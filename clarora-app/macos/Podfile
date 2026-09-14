@@ -1,0 +1,27 @@
+require_relative '../node_modules/react-native-macos/scripts/react_native_pods'
+
+prepare_react_native_project!
+
+target 'Clarora-macOS' do
+  platform :macos, '11.0'
+  use_native_modules!
+
+  # Flags change depending on the env values.
+  flags = get_default_flags()
+
+  use_react_native!(
+    :path => '../node_modules/react-native-macos',
+    :hermes_enabled => false,
+    # The macOS app uses classic RCTViewManager-based native modules.  Keeping
+    # the new architecture off avoids the Fabric/Bridgeless startup white
+    # screen while Android keeps its own configuration.
+    :new_arch_enabled => false,
+    :fabric_enabled => false,
+    # An absolute path to your application root.
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  post_install do |installer|
+    react_native_post_install(installer)
+  end
+end

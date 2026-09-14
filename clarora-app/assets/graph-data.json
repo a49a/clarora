@@ -1,0 +1,158 @@
+{
+  "nodes": [
+    {
+      "id": "demo-1",
+      "label": "bright",
+      "list_num": 1,
+      "category": "原创示例",
+      "order": 1,
+      "pron": "",
+      "senses": [
+        {
+          "zh": "明亮的",
+          "en": "full of light"
+        }
+      ],
+      "kaofa": "",
+      "etymology": "",
+      "mnemonic": "",
+      "node_type": "main",
+      "source": "demo",
+      "source_tags": [
+        "demo:1"
+      ]
+    },
+    {
+      "id": "demo-2",
+      "label": "luminous",
+      "list_num": 1,
+      "category": "原创示例",
+      "order": 2,
+      "pron": "",
+      "senses": [
+        {
+          "zh": "发光的",
+          "en": "giving off light"
+        }
+      ],
+      "kaofa": "",
+      "etymology": "",
+      "mnemonic": "",
+      "node_type": "main",
+      "source": "demo",
+      "source_tags": [
+        "demo:1"
+      ]
+    },
+    {
+      "id": "demo-3",
+      "label": "dark",
+      "list_num": 1,
+      "category": "原创示例",
+      "order": 3,
+      "pron": "",
+      "senses": [
+        {
+          "zh": "昏暗的",
+          "en": "having little light"
+        }
+      ],
+      "kaofa": "",
+      "etymology": "",
+      "mnemonic": "",
+      "node_type": "main",
+      "source": "demo",
+      "source_tags": [
+        "demo:1"
+      ]
+    },
+    {
+      "id": "demo-4",
+      "label": "quiet",
+      "list_num": 1,
+      "category": "原创示例",
+      "order": 4,
+      "pron": "",
+      "senses": [
+        {
+          "zh": "安静的",
+          "en": "making little sound"
+        }
+      ],
+      "kaofa": "",
+      "etymology": "",
+      "mnemonic": "",
+      "node_type": "main",
+      "source": "demo",
+      "source_tags": [
+        "demo:1"
+      ]
+    },
+    {
+      "id": "demo-5",
+      "label": "silent",
+      "list_num": 1,
+      "category": "原创示例",
+      "order": 5,
+      "pron": "",
+      "senses": [
+        {
+          "zh": "无声的",
+          "en": "making no sound"
+        }
+      ],
+      "kaofa": "",
+      "etymology": "",
+      "mnemonic": "",
+      "node_type": "main",
+      "source": "demo",
+      "source_tags": [
+        "demo:1"
+      ]
+    },
+    {
+      "id": "demo-6",
+      "label": "noisy",
+      "list_num": 1,
+      "category": "原创示例",
+      "order": 6,
+      "pron": "",
+      "senses": [
+        {
+          "zh": "吵闹的",
+          "en": "making a lot of sound"
+        }
+      ],
+      "kaofa": "",
+      "etymology": "",
+      "mnemonic": "",
+      "node_type": "main",
+      "source": "demo",
+      "source_tags": [
+        "demo:1"
+      ]
+    }
+  ],
+  "links": [
+    {
+      "source": "demo-1",
+      "target": "demo-2",
+      "link_type": "syn"
+    },
+    {
+      "source": "demo-1",
+      "target": "demo-3",
+      "link_type": "ant"
+    },
+    {
+      "source": "demo-4",
+      "target": "demo-5",
+      "link_type": "syn"
+    },
+    {
+      "source": "demo-4",
+      "target": "demo-6",
+      "link_type": "ant"
+    }
+  ]
+}

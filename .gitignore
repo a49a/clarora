@@ -1,0 +1,41 @@
+# Dependencies and build output
+node_modules/
+Pods/
+dist/
+*.zip
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Local environments and credentials
+.venv/
+.env
+.env.*
+*.pem
+*.key
+*.jks
+*.keystore
+!clarora-app/android/app/debug.keystore
+*.p8
+*.p12
+*.mobileprovision
+*.pfx
+*.cer
+
+# Personal learning materials and runtime data
+*.pdf
+*.epub
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+/data/
+/uploads/
+/subtitles/
+
+# Python caches
+__pycache__/
+*.py[cod]

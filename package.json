@@ -1,0 +1,17 @@
+{
+  "name": "clarora-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "setup": "npm --prefix clarora-app ci",
+    "start": "npm --prefix clarora-app start",
+    "typecheck": "npm --prefix clarora-app run typecheck",
+    "test": "npm --prefix clarora-app test",
+    "windows": "npm --prefix clarora-app run windows",
+    "windows:dev": "npm --prefix clarora-app run windows",
+    "windows:build": "npm --prefix clarora-app run windows:build",
+    "macos": "npm --prefix clarora-app run macos",
+    "android": "npm --prefix clarora-app run android",
+    "ios": "npm --prefix clarora-app run ios"
+  }
+}

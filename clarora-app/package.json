@@ -1,0 +1,52 @@
+{
+  "name": "clarora",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "postinstall": "node scripts/patch-macos-redbox.cjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.cjs",
+    "windows": "react-native run-windows --arch x64 --no-telemetry",
+    "windows:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1",
+    "start": "react-native start",
+    "android": "react-native run-android",
+    "android:apk": "cd android && ./gradlew assembleDebug",
+    "ios": "react-native run-ios --scheme Clarora-iOS",
+    "ios:pods": "cd ios && pod install",
+    "macos:pods": "cd macos && LC_ALL=en_US.UTF-8 pod install",
+    "premacos": "node scripts/ensure-macos-pods.cjs",
+    "macos": "cd macos && react-native run-macos --mode Debug",
+    "premacos:release": "node scripts/ensure-macos-pods.cjs",
+    "macos:release": "cd macos && react-native run-macos --mode Release"
+  },
+  "dependencies": {
+    "@babel/runtime": "^7.26.0",
+    "@noble/hashes": "1.8.0",
+    "@react-native-community/cli-platform-ios": "15.0.1",
+    "fast-xml-parser": "5.5.6",
+    "react": "18.3.1",
+    "react-native": "npm:react-native-macos@0.76.0",
+    "react-native-fs": "^2.20.0",
+    "react-native-macos": "^0.76.0",
+    "react-native-sound": "^0.11.2",
+    "react-native-sqlite-storage": "^6.0.1",
+    "react-native-windows": "0.76.17"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.0",
+    "@react-native-community/cli": "15.0.1",
+    "@react-native/babel-preset": "0.76.0",
+    "@react-native/metro-config": "0.76.0",
+    "@types/react": "~18.3.12",
+    "metro-config": "^0.81.5",
+    "typescript": "^5.7.0"
+  },
+  "react-native-windows": {
+    "init-windows": {
+      "name": "Clarora",
+      "namespace": "Clarora",
+      "template": "old/uwp-cs-app"
+    }
+  }
+}

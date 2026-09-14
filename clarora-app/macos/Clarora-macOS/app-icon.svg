@@ -1,0 +1,17 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="160" y1="96" x2="864" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0D1512"/>
+      <stop offset="1" stop-color="#1D2F26"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="302" y1="238" x2="768" y2="787" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#52E0A2"/>
+      <stop offset="1" stop-color="#34D399"/>
+    </linearGradient>
+  </defs>
+
+  <!-- macOS applies its own squircle mask. Keep the source canvas fully opaque. -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <path d="M790 280L690 360C645 305 597 282 535 282C407 282 330 372 330 512C330 652 407 742 535 742C597 742 645 719 690 664L790 744C722 831 641 874 531 874C328 874 197 735 197 512C197 289 328 150 531 150C641 150 722 193 790 280Z" fill="url(#accent)"/>
+</svg>
