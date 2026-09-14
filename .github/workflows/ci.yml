@@ -1,0 +1,88 @@
+name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: Typecheck and tests (shared code)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clarora-app/package-lock.json
+      - run: npm ci
+        working-directory: clarora-app
+      - run: npm run typecheck
+        working-directory: clarora-app
+      - run: npm test
+        working-directory: clarora-app
+  android:
+    name: Android debug build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clarora-app/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npm ci
+        working-directory: clarora-app
+      - run: npm run android:apk
+        working-directory: clarora-app
+  macos:
+    name: macOS debug build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clarora-app/package-lock.json
+      - run: brew install mpv
+      - run: npm ci
+        working-directory: clarora-app
+      - run: node scripts/ensure-macos-pods.cjs
+        working-directory: clarora-app
+      - run: >-
+          xcodebuild -workspace macos/Clarora.xcworkspace
+          -scheme Clarora-macOS -configuration Debug
+          -destination 'platform=macOS'
+          CODE_SIGNING_ALLOWED=NO build
+        working-directory: clarora-app
+  ios:
+    name: iOS simulator build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clarora-app/package-lock.json
+      - run: npm ci
+        working-directory: clarora-app
+      - run: npm run ios:pods
+        working-directory: clarora-app
+      - run: >-
+          xcodebuild -workspace ios/Clarora.xcworkspace
+          -scheme Clarora-iOS -configuration Debug
+          -sdk iphonesimulator
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO build
+        working-directory: clarora-app

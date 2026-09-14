@@ -1,5 +1,7 @@
 name: React Native Windows
 on:
+  push:
+    branches: [master]
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,10 +21,6 @@ jobs:
       - uses: microsoft/setup-msbuild@v2
       - uses: nuget/setup-nuget@v2
       - run: npm ci
-        working-directory: clarora-app
-      - run: npm run typecheck
-        working-directory: clarora-app
-      - run: npm test
         working-directory: clarora-app
       - run: npm run windows:build
         working-directory: clarora-app
