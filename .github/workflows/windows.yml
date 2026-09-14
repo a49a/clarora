@@ -1,0 +1,33 @@
+name: React Native Windows
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clarora-app/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: microsoft/setup-msbuild@v2
+      - uses: nuget/setup-nuget@v2
+      - run: npm ci
+        working-directory: clarora-app
+      - run: npm run typecheck
+        working-directory: clarora-app
+      - run: npm test
+        working-directory: clarora-app
+      - run: npm run windows:build
+        working-directory: clarora-app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Clarora-Windows-x64-unsigned
+          path: clarora-app/windows/AppPackages/**/*
+          if-no-files-found: error
