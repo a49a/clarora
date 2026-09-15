@@ -1673,6 +1673,160 @@ RCT_EXPORT_METHOD(stopListening)
 
 @end
 
+// ── RNMacWhisper：端侧字幕转写（whisper.cpp + 本地 ggml 模型，离线生成）──────
+// 依赖 Homebrew 的 whisper-cpp（brew install whisper-cpp），库路径与 libmpv
+// 相同：/opt/homebrew。音频经 AVFoundation 流式解码为 16 kHz 单声道 Float32。
+
+#import <whisper.h>
+#import <ggml-backend.h>
+#include <vector>
+
+@interface RNMacWhisper : NSObject <RCTBridgeModule>
+@end
+
+@implementation RNMacWhisper
+
+RCT_EXPORT_MODULE(RNMacWhisper);
+
++ (BOOL)requiresMainQueueSetup { return NO; }
+
+// whisper.cpp 1.9 的计算后端（CPU / Metal）是运行时动态加载的模块；应用进程
+// 必须显式加载，否则无 GPU 设备时 use_gpu=true 会直接 GGML_ABORT 崩掉进程。
+// Homebrew 的后端位于 ggml 的 libexec 目录（/opt/homebrew/opt/ggml 为版本无关符号链接）。
+static void LoadWhisperBackends(void) {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    ggml_backend_load_all_from_path("/opt/homebrew/opt/ggml/libexec");
+    if (ggml_backend_dev_count() == 0) ggml_backend_load_all();
+  });
+}
+
+// One loaded model per path; repeat transcriptions skip the model load.
+static NSMutableDictionary<NSString *, NSValue *> *WhisperContextCache(void) {
+  static NSMutableDictionary<NSString *, NSValue *> *contexts = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ contexts = [NSMutableDictionary dictionary]; });
+  return contexts;
+}
+
+- (dispatch_queue_t)transcriptionQueue {
+  static dispatch_queue_t queue = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ queue = dispatch_queue_create("app.clarora.whisper", DISPATCH_QUEUE_SERIAL); });
+  return queue;
+}
+
+// Stream-decode any AVFoundation-readable recording into 16 kHz mono Float32
+// with bounded memory — whisper.cpp only accepts this input format.
+- (BOOL)decodeAudioToWhisperPcm:(NSString *)path
+                        samples:(std::vector<float> *)samples
+                      errorText:(NSString **)errorText {
+  NSError *error = nil;
+  AVAudioFile *file = [[AVAudioFile alloc] initForReading:[NSURL fileURLWithPath:path] error:&error];
+  if (file == nil || file.processingFormat == nil) {
+    *errorText = error.localizedDescription ?: @"无法读取音频文件";
+    return NO;
+  }
+  if (file.length / file.processingFormat.sampleRate > 4 * 3600.0) {
+    *errorText = @"音频超过 4 小时，请分段后生成字幕";
+    return NO;
+  }
+  AVAudioFormat *target = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:16000 channels:1];
+  AVAudioConverter *converter = [[AVAudioConverter alloc] initFromFormat:file.processingFormat toFormat:target];
+  if (converter == nil) {
+    *errorText = @"该音频格式不受支持（OGG 不支持，可先转 MP3/M4A/WAV）";
+    return NO;
+  }
+
+  AVAudioPCMBuffer *input = [[AVAudioPCMBuffer alloc] initWithPCMFormat:file.processingFormat
+                                                          frameCapacity:8192];
+  AVAudioPCMBuffer *output = [[AVAudioPCMBuffer alloc] initWithPCMFormat:target frameCapacity:16384];
+  __block BOOL endOfFile = NO;
+  while (true) {
+    AVAudioConverterOutputStatus status = [converter convertToBuffer:output error:&error
+                                                  withInputFromBlock:^AVAudioBuffer *(AVAudioPacketCount packets, AVAudioConverterInputStatus *inputStatus) {
+      if (endOfFile) { *inputStatus = AVAudioConverterInputStatus_EndOfStream; return nil; }
+      if ([file readIntoBuffer:input error:nil] == 0) {
+        endOfFile = YES;
+        *inputStatus = AVAudioConverterInputStatus_EndOfStream;
+        return nil;
+      }
+      *inputStatus = AVAudioConverterInputStatus_HaveData;
+      return input;
+    }];
+    if (status == AVAudioConverterOutputStatus_HaveData) {
+      float *channel = output.floatChannelData[0];
+      samples->insert(samples->end(), channel, channel + output.frameLength);
+      continue;
+    }
+    if (status == AVAudioConverterOutputStatus_EndOfStream) break;
+    *errorText = error.localizedDescription ?: @"音频转码失败";
+    return NO;
+  }
+  if (samples->empty()) {
+    *errorText = @"音频内容为空";
+    return NO;
+  }
+  return YES;
+}
+
+RCT_EXPORT_METHOD(transcribe:(NSString *)audioPath
+                  modelPath:(NSString *)modelPath
+                  language:(NSString *)language
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  dispatch_async(self.transcriptionQueue, ^{
+    std::vector<float> samples;
+    NSString *errorText = nil;
+    if (![self decodeAudioToWhisperPcm:audioPath samples:&samples errorText:&errorText]) {
+      reject(@"decode_error", errorText, nil);
+      return;
+    }
+
+    NSValue *cached = WhisperContextCache()[modelPath];
+    whisper_context *context = cached ? (whisper_context *)cached.pointerValue : nil;
+    if (context == nil) {
+      LoadWhisperBackends();
+      struct whisper_context_params contextParams = whisper_context_default_params();
+      // 仅在确认存在计算设备时启用 GPU（Metal），否则退回 CPU，避免 GGML 断言崩溃。
+      contextParams.use_gpu = ggml_backend_dev_count() > 0;
+      context = whisper_init_from_file_with_params(modelPath.UTF8String, contextParams);
+      if (context == nil) {
+        reject(@"model_error", @"无法加载端侧模型文件，请到设置中重新下载", nil);
+        return;
+      }
+      WhisperContextCache()[modelPath] = [NSValue valueWithPointer:context];
+    }
+
+    struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+    params.print_progress = false;
+    params.print_special = false;
+    params.print_realtime = false;
+    params.print_timestamps = false;
+    params.translate = false;
+    params.language = language.length ? language.UTF8String : "auto";
+
+    if (whisper_full(context, params, samples.data(), (int)samples.size()) != 0) {
+      reject(@"transcribe_error", @"端侧转写失败，请重试或更换模型", nil);
+      return;
+    }
+
+    double duration = (double)samples.size() / 16000.0;
+    NSMutableArray<NSDictionary *> *segments = [NSMutableArray array];
+    int count = whisper_full_n_segments(context);
+    for (int i = 0; i < count; i++) {
+      double start = whisper_full_get_segment_t0(context, i) / 100.0;  // whisper 时刻单位是 10ms
+      double end = MAX(whisper_full_get_segment_t1(context, i) / 100.0, start);
+      NSString *text = [NSString stringWithUTF8String:whisper_full_get_segment_text(context, i)];
+      [segments addObject:@{ @"start": @(start), @"end": @(end), @"text": text }];
+    }
+    resolve(@{ @"segments": segments, @"duration": @(duration) });
+  });
+}
+
+@end
+
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification

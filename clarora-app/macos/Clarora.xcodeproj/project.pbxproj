@@ -399,6 +399,8 @@
 					"-ObjC",
 					"-lc++",
 					"-lmpv",
+					"-lwhisper",
+					"-lggml",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.clarora.app;
 				PRODUCT_NAME = Clarora;
@@ -432,6 +434,8 @@
 					"-ObjC",
 					"-lc++",
 					"-lmpv",
+					"-lwhisper",
+					"-lggml",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.clarora.app;
 				PRODUCT_NAME = Clarora;

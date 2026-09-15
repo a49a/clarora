@@ -6,7 +6,7 @@ import { THEME_LABELS, THEME_ORDER } from '../ui/theme';
 import { getSetting, setSetting } from '../data/database';
 import { loadStorageConfig, saveStorageConfig, DEFAULT_STORAGE, type StorageConfig } from '../services/objectStorage';
 import { listBackups, uploadLibrary, downloadLibrary, type BackupInfo } from '../services/librarySync';
-import { loadAiConfig, saveAiConfig, DEFAULT_AI, type AiConfig } from '../services/ai';
+import { loadAiConfig, saveAiConfig, DEFAULT_AI, LOCAL_WHISPER_MODELS, downloadLocalModel, deleteLocalModel, localModelDownloaded, type AiConfig } from '../services/ai';
 
 export default function SettingsScreen() {
   const { theme, themeName, setThemeName } = useAppTheme();
@@ -30,6 +30,21 @@ export default function SettingsScreen() {
   const [fontSize, setFontSize] = useState(24);
   const [scrollSpeed, setScrollSpeed] = useState('normal');
   const [command, setCommand] = useState('');
+  const [localReady, setLocalReady] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    let mounted = true;
+    if (Platform.OS === 'macos') {
+      (async () => {
+        const entries = await Promise.all(LOCAL_WHISPER_MODELS.map(async model => [model.id, await localModelDownloaded(model.id)] as const));
+        if (mounted) setLocalReady(Object.fromEntries(entries));
+      })().catch(() => {});
+    }
+    return () => { mounted = false; };
+  }, []);
+  const refreshLocalModels = async () => {
+    const entries = await Promise.all(LOCAL_WHISPER_MODELS.map(async model => [model.id, await localModelDownloaded(model.id)] as const));
+    setLocalReady(Object.fromEntries(entries));
+  };
   useEffect(() => {
     let mounted = true;
     Promise.all([loadStorageConfig(), loadAiConfig(), getSetting('flashcard_font_size'), getSetting('scroll_speed'), getSetting('import_command')]).then(([s, a, f, speed, cmd]) => {
@@ -86,12 +101,33 @@ export default function SettingsScreen() {
         {button('将选中版本合并到本机', () => { if (!selectedBackup) return; void run(async () => { const result = await downloadLibrary(selectedBackup, setStatus); return `合并完成：${result.words} 个单词，${result.audios} 个音频。返回学习页面查看。`; }); })}
       </>}
     </View></Details>
+    {Platform.OS === 'macos' && <Details title="字幕转写引擎"><View style={styles.section}>
+      <Text style={styles.hint}>「端侧模型」在这台 Mac 上离线生成字幕，音频不上传、不消耗转写 API；英文字幕的翻译仍使用「AI 服务」中的聊天模型。端侧引擎依赖 Homebrew 的 whisper-cpp（brew install whisper-cpp），模型首次使用前需在本区块下载。</Text>
+      <View style={styles.row}>
+        {button('端侧模型（离线）', () => { void run(async () => { await saveAiConfig({ ...ai, asrEngine: 'local' }); setAi(s => ({ ...s, asrEngine: 'local' })); return '已选择端侧模型转写'; }); }, ai.asrEngine === 'local')}
+        {button('自定义转写 API', () => { void run(async () => { await saveAiConfig({ ...ai, asrEngine: 'compatible' }); setAi(s => ({ ...s, asrEngine: 'compatible' })); return '已选择自定义转写 API'; }); }, ai.asrEngine === 'compatible')}
+      </View>
+      {ai.asrEngine === 'local' && <>
+        <Text style={styles.label}>端侧模型</Text>
+        <View style={{ gap: 8 }}>
+          {LOCAL_WHISPER_MODELS.map(model => <View key={model.id} style={styles.row}>
+            {button(`${model.label} · ${model.size}`, () => { void run(async () => { await saveAiConfig({ ...ai, localModel: model.id, asrEngine: 'local' }); setAi(s => ({ ...s, localModel: model.id, asrEngine: 'local' })); return localReady[model.id] ? `已选择 ${model.label}` : `已选择 ${model.label}，请先下载`; }); }, ai.localModel === model.id)}
+            {localReady[model.id]
+              ? <Text style={styles.hint}>已下载</Text>
+              : button('下载', () => { void run(async () => { const message = await downloadLocalModel(model.id); await refreshLocalModels(); return message; }); })}
+            {localReady[model.id] && ai.localModel !== model.id && button('删除', () => { void run(async () => { const message = await deleteLocalModel(model.id); await refreshLocalModels(); return message; }); })}
+          </View>)}
+        </View>
+        <Text style={styles.hint}>英文内容选 .en 模型（更小更准）；非英文或多语种内容选「多语种」模型。多语种模型会自动检测语言。</Text>
+      </>}
+    </View></Details>}
     <Details title="AI 服务 · 自定义 API"><View style={styles.section}>
       <Text style={styles.hint}>客户端直接调用你配置的 OpenAI 兼容 API。聊天、翻译、OCR 和转写按需发送当前材料；未配置时仍可使用本地学习。</Text>
+      {ai.asrEngine === 'local' && <Text style={styles.hint}>当前转写引擎为端侧模型，下方转写配置仅在切换到「自定义转写 API」引擎时生效。</Text>}
       {aiField('baseUrl', 'API Base URL', 'https://your-provider.example/v1')}{aiField('apiKey', 'API Key（本机服务可留空）', '', true)}
       {aiField('model', '聊天模型')}{aiField('visionModel', '视觉模型（OCR）')}
       {aiField('asrBaseUrl', '转写 Base URL（留空沿用上方）')}{aiField('asrApiKey', '转写 API Key（留空沿用上方）', '', true)}{aiField('asrModel', '转写模型')}
-      <Text style={styles.hint}>转写使用 /audio/transcriptions，模型须支持 verbose_json 与 segments 时间轴。跟读评分基于识别文本对齐，记录保存在本机并随资料备份。</Text>
+      <Text style={styles.hint}>转写使用 /audio/transcriptions，模型须支持 verbose_json 与 segments 时间轴。跟读评分基于识别文本对齐，记录保存在本机并随资料备份。端侧模型引擎下，字幕与跟读转写同样在本机完成。</Text>
       {button('保存 AI 配置', () => { void run(async () => { await saveAiConfig(ai); return 'AI 配置已保存'; }); })}
     </View></Details>
     {Platform.OS === 'macos' && <Details title="本机命令导入"><View style={styles.section}>

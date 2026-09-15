@@ -1,12 +1,77 @@
 import { getSetting, setSetting, saveAiRecord, listAiRecords, deleteAiRecord } from '../data/database';
 import { newVaultId } from '../data/vault';
 import { parseSubtitleCues, serializeSubtitleCues } from '../data/subtitles';
-import { FileSystem } from './platform';
+import { FileSystem, currentPlatform, getNativeModules, nativePath } from './platform';
 import type { OcrPageStatus, OcrPageSummary, SpeakingAttemptDetail, SpeakingAttemptSummary, SpeakingScore, AsrEngineList } from './aiTypes';
 export type * from './aiTypes';
 
-export type AiConfig = { baseUrl: string; apiKey: string; model: string; visionModel: string; asrBaseUrl: string; asrApiKey: string; asrModel: string };
-export const DEFAULT_AI: AiConfig = { baseUrl: '', apiKey: '', model: '', visionModel: '', asrBaseUrl: '', asrApiKey: '', asrModel: '' };
+export type AiConfig = { baseUrl: string; apiKey: string; model: string; visionModel: string; asrEngine: 'local' | 'compatible'; localModel: string; asrBaseUrl: string; asrApiKey: string; asrModel: string };
+export const DEFAULT_AI: AiConfig = {
+  baseUrl: '', apiKey: '', model: '', visionModel: '',
+  asrEngine: currentPlatform === 'macos' ? 'local' : 'compatible', localModel: 'base.en',
+  asrBaseUrl: '', asrApiKey: '', asrModel: '',
+};
+
+// ── 端侧转写（whisper.cpp 本地模型，离线生成字幕；macOS 先行）────────────────
+// ggml 模型来自 whisper.cpp 官方仓库，首次使用时下载到应用目录，之后完全离线。
+// huggingface.co 不可达时自动回退 hf-mirror.com 镜像。
+export const LOCAL_WHISPER_MODELS = [
+  { id: 'tiny.en', file: 'ggml-tiny.en.bin', size: '约 78 MB', label: 'Tiny · 英文 · 最快' },
+  { id: 'base.en', file: 'ggml-base.en.bin', size: '约 142 MB', label: 'Base · 英文 · 推荐' },
+  { id: 'small.en', file: 'ggml-small.en.bin', size: '约 466 MB', label: 'Small · 英文 · 更准' },
+  { id: 'base', file: 'ggml-base.bin', size: '约 142 MB', label: 'Base · 多语种' },
+  { id: 'small', file: 'ggml-small.bin', size: '约 466 MB', label: 'Small · 多语种' },
+] as const;
+const MODEL_URL_MIRRORS = [
+  'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/',
+  'https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/',
+];
+export function localWhisperModel(id: string) { return LOCAL_WHISPER_MODELS.find(model => model.id === id); }
+export function resolveWhisperLanguage(modelId: string) { return modelId.endsWith('.en') ? 'en' : 'auto'; }
+async function localWhisperDir() {
+  const dir = (await FileSystem.getDocumentDirectoryAsync()) + 'whisper/';
+  await FileSystem.makeDirectoryAsync(dir).catch(() => {});
+  return dir;
+}
+export async function localModelPath(id: string) {
+  const model = localWhisperModel(id);
+  return model ? `${await localWhisperDir()}${model.file}` : null;
+}
+export async function localModelDownloaded(id: string) {
+  const path = await localModelPath(id);
+  if (!path) return false;
+  try {
+    const files = await FileSystem.listFilesAsync(path.split('/').slice(0, -1).join('/'));
+    return files.some(file => file.endsWith(localWhisperModel(id)!.file));
+  } catch { return false; }
+}
+type NativeWhisper = { transcribe: (audioPath: string, modelPath: string, language: string) => Promise<{ duration: number; segments: Array<{ start: number; end: number; text: string }> }> };
+function nativeWhisper(): NativeWhisper {
+  const module = getNativeModules().RNMacWhisper as NativeWhisper | undefined;
+  if (!module?.transcribe) throw new Error('端侧转写目前仅支持 macOS，其他平台请在下方选择「自定义转写 API」');
+  return module;
+}
+export async function downloadLocalModel(id: string): Promise<string> {
+  const model = localWhisperModel(id);
+  if (!model) throw new Error('未知的端侧模型');
+  const destination = await localModelPath(id);
+  if (!destination) throw new Error('未知的端侧模型');
+  if (await localModelDownloaded(id)) return `${model.label} 已就绪`;
+  let lastError: unknown = null;
+  for (const mirror of MODEL_URL_MIRRORS) {
+    try {
+      await FileSystem.downloadFileAsync(`${mirror}${model.file}`, destination);
+      if (await localModelDownloaded(id)) return `${model.label} 下载完成`;
+    } catch (error) { lastError = error; }
+  }
+  throw new Error(`模型下载失败${lastError ? `（${(lastError as Error).message}）` : ''}，请检查网络后重试`);
+}
+export async function deleteLocalModel(id: string): Promise<string> {
+  const path = await localModelPath(id);
+  if (!path) throw new Error('未知的端侧模型');
+  await FileSystem.deleteAsync(path).catch(() => {});
+  return '模型已删除';
+}
 export async function loadAiConfig(): Promise<AiConfig> {
   const raw = await getSetting('ai_config');
   return { ...DEFAULT_AI, ...(raw ? JSON.parse(raw) : {}) };
@@ -126,19 +191,46 @@ async function transcribe(uri: string, name: string): Promise<Transcript> {
   return { text: typeof value.text === 'string' ? value.text : segments.map((s: any) => s.text).join(' '), duration: Number(value.duration) || (segments.length ? segments[segments.length - 1].end : 0), segments };
 }
 const subtitleJobs = new Map<string, string>();
+const localSubtitleJobs = new Map<string, Promise<string>>();
 export async function transcribeAudio(uri: string, name: string) {
+  const config = await loadAiConfig();
+  const jobId = newVaultId();
+  if (config.asrEngine === 'local') {
+    // 端侧转写在后台进行；waitForSubtitles 等待结果。
+    const pending = runLocalTranscription(uri, config.localModel || 'base.en');
+    localSubtitleJobs.set(jobId, pending);
+    pending.catch(() => {});
+    return { jobId };
+  }
   const result = await transcribe(uri, name);
   if (!result.segments.length) throw new Error('转写模型未返回时间轴，请使用支持 verbose_json segments 的模型');
-  const jobId = newVaultId();
   subtitleJobs.set(jobId, serializeSubtitleCues(result.segments.map((s, i) => ({ ...s, id: String(i) }))));
   return { jobId };
 }
+async function runLocalTranscription(uri: string, modelId: string): Promise<string> {
+  const result = await localTranscribe(uri, modelId);
+  if (!result.segments?.length) throw new Error('端侧模型未返回时间轴');
+  return serializeSubtitleCues(result.segments.map((s, i) => ({ id: String(i), start: s.start, end: s.end, text: s.text })));
+}
+/** 按当前引擎转写：端侧模型（本地）或自定义 API。字幕与跟读共用。 */
+async function localTranscribe(uri: string, modelId: string): Promise<Transcript> {
+  const model = localWhisperModel(modelId);
+  if (!model) throw new Error('未知的端侧模型，请在设置 → 字幕转写引擎中选择');
+  if (!(await localModelDownloaded(modelId))) throw new Error(`端侧模型尚未下载，请在设置 → 字幕转写引擎中下载「${model.label}」`);
+  const result = await nativeWhisper().transcribe(nativePath(uri), await localModelPath(modelId) as string, resolveWhisperLanguage(modelId));
+  return { text: result.segments.map(s => s.text).join(' ').trim(), duration: result.duration, segments: result.segments };
+}
 export async function waitForSubtitles(jobId: string, onProgress?: (progress: number) => void): Promise<string> {
+  const pending = localSubtitleJobs.get(jobId);
+  if (pending) {
+    onProgress?.(0);
+    try { return await pending; } finally { localSubtitleJobs.delete(jobId); }
+  }
   const result = subtitleJobs.get(jobId);
   if (!result) throw new Error('本地转写结果已失效，请重新生成');
-  onProgress?.(100); return result;
+  onProgress?.(1); return result;
 }
-export async function deleteJob(jobId: string) { subtitleJobs.delete(jobId); }
+export async function deleteJob(jobId: string) { subtitleJobs.delete(jobId); localSubtitleJobs.delete(jobId); }
 export async function translateSubtitlesFile(uri: string, _name: string, opts: { lang?: string; provider?: string; mode?: 'replace' | 'bilingual' } = {}) {
   const text = await FileSystem.readAsStringAsync(uri);
   let cues = parseSubtitleCues(text);
@@ -156,14 +248,30 @@ export async function translateSubtitlesFile(uri: string, _name: string, opts: {
   return { jobId, lang: opts.lang || 'zh' };
 }
 export async function waitForTranslation(jobId: string, onStatus?: (message: string) => void) { onStatus?.('翻译完成'); return waitForSubtitles(jobId); }
-export async function getActiveAsrEngine() { const c = await loadAiConfig(); return c.asrModel ? { backend: 'compatible', model: c.asrModel } : null; }
+export async function getActiveAsrEngine() {
+  const config = await loadAiConfig();
+  if (config.asrEngine === 'local') {
+    return { backend: 'local', model: config.localModel || 'base.en', available: await localModelDownloaded(config.localModel || 'base.en') };
+  }
+  return config.asrModel ? { backend: 'compatible', model: config.asrModel, available: true } : null;
+}
 export async function listAsrEngines(): Promise<AsrEngineList> {
-  const c = await loadAiConfig();
-  return { config: { backend: 'compatible' }, backends: [{ backend: 'compatible', label: '自定义转写 API', configured: true, available: !!c.asrModel, reason: c.asrModel ? null : '请在设置中填写转写模型', model: c.asrModel, device: 'API' }] };
+  const config = await loadAiConfig();
+  const localReady = !!getNativeModules().RNMacWhisper;
+  const modelId = config.localModel || 'base.en';
+  return {
+    config: { backend: config.asrEngine },
+    backends: [
+      { backend: 'local', label: '端侧 Whisper（离线）', configured: localReady, available: localReady && await localModelDownloaded(modelId),
+        reason: !localReady ? '端侧转写目前仅支持 macOS' : null, model: modelId, device: localReady ? '本机' : '-' },
+      { backend: 'compatible', label: '自定义转写 API', configured: true, available: !!config.asrModel,
+        reason: config.asrModel ? null : '请在设置中填写转写模型', model: config.asrModel, device: 'API' },
+    ],
+  };
 }
 export async function updateAsrEngine(_backend: string, model?: string) {
-  const c = await loadAiConfig(); if (model) await saveAiConfig({ ...c, asrModel: model });
-  return { backend: 'compatible', label: '自定义转写 API', model: model || c.asrModel, available: !!(model || c.asrModel) };
+  const config = await loadAiConfig(); if (model) await saveAiConfig({ ...config, asrModel: model });
+  return { backend: 'compatible', label: '自定义转写 API', model: model || config.asrModel, available: !!(model || config.asrModel) };
 }
 
 export async function ocrPage(uri: string, name: string) {
@@ -204,7 +312,11 @@ export async function speakingAttempt(uri: string, name: string, reference: stri
   const attemptId = newVaultId();
   const record: SpeakingAttemptDetail = { attemptId, kind, reference, transcript: null, feedback: null, error: null, createdAt: new Date().toISOString(), status: 'processing', score: null };
   try {
-    const result = await transcribe(uri, name); record.transcript = result.text;
+    const config = await loadAiConfig();
+    const result = config.asrEngine === 'local'
+      ? await localTranscribe(uri, config.localModel || 'base.en')
+      : await transcribe(uri, name);
+    record.transcript = result.text;
     record.score = scoreTranscript(reference, result.text, result.duration);
     record.feedback = await askAboutPassage(`原文：${reference}\n识别结果：${result.text}\n对齐：${JSON.stringify(record.score)}`, '用简短中文给出跟读练习建议。只能依据识别文本评价，不推断发音音质。').catch(() => '已完成识别文本对齐；未取得 AI 点评。');
     record.status = 'completed';

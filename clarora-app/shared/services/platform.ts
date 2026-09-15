@@ -2,6 +2,9 @@ import { NativeModules, Platform } from "react-native";
 import RNFS from "./rnfs";
 
 const usesRNFS = Platform.OS === "android" || Platform.OS === "ios";
+/** Current OS name, exported so services can branch without importing react-native directly. */
+export const currentPlatform = Platform.OS;
+export const getNativeModules = (): Record<string, unknown> => NativeModules as unknown as Record<string, unknown>;
 export const nativeLearningAudio = () => Platform.OS === "ios"
   ? NativeModules.RNIOSAudio
   : Platform.OS === "windows" ? NativeModules.RNWindowsAudio

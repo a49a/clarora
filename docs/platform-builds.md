@@ -4,14 +4,14 @@
 
 | 平台 | 实现 | 当前范围 |
 | --- | --- | --- |
-| macOS | `clarora-app/macos/`，React Native macOS 0.76 + libmpv | 共用 `App.tsx` / `shared/`；目录与命令导入、音频合并、libmpv 视频与双字幕同显、桌面快捷键 |
+| macOS | `clarora-app/macos/`，React Native macOS 0.76 + libmpv | 共用 `App.tsx` / `shared/`；端侧离线字幕（whisper.cpp）、目录与命令导入、音频合并、libmpv 视频与双字幕同显、桌面快捷键 |
 | Windows | `clarora-app/windows/`，React Native Windows 0.76.17 | 共用 `App.tsx` / `shared/`；Windows 原生文件、SQLite、音频、片段预加载、录音、键盘与视频适配 |
 | Android | `clarora-app/android/` + `clarora-app/shared/` | 复用移动学习页面；系统文件选择、音频播放与变速、上滑切换；macOS 合并的音频经同步下发 |
 | iOS | `clarora-app/ios/` + `clarora-app/shared/` | 复用移动学习页面；新增文件选择、剪贴板、播放/倍速/循环、片段双播放器预加载、跟读录音及休息音乐适配；需设备验证 |
 
 ## macOS
 
-需要 macOS 11 或更新版本，以及 Node.js 24、Xcode、CocoaPods。视频播放使用 libmpv，当前工程从 `/opt/homebrew`（Homebrew 默认位置）查找；其他安装路径需要调整 `macos/Clarora.xcodeproj` 的 Header / Library Search Paths。
+需要 macOS 11 或更新版本，以及 Node.js 24、Xcode、CocoaPods。视频播放使用 libmpv，端侧字幕使用 whisper.cpp，均从 `/opt/homebrew`（Homebrew 默认位置，`brew install mpv whisper-cpp`）查找；其他安装路径需要调整 `macos/Clarora.xcodeproj` 的 Header / Library Search Paths。
 
 ```sh
 cd clarora-app
@@ -26,6 +26,7 @@ npm run macos
 使用范围与限制：
 
 - 闪卡、音频学习、随便学学、口语跟读、统计、冥想、词汇关系图与自有存储备份均可用。
+- 「AI 生成字幕」默认走端侧 whisper.cpp（设置 → 字幕转写引擎中下载模型），离线运行；英译中翻译仍使用「AI 服务」的聊天 API。也可切换为自定义转写 API。
 - 目录批量导入、命令导入、音频合并（AVFoundation）、双字幕同显与视频学习（libmpv）为 macOS 专属能力。
 - 命令导入需要 App Sandbox 保持关闭（`macos/Clarora-macOS/Clarora.entitlements` 中 `com.apple.security.app-sandbox` 为 `false`），此配置用于直接分发的构建。
 

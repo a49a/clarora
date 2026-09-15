@@ -70,6 +70,7 @@ import { useAppTheme } from "../ui/ThemeContext";
 import { useAIChat, useAIChatEntry } from "../ui/AIChatProvider";
 
 const ASR_ENGINE_LABELS: Record<string, string> = {
+  local: "端侧 Whisper",
   compatible: "自定义转写 API",
   qwen3_asr: "Qwen3-ASR",
   moss: "MOSS",
@@ -1641,7 +1642,7 @@ export default function ListeningScreen({
     try {
       const ext = (selectedAudio.audio_uri.split(".").pop() ?? "mp3").toLowerCase();
       const fileName = `${selectedAudio.name}.${ext}`;
-      setAiStatus("正在上传音频…");
+      setAiStatus("正在准备转写…");
       const { jobId } = await transcribeAudio(selectedAudio.audio_uri, fileName);
       jobIdRef.current = jobId;
       const engine = await getActiveAsrEngine();

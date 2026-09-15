@@ -6,10 +6,11 @@
 - **学习辅助**：统计、番茄钟、冥想、主题、词汇关系图。
 - **自有存储备份**：客户端直连 S3 兼容存储或阿里云 OSS，保留版本，在其他设备选择备份合并。
 - **自定义 AI API**：聊天、流式回答、重点标注、翻译、OCR、转写与跟读文本对齐评分。用户自行配置模型与密钥。
+- **端侧字幕（macOS）**：whisper.cpp 本地模型离线生成字幕，音频不上传；英文转中文再走聊天 API。模型在设置中一键下载。
 
 ## 开发
 
-需要 Node.js 24、对应平台开发工具。macOS 还需要 Xcode、CocoaPods 和 libmpv；当前工程从 `/opt/homebrew` 查找 libmpv，其他安装路径需要调整 Xcode 的 Header / Library Search Paths。
+需要 Node.js 24、对应平台开发工具。macOS 还需要 Xcode、CocoaPods、libmpv 和 whisper-cpp（`brew install mpv whisper-cpp`）；当前工程从 `/opt/homebrew` 查找这些库，其他安装路径需要调整 Xcode 的 Header / Library Search Paths。
 
 ```sh
 npm run setup
