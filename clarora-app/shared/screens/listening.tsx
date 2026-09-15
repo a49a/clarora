@@ -70,7 +70,7 @@ import { useAppTheme } from "../ui/ThemeContext";
 import { useAIChat, useAIChatEntry } from "../ui/AIChatProvider";
 
 const ASR_ENGINE_LABELS: Record<string, string> = {
-  local: "端侧 Whisper",
+  local: "端侧转写",
   compatible: "自定义转写 API",
   qwen3_asr: "Qwen3-ASR",
   moss: "MOSS",

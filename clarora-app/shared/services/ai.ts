@@ -8,68 +8,115 @@ export type * from './aiTypes';
 export type AiConfig = { baseUrl: string; apiKey: string; model: string; visionModel: string; asrEngine: 'local' | 'compatible'; localModel: string; asrBaseUrl: string; asrApiKey: string; asrModel: string };
 export const DEFAULT_AI: AiConfig = {
   baseUrl: '', apiKey: '', model: '', visionModel: '',
-  asrEngine: currentPlatform === 'macos' ? 'local' : 'compatible', localModel: 'base.en',
+  asrEngine: currentPlatform === 'macos' || currentPlatform === 'windows' ? 'local' : 'compatible', localModel: 'base.en',
   asrBaseUrl: '', asrApiKey: '', asrModel: '',
 };
 
-// ── 端侧转写（whisper.cpp 本地模型，离线生成字幕；macOS 先行）────────────────
-// ggml 模型来自 whisper.cpp 官方仓库，首次使用时下载到应用目录，之后完全离线。
-// huggingface.co 不可达时自动回退 hf-mirror.com 镜像。
-export const LOCAL_WHISPER_MODELS = [
-  { id: 'tiny.en', file: 'ggml-tiny.en.bin', size: '约 78 MB', label: 'Tiny · 英文 · 最快' },
-  { id: 'base.en', file: 'ggml-base.en.bin', size: '约 142 MB', label: 'Base · 英文 · 推荐' },
-  { id: 'small.en', file: 'ggml-small.en.bin', size: '约 466 MB', label: 'Small · 英文 · 更准' },
-  { id: 'base', file: 'ggml-base.bin', size: '约 142 MB', label: 'Base · 多语种' },
-  { id: 'small', file: 'ggml-small.bin', size: '约 466 MB', label: 'Small · 多语种' },
+// ── 端侧转写（本地模型，离线生成字幕；macOS 先行）────────────────────────────
+// 模型首次使用时下载到应用目录，之后完全离线。whisper.cpp 模型适合英文，
+// SenseVoice 支持中/英/日/韩/粤（自动检测语言）。huggingface.co 不可达时
+// 自动回退 hf-mirror.com 镜像。
+export const LOCAL_ASR_MODELS = [
+  { id: 'tiny.en', kind: 'whisper', dir: 'whisper', files: ['ggml-tiny.en.bin'], size: '约 78 MB', label: 'Whisper Tiny · 英文 · 最快' },
+  { id: 'base.en', kind: 'whisper', dir: 'whisper', files: ['ggml-base.en.bin'], size: '约 142 MB', label: 'Whisper Base · 英文 · 推荐' },
+  { id: 'small.en', kind: 'whisper', dir: 'whisper', files: ['ggml-small.en.bin'], size: '约 466 MB', label: 'Whisper Small · 英文 · 更准' },
+  { id: 'base', kind: 'whisper', dir: 'whisper', files: ['ggml-base.bin'], size: '约 142 MB', label: 'Whisper Base · 多语种' },
+  { id: 'small', kind: 'whisper', dir: 'whisper', files: ['ggml-small.bin'], size: '约 466 MB', label: 'Whisper Small · 多语种' },
+  { id: 'sense-voice', kind: 'sensevoice', dir: 'sensevoice', files: ['model.int8.onnx', 'tokens.txt'], size: '约 240 MB', label: 'SenseVoice · 中英日韩粤' },
 ] as const;
-const MODEL_URL_MIRRORS = [
-  'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/',
-  'https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/',
+const ASR_MODEL_MIRRORS = [
+  'https://huggingface.co/',
+  'https://hf-mirror.com/',
 ];
-export function localWhisperModel(id: string) { return LOCAL_WHISPER_MODELS.find(model => model.id === id); }
-export function resolveWhisperLanguage(modelId: string) { return modelId.endsWith('.en') ? 'en' : 'auto'; }
-async function localWhisperDir() {
-  const dir = (await FileSystem.getDocumentDirectoryAsync()) + 'whisper/';
+const ASR_MODEL_REPOS: Record<string, string> = {
+  whisper: 'ggerganov/whisper.cpp/resolve/main/',
+  sensevoice: 'csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/',
+};
+export function localAsrModel(id: string) { return LOCAL_ASR_MODELS.find(model => model.id === id); }
+export function resolveAsrLanguage(modelId: string) { return modelId.endsWith('.en') ? 'en' : 'auto'; }
+async function localAsrModelDir(id: string) {
+  const model = localAsrModel(id);
+  const dir = (await FileSystem.getDocumentDirectoryAsync()) + (model?.dir ?? 'asr') + '/';
   await FileSystem.makeDirectoryAsync(dir).catch(() => {});
   return dir;
 }
 export async function localModelPath(id: string) {
-  const model = localWhisperModel(id);
-  return model ? `${await localWhisperDir()}${model.file}` : null;
+  const model = localAsrModel(id);
+  return model ? `${await localAsrModelDir(id)}${model.files[0]}` : null;
 }
 export async function localModelDownloaded(id: string) {
-  const path = await localModelPath(id);
-  if (!path) return false;
+  const model = localAsrModel(id);
+  if (!model) return false;
   try {
-    const files = await FileSystem.listFilesAsync(path.split('/').slice(0, -1).join('/'));
-    return files.some(file => file.endsWith(localWhisperModel(id)!.file));
+    const files = await FileSystem.listFilesAsync(await localAsrModelDir(id));
+    return model.files.every(file => files.some(path => path.endsWith(file)));
   } catch { return false; }
 }
-type NativeWhisper = { transcribe: (audioPath: string, modelPath: string, language: string) => Promise<{ duration: number; segments: Array<{ start: number; end: number; text: string }> }> };
+type AsrResult = { duration: number; segments: Array<{ start: number; end: number; text: string }> };
+type NativeWhisper = { transcribe: (audioPath: string, modelPath: string, language: string) => Promise<AsrResult> };
+type NativeSenseVoice = { transcribe: (audioPath: string, modelPath: string, tokensPath: string) => Promise<AsrResult> };
+type NativeWindowsAsr = {
+  transcribeWhisper: (audioPath: string, modelPath: string, language: string) => Promise<string>;
+  transcribeSenseVoice: (audioPath: string, modelPath: string, tokensPath: string) => Promise<string>;
+};
+export const LOCAL_ASR_PLATFORMS = ['macos', 'windows'];
+const UNSUPPORTED_ASR = '端侧转写目前支持 macOS 和 Windows，其他平台请在下方选择「自定义转写 API」';
 function nativeWhisper(): NativeWhisper {
+  if (currentPlatform === 'windows') {
+    const windows = getNativeModules().RNWindowsAsr as NativeWindowsAsr | undefined;
+    if (!windows?.transcribeWhisper) throw new Error('Windows 端侧转写库尚未安装，请按平台文档运行 scripts/build-windows-asr.ps1');
+    return {
+      transcribe: async (audioPath, modelPath, language) =>
+        JSON.parse(await windows.transcribeWhisper(audioPath, modelPath, language)),
+    };
+  }
   const module = getNativeModules().RNMacWhisper as NativeWhisper | undefined;
-  if (!module?.transcribe) throw new Error('端侧转写目前仅支持 macOS，其他平台请在下方选择「自定义转写 API」');
+  if (!module?.transcribe) throw new Error(UNSUPPORTED_ASR);
   return module;
 }
+function nativeSenseVoice(): NativeSenseVoice {
+  if (currentPlatform === 'windows') {
+    const windows = getNativeModules().RNWindowsAsr as NativeWindowsAsr | undefined;
+    if (!windows?.transcribeSenseVoice) throw new Error('Windows 端侧转写库尚未安装，请按平台文档运行 scripts/build-windows-asr.ps1');
+    return {
+      transcribe: async (audioPath, modelPath, tokensPath) =>
+        JSON.parse(await windows.transcribeSenseVoice(audioPath, modelPath, tokensPath)),
+    };
+  }
+  const module = getNativeModules().RNMacSenseVoice as NativeSenseVoice | undefined;
+  if (!module?.transcribe) throw new Error(UNSUPPORTED_ASR);
+  return module;
+}
+export function localAsrAvailable() {
+  const modules = getNativeModules();
+  if (currentPlatform === 'macos') return !!modules.RNMacWhisper && !!modules.RNMacSenseVoice;
+  if (currentPlatform === 'windows') return !!modules.RNWindowsAsr;
+  return false;
+}
 export async function downloadLocalModel(id: string): Promise<string> {
-  const model = localWhisperModel(id);
+  const model = localAsrModel(id);
   if (!model) throw new Error('未知的端侧模型');
-  const destination = await localModelPath(id);
-  if (!destination) throw new Error('未知的端侧模型');
   if (await localModelDownloaded(id)) return `${model.label} 已就绪`;
+  const dir = await localAsrModelDir(id);
+  const repo = ASR_MODEL_REPOS[model.kind];
   let lastError: unknown = null;
-  for (const mirror of MODEL_URL_MIRRORS) {
+  for (const mirror of ASR_MODEL_MIRRORS) {
     try {
-      await FileSystem.downloadFileAsync(`${mirror}${model.file}`, destination);
+      for (const file of model.files) {
+        await FileSystem.downloadFileAsync(`${mirror}${repo}${file}`, `${dir}${file}`);
+      }
       if (await localModelDownloaded(id)) return `${model.label} 下载完成`;
     } catch (error) { lastError = error; }
   }
   throw new Error(`模型下载失败${lastError ? `（${(lastError as Error).message}）` : ''}，请检查网络后重试`);
 }
 export async function deleteLocalModel(id: string): Promise<string> {
-  const path = await localModelPath(id);
-  if (!path) throw new Error('未知的端侧模型');
-  await FileSystem.deleteAsync(path).catch(() => {});
+  const model = localAsrModel(id);
+  if (!model) throw new Error('未知的端侧模型');
+  const dir = await localAsrModelDir(id);
+  for (const file of model.files) {
+    await FileSystem.deleteAsync(`${dir}${file}`).catch(() => {});
+  }
   return '模型已删除';
 }
 export async function loadAiConfig(): Promise<AiConfig> {
@@ -214,10 +261,13 @@ async function runLocalTranscription(uri: string, modelId: string): Promise<stri
 }
 /** 按当前引擎转写：端侧模型（本地）或自定义 API。字幕与跟读共用。 */
 async function localTranscribe(uri: string, modelId: string): Promise<Transcript> {
-  const model = localWhisperModel(modelId);
+  const model = localAsrModel(modelId);
   if (!model) throw new Error('未知的端侧模型，请在设置 → 字幕转写引擎中选择');
   if (!(await localModelDownloaded(modelId))) throw new Error(`端侧模型尚未下载，请在设置 → 字幕转写引擎中下载「${model.label}」`);
-  const result = await nativeWhisper().transcribe(nativePath(uri), await localModelPath(modelId) as string, resolveWhisperLanguage(modelId));
+  const dir = await localAsrModelDir(modelId);
+  const result = model.kind === 'sensevoice'
+    ? await nativeSenseVoice().transcribe(nativePath(uri), `${dir}${model.files[0]}`, `${dir}${model.files[1]}`)
+    : await nativeWhisper().transcribe(nativePath(uri), `${dir}${model.files[0]}`, resolveAsrLanguage(modelId));
   return { text: result.segments.map(s => s.text).join(' ').trim(), duration: result.duration, segments: result.segments };
 }
 export async function waitForSubtitles(jobId: string, onProgress?: (progress: number) => void): Promise<string> {
@@ -257,13 +307,13 @@ export async function getActiveAsrEngine() {
 }
 export async function listAsrEngines(): Promise<AsrEngineList> {
   const config = await loadAiConfig();
-  const localReady = !!getNativeModules().RNMacWhisper;
+  const localReady = localAsrAvailable();
   const modelId = config.localModel || 'base.en';
   return {
     config: { backend: config.asrEngine },
     backends: [
-      { backend: 'local', label: '端侧 Whisper（离线）', configured: localReady, available: localReady && await localModelDownloaded(modelId),
-        reason: !localReady ? '端侧转写目前仅支持 macOS' : null, model: modelId, device: localReady ? '本机' : '-' },
+      { backend: 'local', label: '端侧转写（离线）', configured: localReady, available: localReady && await localModelDownloaded(modelId),
+        reason: !localReady ? '端侧转写支持 macOS 和 Windows' : null, model: modelId, device: localReady ? '本机' : '-' },
       { backend: 'compatible', label: '自定义转写 API', configured: true, available: !!config.asrModel,
         reason: config.asrModel ? null : '请在设置中填写转写模型', model: config.asrModel, device: 'API' },
     ],

@@ -9,7 +9,8 @@ const segments = [
   { start: 2, end: 4, text: 'once more' },
 ];
 
-function setup(config, whisper) {
+function setup(config, natives = {}, platform = 'macos') {
+  const modules = { RNMacWhisper: natives.whisper, RNMacSenseVoice: natives.senseVoice, RNWindowsAsr: natives.windowsAsr };
   const files = new Set(['ggml-base.en.bin']);
   const api = loader({
     '../data/database': {
@@ -17,9 +18,9 @@ function setup(config, whisper) {
       saveAiRecord: async () => {}, listAiRecords: async () => [], deleteAiRecord: async () => {},
     },
     './platform': {
-      currentPlatform: 'macos',
+      currentPlatform: platform,
       nativePath: value => value,
-      getNativeModules: () => ({ RNMacWhisper: whisper ? { transcribe: whisper } : undefined }),
+      getNativeModules: () => modules,
       FileSystem: {
         getDocumentDirectoryAsync: async () => '/docs/',
         makeDirectoryAsync: async () => {},
@@ -33,10 +34,10 @@ function setup(config, whisper) {
   return { api, files };
 }
 
-test('local engine transcribes on device and never uploads audio', async () => {
+test('whisper engine transcribes on device and never uploads audio', async () => {
   let calls = 0;
   let progress = -1;
-  const s = setup({ asrEngine: 'local', localModel: 'base.en' }, async () => { calls += 1; return { duration: 4, segments }; });
+  const s = setup({ asrEngine: 'local', localModel: 'base.en' }, { whisper: { transcribe: async () => { calls += 1; return { duration: 4, segments }; } } });
   const { jobId } = await s.api.transcribeAudio('file:///a.mp3', 'a.mp3');
   const srt = await s.api.waitForSubtitles(jobId, value => { progress = value; });
   assert.equal(calls, 1);
@@ -45,21 +46,60 @@ test('local engine transcribes on device and never uploads audio', async () => {
   assert.match(srt, /once more/);
 });
 
+test('sense-voice engine dispatches to its own native module with token file', async () => {
+  const s = setup({ asrEngine: 'local', localModel: 'sense-voice' }, {
+    whisper: { transcribe: async () => { throw new Error('不应调用 whisper'); } },
+    senseVoice: { transcribe: async (audio, modelPath, tokensPath) => {
+      assert.equal(modelPath, '/docs/sensevoice/model.int8.onnx');
+      assert.equal(tokensPath, '/docs/sensevoice/tokens.txt');
+      return { duration: 3, segments: [{ start: 0, end: 3, text: '你好世界' }] };
+    } },
+  });
+  s.files.add('model.int8.onnx'); s.files.add('tokens.txt');
+  const { jobId } = await s.api.transcribeAudio('file:///a.mp3', 'a.mp3');
+  const srt = await s.api.waitForSubtitles(jobId);
+  assert.match(srt, /你好世界/);
+});
+
 test('missing model download surfaces in waitForSubtitles with actionable message', async () => {
-  const s = setup({ asrEngine: 'local', localModel: 'small.en' }, async () => ({ duration: 0, segments }));
+  const s = setup({ asrEngine: 'local', localModel: 'small.en' }, { whisper: async () => ({ duration: 0, segments }) });
   const { jobId } = await s.api.transcribeAudio('file:///a.mp3', 'a.mp3');
   await assert.rejects(s.api.waitForSubtitles(jobId), /尚未下载/);
 });
 
+test('windows engine dispatches through RNWindowsAsr JSON bridge', async () => {
+  let modelPath = '', language = '';
+  const s = setup({ asrEngine: 'local', localModel: 'base.en' }, {
+    windowsAsr: {
+      transcribeWhisper: async (audio, model, lang) => {
+        modelPath = model; language = lang;
+        return JSON.stringify({ duration: 4, segments });
+      },
+    },
+  }, 'windows');
+  const { jobId } = await s.api.transcribeAudio('C:/music/a.mp3', 'a.mp3');
+  const srt = await s.api.waitForSubtitles(jobId);
+  assert.equal(modelPath, '/docs/whisper/ggml-base.en.bin');
+  assert.equal(language, 'en');
+  assert.match(srt, /hello world/);
+  assert.match(srt, /once more/);
+});
+
 test('model registry, download flow and language resolution', async () => {
-  const s = setup({ asrEngine: 'local', localModel: 'base.en' }, async () => ({ duration: 0, segments }));
+  const s = setup({ asrEngine: 'local', localModel: 'base.en' }, {
+    whisper: { transcribe: async () => ({ duration: 0, segments }) },
+    senseVoice: { transcribe: async () => ({ duration: 0, segments }) },
+  });
   assert.equal(await s.api.localModelDownloaded('base.en'), true);
   assert.equal(await s.api.localModelDownloaded('small.en'), false);
-  assert.equal(s.api.resolveWhisperLanguage('base.en'), 'en');
-  assert.equal(s.api.resolveWhisperLanguage('base'), 'auto');
+  assert.equal(await s.api.localModelDownloaded('sense-voice'), false);
+  assert.equal(s.api.resolveAsrLanguage('base.en'), 'en');
+  assert.equal(s.api.resolveAsrLanguage('base'), 'auto');
   const message = await s.api.downloadLocalModel('small.en');
   assert.match(message, /下载完成/);
   assert.equal(await s.api.localModelDownloaded('small.en'), true);
+  await s.api.downloadLocalModel('sense-voice');
+  assert.equal(await s.api.localModelDownloaded('sense-voice'), true);
   const engines = await s.api.listAsrEngines();
   assert.equal(engines.backends[0].backend, 'local');
   assert.equal(engines.backends[0].available, true);

@@ -1717,10 +1717,11 @@ static NSMutableDictionary<NSString *, NSValue *> *WhisperContextCache(void) {
 }
 
 // Stream-decode any AVFoundation-readable recording into 16 kHz mono Float32
-// with bounded memory — whisper.cpp only accepts this input format.
-- (BOOL)decodeAudioToWhisperPcm:(NSString *)path
-                        samples:(std::vector<float> *)samples
-                      errorText:(NSString **)errorText {
+// with bounded memory. Shared by every on-device ASR engine (whisper.cpp and
+// sherpa-onnx accept exactly this input format).
+static BOOL ClaroraDecodeAudio16kMono(NSString *path,
+                                      std::vector<float> *samples,
+                                      NSString **errorText) {
   NSError *error = nil;
   AVAudioFile *file = [[AVAudioFile alloc] initForReading:[NSURL fileURLWithPath:path] error:&error];
   if (file == nil || file.processingFormat == nil) {
@@ -1779,7 +1780,7 @@ RCT_EXPORT_METHOD(transcribe:(NSString *)audioPath
   dispatch_async(self.transcriptionQueue, ^{
     std::vector<float> samples;
     NSString *errorText = nil;
-    if (![self decodeAudioToWhisperPcm:audioPath samples:&samples errorText:&errorText]) {
+    if (!ClaroraDecodeAudio16kMono(audioPath, &samples, &errorText)) {
       reject(@"decode_error", errorText, nil);
       return;
     }
@@ -1821,6 +1822,131 @@ RCT_EXPORT_METHOD(transcribe:(NSString *)audioPath
       NSString *text = [NSString stringWithUTF8String:whisper_full_get_segment_text(context, i)];
       [segments addObject:@{ @"start": @(start), @"end": @(end), @"text": text }];
     }
+    resolve(@{ @"segments": segments, @"duration": @(duration) });
+  });
+}
+
+@end
+
+// ── RNMacSenseVoice：端侧字幕转写（sherpa-onnx + SenseVoiceSmall ONNX）──────
+// 依赖 sherpa-onnx 动态库（libsherpa-onnx-c-api + onnxruntime，见 README），
+// 模型为 SenseVoiceSmall int8，支持中/英/日/韩/粤，自动检测语言。结果只有逐
+// token 时间戳，这里按标点和停顿聚合成字幕段。
+
+#import <sherpa-onnx/c-api/c-api.h>
+
+@interface RNMacSenseVoice : NSObject <RCTBridgeModule>
+@end
+
+@implementation RNMacSenseVoice
+
+RCT_EXPORT_MODULE(RNMacSenseVoice);
+
++ (BOOL)requiresMainQueueSetup { return NO; }
+
+- (dispatch_queue_t)transcriptionQueue {
+  static dispatch_queue_t queue = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ queue = dispatch_queue_create("app.clarora.sensevoice", DISPATCH_QUEUE_SERIAL); });
+  return queue;
+}
+
+// One loaded recognizer per model path; model load dominates latency otherwise.
+static NSMutableDictionary<NSString *, NSValue *> *SenseVoiceRecognizers(void) {
+  static NSMutableDictionary<NSString *, NSValue *> *recognizers = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ recognizers = [NSMutableDictionary dictionary]; });
+  return recognizers;
+}
+
+// SenseVoice 只输出逐 token 时间戳；按标点、停顿和长度聚合成适合跟读的字幕段。
++ (NSMutableArray<NSDictionary *> *)cuesFromResult:(const SherpaOnnxOfflineRecognizerResult *)result
+                                         duration:(double)duration {
+  NSMutableArray<NSDictionary *> *segments = [NSMutableArray array];
+  if (result->tokens_arr == nil || result->timestamps == nil) {
+    NSString *text = [NSString stringWithUTF8String:result->text ? result->text : ""];
+    if (text.length) [segments addObject:@{ @"start": @(0), @"end": @(duration), @"text": text }];
+    return segments;
+  }
+
+  NSMutableCharacterSet *punctuation = [NSMutableCharacterSet characterSetWithCharactersInString:@"。！？!?.,;:;:、，"];
+  NSMutableString *cueText = [NSMutableString string];
+  double cueStart = -1, prevEnd = -1;
+  int32_t tokensInCue = 0;
+  for (int32_t i = 0; i < result->count; i++) {
+    NSString *token = [NSString stringWithUTF8String:result->tokens_arr[i]];
+    if (token.length == 0 || [token hasPrefix:@"<|"]) continue;  // 语言/情感等特殊标记
+    double timestamp = result->timestamps[i];
+    if (timestamp < 0 || timestamp > duration) continue;
+    if (cueStart < 0) cueStart = MAX(0, timestamp - 0.05);
+    if (prevEnd >= 0 && timestamp - prevEnd > 0.6 && cueText.length > 0) {
+      [segments addObject:@{ @"start": @(cueStart), @"end": @(MIN(prevEnd + 0.2, duration)), @"text": [cueText copy] }];
+      [cueText setString:@""];
+      cueStart = MAX(0, timestamp - 0.05);
+      tokensInCue = 0;
+    }
+    [cueText appendString:token];
+    tokensInCue++;
+    prevEnd = timestamp;
+    if ([token rangeOfCharacterFromSet:punctuation].location != NSNotFound || tokensInCue >= 20 || timestamp - cueStart >= 6.0) {
+      [segments addObject:@{ @"start": @(cueStart), @"end": @(MIN(timestamp + 0.2, duration)), @"text": [cueText copy] }];
+      [cueText setString:@""];
+      cueStart = -1;
+      tokensInCue = 0;
+    }
+  }
+  if (cueText.length > 0) {
+    [segments addObject:@{ @"start": @(MAX(cueStart, 0)), @"end": @(MIN(prevEnd + 0.2, duration)), @"text": [cueText copy] }];
+  }
+  return segments;
+}
+
+RCT_EXPORT_METHOD(transcribe:(NSString *)audioPath
+                  modelPath:(NSString *)modelPath
+                  tokensPath:(NSString *)tokensPath
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  dispatch_async(self.transcriptionQueue, ^{
+    std::vector<float> samples;
+    NSString *errorText = nil;
+    if (!ClaroraDecodeAudio16kMono(audioPath, &samples, &errorText)) {
+      reject(@"decode_error", errorText, nil);
+      return;
+    }
+
+    NSValue *cached = SenseVoiceRecognizers()[modelPath];
+    const SherpaOnnxOfflineRecognizer *recognizer = cached ? (const SherpaOnnxOfflineRecognizer *)cached.pointerValue : nil;
+    if (recognizer == nil) {
+      SherpaOnnxOfflineRecognizerConfig config;
+      memset(&config, 0, sizeof(config));
+      config.feat_config.sample_rate = 16000;
+      config.feat_config.feature_dim = 80;
+      config.model_config.sense_voice.model = modelPath.UTF8String;
+      config.model_config.sense_voice.language = "auto";  // zh/en/ja/ko/yue 自动检测
+      config.model_config.sense_voice.use_itn = 1;
+      config.model_config.tokens = tokensPath.UTF8String;
+      config.model_config.num_threads = 2;
+      recognizer = SherpaOnnxCreateOfflineRecognizer(&config);
+      if (recognizer == nil) {
+        reject(@"model_error", @"无法加载 SenseVoice 模型，请到设置中重新下载", nil);
+        return;
+      }
+      SenseVoiceRecognizers()[modelPath] = [NSValue valueWithPointer:recognizer];
+    }
+
+    const SherpaOnnxOfflineStream *stream = SherpaOnnxCreateOfflineStream(recognizer);
+    if (stream == nil) {
+      reject(@"transcribe_error", @"端侧转写失败，请重试", nil);
+      return;
+    }
+    SherpaOnnxAcceptWaveformOffline(stream, 16000, samples.data(), (int32_t)samples.size());
+    SherpaOnnxDecodeOfflineStream(recognizer, stream);
+    const SherpaOnnxOfflineRecognizerResult *result = SherpaOnnxGetOfflineStreamResult(stream);
+    double duration = (double)samples.size() / 16000.0;
+    NSMutableArray<NSDictionary *> *segments = [RNMacSenseVoice cuesFromResult:result duration:duration];
+    SherpaOnnxDestroyOfflineRecognizerResult(result);
+    SherpaOnnxDestroyOfflineStream(stream);
     resolve(@{ @"segments": segments, @"duration": @(duration) });
   });
 }

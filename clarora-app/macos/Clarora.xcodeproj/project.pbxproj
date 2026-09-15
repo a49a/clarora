@@ -387,7 +387,7 @@
 					/opt/homebrew/include,
 				);
 				INFOPLIST_FILE = "Clarora-macOS/Info.plist";
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks /opt/homebrew/lib";
 				LIBRARY_SEARCH_PATHS = (
 					"$(SDKROOT)/usr/lib/swift",
 					"$(inherited)",
@@ -401,6 +401,7 @@
 					"-lmpv",
 					"-lwhisper",
 					"-lggml",
+					"-lsherpa-onnx-c-api",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.clarora.app;
 				PRODUCT_NAME = Clarora;
@@ -422,7 +423,7 @@
 					/opt/homebrew/include,
 				);
 				INFOPLIST_FILE = "Clarora-macOS/Info.plist";
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks /opt/homebrew/lib";
 				LIBRARY_SEARCH_PATHS = (
 					"$(SDKROOT)/usr/lib/swift",
 					"$(inherited)",
@@ -436,6 +437,7 @@
 					"-lmpv",
 					"-lwhisper",
 					"-lggml",
+					"-lsherpa-onnx-c-api",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.clarora.app;
 				PRODUCT_NAME = Clarora;

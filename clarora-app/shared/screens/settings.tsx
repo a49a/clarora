@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { Details } from '../ui/Details';
+import { learningDesign } from '../ui/learningDesign';
 import { useAppTheme } from '../ui/ThemeContext';
-import { THEME_LABELS, THEME_ORDER } from '../ui/theme';
+import { getTheme, THEME_DETAILS, THEME_LABELS, THEME_ORDER, type ThemeName } from '../ui/theme';
 import { getSetting, setSetting } from '../data/database';
 import { loadStorageConfig, saveStorageConfig, DEFAULT_STORAGE, type StorageConfig } from '../services/objectStorage';
 import { listBackups, uploadLibrary, downloadLibrary, type BackupInfo } from '../services/librarySync';
-import { loadAiConfig, saveAiConfig, DEFAULT_AI, LOCAL_WHISPER_MODELS, downloadLocalModel, deleteLocalModel, localModelDownloaded, type AiConfig } from '../services/ai';
+import { loadAiConfig, saveAiConfig, DEFAULT_AI, LOCAL_ASR_MODELS, downloadLocalModel, deleteLocalModel, localModelDownloaded, type AiConfig } from '../services/ai';
 
 export default function SettingsScreen() {
-  const { theme, themeName, setThemeName } = useAppTheme();
+  const { theme, themeName, setThemeName, systemScheme } = useAppTheme();
+  const ui = learningDesign(theme);
   const styles = StyleSheet.create({
     page: { flex: 1, backgroundColor: theme.bg }, content: { padding: 24, gap: 18, width: '100%', maxWidth: 920, alignSelf: 'center' },
     title: { fontSize: 30, fontWeight: '700', color: theme.text }, label: { fontSize: 15, fontWeight: '600', color: theme.text },
@@ -18,6 +20,25 @@ export default function SettingsScreen() {
     input: { borderWidth: 1, borderColor: theme.border, borderRadius: 9, padding: 12, color: theme.text, backgroundColor: theme.bg, minHeight: 44 },
     button: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 10, backgroundColor: theme.surfaceHover },
     selected: { borderWidth: 1, borderColor: theme.accent }, status: { color: theme.accent, lineHeight: 22 },
+    segGroup: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    themeSwatches: { flexDirection: 'row', gap: 5, marginBottom: 5 },
+    themeSwatch: { width: 18, height: 18, borderRadius: 9, borderWidth: 1, borderColor: 'rgba(128,128,128,0.25)' },
+    segBtn: {
+      flex: 1,
+      minWidth: 120,
+      alignItems: 'center',
+      gap: 3,
+      paddingVertical: 12,
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.surfaceHover,
+      ...ui.button,
+    },
+    segBtnActive: { backgroundColor: theme.accent, borderColor: theme.accent },
+    segBtnTitle: { color: theme.text, fontSize: 14, fontWeight: '700' },
+    segBtnTitleActive: { color: '#fff' },
+    segBtnDetail: { color: theme.textMuted, fontSize: 11 },
+    segBtnDetailActive: { color: 'rgba(255,255,255,0.85)' },
   });
   const [storage, setStorage] = useState<StorageConfig>({ ...DEFAULT_STORAGE });
   const [ai, setAi] = useState<AiConfig>({ ...DEFAULT_AI });
@@ -33,16 +54,16 @@ export default function SettingsScreen() {
   const [localReady, setLocalReady] = useState<Record<string, boolean>>({});
   useEffect(() => {
     let mounted = true;
-    if (Platform.OS === 'macos') {
+    if (Platform.OS === 'macos' || Platform.OS === 'windows') {
       (async () => {
-        const entries = await Promise.all(LOCAL_WHISPER_MODELS.map(async model => [model.id, await localModelDownloaded(model.id)] as const));
+        const entries = await Promise.all(LOCAL_ASR_MODELS.map(async model => [model.id, await localModelDownloaded(model.id)] as const));
         if (mounted) setLocalReady(Object.fromEntries(entries));
       })().catch(() => {});
     }
     return () => { mounted = false; };
   }, []);
   const refreshLocalModels = async () => {
-    const entries = await Promise.all(LOCAL_WHISPER_MODELS.map(async model => [model.id, await localModelDownloaded(model.id)] as const));
+    const entries = await Promise.all(LOCAL_ASR_MODELS.map(async model => [model.id, await localModelDownloaded(model.id)] as const));
     setLocalReady(Object.fromEntries(entries));
   };
   useEffect(() => {
@@ -72,9 +93,22 @@ export default function SettingsScreen() {
     <Text style={styles.title}>设置</Text>
     <Text style={styles.hint}>资料保存在本机。所有客户端功能开放，无需 Clarora 账号。</Text>
     <View accessibilityLiveRegion="polite"><Text style={styles.status}>{status}</Text></View>
-    <View style={styles.section}><Text style={styles.label}>外观主题</Text><View style={styles.row}>
-      {THEME_ORDER.map(name => <View key={name}>{button(THEME_LABELS[name], () => setThemeName(name), themeName === name)}</View>)}
-    </View></View>
+    <View style={styles.section}><Text style={styles.label}>外观主题</Text><View style={styles.segGroup}>
+      {THEME_ORDER.map((name: ThemeName) => {
+        const selected = themeName === name;
+        const preview = getTheme(name, systemScheme);
+        return <Pressable key={name} accessibilityRole="button" accessibilityState={{ selected }}
+          accessibilityLabel={`${THEME_LABELS[name]}主题`}
+          style={[styles.segBtn, selected && styles.segBtnActive]} onPress={() => setThemeName(name)}>
+          <View style={styles.themeSwatches}>
+            {[preview.bg, preview.sidebar, preview.accent].map((color, index) => <View key={index} style={[styles.themeSwatch, { backgroundColor: color }]} />)}
+          </View>
+          <Text style={[styles.segBtnTitle, selected && styles.segBtnTitleActive]}>{THEME_LABELS[name]}</Text>
+          <Text style={[styles.segBtnDetail, selected && styles.segBtnDetailActive]}>{THEME_DETAILS[name]}</Text>
+        </Pressable>;
+      })}
+    </View>
+    <Text style={styles.hint}>{themeName === 'night' ? '当前主题：夜航。固定使用深色外观，适合夜间学习。' : `当前主题：${THEME_LABELS[themeName]}。明暗自动跟随系统外观。`}</Text></View>
     <View style={styles.section}><Text style={styles.label}>卡片文字大小 · {fontSize}</Text><View style={styles.row}>
       {[-2, 2].map(delta => <View key={delta}>{button(delta < 0 ? 'A−' : 'A+', () => { const size = Math.max(16, Math.min(34, fontSize + delta)); void run(async () => { await setSetting('flashcard_font_size', String(size)); setFontSize(size); return '文字大小已保存'; }); })}</View>)}
     </View></View>
@@ -101,8 +135,8 @@ export default function SettingsScreen() {
         {button('将选中版本合并到本机', () => { if (!selectedBackup) return; void run(async () => { const result = await downloadLibrary(selectedBackup, setStatus); return `合并完成：${result.words} 个单词，${result.audios} 个音频。返回学习页面查看。`; }); })}
       </>}
     </View></Details>
-    {Platform.OS === 'macos' && <Details title="字幕转写引擎"><View style={styles.section}>
-      <Text style={styles.hint}>「端侧模型」在这台 Mac 上离线生成字幕，音频不上传、不消耗转写 API；英文字幕的翻译仍使用「AI 服务」中的聊天模型。端侧引擎依赖 Homebrew 的 whisper-cpp（brew install whisper-cpp），模型首次使用前需在本区块下载。</Text>
+    {(Platform.OS === 'macos' || Platform.OS === 'windows') && <Details title="字幕转写引擎"><View style={styles.section}>
+      <Text style={styles.hint}>「端侧模型」在本机离线生成字幕，音频不上传、不消耗转写 API；英文字幕的翻译仍使用「AI 服务」中的聊天模型。macOS 依赖 whisper.cpp 与 sherpa-onnx 本机库，Windows 依赖 clarora_asr.dll（安装与构建见平台文档），模型首次使用前需在本区块下载。</Text>
       <View style={styles.row}>
         {button('端侧模型（离线）', () => { void run(async () => { await saveAiConfig({ ...ai, asrEngine: 'local' }); setAi(s => ({ ...s, asrEngine: 'local' })); return '已选择端侧模型转写'; }); }, ai.asrEngine === 'local')}
         {button('自定义转写 API', () => { void run(async () => { await saveAiConfig({ ...ai, asrEngine: 'compatible' }); setAi(s => ({ ...s, asrEngine: 'compatible' })); return '已选择自定义转写 API'; }); }, ai.asrEngine === 'compatible')}
@@ -110,7 +144,7 @@ export default function SettingsScreen() {
       {ai.asrEngine === 'local' && <>
         <Text style={styles.label}>端侧模型</Text>
         <View style={{ gap: 8 }}>
-          {LOCAL_WHISPER_MODELS.map(model => <View key={model.id} style={styles.row}>
+          {LOCAL_ASR_MODELS.map(model => <View key={model.id} style={styles.row}>
             {button(`${model.label} · ${model.size}`, () => { void run(async () => { await saveAiConfig({ ...ai, localModel: model.id, asrEngine: 'local' }); setAi(s => ({ ...s, localModel: model.id, asrEngine: 'local' })); return localReady[model.id] ? `已选择 ${model.label}` : `已选择 ${model.label}，请先下载`; }); }, ai.localModel === model.id)}
             {localReady[model.id]
               ? <Text style={styles.hint}>已下载</Text>
@@ -118,7 +152,7 @@ export default function SettingsScreen() {
             {localReady[model.id] && ai.localModel !== model.id && button('删除', () => { void run(async () => { const message = await deleteLocalModel(model.id); await refreshLocalModels(); return message; }); })}
           </View>)}
         </View>
-        <Text style={styles.hint}>英文内容选 .en 模型（更小更准）；非英文或多语种内容选「多语种」模型。多语种模型会自动检测语言。</Text>
+        <Text style={styles.hint}>中文内容选 SenseVoice（支持中英日韩粤，自动检测语言）；纯英文内容选 Whisper .en 模型（更小更准）。英文字幕的中文翻译都由「AI 服务」的聊天模型完成。</Text>
       </>}
     </View></Details>}
     <Details title="AI 服务 · 自定义 API"><View style={styles.section}>
