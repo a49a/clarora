@@ -4,14 +4,28 @@
 
 | 平台 | 实现 | 当前范围 |
 | --- | --- | --- |
-| macOS | `clarora-app/macos/`，React Native macOS 0.76 + libmpv | 共用 `App.tsx` / `shared/`；端侧离线字幕（whisper.cpp）、目录与命令导入、音频合并、libmpv 视频与双字幕同显、桌面快捷键 |
-| Windows | `clarora-app/windows/`，React Native Windows 0.76.17 | 共用 `App.tsx` / `shared/`；Windows 原生文件、SQLite、音频、片段预加载、录音、键盘与视频适配 |
+| macOS | `clarora-app/macos/`，React Native macOS 0.76 + libmpv | 共用 `App.tsx` / `shared/`；端侧离线字幕（whisper.cpp / SenseVoice）、目录与命令导入、音频合并、libmpv 视频与双字幕同显、桌面快捷键 |
+| Windows | `clarora-app/windows/`，React Native Windows 0.76.17 | 共用 `App.tsx` / `shared/`；端侧离线字幕（clarora_asr）、Windows 原生文件、SQLite、音频、片段预加载、录音、键盘与视频适配 |
 | Android | `clarora-app/android/` + `clarora-app/shared/` | 复用移动学习页面；系统文件选择、音频播放与变速、上滑切换；macOS 合并的音频经同步下发 |
 | iOS | `clarora-app/ios/` + `clarora-app/shared/` | 复用移动学习页面；新增文件选择、剪贴板、播放/倍速/循环、片段双播放器预加载、跟读录音及休息音乐适配；需设备验证 |
 
 ## macOS
 
-需要 macOS 11 或更新版本，以及 Node.js 24、Xcode、CocoaPods。视频播放使用 libmpv，端侧字幕使用 whisper.cpp，均从 `/opt/homebrew`（Homebrew 默认位置，`brew install mpv whisper-cpp`）查找；其他安装路径需要调整 `macos/Clarora.xcodeproj` 的 Header / Library Search Paths。
+需要 macOS 11 或更新版本，以及 Node.js 24、Xcode、CocoaPods。视频播放使用 libmpv（`brew install mpv`），端侧字幕使用 whisper.cpp（`brew install whisper-cpp`），均从 `/opt/homebrew`（Homebrew 默认位置）查找；其他安装路径需要调整 `macos/Clarora.xcodeproj` 的 Header / Library Search Paths。
+
+SenseVoice 端侧转写还需要 sherpa-onnx 动态库（无 Homebrew formula，手动安装到同一前缀）：
+
+```sh
+curl -fsSL -o /tmp/sherpa-libs.tar.bz2 \
+  https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-osx-arm64-shared-no-tts-lib.tar.bz2
+tar -xjf /tmp/sherpa-libs.tar.bz2 -C /tmp
+cp sherpa-onnx-v1.13.8-osx-arm64-shared-no-tts-lib/lib/*.dylib /opt/homebrew/lib/
+mkdir -p /opt/homebrew/include/sherpa-onnx/c-api
+curl -fsSL -o /opt/homebrew/include/sherpa-onnx/c-api/c-api.h \
+  https://cdn.jsdelivr.net/gh/k2-fsa/sherpa-onnx@v1.13.8/sherpa-onnx/c-api/c-api.h
+```
+
+Intel Mac 使用 `osx-x86_64-shared-no-tts-lib.tar.bz2` 对应包。GitHub 不可达时，资产下载可改走 `api.github.com`（`Accept: application/octet-stream`）。
 
 ```sh
 cd clarora-app
@@ -26,7 +40,7 @@ npm run macos
 使用范围与限制：
 
 - 闪卡、音频学习、随便学学、口语跟读、统计、冥想、词汇关系图与自有存储备份均可用。
-- 「AI 生成字幕」默认走端侧 whisper.cpp（设置 → 字幕转写引擎中下载模型），离线运行；英译中翻译仍使用「AI 服务」的聊天 API。也可切换为自定义转写 API。
+- 「AI 生成字幕」默认走端侧模型（设置 → 字幕转写引擎中下载）：whisper.cpp 适合英文，SenseVoice 支持中/英/日/韩/粤并自动检测语言，离线运行；英译中翻译仍使用「AI 服务」的聊天 API。也可切换为自定义转写 API。
 - 目录批量导入、命令导入、音频合并（AVFoundation）、双字幕同显与视频学习（libmpv）为 macOS 专属能力。
 - 命令导入需要 App Sandbox 保持关闭（`macos/Clarora-macOS/Clarora.entitlements` 中 `com.apple.security.app-sandbox` 为 `false`），此配置用于直接分发的构建。
 
@@ -44,7 +58,14 @@ npm run windows:dev
 npm run windows:build
 ```
 
-也可打开 `clarora-app/windows/Clarora.sln`，选择 Debug / x64 启动。`MainPage.xaml` 注册 `clarora`，直接加载与其他平台相同的 `index.js` 和 `App.tsx`。
+端侧转写依赖在本机构建一次（产物不进仓库）：
+
+```powershell
+npm run setup
+powershell -NoProfile -ExecutionPolicy Bypass -File clarora-app/scripts/build-windows-asr.ps1
+```
+
+脚本会用 vcpkg 安装 whisper.cpp、下载 sherpa-onnx 发行包，并把 `clarora_asr.dll` 与运行时 DLL 复制到 `clarora-app/windows/Clarora/`（GitHub Actions 的 Windows 构建已自动包含此步骤）。之后打开 `clarora-app/windows/Clarora.sln`，选择 Debug / x64 启动。`MainPage.xaml` 注册 `clarora`，直接加载与其他平台相同的 `index.js` 和 `App.tsx`。
 
 Release 产物位于 `clarora-app/windows/AppPackages/`，包括 JavaScript，无需 Metro。GitHub Actions 可手动运行 **React Native Windows**，下载 `Clarora-Windows-x64-unsigned` artifact。流程构建未签名应用包，不自动发布。安装与分发前需要自己的签名证书（Publisher 与 manifest 一致）或 Microsoft Store 签名。
 
@@ -52,6 +73,7 @@ Windows 使用同一个 SQLite schema、复习算法和自有存储备份逻辑�
 
 Windows 使用范围：
 
+- 「AI 生成字幕」支持端侧模型（clarora_asr.dll：whisper.cpp + SenseVoice），离线运行；英译中翻译走「AI 服务」的聊天 API。DLL 由 `scripts/build-windows-asr.ps1` 构建（需要 vcpkg 与 Visual Studio 2022 的 C++ 工具），缺失时应用其余功能不受影响，端侧转写在设置中提示不可用。
 - 随便学学、闪卡、音频管理与学习、口语跟读、词汇表、OCR 图片导入、统计、冥想和自有存储备份均复用共享页面。
 - 桌面信息流左右拖动，←/→ 切条，空格显示答案；输入文本时不拦截快捷键。
 - 普通音频与两路预加载播放器分开；支持倍速、循环、跟读录音和合并音频。

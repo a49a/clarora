@@ -22,6 +22,10 @@ jobs:
       - uses: nuget/setup-nuget@v2
       - run: npm ci
         working-directory: clarora-app
+      - name: Build on-device ASR library (clarora_asr.dll)
+        continue-on-error: true  # 首次引入的原生构建；失败不阻塞应用包，端侧转写运行时降级
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-asr.ps1
+        working-directory: clarora-app
       - run: npm run windows:build
         working-directory: clarora-app
       - uses: actions/upload-artifact@v4
