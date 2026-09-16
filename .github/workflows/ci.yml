@@ -54,7 +54,10 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: clarora-app/package-lock.json
-      - run: brew install mpv
+      - run: brew install mpv whisper-cpp
+      - name: Install sherpa-onnx libraries
+        run: sh scripts/install-macos-asr-libs.sh
+        working-directory: clarora-app
       - run: npm ci
         working-directory: clarora-app
       - run: node scripts/ensure-macos-pods.cjs
