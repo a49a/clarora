@@ -7,6 +7,7 @@ import ListeningScreen from "./shared/screens/listening";
 import GraphScreen from "./shared/screens/graph";
 import MeditationScreen from "./shared/screens/meditation";
 import OcrScreen from "./shared/screens/ocr";
+import PdfScreen from "./shared/screens/pdf";
 import SpeakingScreen from "./shared/screens/speaking";
 import StatsScreen from "./shared/screens/stats";
 import SettingsScreen from "./shared/screens/settings";
@@ -23,6 +24,7 @@ const screens = [
   { key: "speaking", label: "口语跟读", detail: "Speaking" },
   { key: "video", label: "视频学习", detail: "Video" },
   { key: "ocr", label: "拍照识字", detail: "OCR" },
+  { key: "pdf", label: "文档阅读", detail: "PDF" },
   { key: "audio-manager", label: "音频管理", detail: "Library" },
   { key: "graph", label: "词汇表", detail: "Vocabulary" },
   { key: "stats", label: "学习统计", detail: "Stats" },
@@ -32,15 +34,15 @@ const screens = [
 
 // Mobile clients keep only the learning surfaces; bulk library management
 // stay desktop-only, and the video screen is Mac-only (too small on phones).
-const mobileScreens = screens.filter(
-  (screen) => screen.key !== "audio-manager" && screen.key !== "video"
-);
+// The PDF reader is desktop-only as well (native engines exist on Mac/Windows).
+const desktopOnlyScreens = new Set(["audio-manager", "video", "pdf"]);
+const mobileScreens = screens.filter((screen) => !desktopOnlyScreens.has(screen.key));
 
 type ScreenKey = (typeof screens)[number]["key"];
 const primaryKeys: ScreenKey[] = ["discover", "flashcard", "listening"];
 const navigationGroups: Array<{ key: string; label: string; screens: ScreenKey[] }> = [
   { key: "practice", label: "专项练习", screens: ["speaking", "video"] },
-  { key: "library", label: "资料库", screens: ["audio-manager", "graph", "ocr"] },
+  { key: "library", label: "资料库", screens: ["audio-manager", "pdf", "graph", "ocr"] },
   { key: "tools", label: "学习工具", screens: ["stats", "meditation"] },
 ];
 type ListeningSelection = {
@@ -170,6 +172,9 @@ function Shell() {
       break;
     case "ocr":
       activeContent = <OcrScreen />;
+      break;
+    case "pdf":
+      activeContent = <PdfScreen />;
       break;
     case "speaking":
       activeContent = <SpeakingScreen />;

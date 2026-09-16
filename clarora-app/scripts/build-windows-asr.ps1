@@ -47,6 +47,18 @@ try {
     $sherpaLib = (Get-ChildItem $sherpaDir -Recurse -Directory -Filter 'lib' | Select-Object -First 1).FullName
     if (-not $sherpaInclude -or -not $sherpaLib) { throw 'sherpa-onnx package layout unexpected (include/lib not found).' }
 
+    # ── pdfium（PDF 渲染，bblanchon 发行包）──
+    $pdfiumTag = 'chromium/8057'
+    $pdfiumArchive = Join-Path $env:TEMP 'pdfium-win-x64.tgz'
+    $pdfiumDir = Join-Path $depsDir 'pdfium'
+    if (-not (Test-Path (Join-Path $pdfiumDir 'bin/pdfium.dll'))) {
+        New-Item -ItemType Directory -Force $pdfiumDir | Out-Null
+        & curl.exe -fsSL -o $pdfiumArchive "https://github.com/bblanchon/pdfium-binaries/releases/download/$pdfiumTag/pdfium-win-x64.tgz"
+        if ($LASTEXITCODE -ne 0) { throw 'pdfium download failed.' }
+        & tar -xzf $pdfiumArchive -C $pdfiumDir
+        if ($LASTEXITCODE -ne 0) { throw 'pdfium extraction failed.' }
+    }
+
     # ── CMake 构建（MSVC x64）──
     $buildDir = Join-Path $asrDir 'build'
     & cmake -S $asrDir -B $buildDir -A x64 `
@@ -63,7 +75,8 @@ try {
     Copy-Item -Force (Join-Path $buildDir 'Release/clarora_asr.dll') $packageDir
     foreach ($source in @(
         (Join-Path $vcpkgInstalled 'bin'),
-        (Get-ChildItem $sherpaDir -Recurse -Directory -Filter 'bin' | Select-Object -First 1).FullName
+        (Get-ChildItem $sherpaDir -Recurse -Directory -Filter 'bin' | Select-Object -First 1).FullName,
+        (Join-Path $pdfiumDir 'bin')
     )) {
         if ($source -and (Test-Path $source)) {
             Get-ChildItem $source -Filter '*.dll' | ForEach-Object { Copy-Item -Force $_.FullName $packageDir }

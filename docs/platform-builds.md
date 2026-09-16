@@ -4,8 +4,8 @@
 
 | 平台 | 实现 | 当前范围 |
 | --- | --- | --- |
-| macOS | `clarora-app/macos/`，React Native macOS 0.76 + libmpv | 共用 `App.tsx` / `shared/`；端侧离线字幕（whisper.cpp / SenseVoice）、目录与命令导入、音频合并、libmpv 视频与双字幕同显、桌面快捷键 |
-| Windows | `clarora-app/windows/`，React Native Windows 0.76.17 | 共用 `App.tsx` / `shared/`；端侧离线字幕（clarora_asr）、Windows 原生文件、SQLite、音频、片段预加载、录音、键盘与视频适配 |
+| macOS | `clarora-app/macos/`，React Native macOS 0.76 + libmpv | 共用 `App.tsx` / `shared/`；端侧离线字幕（whisper.cpp / SenseVoice）、PDF 阅读（PDFKit）、目录与命令导入、音频合并、libmpv 视频与双字幕同显、桌面快捷键 |
+| Windows | `clarora-app/windows/`，React Native Windows 0.76.17 | 共用 `App.tsx` / `shared/`；端侧离线字幕（clarora_asr）、PDF 阅读（pdfium）、Windows 原生文件、SQLite、音频、片段预加载、录音、键盘与视频适配 |
 | Android | `clarora-app/android/` + `clarora-app/shared/` | 复用移动学习页面；系统文件选择、音频播放与变速、上滑切换；macOS 合并的音频经同步下发 |
 | iOS | `clarora-app/ios/` + `clarora-app/shared/` | 复用移动学习页面；新增文件选择、剪贴板、播放/倍速/循环、片段双播放器预加载、跟读录音及休息音乐适配；需设备验证 |
 
@@ -13,7 +13,13 @@
 
 需要 macOS 11 或更新版本，以及 Node.js 24、Xcode、CocoaPods。视频播放使用 libmpv（`brew install mpv`），端侧字幕使用 whisper.cpp（`brew install whisper-cpp`），均从 `/opt/homebrew`（Homebrew 默认位置）查找；其他安装路径需要调整 `macos/Clarora.xcodeproj` 的 Header / Library Search Paths。
 
-SenseVoice 端侧转写还需要 sherpa-onnx 动态库（无 Homebrew formula，手动安装到同一前缀）：
+SenseVoice 端侧转写还需要 sherpa-onnx 动态库（无 Homebrew formula）。推荐用仓库脚本一键安装（GitHub 不可达时自动回退 api.github.com；自动识别 arm64 / x86_64）：
+
+```sh
+sh clarora-app/scripts/install-macos-asr-libs.sh
+```
+
+手动安装到同一前缀的等价步骤：
 
 ```sh
 curl -fsSL -o /tmp/sherpa-libs.tar.bz2 \
@@ -73,7 +79,8 @@ Windows 使用同一个 SQLite schema、复习算法和自有存储备份逻辑�
 
 Windows 使用范围：
 
-- 「AI 生成字幕」支持端侧模型（clarora_asr.dll：whisper.cpp + SenseVoice），离线运行；英译中翻译走「AI 服务」的聊天 API。DLL 由 `scripts/build-windows-asr.ps1` 构建（需要 vcpkg 与 Visual Studio 2022 的 C++ 工具），缺失时应用其余功能不受影响，端侧转写在设置中提示不可用。
+- 「AI 生成字幕」支持端侧模型（clarora_asr.dll：whisper.cpp + SenseVoice），离线运行；英译中翻译走「AI 服务」的聊天 API。DLL 由 `scripts/build-windows-asr.ps1` 构建（需要 vcpkg 与 Visual Studio 2022 的 C++ 工具；同一脚本会下载 PDF 渲染所需的 pdfium.dll），缺失时应用其余功能不受影响，端侧转写在设置中提示不可用。
+- 「文档阅读」为内置 PDF 阅读器（pdfium 渲染）：目录侧栏、整页渲染、缩放与页码导航，PDF 保存在应用目录的 `pdf/` 文件夹。
 - 随便学学、闪卡、音频管理与学习、口语跟读、词汇表、OCR 图片导入、统计、冥想和自有存储备份均复用共享页面。
 - 桌面信息流左右拖动，←/→ 切条，空格显示答案；输入文本时不拦截快捷键。
 - 普通音频与两路预加载播放器分开；支持倍速、循环、跟读录音和合并音频。
