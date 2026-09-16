@@ -151,4 +151,4 @@ xcodebuild -workspace Clarora.xcworkspace -scheme Clarora-iOS \
 
 ## 客户端分发
 
-构建并实际验证安装包后，再添加对应下载渠道。Windows 使用已发布的安装包地址，iOS 使用 TestFlight 或 App Store 链接；生成源码不代表已经可供用户下载。
+构建并实际验证安装包后，再添加对应下载渠道。Windows 使用已发布的安装包地址，iOS 使用 TestFlight 或 App Store 链接；生成源码不代表已经可供用户下载。tag 触发的发布流水线（macOS dmg / Windows zip / SHA256SUMS）与发版步骤见 [发布流程](releases.md)。
