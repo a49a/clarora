@@ -99,6 +99,7 @@ export default function GraphScreen() {
       try {
         // Metro may expose JSON directly or through `default`, depending on the
         // native platform and bundle mode. Support both without assuming data.
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- 运行时按平台取 JSON 模块
         const graphModule = require("../../assets/graph-data.json") as
           | GraphData
           | { default?: GraphData };

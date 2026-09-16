@@ -1,0 +1,8 @@
+node_modules
+package-lock.json
+windows
+macos/Pods
+macos/build
+android/build
+android/app/build
+dist

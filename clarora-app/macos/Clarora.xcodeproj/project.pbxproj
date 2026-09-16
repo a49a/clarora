@@ -378,6 +378,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 29AC95FBAA59FC30E3EC19BA /* Pods-Clarora-macOS.debug.xcconfig */;
 			buildSettings = {
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -393,7 +394,6 @@
 					"$(inherited)",
 					/opt/homebrew/lib,
 				);
-				ARCHS = arm64;
 				MACOSX_DEPLOYMENT_TARGET = 11.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -416,6 +416,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = E8FC8283D824D5599468EBBE /* Pods-Clarora-macOS.release.xcconfig */;
 			buildSettings = {
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -430,7 +431,6 @@
 					"$(inherited)",
 					/opt/homebrew/lib,
 				);
-				ARCHS = arm64;
 				MACOSX_DEPLOYMENT_TARGET = 11.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",

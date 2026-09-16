@@ -8,6 +8,7 @@ function setup() {
   let xhr;
   class Request {
     responseText = ''; status = 200;
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- 捕获 XHR 实例供断言使用
     constructor() { xhr = this; }
     open() {} setRequestHeader() {} send() { this.sent = true; }
     abort() { this.onabort?.(); }

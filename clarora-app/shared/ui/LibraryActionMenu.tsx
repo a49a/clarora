@@ -21,7 +21,7 @@ export function LibraryActionMenu({ name, kind, onClose, onRename, onDelete, onB
   const [error, setError] = useState('');
   const locked = useRef(false);
   const label = kind === 'audio' ? '音频' : '练习组';
-  const back = () => { if (!locked.current) { setError(''); step === 'menu' ? onClose() : setStep('menu'); } };
+  const back = () => { if (!locked.current) { setError(''); if (step === 'menu') onClose(); else setStep('menu'); } };
   useEffect(() => {
     const handler = BackHandler.addEventListener('hardwareBackPress', () => { back(); return true; });
     return () => handler.remove();

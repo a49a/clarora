@@ -14,5 +14,13 @@ target 'Clarora-iOS' do
   )
   post_install do |installer|
     react_native_post_install(installer, config[:reactNativePath], :mac_catalyst_enabled => false)
+
+    # react-native 0.77 的 React-jsinspector podspec 头文件集合缺少
+    # jsinspector-modern 的新增头文件（如 TracingAgent.h），与 macOS 同修。
+    react_common = %q($(PODS_ROOT)/../../node_modules/react-native/ReactCommon)
+    jsinspector_dir = %q($(PODS_ROOT)/../../node_modules/react-native/ReactCommon/jsinspector-modern)
+    installer.pods_project.build_configurations.each do |config|
+      config.build_settings['HEADER_SEARCH_PATHS'] = [config.build_settings['HEADER_SEARCH_PATHS'], react_common, jsinspector_dir].compact.join(' ')
+    end
   end
 end

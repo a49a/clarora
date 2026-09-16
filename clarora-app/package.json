@@ -18,29 +18,39 @@
     "premacos": "node scripts/ensure-macos-pods.cjs",
     "macos": "cd macos && react-native run-macos --mode Debug",
     "premacos:release": "node scripts/ensure-macos-pods.cjs",
-    "macos:release": "cd macos && react-native run-macos --mode Release"
+    "macos:release": "cd macos && react-native run-macos --mode Release",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write ."
   },
   "dependencies": {
     "@babel/runtime": "^7.26.0",
     "@noble/hashes": "1.8.0",
-    "@react-native-community/cli-platform-ios": "15.0.1",
+    "@react-native-community/cli-platform-ios": "20.0.0",
+    "@react-native/babel-preset": "0.81.6",
+    "@react-native/metro-config": "0.81.6",
     "fast-xml-parser": "5.5.6",
-    "react": "18.3.1",
-    "react-native": "npm:react-native-macos@0.76.0",
+    "react": "19.1.0",
+    "react-native": "npm:react-native-macos@0.81.9",
     "react-native-fs": "^2.20.0",
-    "react-native-macos": "^0.76.0",
+    "react-native-macos": "0.81.9",
     "react-native-sound": "^0.11.2",
     "react-native-sqlite-storage": "^6.0.1",
-    "react-native-windows": "0.76.17"
+    "react-native-windows": "0.81.35"
   },
   "devDependencies": {
     "@babel/core": "^7.25.0",
-    "@react-native-community/cli": "15.0.1",
-    "@react-native/babel-preset": "0.76.0",
-    "@react-native/metro-config": "0.76.0",
-    "@types/react": "~18.3.12",
+    "@eslint/js": "^10.0.1",
+    "@react-native-community/cli": "20.0.0",
+    "@types/react": "~19.1.0",
+    "eslint": "^10.10.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.12.0",
     "metro-config": "^0.81.5",
-    "typescript": "^5.7.0"
+    "prettier": "^3.9.7",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.70.0"
   },
   "react-native-windows": {
     "init-windows": {

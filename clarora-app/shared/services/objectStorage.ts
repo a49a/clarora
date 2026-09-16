@@ -50,6 +50,7 @@ export function validateStorageConfig(config: StorageConfig): void {
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(config.bucket)) throw new Error('Bucket 格式不正确');
   if (!/^[a-z0-9-]+$/.test(config.region)) throw new Error('请填写 Region');
   if (!config.accessKeyId || !config.secretAccessKey || /[\r\n]/.test(config.accessKeyId + config.secretAccessKey + config.sessionToken)) throw new Error('请填写有效的访问密钥');
+  // eslint-disable-next-line no-control-regex -- 控制字符正是要拦截的对象
   if (!config.prefix || config.prefix.split('/').some(p => !p || p === '.' || p === '..') || /[\\\x00-\x1f]/.test(config.prefix)) throw new Error('资料库前缀不能为空，不能包含空目录或 ..');
 }
 // Hermes versions without TextEncoder still need correct UTF-8 signing bytes.

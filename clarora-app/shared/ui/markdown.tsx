@@ -138,7 +138,7 @@ function renderSingleTextBlocks(
 
   if (codeBuffer !== null && codeBuffer.length > 0) {
     append(
-      <Text key={key++} style={[styles.inline, styles.code, styles.codeBlockText]}>
+      <Text key={key} style={[styles.inline, styles.code, styles.codeBlockText]}>
         {codeBuffer.join("\n")}
       </Text>
     );
@@ -275,7 +275,7 @@ export function MarkdownView({
 
   if (codeBuffer !== null && codeBuffer.length > 0) {
     nodes.push(
-      <View key={key++} style={styles.codeBlock}>
+      <View key={`code-${key}`} style={styles.codeBlock}>
         <Text style={[styles.inline, styles.code, styles.codeBlockText]}>
           {codeBuffer.join("\n")}
         </Text>

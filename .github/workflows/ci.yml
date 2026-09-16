@@ -25,6 +25,8 @@ jobs:
         working-directory: clarora-app
       - run: npm run typecheck
         working-directory: clarora-app
+      - run: npm run lint
+        working-directory: clarora-app
       - run: npm test
         working-directory: clarora-app
   android:
