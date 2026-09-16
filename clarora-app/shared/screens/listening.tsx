@@ -452,7 +452,8 @@ export default function ListeningScreen({
   // AI passage question state. Subtitles are always mouse-selectable on macOS;
   // a right click on the selection chooses either copy or asking AI.
   const { visible: chatOpen, open: openChat } = useAIChat();
-  const [studyOptionsOpen, setStudyOptionsOpen] = useState(false);
+  const [subtitleOptionsOpen, setSubtitleOptionsOpen] = useState(false);
+  const [speedOptionsOpen, setSpeedOptionsOpen] = useState(false);
 
   // ── 听力跟读：录下当前句的朗读，AI 服务转写对齐打分 ────────────────────────
   const [shadowing, setShadowing] = useState(false);
@@ -1156,7 +1157,7 @@ export default function ListeningScreen({
   useEffect(() => {
     // A React Native management prompt is an editable field, so it must own
     // Space and arrow keys instead of the player monitor consuming them.
-    if (mode !== "study" || !selectedAudio || promptVisible || libraryMenu || chatOpen || studyOptionsOpen) return;
+    if (mode !== "study" || !selectedAudio || promptVisible || libraryMenu || chatOpen || subtitleOptionsOpen || speedOptionsOpen) return;
     const keyboard = NativeModules.RNKeyboard as
       | {
           startPlaybackListening?: () => void;
@@ -1197,7 +1198,7 @@ export default function ListeningScreen({
       cancelled = true;
       keyboard.stopListening?.();
     };
-  }, [chatOpen, studyOptionsOpen, libraryMenu, mode, promptVisible, seekBy, selectedAudio, togglePlayback]);
+  }, [chatOpen, subtitleOptionsOpen, speedOptionsOpen, libraryMenu, mode, promptVisible, seekBy, selectedAudio, togglePlayback]);
 
   const seekToCue = useCallback(
     async (cueIndex: number) => {
@@ -2104,7 +2105,7 @@ export default function ListeningScreen({
         {!isManageMode && (showPracticePicker || showAudioPicker) && <Pressable
           accessibilityRole="button" accessibilityLabel="关闭音频选择列表"
           style={[StyleSheet.absoluteFill, { zIndex: 5 }]}
-          onPress={() => { setShowPracticePicker(false); setShowAudioPicker(false); }} />}
+          onPress={() => { setShowPracticePicker(false); setShowAudioPicker(false); setSubtitleOptionsOpen(false); setSpeedOptionsOpen(false); }} />}
         {!isManageMode && (
           <View style={styles.focusSidebar}>
             <View style={[styles.focusSelectorRow, compactStudy && styles.focusSelectorRowCompact]}>
@@ -2228,7 +2229,7 @@ export default function ListeningScreen({
               </View>
               <View style={styles.studyHeadingActions}>
                 {studySidebarStatus}
-                <StudyOptions onVisibilityChange={setStudyOptionsOpen} label="字幕" title="字幕与阅读设置">
+                <StudyOptions open={subtitleOptionsOpen} onVisibilityChange={setSubtitleOptionsOpen} label="字幕" title="字幕与阅读设置">
                   {selectedAudio && <StudySubtitleToolbar
                     kind={classifySubtitleLanguage(subtitleCues)} hasSubtitles={subtitleCues.length > 0}
                     busy={!!aiStatus || switchingAudio} status={aiStatus}
@@ -2683,8 +2684,8 @@ export default function ListeningScreen({
                 </Text>
               </Pressable>
 
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.playerTools} contentContainerStyle={styles.playerToolsContent}>
-              <StudyOptions onVisibilityChange={setStudyOptionsOpen} label={`${playbackRate}×`} title="播放速度">
+              <View style={styles.playerToolsFixed}>
+              <StudyOptions open={speedOptionsOpen} onVisibilityChange={setSpeedOptionsOpen} direction="up" align="left" label={`${playbackRate}×`} title="播放速度">
                 {close => <View style={styles.speedOptions}>
                   {[0.6, 0.7, 0.8, 1.0, 1.2].map(rate => <Pressable key={rate} accessibilityRole="button"
                     accessibilityLabel={`${rate} 倍速`} accessibilityState={{ selected: playbackRate === rate }}
@@ -2694,6 +2695,8 @@ export default function ListeningScreen({
                   </Pressable>)}
                 </View>}
               </StudyOptions>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.playerTools} contentContainerStyle={styles.playerToolsContent}>
 
               <Pressable
                 style={[styles.loopBtn, loopMode && styles.loopBtnActive]}
@@ -3012,7 +3015,7 @@ function makeStyles(
       paddingTop: 18,
     },
     studyContainer: { paddingTop: 8, paddingBottom: 6, minHeight: 0 },
-    focusSidebar: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: theme.surface, borderBottomWidth: 1, borderBottomColor: theme.border, zIndex: 10 },
+    focusSidebar: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: theme.surface, borderBottomWidth: 1, borderBottomColor: theme.border, zIndex: 30 },
     focusSelectorRow: { flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 220, gap: 8, zIndex: 2 },
     focusSelectorRowCompact: { flexBasis: '100%' },
     focusSelectorSection: { flex: 1, minWidth: 0, position: 'relative' },
@@ -3629,8 +3632,9 @@ function makeStyles(
       fontSize: 11,
       fontVariant: ["tabular-nums"],
     },
-    controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 2 },
+    controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 2, zIndex: 30 },
     playerTools: { flex: 1 },
+    playerToolsFixed: { zIndex: 30 },
     playerToolsContent: { flexGrow: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
     speedOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
     speedBtn: { minWidth: 58, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: theme.surfaceHover },
