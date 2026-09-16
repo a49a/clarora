@@ -4,31 +4,35 @@ export type PdfOutlineNode = { title: string; page: number; children: PdfOutline
 export type PdfMeta = { path: string; pages: Array<{ width: number; height: number }>; outline: PdfOutlineNode[] };
 export type LibraryEntry = { path: string; name: string };
 
-// 原生模块方法返回 JSON 字符串；包装层负责解析。
+// 原生模块返回 JSON 字符串（Windows C#）或已解析的对象（macOS 字典）；包装层统一为对象。
 type RawNativePdf = {
-  open: (path: string) => Promise<string>;
-  renderPage: (path: string, index: number, width: number) => Promise<string>;
+  open: (path: string) => Promise<string | { pages: Array<{ width: number; height: number }>; outline: PdfOutlineNode[] }>;
+  renderPage: (path: string, index: number, width: number) => Promise<string | { png: string }>;
 };
 type NativePdf = {
   open: (path: string) => Promise<{ pages: Array<{ width: number; height: number }>; outline: PdfOutlineNode[] }>;
   renderPage: (path: string, index: number, width: number) => Promise<{ png: string }>;
 };
 
+function parseNative<T>(value: string | T): T {
+  return typeof value === 'string' ? JSON.parse(value) : value;
+}
+
 function nativePdf(): NativePdf {
   if (currentPlatform === 'macos') {
     const module = getNativeModules().RNMacPdf as RawNativePdf | undefined;
     if (!module?.open) throw new Error('PDF 阅读目前支持 macOS 和 Windows');
     return {
-      open: async path => JSON.parse(await module.open(path)),
-      renderPage: async (path, index, width) => JSON.parse(await module.renderPage(path, index, width)),
+      open: async path => parseNative(await module.open(path)),
+      renderPage: async (path, index, width) => parseNative(await module.renderPage(path, index, width)),
     };
   }
   if (currentPlatform === 'windows') {
     const module = getNativeModules().RNWindowsPdf as RawNativePdf | undefined;
     if (!module?.open) throw new Error('Windows PDF 阅读依赖 pdfium.dll，请按平台文档运行构建脚本');
     return {
-      open: async path => JSON.parse(await module.open(path)),
-      renderPage: async (path, index, width) => JSON.parse(await module.renderPage(path, index, width)),
+      open: async path => parseNative(await module.open(path)),
+      renderPage: async (path, index, width) => parseNative(await module.renderPage(path, index, width)),
     };
   }
   throw new Error('PDF 阅读目前支持 macOS 和 Windows');

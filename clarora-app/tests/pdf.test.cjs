@@ -24,11 +24,12 @@ function setup(natives = {}) {
 }
 
 const macModule = () => ({
-  open: async () => JSON.stringify({
+  // macOS 原生模块直接 resolve 字典（非 JSON 字符串）
+  open: async () => ({
     pages: [{ width: 595, height: 842 }],
     outline: [{ title: '第一章', page: 0, children: [{ title: '小节', page: -1, children: [] }] }],
   }),
-  renderPage: async () => { renderCalls += 1; return JSON.stringify({ png: 'cGFnZQ==' }); },
+  renderPage: async () => { renderCalls += 1; return { png: 'cGFnZQ==' }; },
 });
 
 test('open maps page sizes and the outline tree', async () => {
