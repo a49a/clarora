@@ -35,7 +35,7 @@ try {
     if (-not (Test-Path (Join-Path $sherpaDir 'lib'))) {
         New-Item -ItemType Directory -Force $sherpaDir | Out-Null
         $archive = Join-Path $env:TEMP $sherpaName
-        & curl.exe -fsSL -o $archive "https://github.com/k2-fsa/sherpa-onnx/releases/download/$sherpaVersion/$sherpaName"
+        & curl.exe -fsSL --connect-timeout 30 --max-time 1800 -o $archive "https://github.com/k2-fsa/sherpa-onnx/releases/download/$sherpaVersion/$sherpaName"
         if ($LASTEXITCODE -ne 0) { throw 'sherpa-onnx download failed.' }
         & tar -xjf $archive -C $sherpaDir
         if ($LASTEXITCODE -ne 0) { throw 'sherpa-onnx extraction failed.' }
@@ -53,7 +53,7 @@ try {
     $pdfiumDir = Join-Path $depsDir 'pdfium'
     if (-not (Test-Path (Join-Path $pdfiumDir 'bin/pdfium.dll'))) {
         New-Item -ItemType Directory -Force $pdfiumDir | Out-Null
-        & curl.exe -fsSL -o $pdfiumArchive "https://github.com/bblanchon/pdfium-binaries/releases/download/$pdfiumTag/pdfium-win-x64.tgz"
+        & curl.exe -fsSL --connect-timeout 30 --max-time 1800 -o $pdfiumArchive "https://github.com/bblanchon/pdfium-binaries/releases/download/$pdfiumTag/pdfium-win-x64.tgz"
         if ($LASTEXITCODE -ne 0) { throw 'pdfium download failed.' }
         & tar -xzf $pdfiumArchive -C $pdfiumDir
         if ($LASTEXITCODE -ne 0) { throw 'pdfium extraction failed.' }

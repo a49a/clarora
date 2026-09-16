@@ -30,7 +30,7 @@ download() {
   # download <url> <输出路径>：失败时回退 api.github.com（Accept: octet-stream）。
   url="$1"
   output="$2"
-  if curl -fsSL --connect-timeout 15 -o "$output" "$url"; then return 0; fi
+  if curl -fsSL --connect-timeout 15 --max-time 300 -o "$output" "$url"; then return 0; fi
   echo "primary download failed, retrying via api.github.com…" >&2
   release_json="$TMP/release.json"
   curl -fsSL --connect-timeout 15 -o "$release_json" \
@@ -60,7 +60,7 @@ HEADER_OK=0
 for header_url in \
   "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/$SHERPA_VERSION/sherpa-onnx/c-api/c-api.h" \
   "https://cdn.jsdelivr.net/gh/k2-fsa/sherpa-onnx@$SHERPA_VERSION/sherpa-onnx/c-api/c-api.h"; do
-  if curl -fsSL --connect-timeout 15 -o "$HEADER" "$header_url"; then HEADER_OK=1; break; fi
+  if curl -fsSL --connect-timeout 15 --max-time 120 -o "$HEADER" "$header_url"; then HEADER_OK=1; break; fi
 done
 if [ "$HEADER_OK" != 1 ] || ! grep -q "SherpaOnnxCreateOfflineRecognizer" "$HEADER" 2>/dev/null; then
   echo "c-api.h download failed" >&2
