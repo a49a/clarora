@@ -1,3 +1,4 @@
+import { StudyOptions } from "../ui/StudyOptions";
 import { StudySubtitleToolbar } from "../ui/StudySubtitleToolbar";
 import { LibraryActionMenu } from "../ui/LibraryActionMenu";
 import { AudioLibraryManager } from "../ui/AudioLibraryManager";
@@ -67,7 +68,7 @@ import {
   type SpeakingScore,
 } from "../services/ai";
 import { useAppTheme } from "../ui/ThemeContext";
-import { useAIChat, useAIChatEntry } from "../ui/AIChatProvider";
+import { AIChatInlineButton, useAIChat, useAIChatEntry } from "../ui/AIChatProvider";
 
 const ASR_ENGINE_LABELS: Record<string, string> = {
   local: "端侧转写",
@@ -451,6 +452,7 @@ export default function ListeningScreen({
   // AI passage question state. Subtitles are always mouse-selectable on macOS;
   // a right click on the selection chooses either copy or asking AI.
   const { visible: chatOpen, open: openChat } = useAIChat();
+  const [studyOptionsOpen, setStudyOptionsOpen] = useState(false);
 
   // ── 听力跟读：录下当前句的朗读，AI 服务转写对齐打分 ────────────────────────
   const [shadowing, setShadowing] = useState(false);
@@ -900,9 +902,8 @@ export default function ListeningScreen({
     }
   }, [onExitStudy, unloadSound]);
 
-  // On Android the focus session is exited with a left swipe (or the system
-  // back button) instead of an on-screen button, so the whole screen stays
-  // usable one-handed in portrait.
+  // Keep Android swipe-to-exit inside the transcript so horizontal player
+  // tools and A/B handles can own their gestures. The exit button remains visible.
   const exitSwipe = useMemo(
     () =>
       PanResponder.create({
@@ -1155,7 +1156,7 @@ export default function ListeningScreen({
   useEffect(() => {
     // A React Native management prompt is an editable field, so it must own
     // Space and arrow keys instead of the player monitor consuming them.
-    if (mode !== "study" || !selectedAudio || promptVisible || libraryMenu || chatOpen) return;
+    if (mode !== "study" || !selectedAudio || promptVisible || libraryMenu || chatOpen || studyOptionsOpen) return;
     const keyboard = NativeModules.RNKeyboard as
       | {
           startPlaybackListening?: () => void;
@@ -1196,7 +1197,7 @@ export default function ListeningScreen({
       cancelled = true;
       keyboard.stopListening?.();
     };
-  }, [chatOpen, libraryMenu, mode, promptVisible, seekBy, selectedAudio, togglePlayback]);
+  }, [chatOpen, studyOptionsOpen, libraryMenu, mode, promptVisible, seekBy, selectedAudio, togglePlayback]);
 
   const seekToCue = useCallback(
     async (cueIndex: number) => {
@@ -2088,12 +2089,15 @@ export default function ListeningScreen({
     } catch (error: any) { setError(`切换音频失败：${error?.message ?? error}`); }
     finally { setSwitchingAudio(false); }
   };
+  const [studyWidth, setStudyWidth] = useState(1000);
+  const [showCurrentCue, setShowCurrentCue] = useState(false);
+  const compactStudy = studyWidth < 760;
   const styles = makeStyles(theme, subtitleSize);
 
   return (
     <View
       style={styles.safeArea}
-      {...(!isManageMode && Platform.OS === "android" ? exitSwipe.panHandlers : null)}
+      onLayout={event => setStudyWidth(event.nativeEvent.layout.width)}
     >
       <StatusBar barStyle={scheme === "dark" ? "light-content" : "dark-content"} />
       <View style={[styles.screenBody, !isManageMode && styles.studyScreenBody]}>
@@ -2103,22 +2107,8 @@ export default function ListeningScreen({
           onPress={() => { setShowPracticePicker(false); setShowAudioPicker(false); }} />}
         {!isManageMode && (
           <View style={styles.focusSidebar}>
-            <View style={styles.studyHeadingRow}>
-              <Text style={styles.focusSidebarTitle}>音频学习</Text>
-              <View style={styles.studyHeadingActions}>
-                {studySidebarStatus}
-                {onExitStudy && <Pressable accessibilityRole="button" accessibilityLabel="退出音频学习"
-                  style={({ pressed }) => [styles.studyExitBtn, pressed && styles.buttonPressed]}
-                  onPress={() => void handleExitStudy()}>
-                  <Text style={styles.studyExitText}>退出学习 ↗</Text>
-                </Pressable>}
-              </View>
-            </View>
-            <View style={styles.focusSidebarTop}>
-
-              <View style={styles.focusSelectorRow}>
+            <View style={[styles.focusSelectorRow, compactStudy && styles.focusSelectorRowCompact]}>
               <View style={styles.focusSelectorSection}>
-                <Text style={styles.focusSelectorLabel}>练习组</Text>
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="选择练习组"
@@ -2176,7 +2166,6 @@ export default function ListeningScreen({
               </View>
 
               <View style={styles.focusSelectorSection}>
-                <Text style={styles.focusSelectorLabel}>音频 {audioIndex >= 0 ? `${audioIndex + 1} / ${selectedPractice?.audios.length}` : ''}</Text>
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="选择音频"
@@ -2224,16 +2213,50 @@ export default function ListeningScreen({
                   </ScrollView>
                 )}
               </View>
-              </View>
+            </View>
+            <View style={styles.studyHeaderActions}>
               <View style={styles.studySkipRow}>
+                <Text style={styles.studyPageText}>{audioIndex >= 0 ? `${audioIndex + 1}/${selectedPractice?.audios.length ?? 0}` : ''}</Text>
                 <Pressable accessibilityRole="button" accessibilityLabel="上一条音频"
                   disabled={!!aiStatus || switchingAudio || audioIndex <= 0}
                   style={[styles.studySkipBtn, (switchingAudio || audioIndex <= 0) && styles.focusSelectorBtnDisabled]}
-                  onPress={() => void changeStudyAudio(-1)}><Text style={styles.studySkipText}>‹ 上一条</Text></Pressable>
+                  onPress={() => void changeStudyAudio(-1)}><Text style={styles.studySkipText}>‹</Text></Pressable>
                 <Pressable accessibilityRole="button" accessibilityLabel="下一条音频"
                   disabled={!!aiStatus || switchingAudio || audioIndex < 0 || audioIndex >= (selectedPractice?.audios.length ?? 0) - 1}
                   style={[styles.studySkipBtn, (switchingAudio || audioIndex < 0 || audioIndex >= (selectedPractice?.audios.length ?? 0) - 1) && styles.focusSelectorBtnDisabled]}
-                  onPress={() => void changeStudyAudio(1)}><Text style={styles.studySkipText}>下一条 ›</Text></Pressable>
+                  onPress={() => void changeStudyAudio(1)}><Text style={styles.studySkipText}>›</Text></Pressable>
+              </View>
+              <View style={styles.studyHeadingActions}>
+                {studySidebarStatus}
+                <StudyOptions onVisibilityChange={setStudyOptionsOpen} label="字幕" title="字幕与阅读设置">
+                  {selectedAudio && <StudySubtitleToolbar
+                    kind={classifySubtitleLanguage(subtitleCues)} hasSubtitles={subtitleCues.length > 0}
+                    busy={!!aiStatus || switchingAudio} status={aiStatus}
+                    onEnglish={() => void handleUploadSubtitle("en")}
+                    onChinese={() => void handleUploadSubtitle("zh")}
+                    onTranslate={() => void runTranslate()}
+                    onGenerate={() => void handleAiSubtitle()}
+                  />}
+                  <View style={styles.subtitleSizeRow}>
+                    <Text style={styles.subtitleSizeLabel}>字幕大小</Text>
+                    <Pressable accessibilityRole="button" accessibilityLabel="缩小字幕" style={styles.subtitleSizeBtn} onPress={() => changeSubtitleSize(-1)}><Text style={styles.subtitleSizeBtnText}>A−</Text></Pressable>
+                    <Text style={styles.subtitleSizeVal}>{subtitleSize}</Text>
+                    <Pressable accessibilityRole="button" accessibilityLabel="放大字幕" style={styles.subtitleSizeBtn} onPress={() => changeSubtitleSize(1)}><Text style={styles.subtitleSizeBtnText}>A+</Text></Pressable>
+                  </View>
+                  <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: showCurrentCue }}
+                    onPress={() => setShowCurrentCue(value => !value)} style={styles.subtitleSettingRow}>
+                    <Text style={styles.loopBtnText}>{showCurrentCue ? '✓ ' : ''}单独显示当前句</Text>
+                  </Pressable>
+                  <Text style={styles.selectableSubtitleHint}>{Platform.OS === 'android'
+                    ? '长按字幕可复制。开启截取后，拖动 A/B 标记设置片段。'
+                    : '拖选字幕后右键可复制或向 AI 提问。开启截取后，点击字幕设置 A/B 边界。'}</Text>
+                </StudyOptions>
+                <AIChatInlineButton />
+                {onExitStudy && <Pressable accessibilityRole="button" accessibilityLabel="退出音频学习"
+                  style={({ pressed }) => [styles.studyExitBtn, pressed && styles.buttonPressed]}
+                  onPress={() => void handleExitStudy()}>
+                  <Text style={styles.studyExitText}>退出学习</Text>
+                </Pressable>}
               </View>
             </View>
           </View>
@@ -2378,55 +2401,25 @@ export default function ListeningScreen({
 
         {!isManageMode && (
           <>
-          {selectedAudio && <StudySubtitleToolbar
-            kind={classifySubtitleLanguage(subtitleCues)} hasSubtitles={subtitleCues.length > 0}
-            busy={!!aiStatus || switchingAudio} status={aiStatus}
-            onEnglish={() => void handleUploadSubtitle("en")}
-            onChinese={() => void handleUploadSubtitle("zh")}
-            onTranslate={() => void runTranslate()}
-            onGenerate={() => void handleAiSubtitle()}
+          {!!aiStatus && <Text accessibilityLiveRegion="polite" style={styles.studyStatus}>{aiStatus}</Text>}
+          {selectedAudio && subtitleCues.length === 0 && <StudySubtitleToolbar
+            kind={classifySubtitleLanguage(subtitleCues)} hasSubtitles={false}
+            busy={!!aiStatus || switchingAudio} status={null}
+            onEnglish={() => void handleUploadSubtitle("en")} onChinese={() => void handleUploadSubtitle("zh")}
+            onTranslate={() => void runTranslate()} onGenerate={() => void handleAiSubtitle()}
           />}
           {/* Subtitle list */}
           {subtitleCues.length > 0 ? (
-          <View style={styles.subtitleContainer}>
+          <View style={styles.subtitleContainer} {...(Platform.OS === "android" ? exitSwipe.panHandlers : null)}>
             {/* Current cue highlight */}
-            <View style={styles.currentCue}>
+            {showCurrentCue && <View style={styles.currentCue}>
               <Text style={styles.currentCueText}>
                 {activeCueIndex >= 0
                   ? subtitleCues[activeCueIndex].text
                   : "·  ·  ·"}
               </Text>
-            </View>
+            </View>}
 
-            {/* Subtitle font size: scales English + Chinese together */}
-            <View style={styles.subtitleSizeRow}>
-              <Text style={styles.subtitleSizeLabel}>字幕大小</Text>
-              <Pressable
-                style={styles.subtitleSizeBtn}
-                onPress={() => changeSubtitleSize(-1)}
-                hitSlop={6}
-              >
-                <Text style={styles.subtitleSizeBtnText}>A−</Text>
-              </Pressable>
-              <Text style={styles.subtitleSizeVal}>{subtitleSize}</Text>
-              <Pressable
-                style={styles.subtitleSizeBtn}
-                onPress={() => changeSubtitleSize(1)}
-                hitSlop={6}
-              >
-                <Text style={styles.subtitleSizeBtnText}>A+</Text>
-              </Pressable>
-            </View>
-
-            <Text style={styles.selectableSubtitleHint}>
-              {loopMode
-                ? Platform.OS === "android"
-                  ? "拖动下方 A/B 标记设置截取片段。"
-                  : "点击字幕或单词设置、微调 A/B 截取边界。"
-                : Platform.OS === "android"
-                  ? "长按字幕可使用系统复制功能。"
-                  : "按住鼠标拖选字幕后右键：复制字幕或向 AI 提问。"}
-            </Text>
             <View style={styles.nativeSelectableSubtitle}>
             {NativeSelectableSubtitleView ? (
               <NativeSelectableSubtitleView
@@ -2637,9 +2630,11 @@ export default function ListeningScreen({
                 }}
               />
             )}
-            {/* Progress bar: the whole 22pt strip is clickable; the thin
+            {/* Progress bar: the whole 28pt strip is clickable; the thin
                 rail inside shows progress and the playhead line marks the
                 current position. */}
+            <View style={styles.progressRow}>
+            <Text style={styles.timeText}>{formatTime(positionMs / 1000)}</Text>
             <Pressable
               style={styles.progressBarTrack}
               onLayout={(e) => {
@@ -2673,10 +2668,7 @@ export default function ListeningScreen({
                 />
               )}
             </Pressable>
-
-            <View style={styles.timeRow}>
-              <Text style={styles.timeText}>{formatTime(positionMs / 1000)}</Text>
-              <Text style={styles.timeText}>{formatTime(durationMs / 1000)}</Text>
+            <Text style={styles.timeText}>{formatTime(durationMs / 1000)}</Text>
             </View>
 
             {/* Play / Speed controls */}
@@ -2691,27 +2683,17 @@ export default function ListeningScreen({
                 </Text>
               </Pressable>
 
-              <View style={styles.speedRow}>
-                {[0.6, 0.7, 0.8, 1.0, 1.2].map((rate) => (
-                  <Pressable
-                    key={rate}
-                    style={[
-                      styles.speedBtn,
-                      playbackRate === rate && styles.speedBtnActive,
-                    ]}
-                    onPress={() => changeRate(rate)}
-                  >
-                    <Text
-                      style={[
-                        styles.speedBtnText,
-                        playbackRate === rate && styles.speedBtnTextActive,
-                      ]}
-                     >
-                      {rate}x
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.playerTools} contentContainerStyle={styles.playerToolsContent}>
+              <StudyOptions onVisibilityChange={setStudyOptionsOpen} label={`${playbackRate}×`} title="播放速度">
+                {close => <View style={styles.speedOptions}>
+                  {[0.6, 0.7, 0.8, 1.0, 1.2].map(rate => <Pressable key={rate} accessibilityRole="button"
+                    accessibilityLabel={`${rate} 倍速`} accessibilityState={{ selected: playbackRate === rate }}
+                    style={[styles.speedBtn, playbackRate === rate && styles.speedBtnActive]}
+                    onPress={() => { changeRate(rate); close(); }}>
+                    <Text style={[styles.speedBtnText, playbackRate === rate && styles.speedBtnTextActive]}>{rate}×</Text>
+                  </Pressable>)}
+                </View>}
+              </StudyOptions>
 
               <Pressable
                 style={[styles.loopBtn, loopMode && styles.loopBtnActive]}
@@ -2761,8 +2743,7 @@ export default function ListeningScreen({
                   {keyLoading ? "标重点中…" : keyMarks.length > 0 ? "✓ 已标重点" : "✦ 标重点"}
                 </Text>
               </Pressable>
-
-
+              </ScrollView>
             </View>
 
             {loopMode && (
@@ -3030,37 +3011,22 @@ function makeStyles(
       paddingHorizontal: 18,
       paddingTop: 18,
     },
-    studyContainer: { paddingTop: 12, paddingBottom: 14 },
-    focusSidebar: { paddingHorizontal: 18, paddingVertical: 14, gap: 12, backgroundColor: theme.bg, borderBottomWidth: 1, borderBottomColor: theme.border, zIndex: 10 },
-    studyHeadingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' },
-    studyHeadingActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-    studyExitBtn: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 12, backgroundColor: theme.surfaceHover },
-    studyExitText: { color: theme.textSecondary, fontSize: 13 },
-    focusSidebarTitle: { color: theme.text, fontSize: 22, fontWeight: '700' },
-    focusSidebarTop: { flexDirection: 'row', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' },
-    focusSelectorRow: { flexDirection: 'row', flexGrow: 1, flexShrink: 1, flexBasis: 300, gap: 10, zIndex: 2 },
+    studyContainer: { paddingTop: 8, paddingBottom: 6, minHeight: 0 },
+    focusSidebar: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: theme.surface, borderBottomWidth: 1, borderBottomColor: theme.border, zIndex: 10 },
+    focusSelectorRow: { flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 220, gap: 8, zIndex: 2 },
+    focusSelectorRowCompact: { flexBasis: '100%' },
     focusSelectorSection: { flex: 1, minWidth: 0, position: 'relative' },
-    studySkipRow: { flexDirection: 'row', gap: 8 },
-    studySkipBtn: { minHeight: 42, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 12, backgroundColor: theme.surfaceHover },
-    studySkipText: { color: theme.accent, fontSize: 13, fontWeight: '600' },
-    focusSelectorLabel: {
-      color: theme.textMuted,
-      fontSize: 11,
-      fontWeight: "700",
-      letterSpacing: 0.4,
-      marginBottom: 7,
-    },
-    focusSelectorBtn: {
-      flexDirection: "row",
-      alignItems: "center",
-      minHeight: 40,
-      paddingVertical: 9,
-      paddingHorizontal: 11,
-      borderRadius: 12,
-      borderWidth: 1,
-      borderColor: theme.border,
-      backgroundColor: theme.surface,
-    },
+    studyHeaderActions: { flexDirection: 'row', flexGrow: 1, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
+    studyHeadingActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginLeft: 'auto' },
+    studySkipRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+    studySkipBtn: { minWidth: 34, minHeight: Platform.OS === 'ios' || Platform.OS === 'android' ? 44 : 34, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
+    studySkipText: { color: theme.accent, fontSize: 22, fontWeight: '600' },
+    studyPageText: { color: theme.textMuted, fontSize: 11, fontVariant: ['tabular-nums'] },
+    studyExitBtn: { minHeight: Platform.OS === 'ios' || Platform.OS === 'android' ? 44 : 34, justifyContent: 'center', paddingHorizontal: 8, borderRadius: 8 },
+    studyExitText: { color: theme.textSecondary, fontSize: 12 },
+    studyStatus: { color: theme.accent, fontSize: 12, paddingVertical: 4 },
+    subtitleSettingRow: { minHeight: 44, justifyContent: 'center' },
+    focusSelectorBtn: { flexDirection: 'row', alignItems: 'center', minHeight: Platform.OS === 'ios' || Platform.OS === 'android' ? 44 : 34, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, backgroundColor: theme.surfaceHover },
     focusSelectorBtnDisabled: { opacity: 0.52 },
     focusSelectorBtnText: {
       flex: 1,
@@ -3400,14 +3366,14 @@ function makeStyles(
     },
 
     // Subtitle
-    subtitleContainer: { flex: 1, marginTop: 6 },
+    subtitleContainer: { flex: 1, minHeight: 0 },
     selectableSubtitleHint: { color: theme.textSecondary, fontSize: 12, marginTop: 8, marginBottom: 6 },
     nativeSelectableSubtitle: {
       flex: 1,
-      minHeight: 160,
+      minHeight: 60,
       borderWidth: 1,
       borderColor: theme.border,
-      borderRadius: 24,
+      borderRadius: 12,
       backgroundColor: theme.surface,
       overflow: "hidden",
       paddingVertical: 8,
@@ -3481,7 +3447,6 @@ function makeStyles(
     subtitleSizeRow: {
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "flex-end",
       gap: 8,
       paddingVertical: 4,
     },
@@ -3490,6 +3455,7 @@ function makeStyles(
       color: theme.textMuted,
     },
     subtitleSizeBtn: {
+      minHeight: 44, minWidth: 44, justifyContent: "center", alignItems: "center",
       paddingHorizontal: 8,
       paddingVertical: 2,
       borderRadius: 6,
@@ -3564,19 +3530,12 @@ function makeStyles(
       borderRightColor: theme.accent,
       paddingRight: 1,
     },
-    loopBtn: {
-      alignItems: "center",
-      paddingVertical: 7,
-      paddingHorizontal: 12,
-      borderWidth: 1,
-      borderColor: theme.border,
-      backgroundColor: theme.surface,
-      ...ui.button,
-    },
+    loopBtn: { alignItems: 'center', justifyContent: 'center', minHeight: Platform.OS === 'ios' || Platform.OS === 'android' ? 44 : 34, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 8, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.surface },
     loopBtnActive: { backgroundColor: theme.accent, borderColor: theme.accent },
     loopBtnText: { color: theme.text, fontSize: 12, fontWeight: "600" },
     loopBtnTextActive: { color: "#fff" },
     loopStatus: {
+      flexWrap: "wrap", gap: 8,
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
@@ -3643,14 +3602,9 @@ function makeStyles(
     },
 
     // Player
-    playerArea: {
-      paddingTop: 10,
-      paddingBottom: Platform.OS === "android" ? 10 : 0,
-    },
-    progressBarTrack: {
-      height: 22,
-      justifyContent: "center",
-    },
+    playerArea: { paddingTop: 4, paddingBottom: Platform.OS === 'android' ? 6 : 0 },
+    progressRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    progressBarTrack: { flex: 1, height: 28, justifyContent: 'center' },
     progressBarRail: {
       height: 5,
       backgroundColor: theme.border,
@@ -3663,50 +3617,28 @@ function makeStyles(
     },
     progressBarPlayhead: {
       position: "absolute",
-      top: 5,
+      top: 8,
       width: 2,
       height: 12,
       borderRadius: 1,
       marginLeft: -1,
       backgroundColor: theme.text,
     },
-    timeRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      marginTop: 4,
-    },
     timeText: {
       color: theme.textSecondary,
       fontSize: 11,
       fontVariant: ["tabular-nums"],
     },
-    controlsRow: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      alignItems: "center",
-      justifyContent: "flex-start",
-      gap: 10,
-      marginTop: 8,
-    },
-    speedRow: { flexDirection: "row", gap: 6 },
-    speedBtn: {
-      paddingVertical: 4,
-      paddingHorizontal: 8,
-      backgroundColor: theme.surface,
-      ...ui.button,
-    },
+    controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 2 },
+    playerTools: { flex: 1 },
+    playerToolsContent: { flexGrow: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
+    speedOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    speedBtn: { minWidth: 58, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: theme.surfaceHover },
     speedBtnActive: { backgroundColor: theme.accent },
     speedBtnText: { color: theme.text, fontSize: 12, fontWeight: "500" },
     speedBtnTextActive: { color: "#fff" },
-    playBtn: {
-      width: 52,
-      height: 52,
-      borderRadius: 26,
-      backgroundColor: theme.accent,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    playBtnText: { color: "#fff", fontSize: 22 },
+    playBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: theme.accent, alignItems: 'center', justifyContent: 'center' },
+    playBtnText: { color: '#fff', fontSize: 18 },
 
     // Toast
     toast: {

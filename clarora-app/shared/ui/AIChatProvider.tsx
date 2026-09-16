@@ -7,7 +7,7 @@ import { useAppTheme } from './ThemeContext';
 import { ChatPanel } from './ChatPanel';
 import { newChat, openReference, appendReference, restoreChats, chatHistory, type ChatSession as Session, type ChatReference as Reference } from '../data/chat';
 
-const ChatContext = createContext<{ visible: boolean; open: (reference?: Reference) => void; registerEntry: (entry: () => void) => () => void } | null>(null);
+const ChatContext = createContext<{ visible: boolean; open: (reference?: Reference) => void; collecting: boolean; launch: () => void; registerInlineLauncher: () => () => void; registerEntry: (entry: () => void) => () => void } | null>(null);
 export function useAIChat() {
   const value = useContext(ChatContext);
   if (!value) throw new Error('AIChatProvider is missing');
@@ -25,8 +25,26 @@ export function useAIChatEntry(text: string, source: string, onOpen?: () => void
   }), [open, registerEntry, text, source, onOpen]);
 }
 
+// A learning screen may host the same global entry in its own toolbar.
+// Register only while mounted, restoring the footer when leaving that screen.
+export function AIChatInlineButton() {
+  const { theme } = useAppTheme();
+  const { launch, collecting, registerInlineLauncher } = useAIChat();
+  useEffect(() => registerInlineLauncher(), [registerInlineLauncher]);
+  return <Pressable accessibilityRole="button" accessibilityLabel={collecting ? '返回 AI 学习助手' : '打开 AI 学习助手'}
+    onPress={launch} style={({ pressed }) => ({ minHeight: Platform.OS === 'ios' || Platform.OS === 'android' ? 44 : 34,
+      justifyContent: 'center', borderRadius: 8, backgroundColor: theme.accent, paddingHorizontal: 12, opacity: pressed ? .7 : 1 })}>
+    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>{collecting ? '返回 AI' : '✦ AI 助手'}</Text>
+  </Pressable>;
+}
+
 export function AIChatProvider({ children }: { children: ReactNode }) {
   const { theme } = useAppTheme();
+  const [inlineLaunchers, setInlineLaunchers] = useState(0);
+  const registerInlineLauncher = useCallback(() => {
+    setInlineLaunchers(count => count + 1);
+    return () => setInlineLaunchers(count => count - 1);
+  }, []);
   const [visible, setVisible] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([newChat()]);
@@ -158,14 +176,15 @@ export function AIChatProvider({ children }: { children: ReactNode }) {
       if (request.current === controller) { request.current = null; setBusy(false); setPending(''); setStream(null); }
     }
   };
-  return <ChatContext.Provider value={{ visible, open, registerEntry }}>
+  const launch = () => collecting ? open() : entryRef.current ? entryRef.current() : open();
+  return <ChatContext.Provider value={{ visible, open, registerEntry, collecting, launch, registerInlineLauncher }}>
     <View style={{ flex: 1, backgroundColor: theme.bg }}>
       <View style={{ flex: 1, minHeight: 0 }} pointerEvents={visible ? 'none' : 'auto'} accessibilityElementsHidden={visible} importantForAccessibility={visible ? 'no-hide-descendants' : 'auto'}>{children}</View>
       {/* Reserve real layout space so the launcher cannot cover page actions or navigation. */}
-      {!visible && <LauncherContainer style={{ flexShrink: 0 }}>
-        <View style={{ alignItems: 'flex-end', paddingHorizontal: 18, paddingVertical: 10 }}>
-          <Pressable accessibilityRole="button" accessibilityLabel={collecting ? '返回 AI 学习助手' : '打开 AI 学习助手'} onPress={() => collecting ? open() : entryRef.current ? entryRef.current() : open()}
-            style={{ maxWidth: '100%', minHeight: 44, justifyContent: 'center', borderRadius: 22, backgroundColor: theme.accent, paddingHorizontal: 18, paddingVertical: 12 }}>
+      {!visible && inlineLaunchers === 0 && <LauncherContainer style={{ flexShrink: 0 }}>
+        <View style={{ alignItems: 'flex-end', paddingHorizontal: 14, paddingVertical: 5 }}>
+          <Pressable accessibilityRole="button" accessibilityLabel={collecting ? '返回 AI 学习助手' : '打开 AI 学习助手'} onPress={launch}
+            style={{ maxWidth: '100%', minHeight: 34, justifyContent: 'center', borderRadius: 17, backgroundColor: theme.accent, paddingHorizontal: 14, paddingVertical: 7 }}>
             <Text style={{ color: '#fff', fontWeight: '700', textAlign: 'center' }}>{collecting ? '选文后右键提问 · 返回 AI' : '✦ AI 助手'}</Text>
           </Pressable>
         </View>
