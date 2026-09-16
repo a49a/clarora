@@ -1,0 +1,5 @@
+# Vendored 第三方单头解码库（Windows 端侧转写的音频解码），不计入语言统计与 diff
+clarora-app/windows/clarora-asr/miniaudio.h linguist-vendored=true -diff
+
+# 生成文件
+clarora-app/package-lock.json linguist-generated=true
