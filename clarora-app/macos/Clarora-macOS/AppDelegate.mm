@@ -1953,6 +1953,203 @@ RCT_EXPORT_METHOD(transcribe:(NSString *)audioPath
 
 @end
 
+// ── RNMacPdf：PDF 阅读（PDFKit 渲染 + 目录树）────────────────────────────
+// 与 Windows 的 RNWindowsPdf 共享同一接口：open 返回页面尺寸与目录树，
+// renderPage 把整页渲染成 PNG base64，由共享 JS 阅读器排版。
+
+#import <PDFKit/PDFKit.h>
+
+@interface RNMacPdf : NSObject <RCTBridgeModule>
+@end
+
+@implementation RNMacPdf
+
+RCT_EXPORT_MODULE(RNMacPdf);
+
++ (BOOL)requiresMainQueueSetup { return NO; }
+
+static NSMutableDictionary<NSString *, PDFDocument *> *PdfDocuments(void) {
+  static NSMutableDictionary<NSString *, PDFDocument *> *documents = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ documents = [NSMutableDictionary dictionary]; });
+  return documents;
+}
+
+- (dispatch_queue_t)pdfQueue {
+  static dispatch_queue_t queue = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ queue = dispatch_queue_create("app.clarora.pdf", DISPATCH_QUEUE_SERIAL); });
+  return queue;
+}
+
+// 递归收集目录树；total 为节点上限，防止异常 PDF 撑爆桥接。
+- (void)collectOutline:(PDFOutline *)outline
+                  into:(NSMutableArray<NSDictionary *> *)out
+                 depth:(NSInteger)depth
+                remaining:(NSInteger *)remaining {
+  if (outline == nil || *remaining <= 0 || depth > 8) return;
+  NSInteger count = outline.numberOfChildren;
+  for (NSInteger i = 0; i < count && *remaining > 0; i++) {
+    PDFOutline *child = [outline childAtIndex:i];
+    if (child == nil) continue;
+    (*remaining)--;
+    NSInteger page = -1;
+    PDFDestination *destination = child.destination;
+    if (destination != nil && destination.page != nil) {
+      page = [destination.page.document indexForPage:destination.page];
+    }
+    NSMutableArray<NSDictionary *> *children = [NSMutableArray array];
+    [self collectOutline:child into:children depth:depth + 1 remaining:remaining];
+    [out addObject:@{ @"title": child.label ?: @"", @"page": @(page), @"children": children }];
+  }
+}
+
+RCT_EXPORT_METHOD(open:(NSString *)path
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  dispatch_async(self.pdfQueue, ^{
+    PDFDocument *document = PdfDocuments()[path];
+    if (document == nil) {
+      document = [[PDFDocument alloc] initWithURL:[NSURL fileURLWithPath:path]];
+      if (document == nil || document.isLocked || document.pageCount == 0) {
+        reject(@"pdf_error", @"无法读取 PDF 文件（可能已加密或损坏）", nil);
+        return;
+      }
+      PdfDocuments()[path] = document;
+    }
+
+    NSMutableArray<NSDictionary *> *pages = [NSMutableArray array];
+    for (NSInteger i = 0; i < document.pageCount; i++) {
+      CGRect bounds = [[document pageAtIndex:i] boundsForBox:kPDFDisplayBoxMediaBox];
+      [pages addObject:@{ @"width": @(bounds.size.width), @"height": @(bounds.size.height) }];
+    }
+
+    NSMutableArray<NSDictionary *> *outline = [NSMutableArray array];
+    NSInteger remaining = 500;
+    [self collectOutline:document.outlineRoot into:outline depth:0 remaining:&remaining];
+    resolve(@{ @"pages": pages, @"outline": outline });
+  });
+}
+
+RCT_EXPORT_METHOD(renderPage:(NSString *)path
+                  index:(NSInteger)index
+                  width:(double)widthPx
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  dispatch_async(self.pdfQueue, ^{
+    PDFDocument *document = PdfDocuments()[path];
+    if (document == nil || index < 0 || index >= document.pageCount) {
+      reject(@"pdf_error", @"请先打开 PDF 文件", nil);
+      return;
+    }
+    PDFPage *page = [document pageAtIndex:index];
+    CGRect bounds = [page boundsForBox:kPDFDisplayBoxMediaBox];
+    if (bounds.size.width <= 0) { reject(@"pdf_error", @"页面尺寸异常", nil); return; }
+    double scale = widthPx / bounds.size.width;
+    CGSize target = CGSizeMake(round(widthPx), round(bounds.size.height * scale));
+
+    // PDFKit 的 thumbnailOfSize 在部分文档上拿不到 CGImage；位图上下文 +
+    // drawWithBox 是稳定的整页渲染路径（白底，PDF 坐标系翻转后绘制）。
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(NULL, target.width, target.height, 8,
+                                                 target.width * 4, space,
+                                                 kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(space);
+    if (context == nil) { reject(@"pdf_error", @"页面渲染失败", nil); return; }
+    CGContextSetRGBFillColor(context, 1, 1, 1, 1);
+    CGContextFillRect(context, CGRectMake(0, 0, target.width, target.height));
+    // drawWithBox 自带坐标系翻转，这里只做点→像素缩放。
+    CGContextScaleCTM(context, scale, scale);
+    [page drawWithBox:kPDFDisplayBoxMediaBox toContext:context];
+    CGImageRef rendered = CGBitmapContextCreateImage(context);
+    CGContextRelease(context);
+    if (rendered == nil) { reject(@"pdf_error", @"页面渲染失败", nil); return; }
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:rendered];
+    CGImageRelease(rendered);
+    NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    resolve(@{ @"png": [png base64EncodedStringWithOptions:NSDataBase64Encoding64CharacterLineLength] });
+  });
+}
+
+RCT_EXPORT_METHOD(close:(NSString *)path
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  dispatch_async(self.pdfQueue, ^{
+    [PdfDocuments() removeObjectForKey:path];
+    resolve(@{ @"closed": @YES });
+  });
+}
+
+@end
+
+// ── RNMacKeychain：系统钥匙串存取（AI / 存储密钥等敏感配置）────────────────
+// 通用密码项：service 固定为 app.clarora.secrets，account 区分用途。
+
+#import <Security/Security.h>
+
+@interface RNMacKeychain : NSObject <RCTBridgeModule>
+@end
+
+@implementation RNMacKeychain
+
+RCT_EXPORT_MODULE(RNMacKeychain);
+
+static NSDictionary *KeychainQuery(NSString *account) {
+  return @{
+    (id)kSecClass: (id)kSecClassGenericPassword,
+    (id)kSecAttrService: @"app.clarora.secrets",
+    (id)kSecAttrAccount: account,
+  };
+}
+
+RCT_EXPORT_METHOD(setSecret:(NSString *)account
+                  value:(NSString *)value
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  NSDictionary *query = KeychainQuery(account);
+  SecItemDelete((__bridge CFDictionaryRef)query);  // 覆盖语义：先删旧值再写入
+  NSMutableDictionary *attributes = [query mutableCopy];
+  attributes[(__bridge NSString *)kSecValueData] = [value dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+  attributes[(__bridge NSString *)kSecAttrAccessible] = (id)kSecAttrAccessibleAfterFirstUnlock;
+  OSStatus status = SecItemAdd((__bridge CFDictionaryRef)attributes, NULL);
+  if (status == errSecSuccess) resolve(@YES);
+  else reject(@"keychain_error", [NSString stringWithFormat:@"钥匙串写入失败（OSStatus %d）", (int)status], nil);
+}
+
+RCT_EXPORT_METHOD(getSecret:(NSString *)account
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  NSMutableDictionary *query = [KeychainQuery(account) mutableCopy];
+  query[(__bridge NSString *)kSecReturnData] = @YES;
+  query[(__bridge NSString *)kSecMatchLimit] = (id)kSecMatchLimitOne;
+  CFDataRef data = NULL;
+  OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&data);
+  if (status == errSecItemNotFound) { resolve([NSNull null]); return; }
+  if (status != errSecSuccess) {
+    reject(@"keychain_error", [NSString stringWithFormat:@"钥匙串读取失败（OSStatus %d）", (int)status], nil);
+    return;
+  }
+  NSString *value = [[NSString alloc] initWithData:(__bridge NSData *)data encoding:NSUTF8StringEncoding];
+  CFRelease(data);
+  resolve(value ?: @"");
+}
+
+RCT_EXPORT_METHOD(deleteSecret:(NSString *)account
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  OSStatus status = SecItemDelete((__bridge CFDictionaryRef)KeychainQuery(account));
+  if (status == errSecSuccess || status == errSecItemNotFound) resolve(@YES);
+  else reject(@"keychain_error", [NSString stringWithFormat:@"钥匙串删除失败（OSStatus %d）", (int)status], nil);
+}
+
+@end
+
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification

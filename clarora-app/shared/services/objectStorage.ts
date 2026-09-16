@@ -4,6 +4,7 @@ import { bytesToHex } from '@noble/hashes/utils';
 import { XMLParser } from 'fast-xml-parser';
 import { getSetting, setSetting } from '../data/database';
 import { FileSystem } from './platform';
+import { SECRET_NAMES, migrateSecret, secretStore } from './secrets';
 
 export type StorageConfig = {
   provider: 's3' | 'oss'; endpoint: string; region: string; bucket: string;
@@ -16,11 +17,30 @@ export const DEFAULT_STORAGE: StorageConfig = {
 };
 export async function loadStorageConfig(): Promise<StorageConfig> {
   const value = await getSetting('object_storage_config');
-  return { ...DEFAULT_STORAGE, ...(value ? JSON.parse(value) : {}) };
+  const config: StorageConfig = { ...DEFAULT_STORAGE, ...(value ? JSON.parse(value) : {}) };
+  const store = secretStore();
+  if (store) {
+    // SecretAccessKey / SessionToken 保存在系统凭证保险库；旧明文自动迁入并抹掉。
+    try {
+      config.secretAccessKey = await migrateSecret(store, SECRET_NAMES.storageSecretAccessKey, config.secretAccessKey);
+      config.sessionToken = await migrateSecret(store, SECRET_NAMES.storageSessionToken, config.sessionToken);
+      await setSetting('object_storage_config', JSON.stringify({ ...config, secretAccessKey: '', sessionToken: '' }));
+    } catch { /* 保险库写入失败：沿用数据库明文 */ }
+  }
+  return config;
 }
 export async function saveStorageConfig(config: StorageConfig): Promise<void> {
   validateStorageConfig(config);
-  await setSetting('object_storage_config', JSON.stringify(config));
+  const store = secretStore();
+  const persisted: StorageConfig = { ...config };
+  if (store) {
+    // 密钥只写入系统凭证保险库，数据库配置不再保存明文。
+    await store.setSecret(SECRET_NAMES.storageSecretAccessKey, config.secretAccessKey);
+    await store.setSecret(SECRET_NAMES.storageSessionToken, config.sessionToken);
+    persisted.secretAccessKey = '';
+    persisted.sessionToken = '';
+  }
+  await setSetting('object_storage_config', JSON.stringify(persisted));
 }
 export function validateStorageConfig(config: StorageConfig): void {
   if (!['s3', 'oss'].includes(config.provider)) throw new Error('不支持的存储类型');

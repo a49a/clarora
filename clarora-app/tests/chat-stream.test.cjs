@@ -17,7 +17,7 @@ function setup() {
   const exports = {};
   vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../shared/services/ai.ts'), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
-  }).outputText, { exports, XMLHttpRequest: Request, require: name => name === 'react-native' ? { Platform: { OS: 'macos' } } : name === '../data/database' ? { getSetting: async () => JSON.stringify({ baseUrl: 'http://localhost:8080/v1', model: 'local-model' }) } : {}, setTimeout, clearTimeout });
+  }).outputText, { exports, XMLHttpRequest: Request, require: name => name === 'react-native' ? { Platform: { OS: 'macos' } } : name === '../data/database' ? { getSetting: async () => JSON.stringify({ baseUrl: 'http://localhost:8080/v1', model: 'local-model' }) } : name === './secrets' ? { secretStore: () => null } : {}, setTimeout, clearTimeout });
   const events = [];
   return { events, xhr: () => xhr, start: async (signal) => {
     const promise = exports.streamChatAnswer({ passage: 'Hello', question: '解释', signal, onEvent: e => events.push(e) });

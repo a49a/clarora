@@ -11,7 +11,7 @@ Clarora 是纯客户端应用。对象存储只保存备份 JSON 和附件，不
 5. S3 默认使用虚拟主机式地址；MinIO 或其他服务要求路径式地址时启用 Path-style。OSS 使用 OSS V4 原生签名，而非假设所有 OSS Endpoint 都兼容 S3 签名。
 6. “保存并读取备份”检查列表读取权限。“备份本机资料”还需要对象写入权限，恢复需要对象读取权限。
 
-客户端要求对象存储使用 HTTPS。凭证目前存于本机应用 SQLite 中，尚未接入系统钥匙串，且不会随备份上传。备份没有端到端加密；存储商的服务端加密由用户在 Bucket 侧配置。
+客户端要求对象存储使用 HTTPS。凭证在 macOS / Windows 存于系统凭证保险库（钥匙串 / 凭据库），不随备份上传；移动端暂存本机应用 SQLite。备份没有端到端加密；存储商的服务端加密由用户在 Bucket 侧配置。
 
 所需操作为 ListObjectsV2、GetObject、PutObject，不需要应用主动删除对象或管理 Bucket。S3 权限通常对应 `s3:ListBucket`、`s3:GetObject`、`s3:PutObject`；OSS 对应 `oss:ListObjects`、`oss:GetObject`、`oss:PutObject`。列表授权应限定资料库前缀，读写对象授权限定该前缀下的对象。
 

@@ -9,13 +9,38 @@ const segments = [
   { start: 2, end: 4, text: 'once more' },
 ];
 
-function setup(config, natives = {}, platform = 'macos') {
+function setup(config, natives = {}, platform = 'macos', secretMap = null) {
   const modules = { RNMacWhisper: natives.whisper, RNMacSenseVoice: natives.senseVoice, RNWindowsAsr: natives.windowsAsr };
   const files = new Set(['ggml-base.en.bin']);
+  const settingsMap = new Map();
+  if (config) settingsMap.set('ai_config', JSON.stringify(config));
+  const settingsRecord = [];
   const api = loader({
     '../data/database': {
-      getSetting: async () => JSON.stringify(config), setSetting: async () => {},
+      getSetting: async name => settingsMap.get(name) ?? null,
+      setSetting: async (name, value) => { settingsRecord.push(value); settingsMap.set(name, value); },
       saveAiRecord: async () => {}, listAiRecords: async () => [], deleteAiRecord: async () => {},
+    },
+    './secrets': {
+      SECRET_NAMES: {
+        aiApiKey: 'clarora.ai.api-key',
+        aiAsrApiKey: 'clarora.ai.asr-api-key',
+        storageSecretAccessKey: 'clarora.storage.secret-access-key',
+        storageSessionToken: 'clarora.storage.session-token',
+      },
+      migrateSecret: async (store, key, plaintext) => {
+        const stored = await store.getSecret(key).catch(() => null);
+        if (stored != null) return stored;
+        if (plaintext) await store.setSecret(key, plaintext);
+        return plaintext;
+      },
+      secretStore: () => secretMap
+        ? {
+            setSecret: async (key, value) => { secretMap.set(key, value); },
+            getSecret: async key => (secretMap.has(key) ? secretMap.get(key) : null),
+            deleteSecret: async key => { secretMap.delete(key); },
+          }
+        : null,
     },
     './platform': {
       currentPlatform: platform,
@@ -31,7 +56,7 @@ function setup(config, natives = {}, platform = 'macos') {
       },
     },
   })(file);
-  return { api, files };
+  return { api, files, settingsMap, settingsRecord };
 }
 
 test('whisper engine transcribes on device and never uploads audio', async () => {
@@ -105,4 +130,48 @@ test('model registry, download flow and language resolution', async () => {
   assert.equal(engines.backends[0].available, true);
   await s.api.deleteLocalModel('small.en');
   assert.equal(await s.api.localModelDownloaded('small.en'), false);
+});
+
+test('ai api keys migrate into the system vault and the database is scrubbed', async () => {
+  const secretMap = new Map();
+  const s = setup({ baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'plain-key' }, {}, 'macos', secretMap);
+  const config = await s.api.loadAiConfig();
+  assert.equal(config.apiKey, 'plain-key');
+  assert.equal(secretMap.get('clarora.ai.api-key'), 'plain-key');
+  assert.ok(!s.settingsMap.get('ai_config').includes('plain-key'));
+});
+
+test('saving puts keys in the vault and stores a scrubbed config', async () => {
+  const secretMap = new Map();
+  const s = setup({}, {}, 'macos', secretMap);
+  await s.api.saveAiConfig({ ...s.api.DEFAULT_AI, baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'new-key' });
+  assert.equal(secretMap.get('clarora.ai.api-key'), 'new-key');
+  const stored = JSON.parse(s.settingsMap.get('ai_config'));
+  assert.equal(stored.apiKey, '');
+});
+
+test('platforms without a vault keep the legacy behavior', async () => {
+  const s = setup({ baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'kept' }, {}, 'android');
+  await s.api.saveAiConfig({ ...s.api.DEFAULT_AI, baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'kept' });
+  assert.ok(s.settingsMap.get('ai_config').includes('kept'));
+});
+
+test('real secrets helper stores once and reuses the vault value', async () => {
+  const secretsFile = path.join(__dirname, '../shared/services/secrets.ts');
+  const map = new Map();
+  const keychain = {
+    setSecret: async (key, value) => { map.set(key, value); },
+    getSecret: async key => (map.has(key) ? map.get(key) : null),
+    deleteSecret: async key => { map.delete(key); },
+  };
+  const secrets = loader({
+    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: keychain }) },
+  })(secretsFile);
+  const first = await secrets.migrateSecret(await secrets.secretStore(), 'clarora.ai.api-key', 'plain-key');
+  assert.equal(first, 'plain-key');
+  assert.equal(map.size, 1);
+  const second = await secrets.migrateSecret(await secrets.secretStore(), 'clarora.ai.api-key', 'ignored');
+  assert.equal(second, 'plain-key');
+  assert.equal(map.size, 1);
+  assert.equal(secrets.SECRET_NAMES.aiApiKey, 'clarora.ai.api-key');
 });

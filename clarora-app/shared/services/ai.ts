@@ -1,6 +1,7 @@
 import { getSetting, setSetting, saveAiRecord, listAiRecords, deleteAiRecord } from '../data/database';
 import { newVaultId } from '../data/vault';
 import { parseSubtitleCues, serializeSubtitleCues } from '../data/subtitles';
+import { SECRET_NAMES, migrateSecret, secretStore } from './secrets';
 import { FileSystem, currentPlatform, getNativeModules, nativePath } from './platform';
 import type { OcrPageStatus, OcrPageSummary, SpeakingAttemptDetail, SpeakingAttemptSummary, SpeakingScore, AsrEngineList } from './aiTypes';
 export type * from './aiTypes';
@@ -121,7 +122,18 @@ export async function deleteLocalModel(id: string): Promise<string> {
 }
 export async function loadAiConfig(): Promise<AiConfig> {
   const raw = await getSetting('ai_config');
-  return { ...DEFAULT_AI, ...(raw ? JSON.parse(raw) : {}) };
+  const config: AiConfig = { ...DEFAULT_AI, ...(raw ? JSON.parse(raw) : {}) };
+  const store = secretStore();
+  if (store) {
+    // API Key 保存在系统凭证保险库；数据库中的旧明文自动迁入并抹掉。
+    // 保险库不可用时保留数据库明文，保证功能不受影响。
+    try {
+      config.apiKey = await migrateSecret(store, SECRET_NAMES.aiApiKey, config.apiKey);
+      config.asrApiKey = await migrateSecret(store, SECRET_NAMES.aiAsrApiKey, config.asrApiKey);
+      await setSetting('ai_config', JSON.stringify({ ...config, apiKey: '', asrApiKey: '' }));
+    } catch { /* 保险库写入失败：沿用数据库明文 */ }
+  }
+  return config;
 }
 function validateBaseUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, '');
@@ -132,7 +144,16 @@ export async function saveAiConfig(config: AiConfig) {
   if (config.baseUrl) validateBaseUrl(config.baseUrl);
   if (config.asrBaseUrl) validateBaseUrl(config.asrBaseUrl);
   if (/[\r\n]/.test(config.apiKey + config.asrApiKey)) throw new Error('API Key 格式错误');
-  await setSetting('ai_config', JSON.stringify(config));
+  const store = secretStore();
+  const persisted: AiConfig = { ...config };
+  if (store) {
+    // 密钥只写入系统凭证保险库，数据库配置不再保存明文。
+    await store.setSecret(SECRET_NAMES.aiApiKey, config.apiKey);
+    await store.setSecret(SECRET_NAMES.aiAsrApiKey, config.asrApiKey);
+    persisted.apiKey = '';
+    persisted.asrApiKey = '';
+  }
+  await setSetting('ai_config', JSON.stringify(persisted));
 }
 async function endpoint(asr = false, vision = false) {
   const c = await loadAiConfig();
