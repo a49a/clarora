@@ -91,6 +91,23 @@ function applyShadowColorPatch(packageDir) {
   return true;
 }
 
+// react-native-macos 0.81:React-jsinspector podspec 只平铺匹配
+// jsinspector-modern/*.{cpp,h}，但 tarball 把 CdpJson.* 留在了 cdp/ 子目录，
+// pod install 生成的 Pods 工程因此引用不存在的文件。拷贝平铺即可；
+// tarball 将来若自带平铺文件则本补丁自动跳过。
+const jsinspectorCdpFiles = ['CdpJson.cpp', 'CdpJson.h'];
+
+function flattenJsinspectorCdp(packageDir) {
+  const dir = path.join(packageDir, 'ReactCommon', 'jsinspector-modern');
+  const cdpDir = path.join(dir, 'cdp');
+  if (jsinspectorCdpFiles.every(name => fs.existsSync(path.join(dir, name)))) return false;
+  if (!jsinspectorCdpFiles.every(name => fs.existsSync(path.join(cdpDir, name)))) {
+    throw new Error('jsinspector cdp sources missing; review the flatten patch before upgrading.');
+  }
+  for (const name of jsinspectorCdpFiles) fs.copyFileSync(path.join(cdpDir, name), path.join(dir, name));
+  return true;
+}
+
 if (require.main === module) {
   // The workspace installs macOS under its own name and the react-native alias.
   for (const name of ['react-native-macos', 'react-native']) {
@@ -117,6 +134,15 @@ if (require.main === module) {
 
     if (ensureReactPerfLoggerStub(packageDir)) {
       console.log('clarora patch: created stub', reactPerfLoggerStubRel);
+    }
+
+    try {
+      if (flattenJsinspectorCdp(packageDir)) {
+        console.log('clarora patch: flattened', `ReactCommon/jsinspector-modern/{${jsinspectorCdpFiles.join(',')}}`);
+      }
+    } catch (error) {
+      console.error(`clarora jsinspector flatten (${name}):`, error.message);
+      process.exitCode = 1;
     }
   }
 }
