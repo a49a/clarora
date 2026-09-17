@@ -1,3 +1,4 @@
+using Microsoft.ReactNative;
 using Microsoft.ReactNative.Managed;
 using System;
 using System.IO;
