@@ -72,12 +72,14 @@ jobs:
       - run: npm ci
         working-directory: clarora-app
       - name: Build on-device ASR library (clarora_asr.dll)
+        timeout-minutes: 35
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-asr.ps1
         working-directory: clarora-app
       - run: npm run windows:build
         working-directory: clarora-app
       - name: Package zip
         shell: pwsh
+        working-directory: clarora-app
         run: |
           Compress-Archive -Path "windows/AppPackages/*" -DestinationPath "Clarora-windows-x64.zip" -Force
       - uses: actions/upload-artifact@v4

@@ -5,6 +5,19 @@
 #   * sherpa-onnx 发行包（脚本自动下载）
 # 产物缺失时应用仍可构建运行，只是端侧转写在设置中会提示不可用。
 $ErrorActionPreference = 'Stop'
+
+function Get-DependencyArchive {
+    param([string]$Name, [string]$Url, [string]$Destination)
+    Write-Host "Downloading $Name from $Url"
+    # Show progress; fail stalled transfers instead of silently waiting for the
+    # entire job timeout. Only transient curl failures are retried.
+    & curl.exe -fL --connect-timeout 30 --max-time 600 `
+        --speed-limit 1024 --speed-time 60 --retry 2 --retry-max-time 900 `
+        -o $Destination $Url
+    if ($LASTEXITCODE -ne 0) { throw "$Name download failed (curl exit $LASTEXITCODE)." }
+    Write-Host "Downloaded $Name ($((Get-Item $Destination).Length) bytes)."
+}
+
 Push-Location (Join-Path $PSScriptRoot '..')
 try {
     $asrDir = Join-Path (Get-Location) 'windows/clarora-asr'
@@ -21,9 +34,11 @@ try {
         $vcpkgRoot = Join-Path $env:LOCALAPPDATA 'microsoft/vcpkg'
     }
     if (-not $vcpkgRoot) { throw 'vcpkg is required for whisper.cpp (set VCPKG_ROOT; see https://learn.microsoft.com/vcpkg/get-started).' }
-    & vcpkg install whisper-cpp:x64-windows
+    Write-Host 'Installing whisper.cpp with vcpkg...'
+    & (Join-Path $vcpkgRoot 'vcpkg.exe') install whisper-cpp:x64-windows
     if ($LASTEXITCODE -ne 0) { throw 'vcpkg install whisper-cpp:x64-windows failed.' }
     $vcpkgInstalled = Join-Path $vcpkgRoot 'installed/x64-windows'
+    Write-Host 'Preparing whisper.cpp include and library links...'
     New-Item -ItemType Directory -Force (Join-Path $depsDir 'whisper.cpp') | Out-Null
     New-Item -ItemType SymbolicLink -Path (Join-Path $depsDir 'whisper.cpp/include') -Target (Join-Path $vcpkgInstalled 'include') -Force | Out-Null
     New-Item -ItemType SymbolicLink -Path (Join-Path $depsDir 'whisper.cpp/lib') -Target (Join-Path $vcpkgInstalled 'lib') -Force | Out-Null
@@ -35,8 +50,9 @@ try {
     if (-not (Test-Path (Join-Path $sherpaDir 'lib'))) {
         New-Item -ItemType Directory -Force $sherpaDir | Out-Null
         $archive = Join-Path $env:TEMP $sherpaName
-        & curl.exe -fsSL --connect-timeout 30 --max-time 1800 -o $archive "https://github.com/k2-fsa/sherpa-onnx/releases/download/$sherpaVersion/$sherpaName"
-        if ($LASTEXITCODE -ne 0) { throw 'sherpa-onnx download failed.' }
+        Get-DependencyArchive -Name 'sherpa-onnx' -Destination $archive `
+            -Url "https://github.com/k2-fsa/sherpa-onnx/releases/download/$sherpaVersion/$sherpaName"
+        Write-Host 'Extracting sherpa-onnx...'
         & tar -xjf $archive -C $sherpaDir
         if ($LASTEXITCODE -ne 0) { throw 'sherpa-onnx extraction failed.' }
         Get-ChildItem $sherpaDir -Directory | ForEach-Object {
@@ -53,24 +69,28 @@ try {
     $pdfiumDir = Join-Path $depsDir 'pdfium'
     if (-not (Test-Path (Join-Path $pdfiumDir 'bin/pdfium.dll'))) {
         New-Item -ItemType Directory -Force $pdfiumDir | Out-Null
-        & curl.exe -fsSL --connect-timeout 30 --max-time 1800 -o $pdfiumArchive "https://github.com/bblanchon/pdfium-binaries/releases/download/$pdfiumTag/pdfium-win-x64.tgz"
-        if ($LASTEXITCODE -ne 0) { throw 'pdfium download failed.' }
+        Get-DependencyArchive -Name 'pdfium' -Destination $pdfiumArchive `
+            -Url "https://github.com/bblanchon/pdfium-binaries/releases/download/$pdfiumTag/pdfium-win-x64.tgz"
+        Write-Host 'Extracting pdfium...'
         & tar -xzf $pdfiumArchive -C $pdfiumDir
         if ($LASTEXITCODE -ne 0) { throw 'pdfium extraction failed.' }
     }
 
     # ── CMake 构建（MSVC x64）──
     $buildDir = Join-Path $asrDir 'build'
+    Write-Host 'Configuring clarora_asr with CMake...'
     & cmake -S $asrDir -B $buildDir -A x64 `
         "-DCMAKE_TOOLCHAIN_FILE=$(Join-Path $vcpkgRoot 'scripts/buildsystems/vcpkg.cmake')" `
         "-DSHERPA_INCLUDE_DIR=$sherpaInclude" `
         "-DSHERPA_LIB_DIR=$sherpaLib"
     if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
+    Write-Host 'Building clarora_asr (Release)...'
     & cmake --build $buildDir --config Release
     if ($LASTEXITCODE -ne 0) { throw 'clarora_asr.dll build failed.' }
 
     # ── 依赖 DLL 汇总到 UWP 工程目录（csproj 以 Content 打包）──
     $packageDir = Join-Path (Get-Location) 'windows/Clarora'
+    Write-Host 'Copying ASR and PDF runtime DLLs into the application...'
     New-Item -ItemType Directory -Force $packageDir | Out-Null
     Copy-Item -Force (Join-Path $buildDir 'Release/clarora_asr.dll') $packageDir
     foreach ($source in @(

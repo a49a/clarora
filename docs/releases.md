@@ -20,6 +20,16 @@ macOS dmg 与 Windows zip，生成校验和，并创建 GitHub Release。
 6. 更新官网 `clarora-web/config.js` 的 `downloads`（模板见下），提交推送后
    官网下载卡片生效。
 
+## Windows 依赖步骤长时间无输出
+
+`All requested installations completed successfully` 表示 vcpkg 已结束；下一阶段是
+sherpa-onnx 下载与解压，然后是 pdfium 和 CMake 编译。脚本会输出各阶段名称和下载进度，
+下载连续 60 秒低于 1 KiB/s 会失败，单次请求最多 10 分钟，瞬时错误最多重试两次。
+ASR 步骤总上限为 35 分钟，发布流程中失败会阻止不完整的安装包发布。
+
+已启动的运行不会加载后续提交中的修复；重新运行旧任务也仍然使用旧提交。
+验证修复时需要在包含修复的新提交上启动工作流。
+
 ## 下载链接模板（clarora-web/config.js）
 
 `releases/latest/download/<文件名>` 是 GitHub 的永久链接，始终指向最新
