@@ -15,6 +15,11 @@ try {
         if (-not $path) { throw 'Install Visual Studio 2022 with UWP and C++ development tools.' }
     } else { $path = $msbuild.Source }
     $packages = Join-Path (Get-Location) 'windows/AppPackages/'
+    # The managed code generator is invoked through a raw MSBuild task (not a
+    # ProjectReference), so the solution-level /restore does not cover it and a
+    # fresh machine has no obj/project.assets.json for it yet.
+    & $path node_modules/react-native-windows/Microsoft.ReactNative.Managed.CodeGen/Microsoft.ReactNative.Managed.CodeGen.csproj /t:Restore
+    if ($LASTEXITCODE -ne 0) { throw 'NuGet restore for the managed code generator failed.' }
     & $path windows/Clarora.sln /restore /m /p:Configuration=Release /p:Platform=x64 /p:AppxBundle=Never /p:AppxBundlePlatforms=x64 /p:UapAppxPackageBuildMode=SideloadOnly /p:AppxPackageSigningEnabled=false /p:GenerateAppxPackageOnBuild=true "/p:AppxPackageDir=$packages"
     if ($LASTEXITCODE -ne 0) { throw 'Windows application build failed.' }
     Write-Host "Unsigned application packages: $packages"
