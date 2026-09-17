@@ -126,11 +126,13 @@ function flattenJsinspectorCdp(packageDir) {
   return true;
 }
 
-// react-native-windows 0.81:UWP 源码构建已不被上游维护，留了两处坏死：
+// react-native-windows 0.81:UWP 源码构建已不被上游维护，留了几处坏死：
 // ① HermesSamplingProfiler.cpp 使用 std::coroutine_handle 但全链路无人
 //    包含 <coroutine>；② Microsoft.ReactNative.Managed.csproj 强制
-//    VisualStudioVersion=18.0 并导入 v18 的 XAML targets，VS2022 没有。
-// 补上头文件并把版本条件降回 17.0（runner 的 VS2022 可用）。
+//    VisualStudioVersion=18.0 并导入 v18 的 XAML targets，VS2022 没有；
+// ③ React.Cpp.props 在 v143 工具集下追加旧版协程开关 /await，与 C++20
+//    协程互斥（WinRTWebSocketResource.h 又按 _MSC_VER 分支，两者矛盾）。
+// 统一改走 /await:strict 的 std 命名空间，并补齐头文件与分支。
 const windowsPatches = [
   {
     file: 'Shared/Hermes/HermesSamplingProfiler.cpp',
@@ -146,6 +148,30 @@ const windowsPatches = [
     file: 'Microsoft.ReactNative.Managed/Microsoft.ReactNative.Managed.csproj',
     original: '<VisualStudioVersion>18.0</VisualStudioVersion>',
     replacement: '<VisualStudioVersion>17.0</VisualStudioVersion>',
+  },
+  {
+    file: 'PropertySheets/React.Cpp.props',
+    original: '%(AdditionalOptions) /await</AdditionalOptions>',
+    replacement: '%(AdditionalOptions) /await:strict</AdditionalOptions>',
+  },
+  {
+    file: 'Microsoft.ReactNative/Microsoft.ReactNative.vcxproj',
+    original: '%(AdditionalOptions) /await</AdditionalOptions>',
+    replacement: '%(AdditionalOptions) /await:strict</AdditionalOptions>',
+  },
+  {
+    file: 'Shared/Networking/WinRTWebSocketResource.h',
+    original: '#include <queue>',
+    replacement: '#include <coroutine>\n#include <queue>',
+  },
+  {
+    file: 'Shared/Networking/WinRTWebSocketResource.h',
+    original: `#if _MSC_VER >= 1951
+    using CoroHandle = std::coroutine_handle<>;
+#else
+    using CoroHandle = std::experimental::coroutine_handle<>;
+#endif`,
+    replacement: 'using CoroHandle = std::coroutine_handle<>;',
   },
 ];
 
