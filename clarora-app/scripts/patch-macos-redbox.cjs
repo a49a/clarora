@@ -161,17 +161,12 @@ const windowsPatches = [
   },
   {
     file: 'Shared/Networking/WinRTWebSocketResource.h',
-    original: '#include <queue>',
-    replacement: '#include <coroutine>\n#include <queue>',
-  },
-  {
-    file: 'Shared/Networking/WinRTWebSocketResource.h',
     original: `#if _MSC_VER >= 1951
     using CoroHandle = std::coroutine_handle<>;
 #else
     using CoroHandle = std::experimental::coroutine_handle<>;
 #endif`,
-    replacement: 'using CoroHandle = std::coroutine_handle<>;',
+    replacement: '// Clarora: /await:strict 下的 C++20 协程，两种编译器统一走 std 命名空间。\n#include <coroutine>\nusing CoroHandle = std::coroutine_handle<>; // Clarora strict',
   },
 ];
 
