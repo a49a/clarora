@@ -317,6 +317,26 @@ RCT_EXPORT_METHOD(writeFile:(NSString *)path
   resolve(nil);
 }
 
+RCT_EXPORT_METHOD(writeBase64:(NSString *)path
+                  contents:(NSString *)contents
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  NSData *data = [[NSData alloc] initWithBase64EncodedString:contents options:0];
+  if (!data) { reject(@"filesystem_error", @"无效的 base64 内容", nil); return; }
+  NSError *error = nil;
+  [[NSFileManager defaultManager] createDirectoryAtPath:[path stringByDeletingLastPathComponent]
+                            withIntermediateDirectories:YES
+                                             attributes:nil
+                                                  error:&error];
+  BOOL wrote = error == nil && [data writeToFile:path options:NSDataWritingAtomic error:&error];
+  if (!wrote) {
+    reject(@"filesystem_error", error.localizedDescription ?: @"写入文件失败", error);
+    return;
+  }
+  resolve(nil);
+}
+
 RCT_EXPORT_METHOD(deleteFile:(NSString *)path
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
@@ -339,6 +359,9 @@ RCT_EXPORT_METHOD(deleteFile:(NSString *)path
   }
   if ([type isEqualToString:@"text/*"]) {
     return @[@"txt", @"srt", @"vtt", @"md", @"csv"];
+  }
+  if ([type isEqualToString:@"anki"]) {
+    return @[@"apkg", @"colpkg", @"anki2"];
   }
   if ([type isEqualToString:@"video/*"]) {
     return @[@"mp4", @"mov", @"m4v", @"mkv", @"webm", @"avi"];

@@ -21,6 +21,7 @@ type NativeFilePicker = {
   copyFile: (source: string, destination: string) => Promise<void>;
   readFile: (path: string) => Promise<string>;
   readBase64: (path: string) => Promise<string>;
+  writeBase64?: (path: string, contents: string) => Promise<void>;
   writeFile: (path: string, contents: string) => Promise<void>;
   deleteFile: (path: string) => Promise<void>;
 };
@@ -139,6 +140,22 @@ export const FileSystem = {
       return;
     }
     await getNativeFilePicker().writeFile(nativePath(uri), contents);
+  },
+  async writeBase64Async(uri: string, base64: string): Promise<void> {
+    if (usesRNFS) {
+      await RNFS.writeFile(nativePath(uri), base64, "base64");
+      return;
+    }
+    const write = getNativeFilePicker().writeBase64;
+    if (!write) throw new Error(`${Platform.OS} 原生层暂不支持写入二进制文件`);
+    await write(nativePath(uri), base64);
+  },
+  async deleteFileAsync(uri: string): Promise<void> {
+    if (usesRNFS) {
+      await RNFS.unlink(nativePath(uri));
+      return;
+    }
+    await getNativeFilePicker().deleteFile(nativePath(uri));
   },
   async makeDirectoryAsync(uri: string): Promise<void> {
     if (usesRNFS) {

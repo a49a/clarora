@@ -35,6 +35,7 @@ import {
 } from "../data/database";
 import { Audio, type AVPlaybackStatus, type SoundLike } from "../services/platform";
 import { importFromTextFile, importFromDirectory } from "../data/importer";
+import { importAnkiDeck } from "../data/anki";
 import { MarkdownView } from "../ui/markdown";
 import { useAIChat, useAIChatEntry } from "../ui/AIChatProvider";
 import { useAppTheme } from "../ui/ThemeContext";
@@ -228,6 +229,27 @@ export default function HomeScreen() {
       }
       const { imported, replaced } = await replaceWords(parsed);
       showToast(`已导入 ${imported} 条单词，替换原有 ${replaced} 条`);
+      await refreshCards();
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setImporting(false);
+    }
+  }, [refreshCards, showToast]);
+
+  // Import an Anki deck (.apkg / .colpkg): merge its notes into the deck.
+  const importAnki = useCallback(async () => {
+    setImporting(true);
+    setError(null);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: "anki",
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const fileUri = result.assets[0].uri;
+      const { imported } = await importAnkiDeck(fileUri);
+      showToast(`成功导入 ${imported} 张 Anki 卡片`);
       await refreshCards();
     } catch (e: any) {
       setError(String(e?.message ?? e));
@@ -836,6 +858,18 @@ export default function HomeScreen() {
             disabled={importing}
           >
             <Text style={styles.btnSecondaryText}>导入目录</Text>
+          </Pressable>}
+          {Platform.OS === "macos" && <Pressable
+            style={({ pressed }) => [
+              styles.btn,
+              styles.btnSecondary,
+              pressed && styles.btnPressed,
+              importing && styles.btnDisabled,
+            ]}
+            onPress={importAnki}
+            disabled={importing}
+          >
+            <Text style={styles.btnSecondaryText}>Anki 卡组</Text>
           </Pressable>}
             </>
           )}
