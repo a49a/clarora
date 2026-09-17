@@ -120,18 +120,37 @@ export async function deleteLocalModel(id: string): Promise<string> {
   }
   return '模型已删除';
 }
-export async function loadAiConfig(): Promise<AiConfig> {
+// Serialize reads that migrate credentials with saves, so a stale read cannot
+// overwrite a newly saved configuration.
+let configOperation: Promise<unknown> = Promise.resolve();
+function withConfigLock<T>(action: () => Promise<T>): Promise<T> {
+  const result = configOperation.then(action);
+  configOperation = result.catch(() => {});
+  return result;
+}
+export function loadAiConfig(options: { includeSecrets?: boolean } = {}): Promise<AiConfig> {
+  return withConfigLock(() => readAiConfig(options.includeSecrets !== false));
+}
+async function readAiConfig(includeSecrets: boolean): Promise<AiConfig> {
   const raw = await getSetting('ai_config');
   const config: AiConfig = { ...DEFAULT_AI, ...(raw ? JSON.parse(raw) : {}) };
-  // __DEV__ 构建跳过钥匙串：重签名后 ACL 不匹配会弹密码框阻塞启动。
-  // 保险库只在 Release 构建启用；不可用时保留数据库明文，功能不受影响。
-  const store = isDevBuild() ? null : secretStore();
+  const store = !includeSecrets || isDevBuild() ? null : secretStore();
   if (store) {
+    // A plaintext value can be a newer save after a vault write failed.
+    // Do not replace it with an older (or empty) vault entry.
+    const hasPlaintext = !!(config.apiKey || config.asrApiKey);
     try {
-      config.apiKey = await migrateSecret(store, SECRET_NAMES.aiApiKey, config.apiKey);
-      config.asrApiKey = await migrateSecret(store, SECRET_NAMES.aiAsrApiKey, config.asrApiKey);
-      await setSetting('ai_config', JSON.stringify({ ...config, apiKey: '', asrApiKey: '' }));
-    } catch { /* 保险库写入失败：沿用数据库明文 */ }
+      if (config.apiKey) await store.setSecret(SECRET_NAMES.aiApiKey, config.apiKey);
+      else config.apiKey = await migrateSecret(store, SECRET_NAMES.aiApiKey, '');
+      if (config.asrApiKey) await store.setSecret(SECRET_NAMES.aiAsrApiKey, config.asrApiKey);
+      else config.asrApiKey = await migrateSecret(store, SECRET_NAMES.aiAsrApiKey, '');
+      if (hasPlaintext) {
+        await setSetting('ai_config', JSON.stringify({ ...config, apiKey: '', asrApiKey: '' }));
+      }
+    } catch {
+      if (hasPlaintext) return config;
+      throw new Error('无法读取已保存的 AI 密钥，请在设置中重新输入并保存，或允许钥匙串访问');
+    }
   }
   return config;
 }
@@ -140,30 +159,59 @@ function validateBaseUrl(value: string): string {
   if (!/^https:\/\/[^\s@?#]+$/.test(trimmed) && !/^http:\/\/(localhost|127\.0\.0\.1|10\.0\.2\.2)(:\d+)?(\/[^\s?#]*)?$/.test(trimmed)) throw new Error('API 地址须为 HTTPS（本机服务可用 HTTP），包含服务商要求的 /v1 等路径');
   return trimmed;
 }
-export async function saveAiConfig(config: AiConfig) {
-  if (config.baseUrl) validateBaseUrl(config.baseUrl);
-  if (config.asrBaseUrl) validateBaseUrl(config.asrBaseUrl);
-  if (/[\r\n]/.test(config.apiKey + config.asrApiKey)) throw new Error('API Key 格式错误');
+export function saveAiConfig(config: AiConfig): Promise<AiConfig> {
+  const snapshot = { ...config };
+  return withConfigLock(() => persistAiConfig(snapshot));
+}
+async function persistAiConfig(config: AiConfig): Promise<AiConfig> {
+  const trimmed: AiConfig = {
+    ...config,
+    baseUrl: config.baseUrl.trim(),
+    apiKey: config.apiKey.trim(),
+    model: config.model.trim(),
+    visionModel: config.visionModel.trim(),
+    asrBaseUrl: config.asrBaseUrl.trim(),
+    asrApiKey: config.asrApiKey.trim(),
+    asrModel: config.asrModel.trim(),
+  };
+  if (trimmed.baseUrl) validateBaseUrl(trimmed.baseUrl);
+  if (trimmed.asrBaseUrl) validateBaseUrl(trimmed.asrBaseUrl);
+  if (/[\r\n]/.test(trimmed.apiKey + trimmed.asrApiKey)) throw new Error('API Key 格式错误');
   const store = isDevBuild() ? null : secretStore();
-  const persisted: AiConfig = { ...config };
+  const persisted: AiConfig = { ...trimmed };
   if (store) {
     // 密钥优先写入系统凭证保险库，数据库不再保存明文；保险库写入被拒
     // （如钥匙串授权拒绝）时退回数据库明文，保证配置本身不丢。
     try {
-      await store.setSecret(SECRET_NAMES.aiApiKey, config.apiKey);
-      await store.setSecret(SECRET_NAMES.aiAsrApiKey, config.asrApiKey);
+      await store.setSecret(SECRET_NAMES.aiApiKey, trimmed.apiKey);
+      await store.setSecret(SECRET_NAMES.aiAsrApiKey, trimmed.asrApiKey);
       persisted.apiKey = '';
       persisted.asrApiKey = '';
     } catch { /* 沿用数据库明文 */ }
   }
-  await setSetting('ai_config', JSON.stringify(persisted));
+  const serialized = JSON.stringify(persisted);
+  await setSetting('ai_config', serialized);
+  if (await getSetting('ai_config') !== serialized) {
+    throw new Error('AI 配置保存校验失败，请重试；输入内容已保留');
+  }
+  return trimmed;
 }
 async function endpoint(asr = false, vision = false) {
   const c = await loadAiConfig();
   const model = asr ? c.asrModel : vision ? c.visionModel : c.model;
   const url = asr ? c.asrBaseUrl || c.baseUrl : c.baseUrl;
   if (!url || !model) throw new Error(`请在设置 → AI 服务中配置${asr ? '转写地址和模型' : 'API 地址和聊天模型'}`);
-  return { ...c, url: validateBaseUrl(url), model, key: asr ? c.asrApiKey || c.apiKey : c.apiKey };
+  const key = (asr ? c.asrApiKey || c.apiKey : c.apiKey).trim();
+  const validatedUrl = validateBaseUrl(url);
+  if (!key && !/^http:\/\/(localhost|127\.0\.0\.1|10\.0\.2\.2)(:|\/|$)/i.test(validatedUrl)) {
+    throw new Error('尚未配置 API Key，请在设置 → AI 服务中填写并保存');
+  }
+  return { ...c, url: validatedUrl, model, key };
+}
+function aiRequestError(status: number): string {
+  return status === 401
+    ? 'AI 服务拒绝了 API Key（HTTP 401），请检查密钥是否有效、是否属于当前 API 地址，并重新保存'
+    : `AI 请求失败（HTTP ${status}），请检查模型、密钥与服务地址`;
 }
 export type AskHistoryTurn = { role: 'user' | 'assistant'; content: string };
 export type ChatStreamEvent = { type: 'reasoning' | 'answer'; text: string } | { type: 'done' } | { type: 'error'; message: string };
@@ -183,7 +231,7 @@ async function completion(messages: unknown[], signal?: AbortSignal, vision = fa
     const response = await fetch(`${c.url}/chat/completions`, { method: 'POST', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', ...(c.key ? { Authorization: `Bearer ${c.key}` } : {}) },
       body: JSON.stringify({ model: vision ? c.visionModel : c.model, messages, stream: false }) });
-    if (!response.ok) throw new Error(`AI 请求失败（HTTP ${response.status}），请检查模型、密钥与服务地址`);
+    if (!response.ok) throw new Error(aiRequestError(response.status));
     const result = await response.json();
     const text = result.choices?.[0]?.message?.content;
     if (typeof text !== 'string' || !text.trim()) throw new Error('模型未返回回答');
@@ -231,7 +279,7 @@ export async function streamChatAnswer(opts: { passage: string; question: string
     xhr.onload = () => {
       consume();
       if (xhr.status < 200 || xhr.status >= 300) {
-        settle(() => reject(Object.assign(new Error(`AI 请求失败（HTTP ${xhr.status}）`), [404, 405].includes(xhr.status) ? { code: 'no-stream' } : {}))); return;
+        settle(() => reject(Object.assign(new Error(aiRequestError(xhr.status)), [404, 405].includes(xhr.status) ? { code: 'no-stream' } : {}))); return;
       }
       if (buffer.trim()) frame(buffer);
       if (failure) settle(() => reject(failure));
