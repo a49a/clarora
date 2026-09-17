@@ -34,7 +34,7 @@ class ClaroraFilePickerModule(private val context: ReactApplicationContext) :
       promise.reject("picker_busy", "已有拍照任务进行中")
       return
     }
-    val activity = currentActivity
+    val activity = context.currentActivity
     if (activity == null) {
       promise.reject("picker_unavailable", "当前没有可用的 Android 窗口")
       return
@@ -60,7 +60,7 @@ class ClaroraFilePickerModule(private val context: ReactApplicationContext) :
       promise.reject("picker_busy", "已有文件选择窗口正在打开")
       return
     }
-    val activity = currentActivity
+    val activity = context.currentActivity
     if (activity == null) {
       promise.reject("picker_unavailable", "当前没有可用的 Android 窗口")
       return

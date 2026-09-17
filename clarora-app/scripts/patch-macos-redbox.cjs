@@ -91,6 +91,24 @@ function applyShadowColorPatch(packageDir) {
   return true;
 }
 
+// react-native-macos 的 fork-only 版本(如 0.81.9)在 Maven Central 没有
+// 对应的 react-android/hermes-android 预编译产物,Android 构建会 404。
+// RN gradle 插件从 ReactAndroid/gradle.properties 读 VERSION_NAME 来锁定
+// 这两个产物;把该值钉到同发布线的最新上游版本即可全局对齐。
+const ANDROID_ARTIFACT_VERSION = '0.81.6';
+const androidArtifactVersions = ['0.81'];
+
+function pinAndroidArtifactVersion(packageDir) {
+  const pkgVersion = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8')).version;
+  if (!androidArtifactVersions.some(prefix => pkgVersion.startsWith(prefix))) return false;
+  const file = path.join(packageDir, 'ReactAndroid', 'gradle.properties');
+  let source = fs.readFileSync(file, 'utf8');
+  const pinned = source.replace(/^VERSION_NAME=.*$/m, `VERSION_NAME=${ANDROID_ARTIFACT_VERSION}`);
+  if (pinned === source) return false;
+  fs.writeFileSync(file, pinned);
+  return true;
+}
+
 // react-native-macos 0.81:React-jsinspector podspec 只平铺匹配
 // jsinspector-modern/*.{cpp,h}，但 tarball 把 CdpJson.* 留在了 cdp/ 子目录，
 // pod install 生成的 Pods 工程因此引用不存在的文件。拷贝平铺即可；
@@ -142,6 +160,15 @@ if (require.main === module) {
       }
     } catch (error) {
       console.error(`clarora jsinspector flatten (${name}):`, error.message);
+      process.exitCode = 1;
+    }
+
+    try {
+      if (pinAndroidArtifactVersion(packageDir)) {
+        console.log('clarora patch: pinned Android react-android artifacts to', ANDROID_ARTIFACT_VERSION);
+      }
+    } catch (error) {
+      console.error(`clarora android version pin (${name}):`, error.message);
       process.exitCode = 1;
     }
   }
