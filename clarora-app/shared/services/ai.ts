@@ -1,7 +1,7 @@
 import { getSetting, setSetting, saveAiRecord, listAiRecords, deleteAiRecord } from '../data/database';
 import { newVaultId } from '../data/vault';
 import { parseSubtitleCues, serializeSubtitleCues } from '../data/subtitles';
-import { SECRET_NAMES, migrateSecret, secretStore } from './secrets';
+import { SECRET_NAMES, isDevBuild, migrateSecret, secretStore } from './secrets';
 import { FileSystem, currentPlatform, getNativeModules, nativePath } from './platform';
 import type { OcrPageStatus, OcrPageSummary, SpeakingAttemptDetail, SpeakingAttemptSummary, SpeakingScore, AsrEngineList } from './aiTypes';
 export type * from './aiTypes';
@@ -123,10 +123,10 @@ export async function deleteLocalModel(id: string): Promise<string> {
 export async function loadAiConfig(): Promise<AiConfig> {
   const raw = await getSetting('ai_config');
   const config: AiConfig = { ...DEFAULT_AI, ...(raw ? JSON.parse(raw) : {}) };
-  const store = secretStore();
+  // __DEV__ 构建跳过钥匙串：重签名后 ACL 不匹配会弹密码框阻塞启动。
+  // 保险库只在 Release 构建启用；不可用时保留数据库明文，功能不受影响。
+  const store = isDevBuild() ? null : secretStore();
   if (store) {
-    // API Key 保存在系统凭证保险库；数据库中的旧明文自动迁入并抹掉。
-    // 保险库不可用时保留数据库明文，保证功能不受影响。
     try {
       config.apiKey = await migrateSecret(store, SECRET_NAMES.aiApiKey, config.apiKey);
       config.asrApiKey = await migrateSecret(store, SECRET_NAMES.aiAsrApiKey, config.asrApiKey);
@@ -144,7 +144,7 @@ export async function saveAiConfig(config: AiConfig) {
   if (config.baseUrl) validateBaseUrl(config.baseUrl);
   if (config.asrBaseUrl) validateBaseUrl(config.asrBaseUrl);
   if (/[\r\n]/.test(config.apiKey + config.asrApiKey)) throw new Error('API Key 格式错误');
-  const store = secretStore();
+  const store = isDevBuild() ? null : secretStore();
   const persisted: AiConfig = { ...config };
   if (store) {
     // 密钥只写入系统凭证保险库，数据库配置不再保存明文。

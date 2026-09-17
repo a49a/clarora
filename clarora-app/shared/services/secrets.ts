@@ -24,11 +24,52 @@ type NativeSecretStore = {
   deleteSecret: (name: string) => Promise<void>;
 };
 
+// Keep reads serialized and cached for this JS session. In particular, once
+// access is denied, queued reads for other accounts must not open more dialogs.
+let macStore: SecretStore | undefined;
+function sessionStore(native: NativeSecretStore): SecretStore {
+  const values = new Map<string, string | null>();
+  let readFailure: { error: unknown } | undefined;
+  let pending: Promise<unknown> = Promise.resolve();
+  function enqueue<T>(action: () => Promise<T>): Promise<T> {
+    const result = pending.then(action);
+    pending = result.catch(() => {});
+    return result;
+  }
+  return {
+    getSecret: name => enqueue(async () => {
+      if (values.has(name)) return values.get(name)!;
+      if (readFailure) throw readFailure.error;
+      try {
+        const value = await native.getSecret(name);
+        values.set(name, value);
+        return value;
+      } catch (error) {
+        readFailure = { error };
+        throw error;
+      }
+    }),
+    setSecret: (name, value) => enqueue(async () => {
+      await native.setSecret(name, value);
+      values.set(name, value);
+    }),
+    deleteSecret: name => enqueue(async () => {
+      await native.deleteSecret(name);
+      values.set(name, null);
+    }),
+  };
+}
+
+/** RN 注入的 __DEV__;node 测试环境没有该全局,视为非 DEV。 */
+export function isDevBuild(): boolean {
+  return typeof __DEV__ !== 'undefined' && __DEV__ === true;
+}
+
 export function secretStore(): SecretStore | null {
   if (currentPlatform === 'macos') {
     const module = getNativeModules().RNMacKeychain as NativeSecretStore | undefined;
     if (!module?.setSecret) return null;
-    return module;
+    return macStore ??= sessionStore(module);
   }
   if (currentPlatform === 'windows') {
     const module = getNativeModules().RNWindowsCredentials as NativeSecretStore | undefined;
@@ -48,8 +89,8 @@ export async function migrateSecret(
   name: string,
   plaintext: string,
 ): Promise<string> {
-  const stored = await store.getSecret(name).catch(() => null);
+  const stored = await store.getSecret(name);
   if (stored != null) return stored;
-  if (plaintext) await store.setSecret(name, plaintext).catch(() => {});
+  if (plaintext) await store.setSecret(name, plaintext);
   return plaintext;
 }

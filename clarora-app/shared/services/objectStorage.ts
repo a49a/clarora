@@ -4,7 +4,7 @@ import { bytesToHex } from '@noble/hashes/utils';
 import { XMLParser } from 'fast-xml-parser';
 import { getSetting, setSetting } from '../data/database';
 import { FileSystem } from './platform';
-import { SECRET_NAMES, migrateSecret, secretStore } from './secrets';
+import { SECRET_NAMES, isDevBuild, migrateSecret, secretStore } from './secrets';
 
 export type StorageConfig = {
   provider: 's3' | 'oss'; endpoint: string; region: string; bucket: string;
@@ -18,9 +18,9 @@ export const DEFAULT_STORAGE: StorageConfig = {
 export async function loadStorageConfig(): Promise<StorageConfig> {
   const value = await getSetting('object_storage_config');
   const config: StorageConfig = { ...DEFAULT_STORAGE, ...(value ? JSON.parse(value) : {}) };
-  const store = secretStore();
+  // __DEV__ 构建跳过钥匙串（重签名 ACL 弹窗会阻塞）；保险库只在 Release 启用。
+  const store = isDevBuild() ? null : secretStore();
   if (store) {
-    // SecretAccessKey / SessionToken 保存在系统凭证保险库；旧明文自动迁入并抹掉。
     try {
       config.secretAccessKey = await migrateSecret(store, SECRET_NAMES.storageSecretAccessKey, config.secretAccessKey);
       config.sessionToken = await migrateSecret(store, SECRET_NAMES.storageSessionToken, config.sessionToken);
@@ -31,7 +31,7 @@ export async function loadStorageConfig(): Promise<StorageConfig> {
 }
 export async function saveStorageConfig(config: StorageConfig): Promise<void> {
   validateStorageConfig(config);
-  const store = secretStore();
+  const store = isDevBuild() ? null : secretStore();
   const persisted: StorageConfig = { ...config };
   if (store) {
     // 密钥只写入系统凭证保险库，数据库配置不再保存明文。

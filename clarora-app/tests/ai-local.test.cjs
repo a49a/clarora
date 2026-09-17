@@ -22,6 +22,7 @@ function setup(config, natives = {}, platform = 'macos', secretMap = null) {
       saveAiRecord: async () => {}, listAiRecords: async () => [], deleteAiRecord: async () => {},
     },
     './secrets': {
+      isDevBuild: () => false,
       SECRET_NAMES: {
         aiApiKey: 'clarora.ai.api-key',
         aiAsrApiKey: 'clarora.ai.asr-api-key',
