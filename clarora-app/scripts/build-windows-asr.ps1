@@ -9,13 +9,40 @@ $ErrorActionPreference = 'Stop'
 function Get-DependencyArchive {
     param([string]$Name, [string]$Url, [string]$Destination)
     Write-Host "Downloading $Name from $Url"
+    $partial = "$Destination.partial"
     # Show progress; fail stalled transfers instead of silently waiting for the
     # entire job timeout. Only transient curl failures are retried.
     & curl.exe -fL --connect-timeout 30 --max-time 600 `
         --speed-limit 1024 --speed-time 60 --retry 2 --retry-max-time 900 `
-        -o $Destination $Url
+        -o $partial $Url
     if ($LASTEXITCODE -ne 0) { throw "$Name download failed (curl exit $LASTEXITCODE)." }
+    Move-Item -LiteralPath $partial -Destination $Destination -Force
     Write-Host "Downloaded $Name ($((Get-Item $Destination).Length) bytes)."
+}
+
+function Expand-DependencyArchive {
+    param([string]$Archive, [string]$Destination, [int]$StripComponents = 0)
+    # Avoid selecting Git/MSYS tar from PATH on the Windows runner.
+    $tarPath = Join-Path $env:SystemRoot 'System32/tar.exe'
+    if (-not (Test-Path $tarPath)) { throw "Windows tar not found: $tarPath" }
+    Write-Host "Extracting $Archive with $tarPath (timeout: 120 seconds)..."
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo.FileName = $tarPath
+    # Windows tar detects gzip/bzip2 itself. Close stdin so no subprocess can
+    # wait indefinitely for interactive input in CI.
+    $process.StartInfo.Arguments = "-xf `"$Archive`" -C `"$Destination`" --strip-components=$StripComponents"
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.RedirectStandardInput = $true
+    try {
+        if (-not $process.Start()) { throw 'Could not start Windows tar.' }
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(120000)) {
+            & taskkill.exe /PID $process.Id /T /F | Out-Null
+            throw "Archive extraction timed out after 120 seconds: $Archive"
+        }
+        if ($process.ExitCode -ne 0) { throw "Archive extraction failed (exit $($process.ExitCode)): $Archive" }
+        Write-Host "Extraction completed: $Destination"
+    } finally { $process.Dispose() }
 }
 
 Push-Location (Join-Path $PSScriptRoot '..')
@@ -53,15 +80,19 @@ try {
         Get-DependencyArchive -Name 'sherpa-onnx' -Destination $archive `
             -Url "https://github.com/k2-fsa/sherpa-onnx/releases/download/$sherpaVersion/$sherpaName"
         Write-Host 'Extracting sherpa-onnx...'
-        & tar -xjf $archive -C $sherpaDir
-        if ($LASTEXITCODE -ne 0) { throw 'sherpa-onnx extraction failed.' }
-        Get-ChildItem $sherpaDir -Directory | ForEach-Object {
-            Get-ChildItem $_.FullName | ForEach-Object { Move-Item -Force $_.FullName $sherpaDir }
-        }
+        Expand-DependencyArchive -Archive $archive -Destination $sherpaDir -StripComponents 1
     }
-    $sherpaInclude = (Get-ChildItem $sherpaDir -Recurse -Directory -Filter 'include' | Select-Object -First 1).FullName
-    $sherpaLib = (Get-ChildItem $sherpaDir -Recurse -Directory -Filter 'lib' | Select-Object -First 1).FullName
-    if (-not $sherpaInclude -or -not $sherpaLib) { throw 'sherpa-onnx package layout unexpected (include/lib not found).' }
+    # The Windows no-tts-lib asset contains only lib/ (including DLLs).
+    # Fetch the standalone C API header from the matching release tag.
+    $sherpaInclude = Join-Path $sherpaDir 'include'
+    $sherpaHeader = Join-Path $sherpaInclude 'sherpa-onnx/c-api/c-api.h'
+    if (-not (Test-Path $sherpaHeader)) {
+        New-Item -ItemType Directory -Force (Split-Path $sherpaHeader) | Out-Null
+        Get-DependencyArchive -Name 'sherpa-onnx C API header' -Destination $sherpaHeader `
+            -Url "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/$sherpaVersion/sherpa-onnx/c-api/c-api.h"
+    }
+    $sherpaLib = Join-Path $sherpaDir 'lib'
+    if (-not (Test-Path (Join-Path $sherpaLib 'sherpa-onnx-c-api.lib'))) { throw 'sherpa-onnx import library not found.' }
 
     # ── pdfium（PDF 渲染，bblanchon 发行包）──
     $pdfiumTag = 'chromium/8057'
@@ -72,8 +103,7 @@ try {
         Get-DependencyArchive -Name 'pdfium' -Destination $pdfiumArchive `
             -Url "https://github.com/bblanchon/pdfium-binaries/releases/download/$pdfiumTag/pdfium-win-x64.tgz"
         Write-Host 'Extracting pdfium...'
-        & tar -xzf $pdfiumArchive -C $pdfiumDir
-        if ($LASTEXITCODE -ne 0) { throw 'pdfium extraction failed.' }
+        Expand-DependencyArchive -Archive $pdfiumArchive -Destination $pdfiumDir
     }
 
     # ── CMake 构建（MSVC x64）──
@@ -95,7 +125,7 @@ try {
     Copy-Item -Force (Join-Path $buildDir 'Release/clarora_asr.dll') $packageDir
     foreach ($source in @(
         (Join-Path $vcpkgInstalled 'bin'),
-        (Get-ChildItem $sherpaDir -Recurse -Directory -Filter 'bin' | Select-Object -First 1).FullName,
+        $sherpaLib,
         (Join-Path $pdfiumDir 'bin')
     )) {
         if ($source -and (Test-Path $source)) {
