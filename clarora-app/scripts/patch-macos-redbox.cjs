@@ -155,6 +155,11 @@ const windowsPatches = [
     replacement: '%(AdditionalOptions) /await:strict</AdditionalOptions>',
   },
   {
+    file: 'Microsoft.ReactNative/Microsoft.ReactNative.vcxproj',
+    original: '%(AdditionalOptions) /await</AdditionalOptions>',
+    replacement: '%(AdditionalOptions) /await:strict</AdditionalOptions>',
+  },
+  {
     file: 'Shared/Networking/WinRTWebSocketResource.h',
     original: '#include <queue>',
     replacement: '#include <coroutine>\n#include <queue>',
