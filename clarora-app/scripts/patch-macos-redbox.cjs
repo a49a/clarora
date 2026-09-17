@@ -126,6 +126,44 @@ function flattenJsinspectorCdp(packageDir) {
   return true;
 }
 
+// react-native-windows 0.81:UWP 源码构建已不被上游维护，留了两处坏死：
+// ① HermesSamplingProfiler.cpp 使用 std::coroutine_handle 但全链路无人
+//    包含 <coroutine>；② Microsoft.ReactNative.Managed.csproj 强制
+//    VisualStudioVersion=18.0 并导入 v18 的 XAML targets，VS2022 没有。
+// 补上头文件并把版本条件降回 17.0（runner 的 VS2022 可用）。
+const windowsPatches = [
+  {
+    file: 'Shared/Hermes/HermesSamplingProfiler.cpp',
+    original: '#include <future>',
+    replacement: '#include <coroutine>\n#include <future>',
+  },
+  {
+    file: 'Microsoft.ReactNative.Managed/Microsoft.ReactNative.Managed.csproj',
+    original: "'$(VisualStudioVersion)' == '' or '$(VisualStudioVersion)' &lt; '18.0' ",
+    replacement: "'$(VisualStudioVersion)' == '' or '$(VisualStudioVersion)' &lt; '17.0' ",
+  },
+  {
+    file: 'Microsoft.ReactNative.Managed/Microsoft.ReactNative.Managed.csproj',
+    original: '<VisualStudioVersion>18.0</VisualStudioVersion>',
+    replacement: '<VisualStudioVersion>17.0</VisualStudioVersion>',
+  },
+];
+
+function applyWindowsPatches(packageDir) {
+  let applied = 0;
+  for (const patch of windowsPatches) {
+    const file = path.join(packageDir, patch.file);
+    let source = fs.readFileSync(file, 'utf8');
+    if (source.includes(patch.replacement)) continue;
+    if (!source.includes(patch.original)) {
+      throw new Error(`${patch.file} changed; review the windows patch before upgrading.`);
+    }
+    fs.writeFileSync(file, source.replace(patch.original, patch.replacement));
+    applied++;
+  }
+  return applied > 0;
+}
+
 if (require.main === module) {
   // The workspace installs macOS under its own name and the react-native alias.
   for (const name of ['react-native-macos', 'react-native']) {
@@ -171,6 +209,15 @@ if (require.main === module) {
       console.error(`clarora android version pin (${name}):`, error.message);
       process.exitCode = 1;
     }
+  }
+
+  try {
+    if (applyWindowsPatches(path.join(__dirname, '..', 'node_modules', 'react-native-windows'))) {
+      console.log('clarora patch: applied react-native-windows UWP fixes');
+    }
+  } catch (error) {
+    console.error('clarora windows patch:', error.message);
+    process.exitCode = 1;
   }
 }
 
