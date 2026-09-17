@@ -158,6 +158,14 @@ const windowsPatches = [
     replacement: "<Platform Condition=\" '$(Platform)' == '' \">x64</Platform>",
   },
   {
+    // UWP 打包链路会对引用工程调用 Pack target(新 SDK 工程才有),旧式
+    // Managed.csproj 没有,补一个空目标让打包继续;产出的 DLL 已通过
+    // packaging outputs 收集。
+    file: 'Microsoft.ReactNative.Managed/Microsoft.ReactNative.Managed.csproj',
+    original: '<Target Name="Deploy" />',
+    replacement: '<Target Name="Deploy" />\n  <Target Name="Pack" />',
+  },
+  {
     file: 'PropertySheets/React.Cpp.props',
     original: '%(AdditionalOptions) /await</AdditionalOptions>',
     replacement: '%(AdditionalOptions) /await:strict</AdditionalOptions>',
