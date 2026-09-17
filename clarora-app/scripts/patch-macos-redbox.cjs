@@ -166,6 +166,15 @@ const windowsPatches = [
     replacement: '<Target Name="Deploy" />\n  <Target Name="Pack" />',
   },
   {
+    // Managed 会被若干路径触发(应用引用、CodeGen 的裸 MSBuild 调用),
+    // 后者拿不到全局 Platform/Configuration,OutDir 里平台段为空,生成的
+    // PRI 与应用打包期期望的 target\\x64\\Release 路径对不上(PRI252)。
+    // 固定到发布脚本唯一的 x64/Release 组合。
+    file: 'Microsoft.ReactNative.Managed/Microsoft.ReactNative.Managed.csproj',
+    original: '<OutputType>Library</OutputType>',
+    replacement: '<OutputType>Library</OutputType>\n    <OutDir>$(ReactNativeWindowsDir)target\\x64\\Release\\$(MSBuildProjectName)\\</OutDir>',
+  },
+  {
     file: 'PropertySheets/React.Cpp.props',
     original: '%(AdditionalOptions) /await</AdditionalOptions>',
     replacement: '%(AdditionalOptions) /await:strict</AdditionalOptions>',
