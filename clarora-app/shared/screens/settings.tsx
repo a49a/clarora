@@ -121,7 +121,7 @@ export default function SettingsScreen() {
       {storageField('accessKeyId', 'Access Key ID')}{storageField('secretAccessKey', 'Secret Access Key', '', true)}
       {storageField('sessionToken', '临时凭证 Token（可选）', '', true)}
       {storage.provider === 's3' && <View style={styles.row}><Switch accessibilityLabel="Path-style 地址" disabled={busy || !ready} value={storage.pathStyle} onValueChange={pathStyle => { setStorage(s => ({ ...s, pathStyle })); setBackups([]); setSelectedBackup(''); }} /><Text style={styles.hint}>Path-style（按存储商要求启用）</Text></View>}
-      <Text style={styles.hint}>凭证仅保存在本机应用数据库，不进入云备份；当前未使用系统钥匙串。请使用仅可访问该资料库的专用密钥。备份通过 HTTPS 传输，未提供端到端加密。</Text>
+      <Text style={styles.hint}>凭证保存在本机：正式版存入系统凭证保险库（macOS 钥匙串 / Windows 凭证管理器），开发版与移动端存应用数据库；均不进入云备份。请使用仅可访问该资料库的专用密钥。备份通过 HTTPS 传输，未提供端到端加密。</Text>
       <View style={styles.row}>
         {button('保存并读取备份', () => { void run(async () => { await saveStorageConfig(storage); const list = await refreshBackups(); return `连接成功，找到 ${list.length} 个备份（已验证读取权限）`; }); })}
         {button('备份本机资料', () => { void run(async () => { await saveStorageConfig(storage); const result = await uploadLibrary(setStatus); await refreshBackups(); return `备份完成：${result.words} 个单词，${result.audios} 个音频，${result.files} 个附件`; }); })}

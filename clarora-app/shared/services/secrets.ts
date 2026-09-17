@@ -52,10 +52,14 @@ function sessionStore(native: NativeSecretStore): SecretStore {
     setSecret: (name, value) => enqueue(async () => {
       await native.setSecret(name, value);
       values.set(name, value);
+      // 写入成功说明授权已授予（如用户在授权框点了"始终允许"），
+      // 解除读取熔断，让后续读取重试。
+      readFailure = undefined;
     }),
     deleteSecret: name => enqueue(async () => {
       await native.deleteSecret(name);
       values.set(name, null);
+      readFailure = undefined;
     }),
   };
 }

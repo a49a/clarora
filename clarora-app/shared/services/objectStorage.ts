@@ -34,11 +34,13 @@ export async function saveStorageConfig(config: StorageConfig): Promise<void> {
   const store = isDevBuild() ? null : secretStore();
   const persisted: StorageConfig = { ...config };
   if (store) {
-    // 密钥只写入系统凭证保险库，数据库配置不再保存明文。
-    await store.setSecret(SECRET_NAMES.storageSecretAccessKey, config.secretAccessKey);
-    await store.setSecret(SECRET_NAMES.storageSessionToken, config.sessionToken);
-    persisted.secretAccessKey = '';
-    persisted.sessionToken = '';
+    // 密钥优先写入系统凭证保险库；写入被拒时退回数据库明文，配置不丢。
+    try {
+      await store.setSecret(SECRET_NAMES.storageSecretAccessKey, config.secretAccessKey);
+      await store.setSecret(SECRET_NAMES.storageSessionToken, config.sessionToken);
+      persisted.secretAccessKey = '';
+      persisted.sessionToken = '';
+    } catch { /* 沿用数据库明文 */ }
   }
   await setSetting('object_storage_config', JSON.stringify(persisted));
 }

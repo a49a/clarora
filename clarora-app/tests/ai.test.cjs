@@ -17,6 +17,23 @@ function setup(config = {}, reply = { choices: [{ message: { content: 'answer' }
   } } }, { fetch: async (url, init) => { requests.push({ url, ...init }); return { ok: true, json: async () => reply }; } })(file);
   return { api, records, requests, uploads };
 }
+test('saving AI config survives a rejected keychain write by keeping the database plaintext', async () => {
+  const saved = [];
+  const api = loader({
+    '../data/database': {
+      getSetting: async () => null, setSetting: async (key, value) => saved.push([key, value]),
+      saveAiRecord: async () => {}, listAiRecords: async () => [], deleteAiRecord: async () => {},
+    },
+    './platform': { FileSystem: { readAsStringAsync: async () => '', readBase64Async: async () => '', uploadFileAsync: async () => ({ status: 200, body: '{}' }) },
+      currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+        getSecret: async () => null, setSecret: async () => { throw new Error('Access denied'); }, deleteSecret: async () => {},
+      } }) },
+  }, { fetch: async () => ({ ok: true, json: async () => ({ choices: [] }) }) })(file);
+  await api.saveAiConfig({ ...api.DEFAULT_AI, baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'chat-key', asrApiKey: 'speech-key' });
+  const stored = JSON.parse(saved[0][1]);
+  assert.equal(stored.apiKey, 'chat-key');
+  assert.equal(stored.asrApiKey, 'speech-key');
+});
 const config = { baseUrl: 'https://chat.example/v1', apiKey: 'chat-key', model: 'chat-model', visionModel: 'vision-model', asrBaseUrl: 'https://speech.example/v1', asrApiKey: 'speech-key', asrModel: 'speech-model' };
 test('unconfigured AI does not issue requests and local lists still work', async () => {
   const s = setup(); await assert.rejects(s.api.askAboutPassage('text', 'question'), /请在设置/);

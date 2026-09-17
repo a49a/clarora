@@ -147,11 +147,14 @@ export async function saveAiConfig(config: AiConfig) {
   const store = isDevBuild() ? null : secretStore();
   const persisted: AiConfig = { ...config };
   if (store) {
-    // 密钥只写入系统凭证保险库，数据库配置不再保存明文。
-    await store.setSecret(SECRET_NAMES.aiApiKey, config.apiKey);
-    await store.setSecret(SECRET_NAMES.aiAsrApiKey, config.asrApiKey);
-    persisted.apiKey = '';
-    persisted.asrApiKey = '';
+    // 密钥优先写入系统凭证保险库，数据库不再保存明文；保险库写入被拒
+    // （如钥匙串授权拒绝）时退回数据库明文，保证配置本身不丢。
+    try {
+      await store.setSecret(SECRET_NAMES.aiApiKey, config.apiKey);
+      await store.setSecret(SECRET_NAMES.aiAsrApiKey, config.asrApiKey);
+      persisted.apiKey = '';
+      persisted.asrApiKey = '';
+    } catch { /* 沿用数据库明文 */ }
   }
   await setSetting('ai_config', JSON.stringify(persisted));
 }

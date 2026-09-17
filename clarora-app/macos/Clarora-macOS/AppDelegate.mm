@@ -2110,12 +2110,21 @@ RCT_EXPORT_METHOD(setSecret:(NSString *)account
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
+  NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
   NSDictionary *query = KeychainQuery(account);
-  SecItemDelete((__bridge CFDictionaryRef)query);  // 覆盖语义：先删旧值再写入
-  NSMutableDictionary *attributes = [query mutableCopy];
-  attributes[(__bridge NSString *)kSecValueData] = [value dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
-  attributes[(__bridge NSString *)kSecAttrAccessible] = (id)kSecAttrAccessibleAfterFirstUnlock;
-  OSStatus status = SecItemAdd((__bridge CFDictionaryRef)attributes, NULL);
+  // 先更新既有条目：重签名后旧条目仍挂在旧二进制的 ACL 上，更新会触发
+  // 授权框并允许"始终允许"把新二进制加入信任列表；直接删旧建新则会让
+  // 删除被拒后 SecItemAdd 撞 errSecDuplicateItem，写入从此全部失败。
+  OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)@{
+    (__bridge NSString *)kSecValueData: data,
+    (__bridge NSString *)kSecAttrAccessible: (id)kSecAttrAccessibleAfterFirstUnlock,
+  });
+  if (status == errSecItemNotFound) {
+    NSMutableDictionary *attributes = [query mutableCopy];
+    attributes[(__bridge NSString *)kSecValueData] = data;
+    attributes[(__bridge NSString *)kSecAttrAccessible] = (id)kSecAttrAccessibleAfterFirstUnlock;
+    status = SecItemAdd((__bridge CFDictionaryRef)attributes, NULL);
+  }
   if (status == errSecSuccess) resolve(@YES);
   else reject(@"keychain_error", [NSString stringWithFormat:@"钥匙串写入失败（OSStatus %d）", (int)status], nil);
 }

@@ -51,3 +51,20 @@ test('failed migration writes propagate so callers retain the original configura
   });
   await assert.rejects(api.migrateSecret(api.secretStore(), 'ai', 'keep-existing-key'), failed);
 });
+
+test('a successful write clears the denial latch so later reads retry', async () => {
+  let deny = true;
+  let reads = 0;
+  const api = setup({
+    getSecret: async () => { reads++; if (deny) throw new Error('Access denied'); return 'granted'; },
+    setSecret: async () => { deny = false; }, deleteSecret: async () => {},
+  });
+  const store = api.secretStore();
+  await assert.rejects(store.getSecret('ai'));
+  await assert.rejects(store.getSecret('asr'));  // 熔断生效，不触发新的原生读取
+  assert.equal(reads, 1);
+  await store.setSecret('ai', 'v');
+  assert.equal(await store.getSecret('ai'), 'v');        // 命中写入缓存
+  assert.equal(await store.getSecret('asr'), 'granted'); // 熔断解除，重试原生
+  assert.equal(reads, 2);
+});
