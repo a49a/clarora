@@ -114,6 +114,7 @@
 				E72F2A3D098240328E319014 /* Resources */,
 				1B3FA5618792035413F469F0 /* Bundle React Native code and images */,
 				70D7A60B430BD8FDB8E9BB62 /* [CP] Copy Pods Resources */,
+				88A28BB23E1E0F7EC1317C2C /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -208,6 +209,24 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Clarora-iOS/Pods-Clarora-iOS-resources.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		88A28BB23E1E0F7EC1317C2C /* [CP] Embed Pods Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-Clarora-iOS/Pods-Clarora-iOS-frameworks.sh",
+				"${PODS_XCFRAMEWORKS_BUILD_DIR}/hermes-engine/Pre-built/hermes.framework/hermes",
+			);
+			name = "[CP] Embed Pods Frameworks";
+			outputPaths = (
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/hermes.framework",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Clarora-iOS/Pods-Clarora-iOS-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 		A0C4800214BCA6F0BACC4848 /* [CP] Check Pods Manifest.lock */ = {
@@ -339,7 +358,7 @@
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
-				USE_HERMES = false;
+				USE_HERMES = true;
 			};
 			name = Debug;
 		};
@@ -399,7 +418,7 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
-				USE_HERMES = false;
+				USE_HERMES = true;
 			};
 			name = Release;
 		};
