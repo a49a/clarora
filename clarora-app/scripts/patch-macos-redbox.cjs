@@ -155,18 +155,19 @@ const windowsPatches = [
     replacement: '%(AdditionalOptions) /await:strict</AdditionalOptions>',
   },
   {
-    file: 'Microsoft.ReactNative/Microsoft.ReactNative.vcxproj',
-    original: '%(AdditionalOptions) /await</AdditionalOptions>',
-    replacement: '%(AdditionalOptions) /await:strict</AdditionalOptions>',
+    file: 'Shared/Networking/WinRTWebSocketResource.h',
+    original: '#include <queue>',
+    replacement: '#include <coroutine>\n#include <queue>',
   },
   {
     file: 'Shared/Networking/WinRTWebSocketResource.h',
-    original: `#if _MSC_VER >= 1951
-    using CoroHandle = std::coroutine_handle<>;
-#else
-    using CoroHandle = std::experimental::coroutine_handle<>;
-#endif`,
-    replacement: '// Clarora: /await:strict 下的 C++20 协程，两种编译器统一走 std 命名空间。\n#include <coroutine>\nusing CoroHandle = std::coroutine_handle<>; // Clarora strict',
+    original: '#if _MSC_VER >= 1951',
+    replacement: '#if 1 // Clarora: strict C++20 coroutines',
+  },
+  {
+    file: 'Shared/Networking/WinRTWebSocketResource.h',
+    original: 'using CoroHandle = std::experimental::coroutine_handle<>;',
+    replacement: 'using CoroHandle = std::coroutine_handle<>; // Clarora strict',
   },
 ];
 
