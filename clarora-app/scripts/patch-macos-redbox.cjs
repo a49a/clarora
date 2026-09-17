@@ -150,6 +150,14 @@ const windowsPatches = [
     replacement: '<VisualStudioVersion>17.0</VisualStudioVersion>',
   },
   {
+    // C# 应用经 ProjectReference 触发 Managed 工程时全局 Platform 不会传到,
+    // 它回退默认 x86,与 x64 编译出的 Microsoft.ReactNative.winmd 冲突
+    // (MSB3271)。默认值改为 x64,与发布脚本的 x64-only 一致。
+    file: 'Microsoft.ReactNative.Managed/Microsoft.ReactNative.Managed.csproj',
+    original: "<Platform Condition=\" '$(Platform)' == '' \">x86</Platform>",
+    replacement: "<Platform Condition=\" '$(Platform)' == '' \">x64</Platform>",
+  },
+  {
     file: 'PropertySheets/React.Cpp.props',
     original: '%(AdditionalOptions) /await</AdditionalOptions>',
     replacement: '%(AdditionalOptions) /await:strict</AdditionalOptions>',
