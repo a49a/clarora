@@ -16,6 +16,78 @@
 @property (nonatomic, strong) NSWindow *claroraMainWindow;
 @end
 
+// A real NSSecureTextField is required by AppKit's secure field editor.
+// The RN macOS legacy input instead swaps a secure cell into NSTextField.
+@interface RNMacSecureInputView : NSView <NSTextFieldDelegate>
+@property (nonatomic, strong) NSSecureTextField *field;
+@property (nonatomic, copy) RCTBubblingEventBlock onChange;
+@property (nonatomic, copy) NSString *value;
+@property (nonatomic, copy) NSString *placeholder;
+@property (nonatomic, strong) NSColor *textColor;
+@property (nonatomic, assign) BOOL editable;
+@end
+
+@implementation RNMacSecureInputView
+- (instancetype)initWithFrame:(NSRect)frame
+{
+  if ((self = [super initWithFrame:frame])) {
+    _field = [[NSSecureTextField alloc] initWithFrame:self.bounds];
+    _field.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _field.bordered = NO;
+    _field.drawsBackground = NO;
+    _field.font = [NSFont systemFontOfSize:14];
+    _field.delegate = self;
+    _editable = YES;
+    [self addSubview:_field];
+  }
+  return self;
+}
+- (void)setValue:(NSString *)value
+{
+  _value = [value copy] ?: @"";
+  // Avoid resetting the field editor / selection when React echoes a change.
+  if (![self.field.stringValue isEqualToString:_value]) self.field.stringValue = _value;
+}
+- (void)setPlaceholder:(NSString *)placeholder
+{
+  _placeholder = [placeholder copy];
+  self.field.placeholderString = placeholder ?: @"";
+}
+- (void)setTextColor:(NSColor *)textColor
+{
+  _textColor = textColor;
+  self.field.textColor = textColor ?: NSColor.textColor;
+}
+- (void)setEditable:(BOOL)editable
+{
+  _editable = editable;
+  self.field.editable = editable;
+  self.field.enabled = editable;
+}
+- (void)setAccessibilityLabel:(NSString *)label
+{
+  [super setAccessibilityLabel:label];
+  self.field.accessibilityLabel = label;
+}
+- (void)controlTextDidChange:(NSNotification *)notification
+{
+  _value = [self.field.stringValue copy];
+  if (self.onChange) self.onChange(@{ @"text": _value });
+}
+@end
+
+@interface RNMacSecureInputManager : RCTViewManager
+@end
+@implementation RNMacSecureInputManager
+RCT_EXPORT_MODULE(RNMacSecureInput);
+- (NSView *)view { return [RNMacSecureInputView new]; }
+RCT_EXPORT_VIEW_PROPERTY(value, NSString)
+RCT_EXPORT_VIEW_PROPERTY(placeholder, NSString)
+RCT_EXPORT_VIEW_PROPERTY(editable, BOOL)
+RCT_EXPORT_VIEW_PROPERTY(textColor, NSColor)
+RCT_EXPORT_VIEW_PROPERTY(onChange, RCTBubblingEventBlock)
+@end
+
 @interface RNClipboard : NSObject <RCTBridgeModule>
 @end
 

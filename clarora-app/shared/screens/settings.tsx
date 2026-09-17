@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { Details } from '../ui/Details';
+import { SecretInput } from '../ui/SecretInput';
 import { learningDesign } from '../ui/learningDesign';
 import { useAppTheme } from '../ui/ThemeContext';
 import { getTheme, THEME_DETAILS, THEME_LABELS, THEME_ORDER, type ThemeName } from '../ui/theme';
@@ -48,6 +49,8 @@ export default function SettingsScreen() {
   const busyRef = useRef(false);
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState('');
+  const [aiStatus, setAiStatus] = useState('');
+  const [savedAiKey, setSavedAiKey] = useState(false);
   const [fontSize, setFontSize] = useState(24);
   const [scrollSpeed, setScrollSpeed] = useState('normal');
   const [command, setCommand] = useState('');
@@ -68,9 +71,9 @@ export default function SettingsScreen() {
   };
   useEffect(() => {
     let mounted = true;
-    Promise.all([loadStorageConfig(), loadAiConfig(), getSetting('flashcard_font_size'), getSetting('scroll_speed'), getSetting('import_command')]).then(([s, a, f, speed, cmd]) => {
+    Promise.all([loadStorageConfig(), loadAiConfig().catch((error: Error) => { if (mounted) setAiStatus(error.message); return loadAiConfig({ includeSecrets: false }); }), getSetting('flashcard_font_size'), getSetting('scroll_speed'), getSetting('import_command')]).then(([s, a, f, speed, cmd]) => {
       if (!mounted) return;
-      setStorage(s); setAi(a); setFontSize(Number(f) || 24); setScrollSpeed(speed || 'normal'); setCommand(cmd || ''); setReady(true);
+      setStorage(s); setAi(a); setSavedAiKey(!!a.apiKey); setFontSize(Number(f) || 24); setScrollSpeed(speed || 'normal'); setCommand(cmd || ''); setReady(true);
     }).catch(() => { if (mounted) setStatus('设置读取失败，请重新打开设置页'); });
     return () => { mounted = false; };
   }, []);
@@ -80,14 +83,31 @@ export default function SettingsScreen() {
     try { setStatus(await action()); } catch (error) { setStatus((error as Error).message || '操作失败'); }
     finally { busyRef.current = false; setBusy(false); }
   };
+  const saveAi = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true); setAiStatus('正在保存…');
+    try {
+      const saved = await saveAiConfig(ai);
+      setAi(saved);
+      setSavedAiKey(!!saved.apiKey);
+      setAiStatus(saved.apiKey ? 'AI 配置已保存，API Key 已保存（尚未验证服务端授权）' : 'AI 配置已保存；未填写 API Key，远程 AI 服务无法使用');
+    } catch (error) {
+      setAiStatus(`保存失败：${(error as Error).message || '请重试'}；输入内容已保留`);
+    } finally { busyRef.current = false; setBusy(false); }
+  };
   const button = (label: string, onPress: () => void, selected = false) => <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy || !ready, selected }} disabled={busy || !ready} onPress={onPress}
     style={[styles.button, selected && styles.selected, (busy || !ready) && { opacity: 0.45 }]}><Text style={styles.label}>{label}</Text></Pressable>;
   const field = (label: string, value: string, onChange: (s: string) => void, placeholder = '', secret = false) => <View style={{ gap: 6 }}>
-    <Text style={styles.label}>{label}</Text><TextInput accessibilityLabel={label} style={styles.input} value={value} onChangeText={onChange}
-      placeholder={placeholder} placeholderTextColor={theme.textMuted} secureTextEntry={secret} autoCorrect={false} autoCapitalize="none" editable={ready && !busy} />
+    <Text style={styles.label}>{label}</Text>{secret ? <View style={styles.input}>
+      <SecretInput accessibilityLabel={label} value={value} textColor={theme.text}
+        onChangeText={text => { if (!busyRef.current) onChange(text); }}
+        placeholder={placeholder} autoCorrect={false} autoCapitalize="none" editable={ready} />
+    </View> : <TextInput accessibilityLabel={label} style={styles.input} value={value}
+      onChangeText={text => { if (!busyRef.current) onChange(text); }}
+      placeholder={placeholder} placeholderTextColor={theme.textMuted} autoCorrect={false} autoCapitalize="none" editable={ready && !busy} />}
   </View>;
   const storageField = (key: keyof StorageConfig, label: string, placeholder = '', secret = false) => field(label, String(storage[key]), value => { setStorage(s => ({ ...s, [key]: value })); setBackups([]); setSelectedBackup(''); }, placeholder, secret);
-  const aiField = (key: keyof AiConfig, label: string, placeholder = '', secret = false) => field(label, ai[key], value => setAi(s => ({ ...s, [key]: value })), placeholder, secret);
+  const aiField = (key: keyof AiConfig, label: string, placeholder = '', secret = false) => field(label, ai[key], value => { setAi(s => ({ ...s, [key]: value })); setAiStatus('有未保存的更改'); if (key === 'apiKey') setSavedAiKey(false); }, placeholder, secret);
   const refreshBackups = async () => { const list = await listBackups(); setBackups(list); setSelectedBackup(list[0]?.key || ''); return list; };
   return <View style={styles.page}><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
     <Text style={styles.title}>设置</Text>
@@ -162,7 +182,9 @@ export default function SettingsScreen() {
       {aiField('model', '聊天模型')}{aiField('visionModel', '视觉模型（OCR）')}
       {aiField('asrBaseUrl', '转写 Base URL（留空沿用上方）')}{aiField('asrApiKey', '转写 API Key（留空沿用上方）', '', true)}{aiField('asrModel', '转写模型')}
       <Text style={styles.hint}>转写使用 /audio/transcriptions，模型须支持 verbose_json 与 segments 时间轴。跟读评分基于识别文本对齐，记录保存在本机并随资料备份。端侧模型引擎下，字幕与跟读转写同样在本机完成。</Text>
-      {button('保存 AI 配置', () => { void run(async () => { await saveAiConfig(ai); return 'AI 配置已保存'; }); })}
+      <Text style={styles.hint}>{savedAiKey ? 'API Key：已保存（掩码显示）' : ai.apiKey ? 'API Key：已填写，待保存' : 'API Key：未配置'}</Text>
+      {button(busy ? '正在处理…' : '保存 AI 配置', () => { void saveAi(); })}
+      <View accessibilityLiveRegion="polite"><Text style={styles.status}>{aiStatus}</Text></View>
     </View></Details>
     {Platform.OS === 'macos' && <Details title="本机命令导入"><View style={styles.section}>
       {field('导入命令', command, setCommand, 'find ~/Music -maxdepth 2 -name "*.mp3"')}
@@ -172,5 +194,6 @@ export default function SettingsScreen() {
     <Details title="闪卡滚动速度与快捷键"><View style={styles.section}><View style={styles.row}>
       {(['slow', 'normal', 'fast'] as const).map((speed, i) => <View key={speed}>{button(['慢', '标准', '快'][i], () => { void run(async () => { await setSetting('scroll_speed', speed); setScrollSpeed(speed); return '滚动速度已保存'; }); }, scrollSpeed === speed)}</View>)}
     </View><Text style={styles.hint}>空格：播放 / 暂停 / 翻面；Enter：显示答案；← / →：切换卡片；↑ / ↓：滚动卡片。</Text></View></Details>
+    <View accessibilityLiveRegion="polite"><Text style={styles.status}>{status}</Text></View>
   </ScrollView></View>;
 }
