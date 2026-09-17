@@ -53,6 +53,44 @@ function ensureReactPerfLoggerStub(packageDir) {
   return true;
 }
 
+// react-native-macos 0.81:RCTView setShadowColor 没有 retain 传入的
+// CGColor(属性管线传入的是临时对象),autorelease 后 ivar 悬空,下一次
+// 阴影更新即崩溃(启动白屏/闪退)。补上 retain/release 配对。
+const shadowColorPatch = {
+  file: 'React/Views/RCTView.m',
+  original: `- (void)setShadowColor:(CGColorRef)shadowColor
+{
+    if (_shadowColor != shadowColor)
+    {
+        _shadowColor = shadowColor;
+        [self didUpdateShadow];
+    }
+}`,
+  replacement: `- (void)setShadowColor:(CGColorRef)shadowColor
+{
+    if (_shadowColor != shadowColor)
+    {
+        // Clarora: retain the color — the props pipeline hands us a temporary
+        // CGColor that is freed before the next shadow update.
+        CGColorRetain(shadowColor);
+        CGColorRelease(_shadowColor);
+        _shadowColor = shadowColor;
+        [self didUpdateShadow];
+    }
+}`,
+};
+
+function applyShadowColorPatch(packageDir) {
+  const file = path.join(packageDir, shadowColorPatch.file);
+  let source = fs.readFileSync(file, 'utf8');
+  if (source.includes('CGColorRetain(shadowColor)')) return false;
+  if (!source.includes(shadowColorPatch.original)) {
+    throw new Error('RCTView setShadowColor changed; review the shadow retain patch before upgrading.');
+  }
+  fs.writeFileSync(file, source.replace(shadowColorPatch.original, shadowColorPatch.replacement));
+  return true;
+}
+
 if (require.main === module) {
   // The workspace installs macOS under its own name and the react-native alias.
   for (const name of ['react-native-macos', 'react-native']) {
@@ -62,6 +100,13 @@ if (require.main === module) {
     const source = fs.readFileSync(redBoxFile, 'utf8');
     const patched = patchRedBox(source);
     if (patched !== source) fs.writeFileSync(redBoxFile, patched);
+
+    try {
+      applyShadowColorPatch(packageDir);
+    } catch (error) {
+      console.error(`clarora shadow patch (${name}):`, error.message);
+      process.exitCode = 1;
+    }
 
     try {
       applyRctInstancePatch(packageDir);
