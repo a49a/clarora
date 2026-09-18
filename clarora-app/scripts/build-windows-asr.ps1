@@ -25,7 +25,7 @@ function Expand-DependencyArchive {
     # Avoid selecting Git/MSYS tar from PATH on the Windows runner.
     $tarPath = Join-Path $env:SystemRoot 'System32/tar.exe'
     if (-not (Test-Path $tarPath)) { throw "Windows tar not found: $tarPath" }
-    Write-Host "Extracting $Archive with $tarPath (timeout: 120 seconds)..."
+    Write-Host "Extracting $Archive with $tarPath (timeout: 300 seconds)..."
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo.FileName = $tarPath
     # Windows tar detects gzip/bzip2 itself. Close stdin so no subprocess can
@@ -36,9 +36,9 @@ function Expand-DependencyArchive {
     try {
         if (-not $process.Start()) { throw 'Could not start Windows tar.' }
         $process.StandardInput.Close()
-        if (-not $process.WaitForExit(120000)) {
+        if (-not $process.WaitForExit(300000)) {
             & taskkill.exe /PID $process.Id /T /F | Out-Null
-            throw "Archive extraction timed out after 120 seconds: $Archive"
+            throw "Archive extraction timed out after 300 seconds: $Archive"
         }
         if ($process.ExitCode -ne 0) { throw "Archive extraction failed (exit $($process.ExitCode)): $Archive" }
         Write-Host "Extraction completed: $Destination"
