@@ -42,7 +42,7 @@ jobs:
             -destination 'platform=macOS' \
             -derivedDataPath macos/build/release CODE_SIGNING_ALLOWED=NO build
       - name: Bundle runtime dylibs
-        run: sh scripts/bundle-macos-libs.sh macos/build/release/Build/Products/Release/Clarora.app
+        run: bash scripts/bundle-macos-libs.sh macos/build/release/Build/Products/Release/Clarora.app
         working-directory: clarora-app
       - name: Package dmg
         working-directory: clarora-app
