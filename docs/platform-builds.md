@@ -1,6 +1,6 @@
 # React Native 多平台工程
 
-四个平台当前提供源码和构建入口，还没有已发布的安装包。
+四个平台当前提供源码和构建入口；v0.1.0 起提供 macOS / Windows 安装包（见 GitHub Releases）。
 
 | 平台 | 实现 | 当前范围 |
 | --- | --- | --- |
@@ -8,6 +8,8 @@
 | Windows | `clarora-app/windows/`，React Native Windows 0.76.17 | 共用 `App.tsx` / `shared/`；端侧离线字幕（clarora_asr）、PDF 阅读（pdfium）、Windows 原生文件、SQLite、音频、片段预加载、录音、键盘与视频适配 |
 | Android | `clarora-app/android/` + `clarora-app/shared/` | 复用移动学习页面；系统文件选择、音频播放与变速、上滑切换；macOS 合并的音频经同步下发 |
 | iOS | `clarora-app/ios/` + `clarora-app/shared/` | 复用移动学习页面；新增文件选择、剪贴板、播放/倍速/循环、片段双播放器预加载、跟读录音及休息音乐适配；需设备验证 |
+
+> **Anki 卡组导入**为桌面端能力：macOS 已支持，Windows 随原生二进制写入能力放开。移动端不做 Anki 导入——在桌面端导入的卡片经「同步与备份」下发到移动端。
 
 ## macOS
 

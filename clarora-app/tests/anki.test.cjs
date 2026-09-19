@@ -131,5 +131,5 @@ test('new encrypted anki21b decks explain the export option instead of failing c
 test('non-macOS platforms are rejected with a clear message', async () => {
   const fixture = buildApkg([{ mid: 1, flds: ['a', 'b'] }], { 1: { flds: [{ name: 'F', ord: 0 }, { name: 'B', ord: 1 }] } });
   const { api } = setup({ platform: 'android', apkgBase64: fixture.apkgBase64 });
-  await assert.rejects(api.importAnkiDeck('/picked/deck.apkg'), /仅在 macOS/);
+  await assert.rejects(api.importAnkiDeck('/picked/deck.apkg'), /macOS 桌面端/);
 });

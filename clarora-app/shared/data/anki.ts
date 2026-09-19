@@ -128,12 +128,13 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 /**
  * 从 .apkg / .colpkg 卡组导入闪卡(upsert 合并进现有卡组)。
- * 当前仅在 macOS 提供:依赖原生 base64 写文件与只读打开外部 SQLite;
- * Windows 与移动端补齐对应原生能力后即可放开。
+ * 当前仅在 macOS 桌面端提供:依赖原生 base64 写文件与只读打开外部
+ * SQLite,Windows 随原生写入能力放开。移动端不做 Anki 导入,桌面导入
+ * 的卡片经「同步与备份」下发到移动端。
  */
 export async function importAnkiDeck(fileUri: string): Promise<{ imported: number }> {
   if (Platform.OS !== "macos") {
-    throw new Error("Anki 卡组导入目前仅在 macOS 提供,其他平台即将支持");
+    throw new Error("Anki 卡组导入目前支持 macOS 桌面端;移动端无需导入,桌面导入的卡片会经「同步与备份」下发");
   }
   const base64 = await FileSystem.readBase64Async(fileUri);
   const collectionBytes = pickCollectionEntry(unzipSync(base64ToBytes(base64)));
