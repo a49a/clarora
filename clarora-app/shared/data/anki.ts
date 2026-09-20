@@ -1,5 +1,5 @@
 import { unzipSync } from "fflate";
-import { Platform } from "react-native";
+import { NativeModules, Platform } from "react-native";
 import SQLite from "../services/sqlite";
 import { FileSystem } from "../services/platform";
 import { upsertWords } from "./database";
@@ -75,13 +75,14 @@ export function pickCollectionEntry(entries: Record<string, Uint8Array>): Uint8A
   throw new Error("卡包里没有找到 Anki 数据库(collection.anki2),请确认选择的是 .apkg / .colpkg 卡组文件");
 }
 
-/** 解析已打开的 Anki 库,返回 (正面, 背面) 对。 */
-export async function parseAnkiNotes(sqlite: AnkiSqlite): Promise<Array<{ word: string; meaning: string }>> {
-  const modelRows = await sqlite.executeSql("SELECT models FROM col LIMIT 1");
-  const models: Record<string, AnkiModel> = JSON.parse(String(modelRows[0]?.rows?.[0]?.models ?? "{}"));
-  const noteRows = await sqlite.executeSql("SELECT mid, flds FROM notes");
+/** 把 notes 行(mid/flds)按模型字段表映射为 (正面, 背面) 对。 */
+export function notesFromRows(
+  modelsJson: string,
+  noteRows: Array<{ mid: number | string; flds: string }>,
+): Array<{ word: string; meaning: string }> {
+  const models: Record<string, AnkiModel> = JSON.parse(String(modelsJson || "{}"));
   const results: Array<{ word: string; meaning: string }> = [];
-  for (const row of noteRows[0]?.rows ?? []) {
+  for (const row of noteRows) {
     const model = models[String(row.mid)] ?? {};
     const values = String(row.flds ?? "").split(FIELD_SEPARATOR);
     const indexes = resolveFieldIndexes(model);
@@ -91,6 +92,14 @@ export async function parseAnkiNotes(sqlite: AnkiSqlite): Promise<Array<{ word: 
     if (word) results.push({ word, meaning });
   }
   return results;
+}
+
+/** 解析已打开的 Anki 库,返回 (正面, 背面) 对。 */
+export async function parseAnkiNotes(sqlite: AnkiSqlite): Promise<Array<{ word: string; meaning: string }>> {
+  const modelRows = await sqlite.executeSql("SELECT models FROM col LIMIT 1");
+  const modelsJson = String(modelRows[0]?.rows?.[0]?.models ?? "{}");
+  const noteRows = await sqlite.executeSql("SELECT mid, flds FROM notes");
+  return notesFromRows(modelsJson, (noteRows[0]?.rows ?? []) as Array<{ mid: number; flds: string }>);
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -128,43 +137,57 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 /**
  * 从 .apkg / .colpkg 卡组导入闪卡(upsert 合并进现有卡组)。
- * 当前仅在 macOS 桌面端提供:依赖原生 base64 写文件与只读打开外部
- * SQLite,Windows 随原生写入能力放开。移动端不做 Anki 导入,桌面导入
- * 的卡片经「同步与备份」下发到移动端。
+ * macOS 经原生 readOnly 打开;Windows 经 RNWindowsDatabase 的只读快照
+ * 查询。移动端不做 Anki 导入,桌面导入的卡片经「同步与备份」下发。
  */
 export async function importAnkiDeck(fileUri: string): Promise<{ imported: number }> {
-  if (Platform.OS !== "macos") {
-    throw new Error("Anki 卡组导入目前支持 macOS 桌面端;移动端无需导入,桌面导入的卡片会经「同步与备份」下发");
+  if (Platform.OS !== "macos" && Platform.OS !== "windows") {
+    throw new Error("Anki 卡组导入目前支持桌面端(macOS / Windows);移动端无需导入,桌面导入的卡片会经「同步与备份」下发");
   }
   const base64 = await FileSystem.readBase64Async(fileUri);
   const collectionBytes = pickCollectionEntry(unzipSync(base64ToBytes(base64)));
 
-  // 原生 readOnly 打开按 Documents 目录解析 assetFilename,所以把解出的
-  // SQLite 临时写到 Documents 下,以只读方式打开,不触碰应用自己的库。
+  // 解出的 SQLite 临时文件写到应用目录:
+  // - macOS 经原生 readOnly + assetFilename 直接只读打开;
+  // - Windows 经 RNWindowsDatabase.querySnapshot 读取任意路径的行集。
+  // 两者都不触碰应用自己的数据库。
   const documents = await FileSystem.getDocumentDirectoryAsync();
   const tempName = `clarora-anki-${Date.now()}.anki2`;
   const tempPath = `${documents}${tempName}`;
   await FileSystem.writeBase64Async(tempPath, bytesToBase64(collectionBytes));
 
-  const db = await SQLite.openDatabase({
-    name: `anki-${Date.now()}`,
-    createFromLocation: tempName,
-    readOnly: true,
-  } as Parameters<typeof SQLite.openDatabase>[0]);
   try {
-    const words = await parseAnkiNotes({
-      executeSql: async (sql, params) => {
-        const results = await db.executeSql(sql, params as never[]);
-        const first = Array.isArray(results) ? results[0] : results;
-        const rows = first?.rows;
-        const array = typeof rows?.raw === "function" ? rows.raw() : (rows?._array ?? []);
-        return [{ rows: array as Array<Record<string, unknown>> }];
-      },
-    });
+    let words: Array<{ word: string; meaning: string }>;
+    if (Platform.OS === "macos") {
+      const db = await SQLite.openDatabase({
+        name: `anki-${Date.now()}`,
+        createFromLocation: tempName,
+        readOnly: true,
+      } as Parameters<typeof SQLite.openDatabase>[0]);
+      try {
+        words = await parseAnkiNotes({
+          executeSql: async (sql, params) => {
+            const results = await db.executeSql(sql, params as never[]);
+            const first = Array.isArray(results) ? results[0] : results;
+            const rows = first?.rows;
+            const array = typeof rows?.raw === "function" ? rows.raw() : (rows?._array ?? []);
+            return [{ rows: array as Array<Record<string, unknown>> }];
+          },
+        });
+      } finally {
+        try { await db.close(); } catch { /* 已断开则忽略 */ }
+      }
+    } else {
+      const database = NativeModules.RNWindowsDatabase as {
+        querySnapshot: (path: string, sql: string) => Promise<string>;
+      };
+      const modelRow = JSON.parse(await database.querySnapshot(tempPath, "SELECT models FROM col LIMIT 1"));
+      const noteRows = JSON.parse(await database.querySnapshot(tempPath, "SELECT mid, flds FROM notes"));
+      words = notesFromRows(modelRow[0]?.models ?? "{}", noteRows);
+    }
     const imported = await upsertWords(words);
     return { imported };
   } finally {
-    try { await db.close(); } catch { /* 已断开则忽略 */ }
     try { await FileSystem.deleteFileAsync(tempPath); } catch { /* 临时文件可能已不存在 */ }
   }
 }

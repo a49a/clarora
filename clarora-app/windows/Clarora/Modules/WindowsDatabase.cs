@@ -35,6 +35,66 @@ namespace Clarora
         [DllImport("winsqlite3", CallingConvention = CallingConvention.Cdecl)] private static extern long sqlite3_last_insert_rowid(IntPtr db);
 
         private void Check(int code) { if (code != 0) throw new InvalidOperationException(Marshal.PtrToStringUni(sqlite3_errmsg16(db))); }
+        // 只读打开任意路径的 SQLite 并返回行集(JSON 字符串),供 Anki 卡组
+        // 导入等外部库读取使用;独立句柄,不触碰应用自己的数据库。
+        [ReactMethod("querySnapshot")]
+        public Task<string> QuerySnapshot(string path, string sql) => Task.Run(() => {
+            lock (gate) {
+                if (sqlite3_open16(path, out var handle) != 0) {
+                    var openError = Marshal.PtrToStringUni(sqlite3_errmsg16(handle)) ?? "无法打开数据库";
+                    sqlite3_close(handle);
+                    throw new InvalidOperationException(openError);
+                }
+                try {
+                    if (sqlite3_prepare16_v2(handle, sql, -1, out var statement, IntPtr.Zero) != 0) {
+                        var prepareError = Marshal.PtrToStringUni(sqlite3_errmsg16(handle)) ?? "SQL 准备失败";
+                        sqlite3_finalize(statement);
+                        sqlite3_close(handle);
+                        throw new InvalidOperationException(prepareError);
+                    }
+                    var rows = new System.Text.StringBuilder("[");
+                    int columns = sqlite3_column_count(statement);
+                    string rowSeparator = "";
+                    while (sqlite3_step(statement) == Row) {
+                        rows.Append(rowSeparator).Append('{');
+                        string cellSeparator = "";
+                        for (int column = 0; column < columns; column++) {
+                            var name = Marshal.PtrToStringUni(sqlite3_column_name16(statement, column)) ?? "";
+                            var text = Marshal.PtrToStringUni(sqlite3_column_text16(statement, column)) ?? "";
+                            rows.Append(cellSeparator).Append(QuoteJson(name)).Append(':').Append(QuoteJson(text));
+                            cellSeparator = ",";
+                        }
+                        rows.Append('}');
+                        rowSeparator = ",";
+                    }
+                    sqlite3_finalize(statement);
+                    rows.Append(']');
+                    return rows.ToString();
+                } finally { sqlite3_close(handle); }
+            }
+        });
+
+        private static string QuoteJson(string value) {
+            var builder = new System.Text.StringBuilder(value.Length + 2);
+            builder.Append('"');
+            foreach (var ch in value) {
+                switch (ch) {
+                    case '"': builder.Append("\\\""); break;
+                    case '\\': builder.Append("\\\\"); break;
+                    case '\b': builder.Append("\\b"); break;
+                    case '\f': builder.Append("\\f"); break;
+                    case '\n': builder.Append("\\n"); break;
+                    case '\r': builder.Append("\\r"); break;
+                    case '\t': builder.Append("\\t"); break;
+                    default:
+                        if (ch < ' ') builder.Append("\\u").Append(((int)ch).ToString("x4"));
+                        else builder.Append(ch);
+                        break;
+                }
+            }
+            builder.Append('"');
+            return builder.ToString();
+        }
         [ReactMethod("open")]
         public Task Open(string name) => Task.Run(() => {
             lock (gate) {

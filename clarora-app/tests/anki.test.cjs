@@ -131,5 +131,44 @@ test('new encrypted anki21b decks explain the export option instead of failing c
 test('non-macOS platforms are rejected with a clear message', async () => {
   const fixture = buildApkg([{ mid: 1, flds: ['a', 'b'] }], { 1: { flds: [{ name: 'F', ord: 0 }, { name: 'B', ord: 1 }] } });
   const { api } = setup({ platform: 'android', apkgBase64: fixture.apkgBase64 });
-  await assert.rejects(api.importAnkiDeck('/picked/deck.apkg'), /macOS 桌面端/);
+  await assert.rejects(api.importAnkiDeck('/picked/deck.apkg'), /移动端无需导入/);
+});
+
+test('imports on Windows through the native read-only snapshot query', async () => {
+  const fixture = buildApkg(
+    [{ mid: 1, flds: ['Windows front', 'Windows back'] }],
+    { 1: { name: 'Basic', flds: [{ name: 'Front', ord: 0 }, { name: 'Back', ord: 1 }] } },
+  );
+  const documents = fs.mkdtempSync(path.join(os.tmpdir(), 'clarora-anki-win-'));
+  const upserted = [];
+  const deleted = [];
+  const api = loader({
+    './database': { upsertWords: async words => { upserted.push(...words); return words.length; } },
+    '../services/platform': {
+      currentPlatform: 'windows',
+      nativePath: value => value,
+      FileSystem: {
+        readBase64Async: async () => fixture.apkgBase64,
+        getDocumentDirectoryAsync: async () => documents,
+        writeBase64Async: async (target, base64) => fs.writeFileSync(target, Buffer.from(base64, 'base64')),
+        deleteFileAsync: async target => { deleted.push(target); fs.unlinkSync(target); },
+      },
+    },
+    '../services/sqlite': { default: { openDatabase: () => { throw new Error('Windows 不应走 openDatabase'); } } },
+    'react-native': {
+      Platform: { OS: 'windows' },
+      NativeModules: {
+        RNWindowsDatabase: {
+          querySnapshot: async (target, sql) => {
+            const handle = new DatabaseSync(target);
+            try { return JSON.stringify(handle.prepare(sql).all()); } finally { handle.close(); }
+          },
+        },
+      },
+    },
+  }, {})(path.join(__dirname, '../shared/data/anki.ts'));
+  const { imported } = await api.importAnkiDeck('/picked/deck.apkg');
+  assert.equal(imported, 1);
+  assert.equal(JSON.stringify(upserted), JSON.stringify([{ word: 'Windows front', meaning: 'Windows back' }]));
+  assert.ok(deleted.length > 0, 'temp database should be cleaned up');
 });

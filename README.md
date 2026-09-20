@@ -1,6 +1,6 @@
 # Clarora — 语言学习工具
 
-- **闪卡与复习**：单词、音频片段、AI 问答卡；SM-2 计划复习；文本、目录和 Anki 导入（Anki 卡组目前支持 macOS；移动端不做导入，桌面导入的卡片经「同步与备份」下发）。
+- **闪卡与复习**：单词、音频片段、AI 问答卡；SM-2 计划复习；文本、目录和 Anki 导入（Anki 卡组支持 macOS / Windows 桌面端；移动端不做导入，桌面导入的卡片经「同步与备份」下发）。
 - **音视频学习**：逐句字幕、倍速、循环、双语字幕合并、片段收藏、音频管理与原生播放。
 - **随便学学**：混合推荐本地学习内容，支持收藏和音频片段预加载。
 - **学习辅助**：统计、番茄钟、冥想、主题、词汇关系图。
@@ -8,6 +8,15 @@
 - **自定义 AI API**：聊天、流式回答、重点标注、翻译、OCR、转写与跟读文本对齐评分。用户自行配置模型与密钥。
 - **端侧字幕（macOS / Windows）**：whisper.cpp 与 SenseVoice 本地模型离线生成字幕，音频不上传；英文转中文再走聊天 API。模型在设置中一键下载。
 - **文档阅读（macOS / Windows）**：内置 PDF 阅读器，目录侧栏、整页渲染与缩放，学习资料离线阅读。
+
+## 下载安装
+
+v0.1.0 起提供 macOS 与 Windows 安装包,从 [GitHub Releases](https://github.com/a49a/clarora/releases/latest) 下载:
+
+- macOS:`Clarora-macos-arm64.dmg`(Apple Silicon,运行时依赖已内置,无需 Homebrew)
+- Windows:`Clarora-windows-x64.zip`(解压后按内附说明侧载安装,需开启开发者模式)
+
+安装包未做代码签名:macOS 首次打开如被 Gatekeeper 拦截,右键 App 选「打开」;Windows 如有 SmartScreen 提示,选择「仍要运行」。
 
 ## 开发
 

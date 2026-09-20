@@ -72,6 +72,7 @@ namespace Clarora
         [ReactMethod("listFiles")] public Task<string[]> List(string path) => Task.Run(() => Directory.GetFiles(PathOf(path)));
         [ReactMethod("readFile")] public Task<string> Read(string path) => Task.Run(() => File.ReadAllText(PathOf(path)));
         [ReactMethod("writeFile")] public Task Write(string path, string contents) => Task.Run(() => File.WriteAllText(PathOf(path), contents));
+        [ReactMethod("writeBase64")] public Task WriteBase64(string path, string contents) => Task.Run(() => File.WriteAllBytes(PathOf(path), Convert.FromBase64String(contents)));
         [ReactMethod("makeDirectory")] public Task Mkdir(string path) => Task.Run(() => { Directory.CreateDirectory(PathOf(path)); });
         [ReactMethod("copyFile")] public Task Copy(string source, string target) => Task.Run(() => File.Copy(PathOf(source), PathOf(target), true));
         [ReactMethod("deleteFile")] public Task Delete(string path) => Task.Run(() => File.Delete(PathOf(path)));
