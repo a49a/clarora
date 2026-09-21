@@ -106,12 +106,22 @@ jobs:
       - run: npm ci
         working-directory: clarora-app
       - name: Build on-device ASR library (clarora_asr.dll)
+        id: asr
         continue-on-error: true  # 端侧转写为可选组件;失败时应用降级为无本地转写
         timeout-minutes: 35
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-asr.ps1
         working-directory: clarora-app
       - run: npm run windows:build
         working-directory: clarora-app
+      - name: Capability gate - the standard package must include on-device transcription
+        if: steps.asr.outcome == 'failure'
+        run: |
+          if ([System.IO.File]::Exists('clarora-app/windows/Clarora/clarora_asr.dll')) {
+            Write-Host 'clarora_asr.dll present (built before the timeout cut the auxiliary steps).'
+          } else {
+            throw '标准安装包声明端侧转写能力,但 clarora_asr.dll 缺失(ASR 构建失败且未产出 DLL)。拒绝发布不完整包;如需能力降级包,请使用独立产物名并在 Release 说明中声明。'
+          }
+        working-directory: .
       - name: Package zip
         shell: pwsh
         working-directory: clarora-app

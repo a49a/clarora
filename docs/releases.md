@@ -25,7 +25,7 @@ macOS dmg 与 Windows zip，生成校验和，并创建 GitHub Release。
 `All requested installations completed successfully` 表示 vcpkg 已结束；下一阶段是
 sherpa-onnx 下载与解压，然后是 pdfium 和 CMake 编译。脚本会输出各阶段名称和下载进度，
 下载连续 60 秒低于 1 KiB/s 会失败，单次请求最多 10 分钟，瞬时错误最多重试两次。
-ASR 步骤总上限为 35 分钟，且为非阻塞（continue-on-error）：失败时应用包照常发布，但**不含端侧转写 DLL**，属能力降级而非发布失败；此时应在 Release 说明中注明。要求完整能力的正式发布前，需确认 ASR 步骤实际成功。
+ASR 步骤总上限为 35 分钟。标准安装包声明端侧转写能力，因此 **ASR 失败会阻断发布**：发布流程在应用构建后检查 `clarora_asr.dll` 是否随包产出，缺失即失败（提示改用独立命名的降级包）。若后续需要能力降级的精简包，使用独立产物名并在 Release 说明中声明，不得静默替换标准包。
 
 已启动的运行不会加载后续提交中的修复；重新运行旧任务也仍然使用旧提交。
 验证修复时需要在包含修复的新提交上启动工作流。
