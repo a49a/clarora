@@ -2,8 +2,9 @@ import { currentPlatform, getNativeModules } from './platform';
 
 /**
  * 系统凭证保险库抽象：macOS 走钥匙串（RNMacKeychain），Windows 走
- * PasswordVault（RNWindowsCredentials）。返回 null 表示当前平台没有
- * 原生保险库（iOS/Android），调用方退回原来的本机数据库存储。
+ * PasswordVault（RNWindowsCredentials），iOS 走钥匙串（RNIOSKeychain），
+ * Android 走 Keystore 加密存储（RNAndroidKeychain）。移动端返回 null 表示
+ * 原生模块尚未随包安装（旧安装包），调用方退回本机数据库存储。
  */
 export type SecretStore = {
   setSecret: (name: string, value: string) => Promise<void>;
@@ -79,6 +80,16 @@ export function secretStore(): SecretStore | null {
     const module = getNativeModules().RNWindowsCredentials as NativeSecretStore | undefined;
     if (!module?.setSecret) return null;
     return module;
+  }
+  if (currentPlatform === 'ios') {
+    const module = getNativeModules().RNIOSKeychain as NativeSecretStore | undefined;
+    if (!module?.setSecret) return null;
+    return macStore ??= sessionStore(module);
+  }
+  if (currentPlatform === 'android') {
+    const module = getNativeModules().RNAndroidKeychain as NativeSecretStore | undefined;
+    if (!module?.setSecret) return null;
+    return macStore ??= sessionStore(module);
   }
   return null;
 }

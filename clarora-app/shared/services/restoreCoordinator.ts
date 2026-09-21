@@ -22,7 +22,6 @@ type RestoreOperation = {
 };
 
 const OPERATION_KEY = "restore_operation";
-const EXCLUSIVE_KEY = "restore_exclusive";
 
 function fingerprintOf(data: VaultData): string {
   return JSON.stringify([

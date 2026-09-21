@@ -11,6 +11,7 @@ class ClaroraPlatformPackage : ReactPackage {
       ClaroraFilePickerModule(reactContext),
       ClaroraAudioModule(reactContext),
       ClaroraClipboardModule(reactContext),
+      ClaroraKeychainModule(reactContext),
     )
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> =
