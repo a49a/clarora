@@ -8,7 +8,7 @@ import { getTheme, THEME_DETAILS, THEME_LABELS, THEME_ORDER, type ThemeName } fr
 import { getSetting, setSetting } from '../data/database';
 import { loadStorageConfig, saveStorageConfig, DEFAULT_STORAGE, type StorageConfig } from '../services/objectStorage';
 import { listBackups, uploadLibrary, type BackupInfo } from '../services/librarySync';
-import { inspectBackup, runRestore, resumePendingRestore } from '../services/restoreCoordinator';
+import { inspectBackup, runRestore, resumePendingRestore, type RestorePreview } from '../services/restoreCoordinator';
 import { loadAiConfig, saveAiConfig, DEFAULT_AI, LOCAL_ASR_MODELS, downloadLocalModel, deleteLocalModel, localModelDownloaded, type AiConfig } from '../services/ai';
 
 export default function SettingsScreen() {
@@ -46,7 +46,7 @@ export default function SettingsScreen() {
   const [ai, setAi] = useState<AiConfig>({ ...DEFAULT_AI });
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [selectedBackup, setSelectedBackup] = useState('');
-  const [restorePreview, setRestorePreview] = useState<{ operation_id: string; fingerprint: string; words: number; aiCards: number; attachments: number } | null>(null);
+  const [restorePreview, setRestorePreview] = useState<RestorePreview | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [ready, setReady] = useState(false);
@@ -154,10 +154,10 @@ export default function SettingsScreen() {
       {backups.length > 0 && <>
         <Text style={styles.label}>选择要合并的版本</Text>
         <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled>{backups.map(backup => <View key={backup.key} style={{ marginBottom: 6 }}>
-          {button(`${new Date(parseInt(backup.id.split('-')[0], 36)).toLocaleString()} · ${backup.id.slice(-6)}`, () => { setSelectedBackup(backup.key); void run(async () => { const preview = await inspectBackup(backup.key); setRestorePreview({ operation_id: preview.operation_id, fingerprint: preview.fingerprint, words: preview.summary.words, aiCards: preview.summary.aiCards, attachments: preview.attachments }); return `预览就绪：${preview.summary.words} 个单词、${preview.summary.aiCards} 张问答卡、${preview.attachments} 个附件`; }); }, selectedBackup === backup.key)}
+          {button(`${new Date(parseInt(backup.id.split('-')[0], 36)).toLocaleString()} · ${backup.id.slice(-6)}`, () => { setSelectedBackup(backup.key); void run(async () => { const preview = await inspectBackup(backup.key); setRestorePreview({ operation_id: preview.operation_id, summary: preview.summary, attachments: preview.attachments, local_fingerprint: preview.local_fingerprint, backup_fingerprint: preview.backup_fingerprint, words: preview.summary.words, aiCards: preview.summary.aiCards }); return `预览就绪：${preview.summary.words} 个单词、${preview.summary.aiCards} 张问答卡、${preview.attachments} 个附件`; }); }, selectedBackup === backup.key)}
         </View>)}</ScrollView>
         {restorePreview && <Text style={styles.hint}>将合并 {restorePreview.words} 个单词、{restorePreview.aiCards} 张问答卡与 {restorePreview.attachments} 个附件；合并前自动创建本机恢复点。</Text>}
-        {button('确认合并到本机', () => { if (!selectedBackup || !restorePreview) return; void run(async () => { const { operation_id } = await runRestore(selectedBackup, restorePreview.fingerprint, message => setStatus(message)); setRestorePreview(null); void resumePendingRestore(); return `合并完成（操作 ${operation_id}），可用恢复点回退。返回学习页面查看。`; }); })}
+        {button('确认合并到本机', () => { if (!selectedBackup || !restorePreview) return; void run(async () => { const { operation_id } = await runRestore(selectedBackup, restorePreview, message => setStatus(message)); setRestorePreview(null); void resumePendingRestore(); return `合并完成（操作 ${operation_id}），可用恢复点回退。返回学习页面查看。`; }); })}
         <Text style={styles.hint}>选择版本后会先预览内容数量；确认合并前自动创建本机恢复点，可回退。</Text>
       </>}
     </View></Details>

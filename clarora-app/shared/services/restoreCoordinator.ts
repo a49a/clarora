@@ -1,12 +1,13 @@
 import { exportVaultData, getSetting, setSetting, importVaultData } from '../data/database';
 import { validateVault, type VaultData } from '../data/vault';
 import { FileSystem } from './platform';
+import { mapVaultMedia } from './librarySync';
 import { ObjectStorage, loadStorageConfig } from './objectStorage';
 
 // ── 恢复协调器:备份合并的 inspect → checkpoint → stage → commit → finalize ──
 // 目标(设计 4.2):崩溃可恢复、提交原子、恢复点保护旧附件。文件系统与
 // SQLite 不共享事务,因此每一步都必须幂等:先准备文件,再在数据库提交
-// 数据与操作状态;未被引用的临时文件按操作清单回收。
+// 数据与操作状态;未被提交引用的暂存文件按操作清单回收。
 
 type RestorePhase = "inspect" | "checkpoint" | "stage" | "commit" | "finalize";
 type RestoreOperation = {
@@ -14,10 +15,10 @@ type RestoreOperation = {
   backup_key: string;
   backup_id: string;
   phase: RestorePhase;
-  staged_dir: string;
+  attachments_dir: string;
   restore_point_dir: string;
-  downloaded: string[];
-  fingerprint: string;
+  fingerprint: string;        // 预览时本机资料指纹(闸门:本机未变)
+  backup_fingerprint: string; // 预览时备份指纹(闸门:备份未变)
   created_at: string;
 };
 
@@ -31,23 +32,30 @@ function fingerprintOf(data: VaultData): string {
   ]);
 }
 
-/** 进程级互斥:同一时间只允许一个恢复操作推进。 */
+/** 进程级互斥:同一时间只允许一个恢复操作推进。必须等待整个任务完成,
+ * 否则并发调用会在前一个操作完成前解锁(复审问题 7)。 */
 let running = false;
-function exclusive<T>(action: () => Promise<T>): Promise<T> {
+async function exclusive<T>(action: () => Promise<T>): Promise<T> {
   if (running) throw new Error("已有恢复任务正在进行");
   running = true;
-  try { return action(); } finally { running = false; }
+  try { return await action(); } finally { running = false; }
 }
 
 export type RestorePreview = {
   operation_id: string;
   summary: { words: number; practices: number; audios: number; clips: number; aiCards: number; schedules: number };
   attachments: number;
-  fingerprint: string;
+  /** 预览时本机资料指纹:提交前校验本机未变。 */
+  local_fingerprint: string;
+  /** 预览时备份内容指纹:提交前校验备份未变。 */
+  backup_fingerprint: string;
+  /** 展示用快照字段。 */
+  words: number;
+  aiCards: number;
 };
 
 /**
- * inspect:拉取并校验 manifest,记录合并计划所需的指纹。
+ * inspect:拉取并校验 manifest,记录本机与备份两侧指纹。
  * 校验失败不会创建任何操作状态。
  */
 export async function inspectBackup(backupKey: string): Promise<RestorePreview> {
@@ -57,6 +65,7 @@ export async function inspectBackup(backupKey: string): Promise<RestorePreview> 
     validateVault(manifest.data);
     const attachments = Object.keys(manifest.files ?? {}).length;
     const operation_id = new Date().toISOString().replace(/[-:T.]/g, "").slice(0, 14) + Math.floor(Math.random() * 1000);
+    const local = await exportVaultData();
     return {
       operation_id,
       summary: {
@@ -68,7 +77,10 @@ export async function inspectBackup(backupKey: string): Promise<RestorePreview> 
         schedules: manifest.data.review_schedule.length,
       },
       attachments,
-      fingerprint: fingerprintOf(manifest.data),
+      local_fingerprint: fingerprintOf(local),
+      backup_fingerprint: fingerprintOf(manifest.data),
+      words: manifest.data.words.length,
+      aiCards: manifest.data.ai_cards.length,
     };
   });
 }
@@ -84,10 +96,11 @@ async function writeOperation(operation: RestoreOperation | null): Promise<void>
 
 /**
  * 启动时调用:处理未完成的恢复操作。
- * - 提交(commit)已完成:只做幂等清理,已引用文件不受影响;
- * - 提交前中断:撤销本次操作(删除暂存目录,保留恢复点),用户可从
- *   界面重新发起合并。
- * 返回被清理的操作标识列表,供诊断展示。
+ * - 提交(commit)已完成:合并已生效,附件目录与恢复点都保留,只清除
+ *   操作状态;
+ * - 提交前中断:撤销——删除附件与恢复点目录(均为本操作产物),本机
+ *   资料未动,用户可重新发起合并。
+ * 返回被撤销清理的操作标识列表,供诊断展示。
  */
 export async function resumePendingRestore(): Promise<string[]> {
   return exclusive(async () => {
@@ -96,11 +109,11 @@ export async function resumePendingRestore(): Promise<string[]> {
     const cleaned: string[] = [];
     try {
       if (operation.phase === "commit" || operation.phase === "finalize") {
-        // 已提交:合并已生效,只需清理确认未被引用的暂存文件。
-        await FileSystem.deleteAsync(operation.staged_dir).catch(() => {});
+        // 已提交:合并已生效,只清除操作状态;附件与恢复点保留。
       } else {
-        // 提交前中断:撤销——删除暂存目录;恢复点目录保留供用户回退。
-        await FileSystem.deleteAsync(operation.staged_dir).catch(() => {});
+        // 提交前中断:撤销——删除本操作的附件与恢复点目录。
+        await FileSystem.deleteAsync(operation.attachments_dir).catch(() => {});
+        await FileSystem.deleteAsync(operation.restore_point_dir).catch(() => {});
         cleaned.push(operation.operation_id);
       }
     } finally {
@@ -111,10 +124,10 @@ export async function resumePendingRestore(): Promise<string[]> {
 }
 
 /**
- * 执行备份合并:建立恢复点 → 暂存附件 → 原子提交合并 → 清理。
- * 预览(inspect)后本机资料变化会拒绝执行,要求重新预览。
+ * 执行备份合并:预览指纹闸门 → 恢复点 → 附件下载并改写引用 → 提交合并。
+ * 预览后本机资料或备份内容发生变化都会拒绝执行,要求重新预览。
  */
-export async function runRestore(backupKey: string, previewFingerprint: string,
+export async function runRestore(backupKey: string, preview: RestorePreview,
                                  onProgress?: (message: string) => void): Promise<{ operation_id: string }> {
   return exclusive(async () => {
     const operation = await readOperation();
@@ -124,12 +137,13 @@ export async function runRestore(backupKey: string, previewFingerprint: string,
     validateVault(manifest.data);
     const operation_id = new Date().toISOString().replace(/[-:T.]/g, "").slice(0, 14) + Math.floor(Math.random() * 1000);
     const documents = await FileSystem.getDocumentDirectoryAsync();
-    const staged_dir = `${documents}Clarora/Restore/${operation_id}/staged`;
+    const attachments_dir = `${documents}Clarora/Restore/${operation_id}/attachments`;
     const restore_point_dir = `${documents}Clarora/Restore/${operation_id}/restore-point`;
     const operation_state: RestoreOperation = {
       operation_id, backup_key: backupKey, backup_id: manifest.id, phase: "checkpoint",
-      staged_dir, restore_point_dir, downloaded: [],
-      fingerprint: previewFingerprint, created_at: new Date().toISOString(),
+      attachments_dir, restore_point_dir,
+      fingerprint: preview.local_fingerprint, backup_fingerprint: preview.backup_fingerprint,
+      created_at: new Date().toISOString(),
     };
     await writeOperation(operation_state);
 
@@ -142,45 +156,45 @@ export async function runRestore(backupKey: string, previewFingerprint: string,
     await FileSystem.makeDirectoryAsync(restore_point_dir);
     await FileSystem.writeFileAsync(`${restore_point_dir}/restore-point.json`, JSON.stringify(restore_point));
 
-    // 一致性闸门:预览后本机资料变化则要求重新预览。
-    if (fingerprintOf(current) !== previewFingerprint) {
+    // 指纹闸门:本机资料必须与预览时一致(预览后本机编辑则要求重新预览);
+    // 备份内容也必须与预览时一致(备份被覆盖发布则要求重新选择版本)。
+    if (fingerprintOf(current) !== preview.local_fingerprint) {
       await writeOperation(null);
       throw new Error("本机资料在预览后发生了变化,请重新预览后再合并");
     }
+    if (fingerprintOf(manifest.data) !== preview.backup_fingerprint) {
+      await writeOperation(null);
+      throw new Error("备份内容与预览时不一致,请重新选择版本并预览");
+    }
 
-    // stage:附件下载到暂存目录,完成后进入待提交状态。
-    await FileSystem.makeDirectoryAsync(staged_dir);
+    // stage:附件下载到本操作目录,并把数据中的 media: 引用改写为本地
+    // 稳定路径;改写后的数据才会进入合并。
+    await FileSystem.makeDirectoryAsync(attachments_dir);
     const mediaPrefix = store.key(`media/${manifest.id}/`);
-    const staged: Record<string, string> = {};
+    const local = new Map<string, string>();
     operation_state.phase = "stage";
     await writeOperation(operation_state);
-    await (async () => {
-      const seen = new Map<string, string>();
-      for (const [reference, key] of Object.entries(manifest.files)) {
-        if (!/^media:\d+$/.test(reference) || !key.startsWith(mediaPrefix)) continue;
-        if (seen.has(reference)) return;
-        const target = `${staged_dir}/${key.slice(mediaPrefix.length)}`;
-        onProgress?.(`正在下载附件 ${seen.size + 1}…`);
-        await store.getFile(key, target);
-        seen.set(reference, target);
-      }
-    })();
-    operation_state.downloaded = Object.values(staged);
-    operation_state.phase = "stage";
-    await writeOperation(operation_state);
+    await mapVaultMedia(manifest.data, async reference => {
+      if (!/^media:\d+$/.test(reference) || !Object.hasOwnProperty.call(manifest.files, reference)) throw new Error("备份缺少附件");
+      if (local.has(reference)) return local.get(reference)!;
+      const key = manifest.files[reference];
+      const target = `${attachments_dir}/${key.slice(mediaPrefix.length)}`;
+      onProgress?.(`正在下载附件 ${local.size + 1}/${Object.keys(manifest.files).length}…`);
+      await store.getFile(key, target);
+      local.set(reference, target);
+      return target;
+    });
 
-    // commit:合并规则与既有实现一致(importVaultData),本事务提交后
-    // 暂存目录整体转正为稳定目录。
+    // commit:引用已指向本地文件,合并提交;提交成功后本目录即稳定附件
+    // 目录,绝不可删除。
     operation_state.phase = "commit";
     await writeOperation(operation_state);
     onProgress?.("正在合并到本机资料库…");
     await importVaultData(manifest.data);
-    await FileSystem.makeDirectoryAsync(`${documents}Clarora/Restore/${operation_id}/committed`);
     operation_state.phase = "finalize";
     await writeOperation(operation_state);
 
-    // finalize:标记完成并清理;恢复点保留供用户回退。
-    await FileSystem.deleteAsync(staged_dir).catch(() => {});
+    // finalize:清除操作状态;附件目录(已引用)与恢复点保留供回退。
     await writeOperation(null);
     return { operation_id };
   });
