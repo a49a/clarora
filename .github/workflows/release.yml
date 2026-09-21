@@ -14,14 +14,44 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  resolve:
+    name: Resolve release tag and source
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve release tag and source sha
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            tag="${{ github.event.inputs.tag }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            echo "::error::手动发布必须提供有效 tag(如 v0.1.0)"; exit 1
+          fi
+          git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
+          sha="$(git rev-parse "$tag^{commit}")"
+          # 应用显示版本必须与 tag 一致,不允许只改 Release 标题。
+          pkg_version="$(python3 -c "import json;print(json.load(open('clarora-app/package.json'))['version'])")"
+          if [ "${tag#v}" != "$pkg_version" ]; then
+            echo "::error::tag($tag) 与 package.json 版本($pkg_version)不一致,请先对齐版本再发布"; exit 1
+          fi
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "resolved: $tag @ $sha"
   macos:
     name: macOS release build
+    needs: resolve
     runs-on: macos-15
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.resolve.outputs.release_tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -61,12 +91,13 @@ jobs:
           if-no-files-found: error
   windows:
     name: Windows release build
+    needs: resolve
     runs-on: windows-2022
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.resolve.outputs.release_tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -95,11 +126,11 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [macos, windows]
+    needs: [resolve, macos, windows]
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.resolve.outputs.release_tag }}
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -114,7 +145,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          printf '{\n  "version": "%s",\n  "tag": "%s",\n  "source_sha": "%s",\n  "platforms": [\n    { "platform": "macos", "arch": "arm64", "asset_name": "Clarora-macos-arm64.dmg", "url": "https://github.com/a49a/clarora/releases/download/%s/Clarora-macos-arm64.dmg" },\n    { "platform": "windows", "arch": "x64", "asset_name": "Clarora-windows-x64.zip", "url": "https://github.com/a49a/clarora/releases/download/%s/Clarora-windows-x64.zip" }\n  ]\n}\n' "$RELEASE_TAG" "$RELEASE_TAG" "$SOURCE_SHA" "$RELEASE_TAG" "$RELEASE_TAG" > release/release-metadata.json
+          gh release create "$RELEASE_TAG" \
             release/* --verify-tag --generate-notes \
-            --title "Clarora $GITHUB_REF_NAME"
+            --title "Clarora $RELEASE_TAG"
         working-directory: .
