@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		ED8B51B4386D46B08C48CFF4 /* ClaroraKeychain.mm in Sources */ = {isa = PBXBuildFile; fileRef = 4BCB00AAB5924000A0F33514 /* ClaroraKeychain.mm */; };
 		3BD148CE7BCF30D02D3CFBDB /* libPods-Clarora-iOS.a in Frameworks */ = {isa = PBXBuildFile; fileRef = BFC01D5098D674137F763054 /* libPods-Clarora-iOS.a */; };
 		411AFBB81955F90D76A3AE34 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 21894965603F82AC3BE33D49 /* PrivacyInfo.xcprivacy */; };
 		A1D11D72BCDE87A54FE967CD /* ClaroraModules.mm in Sources */ = {isa = PBXBuildFile; fileRef = 671567BAA986168D1EE5286B /* ClaroraModules.mm */; };
@@ -16,6 +17,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		4BCB00AAB5924000A0F33514 /* ClaroraKeychain.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = ClaroraKeychain.mm; path = Clarora/ClaroraKeychain.mm; sourceTree = "<group>"; };
 		21894965603F82AC3BE33D49 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		30E94E935AF9D694753E09A6 /* main.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		3AE0768F479F6153E9768AAD /* Clarora.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Clarora.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -94,6 +96,7 @@
 				30E94E935AF9D694753E09A6 /* main.m */,
 				A453EA71723A2A919FD050EF /* AppDelegate.mm */,
 				671567BAA986168D1EE5286B /* ClaroraModules.mm */,
+				4BCB00AAB5924000A0F33514 /* ClaroraKeychain.mm */,
 				6B6E66426D7B68F8D9AF3C49 /* AppDelegate.h */,
 				A1C350C3B3A03656ACD073E2 /* Info.plist */,
 			);
@@ -261,6 +264,7 @@
 				F488D689470D6A10B6C88C0F /* main.m in Sources */,
 				D9AFB2D6A0900A64F8022C5B /* AppDelegate.mm in Sources */,
 				A1D11D72BCDE87A54FE967CD /* ClaroraModules.mm in Sources */,
+			ED8B51B4386D46B08C48CFF4 /* ClaroraKeychain.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

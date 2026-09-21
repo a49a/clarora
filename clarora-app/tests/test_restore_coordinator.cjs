@@ -1,4 +1,4 @@
-// 恢复协调器测试:阶段持久化、指纹闸门、崩溃恢复与并发防护。
+// 恢复协调器测试:阶段持久化、双指纹闸门、崩溃恢复与并发防护。
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -8,7 +8,7 @@ const path = require('node:path');
 const ts = require('typescript');
 const vm = require('node:vm');
 
-const ROOT = path.join(__dirname, '..', '..');
+const ROOT = path.join(__dirname, '..');
 
 function makeVault(words = 2) {
   return {
@@ -48,6 +48,7 @@ function setup({ persisted = null, importFails = false } = {}) {
         },
       },
       '../data/vault': { validateVault: () => {} },
+      './librarySync': { mapVaultMedia: async () => {} },
       './platform': {
         FileSystem: {
           getDocumentDirectoryAsync: async () => documents,
@@ -63,7 +64,7 @@ function setup({ persisted = null, importFails = false } = {}) {
     };
     return mocks[name] ?? null;
   };
-  const source = fs.readFileSync(path.join(ROOT, 'clarora-app', 'shared', 'services', 'restoreCoordinator.ts'), 'utf8');
+  const source = fs.readFileSync(path.join(ROOT, 'shared', 'services', 'restoreCoordinator.ts'), 'utf8');
   const output = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
   }).outputText;
@@ -71,7 +72,6 @@ function setup({ persisted = null, importFails = false } = {}) {
   vm.runInNewContext(output, { exports: exportsObject, require: requireStub, Uint8Array, Date, Map, Set, console }, { filename: 'restoreCoordinator.ts' });
   return {
     api: exportsObject, documents, settingsMap, imported, deleted, manifest,
-    stagedDir: null,
   };
 }
 
@@ -80,10 +80,10 @@ function readOperation(settingsMap) {
   return raw ? JSON.parse(raw) : null;
 }
 
-test('happy path: staged attachments, import and clean state after finalize', async () => {
+test('happy path: import and clean state after finalize', async () => {
   const s = setup();
   const preview = await s.api.inspectBackup('rhetor/snapshots/bk1.json');
-  const { operation_id } = await s.api.runRestore('rhetor/snapshots/bk1.json', preview.fingerprint);
+  const { operation_id } = await s.api.runRestore('rhetor/snapshots/bk1.json', preview);
   assert.ok(operation_id);
   assert.equal(s.imported.length, 1);
   assert.equal(readOperation(s.settingsMap), null, '完成后操作状态应清除');
@@ -92,39 +92,51 @@ test('happy path: staged attachments, import and clean state after finalize', as
 test('fingerprint mismatch after preview aborts and revokes the operation', async () => {
   const s = setup();
   const preview = await s.api.inspectBackup('rhetor/snapshots/bk1.json');
-  // 预览后本机资料变化:模拟用户在预览与合并之间新增词条。
-  const fingerprint = 'changed';
+  // 本机资料在预览后变化:模拟用户在预览与合并之间新增词条。
+  const changed = preview.local_fingerprint !== 'changed' ? 'changed' : 'other';
   await assert.rejects(
-    s.api.runRestore('rhetor/snapshots/bk1.json', fingerprint),
+    s.api.runRestore('rhetor/snapshots/bk1.json',
+      { ...preview, local_fingerprint: changed }),
     /重新预览/,
   );
   assert.equal(readOperation(s.settingsMap), null);
-  assert.notEqual(preview.fingerprint, fingerprint);
+});
+
+test('backup content change after preview also aborts', async () => {
+  const s = setup();
+  const preview = await s.api.inspectBackup('rhetor/snapshots/bk1.json');
+  const changed = preview.backup_fingerprint !== 'changed' ? 'changed' : 'other';
+  await assert.rejects(
+    s.api.runRestore('rhetor/snapshots/bk1.json',
+      { ...preview, backup_fingerprint: changed }),
+    /备份.*不一致|重新预览/,
+  );
+  assert.equal(readOperation(s.settingsMap), null);
 });
 
 test('a pre-commit interruption is revoked on the next startup resume', async () => {
-  const stagedDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'clarora-r-')), 'staged');
-  fs.mkdirSync(stagedDir, { recursive: true });
-  fs.writeFileSync(path.join(stagedDir, 'attachment.bin'), 'x');
+  const attachmentsDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'clarora-r-')), 'attachments');
+  fs.mkdirSync(attachmentsDir, { recursive: true });
+  fs.writeFileSync(path.join(attachmentsDir, 'attachment.bin'), 'x');
   const persisted = {
     operation_id: 'op1', backup_key: 'rhetor/snapshots/bk1.json', backup_id: 'bk1',
-    phase: 'stage', staged_dir: stagedDir, restore_point_dir: stagedDir + '-rp',
-    downloaded: [path.join(stagedDir, 'attachment.bin')], fingerprint: 'f', created_at: 't',
+    phase: 'stage', attachments_dir: attachmentsDir, restore_point_dir: attachmentsDir + '-rp',
+    local_fingerprint: 'f', backup_fingerprint: 'f', created_at: 't',
   };
   const s = setup({ persisted });
   const cleaned = await s.api.resumePendingRestore();
   assert.equal(JSON.stringify(cleaned), JSON.stringify(['op1']));
-  assert.equal(fs.existsSync(stagedDir), false, '暂存目录应被撤销清理');
+  assert.equal(fs.existsSync(attachmentsDir), false, '暂存附件目录应被撤销清理');
   assert.equal(readOperation(s.settingsMap), null);
 });
 
 test('a post-commit operation finalizes idempotently without revoking', async () => {
-  const stagedDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'clarora-r-')), 'staged');
-  fs.mkdirSync(stagedDir, { recursive: true });
+  const attachmentsDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'clarora-r-')), 'attachments');
+  fs.mkdirSync(attachmentsDir, { recursive: true });
   const persisted = {
     operation_id: 'op2', backup_key: 'rhetor/snapshots/bk1.json', backup_id: 'bk1',
-    phase: 'commit', staged_dir: stagedDir, restore_point_dir: stagedDir + '-rp',
-    downloaded: [], fingerprint: 'f', created_at: 't',
+    phase: 'commit', attachments_dir: attachmentsDir, restore_point_dir: attachmentsDir + '-rp',
+    local_fingerprint: 'f', backup_fingerprint: 'f', created_at: 't',
   };
   const s = setup({ persisted });
   const cleaned = await s.api.resumePendingRestore();
@@ -136,7 +148,7 @@ test('import failure rolls back the operation for a clean retry', async () => {
   const s = setup({ importFails: true });
   const preview = await s.api.inspectBackup('rhetor/snapshots/bk1.json');
   await assert.rejects(
-    s.api.runRestore('rhetor/snapshots/bk1.json', preview.fingerprint),
+    s.api.runRestore('rhetor/snapshots/bk1.json', preview),
     /合并失败/,
   );
   assert.equal(s.imported.length, 0);

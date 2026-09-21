@@ -25,11 +25,8 @@ type RestoreOperation = {
 const OPERATION_KEY = "restore_operation";
 
 function fingerprintOf(data: VaultData): string {
-  return JSON.stringify([
-    data.words.length, data.words[data.words.length - 1]?.id ?? "",
-    data.ai_cards.length, data.clip_cards.length,
-    data.listening_practices.length, data.listening_audios.length,
-  ]);
+  // 全量 JSON 摘要:任何字段的任何修改都会改变指纹。
+  return JSON.stringify(data);
 }
 
 /** 进程级互斥:同一时间只允许一个恢复操作推进。必须等待整个任务完成,
@@ -178,7 +175,10 @@ export async function runRestore(backupKey: string, preview: RestorePreview,
       if (!/^media:\d+$/.test(reference) || !Object.hasOwnProperty.call(manifest.files, reference)) throw new Error("备份缺少附件");
       if (local.has(reference)) return local.get(reference)!;
       const key = manifest.files[reference];
-      const target = `${attachments_dir}/${key.slice(mediaPrefix.length)}`;
+      const suffix = key.slice(mediaPrefix.length);
+      // 只允许纯文件名(数字.扩展名),不允许路径分隔符或 ..
+      if (!/^\d+\.[A-Za-z0-9]{1,8}$/.test(suffix)) throw new Error(`附件路径非法:${suffix}`);
+      const target = `${attachments_dir}/${suffix}`;
       onProgress?.(`正在下载附件 ${local.size + 1}/${Object.keys(manifest.files).length}…`);
       await store.getFile(key, target);
       local.set(reference, target);
