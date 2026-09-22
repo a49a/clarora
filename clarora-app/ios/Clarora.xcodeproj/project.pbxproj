@@ -17,7 +17,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		4BCB00AAB5924000A0F33514 /* ClaroraKeychain.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = ClaroraKeychain.mm; path = Clarora/ClaroraKeychain.mm; sourceTree = "<group>"; };
+		4BCB00AAB5924000A0F33514 /* ClaroraKeychain.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = ClaroraKeychain.mm; path = ClaroraKeychain.mm; sourceTree = "<group>"; };
 		21894965603F82AC3BE33D49 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		30E94E935AF9D694753E09A6 /* main.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		3AE0768F479F6153E9768AAD /* Clarora.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Clarora.app; sourceTree = BUILT_PRODUCTS_DIR; };

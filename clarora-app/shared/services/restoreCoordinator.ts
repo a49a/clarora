@@ -167,7 +167,6 @@ export async function runRestore(backupKey: string, preview: RestorePreview,
     // stage:附件下载到本操作目录,并把数据中的 media: 引用改写为本地
     // 稳定路径;改写后的数据才会进入合并。
     await FileSystem.makeDirectoryAsync(attachments_dir);
-    const mediaPrefix = store.key(`media/${manifest.id}/`);
     const local = new Map<string, string>();
     operation_state.phase = "stage";
     await writeOperation(operation_state);
@@ -175,10 +174,10 @@ export async function runRestore(backupKey: string, preview: RestorePreview,
       if (!/^media:\d+$/.test(reference) || !Object.hasOwnProperty.call(manifest.files, reference)) throw new Error("备份缺少附件");
       if (local.has(reference)) return local.get(reference)!;
       const key = manifest.files[reference];
-      const suffix = key.slice(mediaPrefix.length);
-      // 只允许纯文件名(数字.扩展名),不允许路径分隔符或 ..
-      if (!/^\d+\.[A-Za-z0-9]{1,8}$/.test(suffix)) throw new Error(`附件路径非法:${suffix}`);
-      const target = `${attachments_dir}/${suffix}`;
+      // 只取文件名部分(不含目录前缀),校验安全后再拼接本地路径。
+      const filename = key.split("/").pop() ?? "";
+      if (!/^\d+\.[A-Za-z0-9]{1,8}$/.test(filename)) throw new Error(`附件文件名非法:${filename}`);
+      const target = `${attachments_dir}/${filename}`;
       onProgress?.(`正在下载附件 ${local.size + 1}/${Object.keys(manifest.files).length}…`);
       await store.getFile(key, target);
       local.set(reference, target);

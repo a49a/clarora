@@ -1,4 +1,4 @@
-// 恢复协调器测试:阶段持久化、双指纹闸门、崩溃恢复与并发防护。
+// 恢复协调器测试:阶段持久化、双指纹闸门、崩溃恢复、并发防护与附件改写。
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -28,6 +28,10 @@ function setup({ persisted = null, importFails = false } = {}) {
     version: 2, id: 'bk1', createdAt: 't',
     data: makeVault(), files: { 'media:0': 'media/bk1/0.bin' },
   };
+  manifest.data.listening_audios.push({
+    id: 'audio1', practice_id: 'p1', name: 'sample',
+    audio_uri: 'media:0', subtitle_uri: '', created_at: 't',
+  });
   const fakeStorage = {
     request: async (method, key) => {
       if (method === 'GET' && key.endsWith('bk1.json')) return JSON.stringify(manifest);
@@ -43,12 +47,19 @@ function setup({ persisted = null, importFails = false } = {}) {
         setSetting: async (key, value) => { settingsMap.set(key, value); },
         exportVaultData: async () => makeVault(),
         importVaultData: async data => {
-          if (importFails) throw new Error('合并失败');
           imported.push(JSON.parse(JSON.stringify(data)));
+          if (importFails) throw new Error('合并失败');
         },
       },
       '../data/vault': { validateVault: () => {} },
-      './librarySync': { mapVaultMedia: async () => {} },
+      './librarySync': {
+        mapVaultMedia: async (data, map) => {
+          for (const row of data.listening_audios) {
+            if (row.audio_uri) row.audio_uri = await map(String(row.audio_uri));
+            if (row.subtitle_uri) row.subtitle_uri = await map(String(row.subtitle_uri));
+          }
+        },
+      },
       './platform': {
         FileSystem: {
           getDocumentDirectoryAsync: async () => documents,
@@ -80,19 +91,20 @@ function readOperation(settingsMap) {
   return raw ? JSON.parse(raw) : null;
 }
 
-test('happy path: import and clean state after finalize', async () => {
+test('happy path: attachments downloaded, refs rewritten, import and clean state', async () => {
   const s = setup();
   const preview = await s.api.inspectBackup('rhetor/snapshots/bk1.json');
   const { operation_id } = await s.api.runRestore('rhetor/snapshots/bk1.json', preview);
   assert.ok(operation_id);
   assert.equal(s.imported.length, 1);
+  const audio = s.imported[0]?.listening_audios?.[0];
+  if (audio) assert.ok(audio.audio_uri.startsWith('/'), `audio_uri 应为本地路径,实际:${audio.audio_uri}`);
   assert.equal(readOperation(s.settingsMap), null, '完成后操作状态应清除');
 });
 
-test('fingerprint mismatch after preview aborts and revokes the operation', async () => {
+test('local fingerprint mismatch after preview aborts and revokes the operation', async () => {
   const s = setup();
   const preview = await s.api.inspectBackup('rhetor/snapshots/bk1.json');
-  // 本机资料在预览后变化:模拟用户在预览与合并之间新增词条。
   const changed = preview.local_fingerprint !== 'changed' ? 'changed' : 'other';
   await assert.rejects(
     s.api.runRestore('rhetor/snapshots/bk1.json',
