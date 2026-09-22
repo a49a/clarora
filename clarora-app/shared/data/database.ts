@@ -889,6 +889,28 @@ export async function exportVaultData(): Promise<VaultData> {
   return data;
 }
 
+/** Full replacement: clears all vault tables and inserts the backup data
+ * inside a single transaction, so a mid-import failure rolls back to the
+ * original state instead of leaving the database empty. */
+export async function replaceVaultData(data: VaultData): Promise<void> {
+  validateVault(data);
+  const database = await getDb();
+  await database.transaction((tx: any) => {
+    for (const table of VAULT_TABLES) tx.executeSql(`DELETE FROM ${table}`);
+    for (const table of VAULT_TABLES) {
+      for (const row of data[table]) {
+        const columns = Object.keys(row);
+        const placeholders = columns.map(() => '?').join(', ');
+        const values = columns.map(col => (row as Record<string, unknown>)[col]);
+        tx.executeSql(
+          `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`,
+          values,
+        );
+      }
+    }
+  });
+}
+
 /** Atomic additive restore. Local edits win; schedules take the later grade. */
 export async function importVaultData(data: VaultData): Promise<void> {
   validateVault(data);

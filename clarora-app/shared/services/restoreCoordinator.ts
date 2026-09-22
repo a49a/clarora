@@ -1,4 +1,4 @@
-import { exportVaultData, getSetting, setSetting, importVaultData } from '../data/database';
+import { exportVaultData, getSetting, setSetting, importVaultData, replaceVaultData } from '../data/database';
 import { validateVault, type VaultData } from '../data/vault';
 import { FileSystem } from './platform';
 import { mapVaultMedia } from './librarySync';
@@ -9,8 +9,9 @@ import { ObjectStorage, loadStorageConfig } from './objectStorage';
 // SQLite 不共享事务,因此每一步都必须幂等:先准备文件,再在数据库提交
 // 数据与操作状态;未被提交引用的暂存文件按操作清单回收。
 //
-// 恢复点数据(合并前的完整 VaultData)与操作状态一样持久化在
-// app_settings 中:用户确认合并满意后清除,或一键回退到合并前状态。
+// 恢复点数据(合并前的完整 VaultData)持久化在 app_settings 的
+// restore_point_data 键中;用户可通过 restoreFromCheckpoint 一键回退,
+// 或通过 discardRestorePoint 放弃回退并继续使用当前数据。
 
 type RestorePhase = "inspect" | "checkpoint" | "stage" | "commit" | "finalize";
 type RestoreOperation = {
@@ -28,8 +29,20 @@ const OPERATION_KEY = "restore_operation";
 const RESTORE_POINT_KEY = "restore_point_data";
 
 function fingerprintOf(data: VaultData): string {
-  // 全量 JSON 摘要:任何字段的任何修改都会改变指纹。
   return JSON.stringify(data);
+}
+
+/** 确定性 manifest 摘要:递归排序对象键后序列化,不受 JSON.parse 插入顺序影响;
+ * 数组保持原顺序(列表元素的排列是有意义的)。 */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(stableStringify).join(",") + "]";
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  return "{" + entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",") + "}";
+}
+
+function manifestFingerprint(m: { id: string; version: number; data: VaultData; files: Record<string, string> }): string {
+  return stableStringify([m.id, m.version, m.data, m.files]);
 }
 
 /** 进程级互斥:同一时间只允许一个恢复操作推进。必须等待整个任务完成,
@@ -78,7 +91,7 @@ export async function inspectBackup(backupKey: string): Promise<RestorePreview> 
       },
       attachments,
       local_fingerprint: fingerprintOf(local),
-      backup_fingerprint: JSON.stringify(manifest),
+      backup_fingerprint: manifestFingerprint(manifest),
       words: manifest.data.words.length,
       aiCards: manifest.data.ai_cards.length,
     };
@@ -144,8 +157,8 @@ export async function runRestore(backupKey: string, preview: RestorePreview,
     };
     await writeOperation(operation_state);
 
-    // checkpoint:本机学习数据恢复点(合并前的完整 VaultData 存入
-    // app_settings,用户可通过「从恢复点回退」一键还原)。
+    // checkpoint:本机学习数据恢复点存入 app_settings(合并前的完整
+    // VaultData),用户可通过「从恢复点回退」一键还原。
     onProgress?.("正在创建本机恢复点…");
     const current = await exportVaultData();
     await setSetting(RESTORE_POINT_KEY, JSON.stringify(current));
@@ -156,7 +169,7 @@ export async function runRestore(backupKey: string, preview: RestorePreview,
       await writeOperation(null);
       throw new Error("本机资料在预览后发生了变化,请重新预览后再合并");
     }
-    if (JSON.stringify(manifest) !== preview.backup_fingerprint) {
+    if (manifestFingerprint(manifest) !== preview.backup_fingerprint) {
       await writeOperation(null);
       throw new Error("备份内容与预览时不一致,请重新选择版本并预览");
     }
@@ -171,7 +184,7 @@ export async function runRestore(backupKey: string, preview: RestorePreview,
       if (!/^media:\d+$/.test(reference) || !Object.hasOwnProperty.call(manifest.files, reference)) throw new Error("备份缺少附件");
       if (local.has(reference)) return local.get(reference)!;
       const key = manifest.files[reference];
-      // 只取文件名部分(不含目录前缀),校验安全后再拼接本地路径。
+      // 只取文件名部分,校验安全后再拼接本地路径。
       const filename = key.split("/").pop() ?? "";
       if (!/^\d+\.[A-Za-z0-9]{1,8}$/.test(filename)) throw new Error(`附件文件名非法:${filename}`);
       const target = `${attachments_dir}/${filename}`;
@@ -201,11 +214,16 @@ export async function hasRestorePoint(): Promise<boolean> {
   return !!(await getSetting(RESTORE_POINT_KEY));
 }
 
-/** 从恢复点回退:将合并前的学习数据写回数据库,清除恢复点。 */
+/** 从恢复点回退:将合并前的学习数据全量替换写回数据库,清除恢复点。 */
 export async function restoreFromCheckpoint(): Promise<void> {
   const raw = await getSetting(RESTORE_POINT_KEY);
   if (!raw) throw new Error("没有可用的恢复点");
   const data: VaultData = JSON.parse(raw);
-  await importVaultData(data);
+  await replaceVaultData(data);
   await setSetting(RESTORE_POINT_KEY, "");
+}
+
+/** 放弃恢复点(用户确认合并结果满意,不再需要回退)。 */
+export function discardRestorePoint(): void {
+  setSetting(RESTORE_POINT_KEY, "");
 }
