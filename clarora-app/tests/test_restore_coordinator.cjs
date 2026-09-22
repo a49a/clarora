@@ -37,7 +37,7 @@ function setup({ persisted = null, importFails = false } = {}) {
       if (method === 'GET' && key.endsWith('bk1.json')) return JSON.stringify(manifest);
       throw new Error('意外的对象存储请求:' + key);
     },
-    getFile: async (key, target) => fs.writeFileSync(target, 'attachment'),
+    getFile: async (key, target) => fs.writeFileSync(target, 'attachment content'),
     key: suffix => `rhetor/${suffix}`,
   };
   const requireStub = name => {
@@ -47,8 +47,8 @@ function setup({ persisted = null, importFails = false } = {}) {
         setSetting: async (key, value) => { settingsMap.set(key, value); },
         exportVaultData: async () => makeVault(),
         importVaultData: async data => {
-          imported.push(JSON.parse(JSON.stringify(data)));
           if (importFails) throw new Error('合并失败');
+          imported.push(JSON.parse(JSON.stringify(data)));
         },
       },
       '../data/vault': { validateVault: () => {} },
@@ -97,8 +97,9 @@ test('happy path: attachments downloaded, refs rewritten, import and clean state
   const { operation_id } = await s.api.runRestore('rhetor/snapshots/bk1.json', preview);
   assert.ok(operation_id);
   assert.equal(s.imported.length, 1);
-  const audio = s.imported[0]?.listening_audios?.[0];
-  if (audio) assert.ok(audio.audio_uri.startsWith('/'), `audio_uri 应为本地路径,实际:${audio.audio_uri}`);
+  // 导入后 listening_audios 的 audio_uri 应已指向本地文件(不再是 media:0)
+  const audio = s.imported[0].listening_audios?.[0];
+  if (audio) assert.ok(audio.audio_uri.includes('/Restore/'), `audio_uri 应指向恢复目录,实际:${audio.audio_uri}`);
   assert.equal(readOperation(s.settingsMap), null, '完成后操作状态应清除');
 });
 

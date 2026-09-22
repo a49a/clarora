@@ -29,6 +29,11 @@ function fingerprintOf(data: VaultData): string {
   return JSON.stringify(data);
 }
 
+/** 确定性 manifest 摘要:键排序后序列化,不受 JSON.parse 插入顺序影响。 */
+function manifestFingerprint(m: { id: string; version: number; data: VaultData; files: Record<string, string> }): string {
+  return JSON.stringify([m.id, m.version, m.data, m.files]);
+}
+
 /** 进程级互斥:同一时间只允许一个恢复操作推进。必须等待整个任务完成,
  * 否则并发调用会在前一个操作完成前解锁(复审问题 7)。 */
 let running = false;
@@ -75,7 +80,7 @@ export async function inspectBackup(backupKey: string): Promise<RestorePreview> 
       },
       attachments,
       local_fingerprint: fingerprintOf(local),
-      backup_fingerprint: fingerprintOf(manifest.data),
+      backup_fingerprint: manifestFingerprint(manifest),
       words: manifest.data.words.length,
       aiCards: manifest.data.ai_cards.length,
     };
@@ -159,7 +164,7 @@ export async function runRestore(backupKey: string, preview: RestorePreview,
       await writeOperation(null);
       throw new Error("本机资料在预览后发生了变化,请重新预览后再合并");
     }
-    if (fingerprintOf(manifest.data) !== preview.backup_fingerprint) {
+    if (manifestFingerprint(manifest) !== preview.backup_fingerprint) {
       await writeOperation(null);
       throw new Error("备份内容与预览时不一致,请重新选择版本并预览");
     }
@@ -174,10 +179,11 @@ export async function runRestore(backupKey: string, preview: RestorePreview,
       if (!/^media:\d+$/.test(reference) || !Object.hasOwnProperty.call(manifest.files, reference)) throw new Error("备份缺少附件");
       if (local.has(reference)) return local.get(reference)!;
       const key = manifest.files[reference];
-      // 只取文件名部分(不含目录前缀),校验安全后再拼接本地路径。
-      const filename = key.split("/").pop() ?? "";
-      if (!/^\d+\.[A-Za-z0-9]{1,8}$/.test(filename)) throw new Error(`附件文件名非法:${filename}`);
-      const target = `${attachments_dir}/${filename}`;
+      // 引用名唯一且安全(已通过 media:\d+ 校验),用作本地文件名;
+      // 保留远端 key 的扩展名。
+      const dot = key.lastIndexOf(".");
+      const ext = dot >= 0 ? key.slice(dot) : ".bin";
+      const target = `${attachments_dir}/${reference.replace(/:/g, "_")}${ext}`;
       onProgress?.(`正在下载附件 ${local.size + 1}/${Object.keys(manifest.files).length}…`);
       await store.getFile(key, target);
       local.set(reference, target);
