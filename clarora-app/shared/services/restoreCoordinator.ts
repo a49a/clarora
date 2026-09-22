@@ -29,9 +29,17 @@ function fingerprintOf(data: VaultData): string {
   return JSON.stringify(data);
 }
 
-/** 确定性 manifest 摘要:键排序后序列化,不受 JSON.parse 插入顺序影响。 */
+/** 确定性 manifest 摘要:递归排序对象键后序列化,不受 JSON.parse 插入顺序影响;
+ * 数组保持原顺序(列表元素的排列是有意义的)。 */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(stableStringify).join(",") + "]";
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+  return "{" + entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",") + "}";
+}
+
 function manifestFingerprint(m: { id: string; version: number; data: VaultData; files: Record<string, string> }): string {
-  return JSON.stringify([m.id, m.version, m.data, m.files]);
+  return stableStringify([m.id, m.version, m.data, m.files]);
 }
 
 /** 进程级互斥:同一时间只允许一个恢复操作推进。必须等待整个任务完成,
