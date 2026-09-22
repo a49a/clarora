@@ -184,10 +184,9 @@ export async function runRestore(backupKey: string, preview: RestorePreview,
       if (!/^media:\d+$/.test(reference) || !Object.hasOwnProperty.call(manifest.files, reference)) throw new Error("备份缺少附件");
       if (local.has(reference)) return local.get(reference)!;
       const key = manifest.files[reference];
-      // 只取文件名部分,校验安全后再拼接本地路径。
-      const filename = key.split("/").pop() ?? "";
-      if (!/^\d+\.[A-Za-z0-9]{1,8}$/.test(filename)) throw new Error(`附件文件名非法:${filename}`);
-      const target = `${attachments_dir}/${filename}`;
+      // 引用名唯一(media:0 等),转成本地安全文件名;不同附件不会同名冲突。
+      const localName = reference.replace(/:/g, "_");
+      const target = `${attachments_dir}/${localName}`;
       onProgress?.(`正在下载附件 ${local.size + 1}/${Object.keys(manifest.files).length}…`);
       await store.getFile(key, target);
       local.set(reference, target);
