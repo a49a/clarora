@@ -74,6 +74,9 @@ jobs:
       - name: Bundle runtime dylibs
         run: bash scripts/bundle-macos-libs.sh macos/build/release/Build/Products/Release/Clarora.app
         working-directory: clarora-app
+      - name: Verify release capabilities
+        run: bash scripts/verify-release.sh macos/build/release/Build/Products/Release/Clarora.app
+        working-directory: clarora-app
       - name: Package dmg
         working-directory: clarora-app
         run: |
