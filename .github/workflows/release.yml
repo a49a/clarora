@@ -51,7 +51,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve.outputs.release_tag }}
+          # 按 resolve 出的提交 SHA 固定检出,而非 tag 名:tag 在流水线中途被
+          # 移动也不会造成"构建的代码与校验的来源不一致"。
+          ref: ${{ needs.resolve.outputs.source_sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -100,7 +102,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve.outputs.release_tag }}
+          ref: ${{ needs.resolve.outputs.source_sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -109,27 +111,22 @@ jobs:
       - run: npm ci
         working-directory: clarora-app
       - name: Build on-device ASR library (clarora_asr.dll)
-        id: asr
-        continue-on-error: true  # 端侧转写为可选组件;失败时应用降级为无本地转写
+        continue-on-error: true  # 端侧转写为可选组件;失败时由最终包验证拦截
         timeout-minutes: 35
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-asr.ps1
         working-directory: clarora-app
       - run: npm run windows:build
         working-directory: clarora-app
-      - name: Capability gate - the standard package must include on-device transcription
-        if: steps.asr.outcome == 'failure'
-        run: |
-          if ([System.IO.File]::Exists('clarora-app/windows/Clarora/clarora_asr.dll')) {
-            Write-Host 'clarora_asr.dll present (built before the timeout cut the auxiliary steps).'
-          } else {
-            throw '标准安装包声明端侧转写能力,但 clarora_asr.dll 缺失(ASR 构建失败且未产出 DLL)。拒绝发布不完整包;如需能力降级包,请使用独立产物名并在 Release 说明中声明。'
-          }
-        working-directory: .
       - name: Package zip
         shell: pwsh
         working-directory: clarora-app
         run: |
           Compress-Archive -Path "windows/AppPackages/*" -DestinationPath "Clarora-windows-x64.zip" -Force
+      # 能力门槛作用在最终安装包上:不再检查工作目录,而是验证 zip 内确实
+      # 包含声明的主程序、端侧转写与 PDF 运行时,缺失即拒绝发布。
+      - name: Verify final package capabilities
+        working-directory: clarora-app
+        run: bash scripts/verify-release.sh Clarora-windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Clarora-windows-x64
@@ -143,11 +140,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve.outputs.release_tag }}
+          ref: ${{ needs.resolve.outputs.source_sha }}
       - uses: actions/download-artifact@v4
         with:
           path: dist
-      - name: Rename artifacts and generate checksums
+      - name: Rename artifacts, generate checksums and metadata
         run: |
           mkdir -p release
           cp dist/Clarora-macos-arm64/Clarora-macos-arm64.dmg release/
@@ -160,7 +157,22 @@ jobs:
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
         run: |
-          printf '{\n  "version": "%s",\n  "tag": "%s",\n  "source_sha": "%s",\n  "platforms": [\n    { "platform": "macos", "arch": "arm64", "asset_name": "Clarora-macos-arm64.dmg", "url": "https://github.com/a49a/clarora/releases/download/%s/Clarora-macos-arm64.dmg" },\n    { "platform": "windows", "arch": "x64", "asset_name": "Clarora-windows-x64.zip", "url": "https://github.com/a49a/clarora/releases/download/%s/Clarora-windows-x64.zip" }\n  ]\n}\n' "$RELEASE_TAG" "$RELEASE_TAG" "$SOURCE_SHA" "$RELEASE_TAG" "$RELEASE_TAG" > release/release-metadata.json
+          # 与官网 clarora-web/release-metadata.json 完全同一 schema:官网构建
+          # 可通过 CLARORA_RELEASE_METADATA 直接消费本文件。
+          cat > release/release-metadata.json <<METADATA
+          {
+            "version": "${RELEASE_TAG#v}",
+            "tag": "$RELEASE_TAG",
+            "source_sha": "$SOURCE_SHA",
+            "repository": "https://github.com/a49a/clarora",
+            "assets_base": "https://github.com/a49a/clarora/releases/download/$RELEASE_TAG",
+            "latest_url": "https://github.com/a49a/clarora/releases/tag/$RELEASE_TAG",
+            "platforms": {
+              "macos": { "status": "released", "arch": "arm64", "asset_name": "Clarora-macos-arm64.dmg", "url": "https://github.com/a49a/clarora/releases/download/$RELEASE_TAG/Clarora-macos-arm64.dmg" },
+              "windows": { "status": "released", "arch": "x64", "asset_name": "Clarora-windows-x64.zip", "url": "https://github.com/a49a/clarora/releases/download/$RELEASE_TAG/Clarora-windows-x64.zip" }
+            }
+          }
+          METADATA
           gh release create "$RELEASE_TAG" \
             release/* --verify-tag --generate-notes \
             --title "Clarora $RELEASE_TAG"
