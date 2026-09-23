@@ -889,10 +889,22 @@ export async function exportVaultData(): Promise<VaultData> {
   return data;
 }
 
+/** Settings upserts applied inside the caller's transaction: markers such as
+ * the restore-commit flag must commit (or roll back) atomically with the
+ * vault rows they describe. */
+function applySettingsUpdates(tx: any, settingsUpdates?: Record<string, string>): void {
+  for (const [key, value] of Object.entries(settingsUpdates ?? {})) {
+    tx.executeSql(
+      "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      [key, value],
+    );
+  }
+}
+
 /** Full replacement: clears all vault tables and inserts the backup data
  * inside a single transaction, so a mid-import failure rolls back to the
  * original state instead of leaving the database empty. */
-export async function replaceVaultData(data: VaultData): Promise<void> {
+export async function replaceVaultData(data: VaultData, settingsUpdates?: Record<string, string>): Promise<void> {
   validateVault(data);
   const database = await getDb();
   await database.transaction((tx: any) => {
@@ -908,11 +920,12 @@ export async function replaceVaultData(data: VaultData): Promise<void> {
         );
       }
     }
+    applySettingsUpdates(tx, settingsUpdates);
   });
 }
 
 /** Atomic additive restore. Local edits win; schedules take the later grade. */
-export async function importVaultData(data: VaultData): Promise<void> {
+export async function importVaultData(data: VaultData, settingsUpdates?: Record<string, string>): Promise<void> {
   validateVault(data);
   const database = await getDb();
   const current = await exportVaultData();
@@ -962,6 +975,7 @@ export async function importVaultData(data: VaultData): Promise<void> {
       if (table === 'study_stats') suffix = ' ON CONFLICT(day) DO UPDATE SET ' + ['listen_seconds', 'review_count', 'pomodoro_count'].map(c => `${c}=MAX(study_stats.${c},excluded.${c})`).join(',');
       tx.executeSql(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})${suffix || " ON CONFLICT DO NOTHING"}`, columns.map(c => row[c]));
     }
+    applySettingsUpdates(tx, settingsUpdates);
   });
 }
 

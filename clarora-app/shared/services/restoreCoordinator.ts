@@ -193,16 +193,15 @@ export async function runRestore(backupKey: string, preview: RestorePreview,
       return target;
     });
 
-    // commit:引用已指向本地文件,合并提交;提交成功后本目录即稳定附件
-    // 目录,绝不可删除。
+    // commit:引用已指向本地文件,合并提交。完成标识与合并写入同一事务:
+    // 只有导入真正提交后,操作状态才会变为 commit;中途失败或退出时
+    // SQLite 一起回滚,状态停在 stage,resume 按未提交撤销清理。
     operation_state.phase = "commit";
-    await writeOperation(operation_state);
     onProgress?.("正在合并到本机资料库…");
-    await importVaultData(manifest.data);
-    operation_state.phase = "finalize";
-    await writeOperation(operation_state);
+    await importVaultData(manifest.data, { [OPERATION_KEY]: JSON.stringify(operation_state) });
 
-    // finalize:清除操作状态;附件目录(已引用)保留供回退。
+    // finalize:合并已随上一事务生效,清除操作状态;附件目录(已引用)
+    // 是稳定附件目录,绝不可删除。
     await writeOperation(null);
     return { operation_id };
   });
@@ -213,13 +212,13 @@ export async function hasRestorePoint(): Promise<boolean> {
   return !!(await getSetting(RESTORE_POINT_KEY));
 }
 
-/** 从恢复点回退:将合并前的学习数据全量替换写回数据库,清除恢复点。 */
+/** 从恢复点回退:将合并前的学习数据全量替换写回数据库,恢复点的清除与
+ * 替换同一事务——回退提交后不会再出现"数据已还原但恢复点仍在"的状态。 */
 export async function restoreFromCheckpoint(): Promise<void> {
   const raw = await getSetting(RESTORE_POINT_KEY);
   if (!raw) throw new Error("没有可用的恢复点");
   const data: VaultData = JSON.parse(raw);
-  await replaceVaultData(data);
-  await setSetting(RESTORE_POINT_KEY, "");
+  await replaceVaultData(data, { [RESTORE_POINT_KEY]: "" });
 }
 
 /** 放弃恢复点(用户确认合并结果满意,不再需要回退)。 */

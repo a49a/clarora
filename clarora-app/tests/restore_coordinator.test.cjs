@@ -23,6 +23,8 @@ function setup({ persisted = null, importFails = false } = {}) {
   const documents = fs.mkdtempSync(path.join(os.tmpdir(), 'clarora-restore-'));
   const settingsMap = new Map(Object.entries(persisted ? { restore_operation: JSON.stringify(persisted) } : {}));
   const imported = [];
+  const importMarkers = [];
+  const replaced = [];
   const deleted = [];
   const manifest = {
     version: 2, id: 'bk1', createdAt: 't',
@@ -46,9 +48,16 @@ function setup({ persisted = null, importFails = false } = {}) {
         getSetting: async key => settingsMap.get(key) ?? null,
         setSetting: async (key, value) => { settingsMap.set(key, value); },
         exportVaultData: async () => makeVault(),
-        importVaultData: async data => {
+        // 与真实实现同语义:settingsUpdates 与导入同一事务——失败时不落盘。
+        importVaultData: async (data, settingsUpdates) => {
           if (importFails) throw new Error('合并失败');
+          for (const [key, value] of Object.entries(settingsUpdates ?? {})) settingsMap.set(key, value);
+          importMarkers.push(settingsUpdates ? JSON.parse(settingsUpdates.restore_operation) : null);
           imported.push(JSON.parse(JSON.stringify(data)));
+        },
+        replaceVaultData: async (data, settingsUpdates) => {
+          for (const [key, value] of Object.entries(settingsUpdates ?? {})) settingsMap.set(key, value);
+          replaced.push({ data, settingsUpdates });
         },
       },
       '../data/vault': { validateVault: () => {} },
@@ -82,7 +91,7 @@ function setup({ persisted = null, importFails = false } = {}) {
   const exportsObject = {};
   vm.runInNewContext(output, { exports: exportsObject, require: requireStub, Uint8Array, Date, Map, Set, console }, { filename: 'restoreCoordinator.ts' });
   return {
-    api: exportsObject, documents, settingsMap, imported, deleted, manifest,
+    api: exportsObject, documents, settingsMap, imported, importMarkers, replaced, deleted, manifest,
   };
 }
 
@@ -165,4 +174,40 @@ test('import failure rolls back the operation for a clean retry', async () => {
     /合并失败/,
   );
   assert.equal(s.imported.length, 0);
+});
+
+test('import failure leaves the marker at stage so resume revokes instead of trusting a commit', async () => {
+  const s = setup({ importFails: true });
+  const preview = await s.api.inspectBackup('rhetor/snapshots/bk1.json');
+  await assert.rejects(s.api.runRestore('rhetor/snapshots/bk1.json', preview), /合并失败/);
+  // 提交标识只能随导入事务落盘:失败时必须仍是 stage,resume 才会撤销清理。
+  const operation = readOperation(s.settingsMap);
+  assert.ok(operation, '失败后操作状态应保留供 resume 处理');
+  assert.equal(operation.phase, 'stage');
+  const cleaned = await s.api.resumePendingRestore();
+  assert.equal(cleaned.length, 1);
+  assert.equal(readOperation(s.settingsMap), null);
+});
+
+test('the commit marker is delivered inside the import transaction, not before it', async () => {
+  const s = setup();
+  const preview = await s.api.inspectBackup('rhetor/snapshots/bk1.json');
+  await s.api.runRestore('rhetor/snapshots/bk1.json', preview);
+  assert.equal(s.importMarkers.length, 1, '提交标识应随导入传入');
+  assert.equal(s.importMarkers[0]?.phase, 'commit');
+});
+
+test('rollback clears the restore point in the same transaction as the replacement', async () => {
+  const s = setup();
+  s.settingsMap.set('restore_point_data', '{"words":[]}');
+  await s.api.restoreFromCheckpoint();
+  assert.equal(s.replaced.length, 1);
+  assert.equal(s.replaced[0].settingsUpdates.restore_point_data, '');
+  assert.equal(s.settingsMap.get('restore_point_data'), '');
+});
+
+test('rollback without a restore point is rejected', async () => {
+  const s = setup();
+  await assert.rejects(s.api.restoreFromCheckpoint(), /没有可用的恢复点/);
+  assert.equal(s.replaced.length, 0);
 });

@@ -8,7 +8,7 @@ import { getTheme, THEME_DETAILS, THEME_LABELS, THEME_ORDER, type ThemeName } fr
 import { getSetting, setSetting } from '../data/database';
 import { loadStorageConfig, saveStorageConfig, DEFAULT_STORAGE, type StorageConfig } from '../services/objectStorage';
 import { listBackups, uploadLibrary, type BackupInfo } from '../services/librarySync';
-import { inspectBackup, runRestore, resumePendingRestore, restoreFromCheckpoint, type RestorePreview } from '../services/restoreCoordinator';
+import { hasRestorePoint, inspectBackup, runRestore, resumePendingRestore, restoreFromCheckpoint, type RestorePreview } from '../services/restoreCoordinator';
 import { loadAiConfig, saveAiConfig, DEFAULT_AI, LOCAL_ASR_MODELS, downloadLocalModel, deleteLocalModel, localModelDownloaded, type AiConfig } from '../services/ai';
 
 export default function SettingsScreen() {
@@ -68,6 +68,11 @@ export default function SettingsScreen() {
     }
     return () => { mounted = false; };
   }, []);
+  useEffect(() => {
+    let mounted = true;
+    hasRestorePoint().then(value => { if (mounted) setCanRollback(value); }).catch(() => {});
+    return () => { mounted = false; };
+  }, []);
   const refreshLocalModels = async () => {
     const entries = await Promise.all(LOCAL_ASR_MODELS.map(async model => [model.id, await localModelDownloaded(model.id)] as const));
     setLocalReady(Object.fromEntries(entries));
@@ -110,7 +115,7 @@ export default function SettingsScreen() {
       placeholder={placeholder} placeholderTextColor={theme.textMuted} autoCorrect={false} autoCapitalize="none" editable={ready && !busy} />}
   </View>;
   const storageField = (key: keyof StorageConfig, label: string, placeholder = '', secret = false) => field(label, String(storage[key]), value => { setStorage(s => ({ ...s, [key]: value })); setBackups([]); setSelectedBackup(''); }, placeholder, secret);
-  const aiField = (key: keyof AiConfig, label: string, placeholder = '', secret = false) => field(label, ai[key], value => { setAi(s => ({ ...s, [key]: value })); setAiStatus('有未保存的更改'); if (key === 'apiKey') setSavedAiKey(false); }, placeholder, secret);
+  const aiField = (key: keyof AiConfig, label: string, placeholder = '', secret = false) => field(label, String(ai[key] ?? ''), value => { setAi(s => ({ ...s, [key]: value })); setAiStatus('有未保存的更改'); if (key === 'apiKey') setSavedAiKey(false); }, placeholder, secret);
   const refreshBackups = async () => { const list = await listBackups(); setBackups(list); setSelectedBackup(list[0]?.key || ''); setRestorePreview(null); return list; };
   // 处理上次未完成的备份恢复:已提交的幂等清理,提交前的撤销。
   useEffect(() => { void resumePendingRestore().catch(() => {}); }, []);
@@ -159,9 +164,9 @@ export default function SettingsScreen() {
         </View>)}</ScrollView>
         {restorePreview && <Text style={styles.hint}>将合并 {restorePreview.words} 个单词、{restorePreview.aiCards} 张问答卡与 {restorePreview.attachments} 个附件；合并前自动创建本机恢复点。</Text>}
         {button('确认合并到本机', () => { if (!selectedBackup || !restorePreview) return; void run(async () => { const { operation_id } = await runRestore(selectedBackup, restorePreview, message => setStatus(message)); setRestorePreview(null); void resumePendingRestore(); setCanRollback(true); return `合并完成（操作 ${operation_id}）。`; }); })}
-        {canRollback && button('从恢复点回退到合并前', async () => { await restoreFromCheckpoint(); setCanRollback(false); setStatus('已回退到合并前的学习资料。'); })}
         <Text style={styles.hint}>选择版本后会先预览内容数量；确认合并前自动创建本机恢复点，可回退。</Text>
       </>}
+      {canRollback && button('从恢复点回退到合并前', () => { void run(async () => { await restoreFromCheckpoint(); setCanRollback(false); return '已回退到合并前的学习资料。'; }); })}
     </View></Details>
     {(Platform.OS === 'macos' || Platform.OS === 'windows') && <Details title="字幕转写引擎"><View style={styles.section}>
       <Text style={styles.hint}>「端侧模型」在本机离线生成字幕，音频不上传、不消耗转写 API；英文字幕的翻译仍使用「AI 服务」中的聊天模型。macOS 依赖 whisper.cpp 与 sherpa-onnx 本机库，Windows 依赖 clarora_asr.dll（安装与构建见平台文档），模型首次使用前需在本区块下载。</Text>
