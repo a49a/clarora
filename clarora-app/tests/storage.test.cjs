@@ -40,3 +40,105 @@ test('list handles pagination, XML escaping and repeated-token failure', async (
   const { ObjectStorage: Broken } = loader({ '../data/database': {}, './platform': {} }, { fetch: async () => ({ ok: true, text: async () => '<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>same</NextContinuationToken></ListBucketResult>' }) })(file);
   await assert.rejects(new Broken(config).list('x'), /分页响应异常/);
 });
+
+test('release build without a credential module refuses to save plaintext secrets', async () => {
+  const stored = [];
+  const { saveStorageConfig } = loader({
+    '../data/database': { getSetting: async () => null, setSetting: async (_k, v) => { stored.push(v); } },
+    './platform': { currentPlatform: 'macos', getNativeModules: () => ({}) },
+  })(file);
+  await assert.rejects(saveStorageConfig(config), /保险库不可用/);
+  assert.equal(stored.length, 0);
+});
+
+test('a partial staging failure aborts cleanly so the storage endpoint keeps its old keys', async () => {
+  const vault = new Map([['clarora.storage.secret-access-key', 'old-secret']]);
+  const stored = [];
+  const { saveStorageConfig } = loader({
+    '../data/database': { getSetting: async () => stored[stored.length - 1] ?? null, setSetting: async (_k, v) => { stored.push(v); } },
+    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+      getSecret: async key => vault.get(key) ?? null,
+      setSecret: async (key, value) => { if (key === 'clarora.storage.session-token.v1') throw new Error('denied'); vault.set(key, value); },
+      deleteSecret: async key => vault.delete(key),
+    } }) },
+  })(file);
+  await assert.rejects(saveStorageConfig(config), /保险库写入失败/);
+  // 暂存半成品已清理,数据库仍引用旧代:老端点配老密钥,不会错代。
+  assert.equal(vault.get('clarora.storage.secret-access-key'), 'old-secret');
+  assert.equal(vault.get('clarora.storage.secret-access-key.v1'), undefined);
+  assert.equal(stored.length, 0);
+});
+
+test('a failed config write keeps the previous generation referenced and discards the stage', async () => {
+  const vault = new Map([['clarora.storage.secret-access-key', 'old-secret']]);
+  const { saveStorageConfig } = loader({
+    '../data/database': { getSetting: async () => null, setSetting: async () => {} },
+    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+      getSecret: async key => vault.get(key) ?? null,
+      setSecret: async (key, value) => { vault.set(key, value); },
+      deleteSecret: async key => { vault.delete(key); },
+    } }) },
+  })(file);
+  await assert.rejects(saveStorageConfig(config), /校验失败/);
+  assert.equal(vault.get('clarora.storage.secret-access-key'), 'old-secret');
+  assert.equal(vault.get('clarora.storage.secret-access-key.v1'), undefined);
+});
+
+test('a failed read of the current config aborts saving instead of staging over live keys', async () => {
+  const vault = new Map([['clarora.storage.secret-access-key.v1', 'live-secret']]);
+  let reads = 0;
+  const { saveStorageConfig } = loader({
+    '../data/database': {
+      getSetting: async () => { if (++reads === 1) throw new Error('read failed'); return null; },
+      setSetting: async () => {},
+    },
+    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+      getSecret: async key => vault.get(key) ?? null,
+      setSecret: async (key, value) => { vault.set(key, value); },
+      deleteSecret: async key => { vault.delete(key); },
+    } }) },
+  })(file);
+  await assert.rejects(saveStorageConfig(config), /中止/);
+  assert.equal(vault.get('clarora.storage.secret-access-key.v1'), 'live-secret');
+});
+
+test('an unknown commit outcome keeps the staged generation instead of deleting it', async () => {
+  const vault = new Map();
+  let reads = 0;
+  const { saveStorageConfig } = loader({
+    '../data/database': {
+      getSetting: async () => { if (++reads >= 2) throw new Error('read failed'); return null; },
+      setSetting: async () => {},
+    },
+    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+      getSecret: async key => vault.get(key) ?? null,
+      setSecret: async (key, value) => { vault.set(key, value); },
+      deleteSecret: async key => { vault.delete(key); },
+    } }) },
+  })(file);
+  await assert.rejects(saveStorageConfig(config), /校验失败/);
+  // 提交结果不确定(两次回读都失败):暂存的新代可能已生效,绝不能清理。
+  assert.equal(vault.get('clarora.storage.secret-access-key.v1'), 'test-secret');
+});
+
+test('a stale load no longer writes back over a newer saved config', async () => {
+  const vault = new Map();
+  const writes = [];
+  let reads = 0;
+  const oldRow = JSON.stringify({ provider: 's3', endpoint: 'https://s3.old', region: 'r', bucket: 'b', accessKeyId: 'a', secretAccessKey: 'old-secret', sessionToken: '', prefix: 'p', pathStyle: false });
+  const newRow = JSON.stringify({ provider: 's3', endpoint: 'https://s3.new', region: 'r', bucket: 'b', accessKeyId: 'a', secretAccessKey: '', sessionToken: '', prefix: 'p', pathStyle: false, secretGen: 1 });
+  const { loadStorageConfig } = loader({
+    '../data/database': {
+      getSetting: async () => (reads++ === 0 ? oldRow : newRow),
+      setSetting: async (_k, v) => { writes.push(v); },
+    },
+    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+      getSecret: async key => vault.get(key) ?? null,
+      setSecret: async (key, value) => { vault.set(key, value); },
+      deleteSecret: async key => { vault.delete(key); },
+    } }) },
+  })(file);
+  await loadStorageConfig();
+  // 审查复现:行在读取期间被更新时,旧读取任务必须跳过迁移回写。
+  assert.equal(writes.length, 0);
+});

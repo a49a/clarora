@@ -4,45 +4,127 @@ import { bytesToHex } from '@noble/hashes/utils';
 import { XMLParser } from 'fast-xml-parser';
 import { getSetting, setSetting } from '../data/database';
 import { FileSystem } from './platform';
-import { SECRET_NAMES, isDevBuild, migrateSecret, secretStore } from './secrets';
+import { SECRET_NAMES, discardGeneration, isDevBuild, secretGeneration, secretStore, setSecretsAtomic, versionedSecretName } from './secrets';
 
 export type StorageConfig = {
   provider: 's3' | 'oss'; endpoint: string; region: string; bucket: string;
   accessKeyId: string; secretAccessKey: string; sessionToken: string;
-  prefix: string; pathStyle: boolean;
+  prefix: string; pathStyle: boolean; secretGen?: number;
 };
 export const DEFAULT_STORAGE: StorageConfig = {
   provider: 's3', endpoint: '', region: '', bucket: '', accessKeyId: '',
   secretAccessKey: '', sessionToken: '', prefix: 'clarora', pathStyle: false,
 };
-export async function loadStorageConfig(): Promise<StorageConfig> {
+// 配置读取、迁移与保存互斥:旧读取任务的迁移回写不得覆盖新保存的配置。
+let storageConfigOp: Promise<unknown> = Promise.resolve();
+function withStorageConfigLock<T>(action: () => Promise<T>): Promise<T> {
+  const result = storageConfigOp.then(action);
+  storageConfigOp = result.catch(() => {});
+  return result;
+}
+export function loadStorageConfig(): Promise<StorageConfig> {
+  return withStorageConfigLock(() => readStorageConfig());
+}
+async function readStorageConfig(): Promise<StorageConfig> {
   const value = await getSetting('object_storage_config');
   const config: StorageConfig = { ...DEFAULT_STORAGE, ...(value ? JSON.parse(value) : {}) };
   // __DEV__ 构建跳过钥匙串（重签名 ACL 弹窗会阻塞）；保险库只在 Release 启用。
   const store = isDevBuild() ? null : secretStore();
   if (store) {
+    // 密钥按代读取:代数与端点同存于这一行,由数据库行保证成对。
+    const generation = secretGeneration(config);
+    const accessKeyName = versionedSecretName(SECRET_NAMES.storageSecretAccessKey, generation);
+    const tokenName = versionedSecretName(SECRET_NAMES.storageSessionToken, generation);
+    const hasPlaintext = !!(config.secretAccessKey || config.sessionToken);
     try {
-      config.secretAccessKey = await migrateSecret(store, SECRET_NAMES.storageSecretAccessKey, config.secretAccessKey);
-      config.sessionToken = await migrateSecret(store, SECRET_NAMES.storageSessionToken, config.sessionToken);
-      await setSetting('object_storage_config', JSON.stringify({ ...config, secretAccessKey: '', sessionToken: '' }));
-    } catch { /* 保险库写入失败：沿用数据库明文 */ }
+      if (config.secretAccessKey) await store.setSecret(accessKeyName, config.secretAccessKey);
+      else config.secretAccessKey = (await store.getSecret(accessKeyName)) ?? '';
+      if (config.sessionToken) await store.setSecret(tokenName, config.sessionToken);
+      else config.sessionToken = (await store.getSecret(tokenName)) ?? '';
+      if (hasPlaintext) {
+        // 只有旧明文行需要迁移回写,且回写前确认行未被并发更新,
+        // 避免旧读取任务把刚保存的新配置(引用已清理的旧代)盖回去。
+        const current = await getSetting('object_storage_config');
+        if (current === value) {
+          await setSetting('object_storage_config', JSON.stringify({ ...config, secretAccessKey: '', sessionToken: '' }));
+        } else {
+          console.warn('存储配置在读取期间被更新,跳过明文迁移回写');
+        }
+      }
+    } catch (error) {
+      // 旧值迁移失败:数据库里的既有明文仍可读(不丢配置),但迁移状态要可见。
+      console.warn('凭证迁移到系统保险库失败,继续使用数据库旧值:', (error as Error).message ?? error);
+    }
   }
   return config;
 }
-export async function saveStorageConfig(config: StorageConfig): Promise<void> {
+export function saveStorageConfig(config: StorageConfig): Promise<void> {
+  return withStorageConfigLock(() => persistStorageConfig(config));
+}
+async function persistStorageConfig(config: StorageConfig): Promise<void> {
   validateStorageConfig(config);
   const store = isDevBuild() ? null : secretStore();
-  const persisted: StorageConfig = { ...config };
-  if (store) {
-    // 密钥优先写入系统凭证保险库；写入被拒时退回数据库明文，配置不丢。
-    try {
-      await store.setSecret(SECRET_NAMES.storageSecretAccessKey, config.secretAccessKey);
-      await store.setSecret(SECRET_NAMES.storageSessionToken, config.sessionToken);
-      persisted.secretAccessKey = '';
-      persisted.sessionToken = '';
-    } catch { /* 沿用数据库明文 */ }
+  if (!isDevBuild() && !store) {
+    throw new Error('本机系统凭证保险库不可用,为避免密钥明文落库,已拒绝保存;请更新安装包以包含凭证模块');
   }
-  await setSetting('object_storage_config', JSON.stringify(persisted));
+  // 原子切换方案:先按代暂存新一代密钥,全部就绪后由数据库行一次性切换
+  // 端点与 secretGen 引用。提交点只有这一行 SQLite 写入,任何失败路径
+  // (含崩溃)都不会出现"端点与密钥来自不同代"。
+  // 读取旧配置失败必须中止:猜错代数会让暂存覆盖正在使用的密钥。
+  const previousRaw = await getSetting('object_storage_config').catch(() => undefined);
+  if (previousRaw === undefined) {
+    throw new Error('读取当前存储配置失败,为避免密钥错代,已中止保存,请重试');
+  }
+  let previousGen = 0;
+  if (previousRaw) {
+    try {
+      previousGen = secretGeneration(JSON.parse(previousRaw) as StorageConfig);
+    } catch {
+      throw new Error('当前存储配置无法解析,为避免密钥错代,已中止保存,请重试');
+    }
+  }
+  const persisted: StorageConfig = { ...config };
+  const nextGen = store ? previousGen + 1 : 0;
+  if (store) {
+    persisted.secretGen = nextGen;
+    persisted.secretAccessKey = '';
+    persisted.sessionToken = '';
+  }
+  const serialized = JSON.stringify(persisted);
+  const stagedNames = [SECRET_NAMES.storageSecretAccessKey, SECRET_NAMES.storageSessionToken] as const;
+
+  // 1) 暂存新一代密钥:写失败(含部分失败)只留下无引用的暂存数据,
+  //    数据库仍引用上一代,直接中止即可,无需任何回滚。
+  if (store) {
+    try {
+      await setSecretsAtomic(store, [
+        { name: versionedSecretName(SECRET_NAMES.storageSecretAccessKey, nextGen), value: config.secretAccessKey },
+        { name: versionedSecretName(SECRET_NAMES.storageSessionToken, nextGen), value: config.sessionToken },
+      ]);
+    } catch (error) {
+      await discardGeneration(store, stagedNames, nextGen);
+      throw new Error(`系统凭证保险库写入失败,配置未变更,请重试:${(error as Error).message ?? error}`);
+    }
+  }
+
+  // 2) 提交点:端点与密钥代数同处一行,SQLite 单写原子生效。
+  await setSetting('object_storage_config', serialized);
+  const readOnce = async (): Promise<{ ok: boolean; value: string | null }> => {
+    try { return { ok: true, value: await getSetting('object_storage_config') }; } catch { return { ok: false, value: null }; }
+  };
+  const first = await readOnce();
+  if (!first.ok || first.value !== serialized) {
+    const second = await readOnce();
+    if (!(second.ok && second.value === serialized)) {
+      // 提交结果不确定(回读失败)时保留暂存的新代——它可能已经生效;
+      // 只有确认未提交(读到旧行)才清理。
+      if (store && second.ok) await discardGeneration(store, stagedNames, nextGen);
+      throw new Error('存储配置保存校验失败,请重试;输入内容已保留');
+    }
+  }
+
+  // 3) 旧代已无引用:尽力清理,失败只留下垃圾数据,不影响正确性。
+  if (store) await discardGeneration(store, stagedNames, previousGen);
 }
 export function validateStorageConfig(config: StorageConfig): void {
   if (!['s3', 'oss'].includes(config.provider)) throw new Error('不支持的存储类型');

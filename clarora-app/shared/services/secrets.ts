@@ -19,6 +19,30 @@ export const SECRET_NAMES = {
   storageSessionToken: 'clarora.storage.session-token',
 } as const;
 
+/**
+ * 密钥代数命名:0 代保持原名(兼容既有保险库条目),更代的密钥带 .v<N>
+ * 后缀。保存先暂存新一代,再由数据库行一次性切换端点与 secretGen 引用;
+ * 未被引用的代只是暂存数据,任何时刻都不会与端点错代搭配。
+ */
+export function versionedSecretName(base: string, generation: number): string {
+  return generation > 0 ? `${base}.v${generation}` : base;
+}
+
+/** 读取配置行中的密钥代数;缺失或非法按 0 代(原名)处理。 */
+export function secretGeneration(config: { secretGen?: number } | null | undefined): number {
+  return typeof config?.secretGen === 'number' && Number.isInteger(config.secretGen) && config.secretGen > 0
+    ? config.secretGen
+    : 0;
+}
+
+/** 尽力删除一代密钥(切换后旧代不再被引用;暂存失败时清掉半成品)。
+ * 清理失败不影响正确性,调用方可安全忽略。 */
+export async function discardGeneration(store: SecretStore, bases: readonly string[], generation: number): Promise<void> {
+  for (const base of bases) {
+    try { await store.deleteSecret(versionedSecretName(base, generation)); } catch { /* 尽力清理 */ }
+  }
+}
+
 type NativeSecretStore = {
   setSecret: (name: string, value: string) => Promise<void>;
   getSecret: (name: string) => Promise<string | null>;
@@ -92,6 +116,44 @@ export function secretStore(): SecretStore | null {
     return macStore ??= sessionStore(module);
   }
   return null;
+}
+
+/**
+ * 成组写入凭证(value 为 null 表示删除该密钥):任一写入失败时,把已写入
+ * 的恢复为原值,避免"一半新一半旧"的密钥组与数据库旧配置搭配使用。
+ * 恢复动作失败不掩盖原始错误,由调用方统一抛出并提示重试。
+ */
+export async function setSecretsAtomic(
+  store: SecretStore,
+  entries: ReadonlyArray<{ name: string; value: string | null }>,
+): Promise<void> {
+  const previous = new Map<string, string | null>();
+  const written: string[] = [];
+  try {
+    for (const { name, value } of entries) {
+      // 预读失败(如读取被拒)按 null 处理:回滚改为删除该名。
+      // 当前调用方只暂存全新代名,删除即为正确的回滚,且不阻塞保存。
+      previous.set(name, await store.getSecret(name).catch(() => null));
+      if (value == null) await store.deleteSecret(name);
+      else await store.setSecret(name, value);
+      written.push(name);
+    }
+  } catch (error) {
+    let restored = true;
+    for (const name of written) {
+      const old = previous.get(name);
+      try {
+        if (old == null) await store.deleteSecret(name);
+        else await store.setSecret(name, old);
+      } catch { restored = false; }
+    }
+    // 如实标记:调用方不得在恢复未完成时声称"已恢复"。
+    // 不用 instanceof 判定:错误可能来自其他 vm域,构造器不同。
+    if (!restored && error && typeof error === 'object') {
+      (error as { rollbackIncomplete?: boolean }).rollbackIncomplete = true;
+    }
+    throw error;
+  }
 }
 
 /**

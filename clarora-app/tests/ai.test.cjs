@@ -17,12 +17,11 @@ function setup(config = {}, reply = { choices: [{ message: { content: 'answer' }
   } } }, { fetch: async (url, init) => { requests.push({ url, ...init }); return { ok: true, json: async () => reply }; } })(file);
   return { api, records, requests, uploads };
 }
-test('saving AI config survives a rejected keychain write by keeping the database plaintext', async () => {
+test('a rejected keychain write fails the save instead of storing database plaintext', async () => {
   let persistedValue = null;
-  const saved = [];
   const api = loader({
     '../data/database': {
-      getSetting: async () => persistedValue, setSetting: async (key, value) => { persistedValue = value; saved.push([key, value]); },
+      getSetting: async () => persistedValue, setSetting: async (key, value) => { persistedValue = value; },
       saveAiRecord: async () => {}, listAiRecords: async () => [], deleteAiRecord: async () => {},
     },
     './platform': { FileSystem: { readAsStringAsync: async () => '', readBase64Async: async () => '', uploadFileAsync: async () => ({ status: 200, body: '{}' }) },
@@ -30,11 +29,12 @@ test('saving AI config survives a rejected keychain write by keeping the databas
         getSecret: async () => null, setSecret: async () => { throw new Error('Access denied'); }, deleteSecret: async () => {},
       } }) },
   }, { fetch: async () => ({ ok: true, json: async () => ({ choices: [] }) }) })(file);
-  const savedConfig = await api.saveAiConfig({ ...api.DEFAULT_AI, baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'chat-key', asrApiKey: 'speech-key' });
-  assert.equal(savedConfig.apiKey, 'chat-key');
-  const stored = JSON.parse(saved[0][1]);
-  assert.equal(stored.apiKey, 'chat-key');
-  assert.equal(stored.asrApiKey, 'speech-key');
+  await assert.rejects(
+    api.saveAiConfig({ ...api.DEFAULT_AI, baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'chat-key', asrApiKey: 'speech-key' }),
+    /保险库写入失败/,
+  );
+  // 密钥暂存失败发生在任何数据库写入之前:配置保持未变更。
+  assert.equal(persistedValue, null);
 });
 const config = { baseUrl: 'https://chat.example/v1', apiKey: 'chat-key', model: 'chat-model', visionModel: 'vision-model', asrBaseUrl: 'https://speech.example/v1', asrApiKey: 'speech-key', asrModel: 'speech-model' };
 test('unconfigured AI does not issue requests and local lists still work', async () => {

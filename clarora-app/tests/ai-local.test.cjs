@@ -35,6 +35,32 @@ function setup(config, natives = {}, platform = 'macos', secretMap = null) {
         if (plaintext) await store.setSecret(key, plaintext);
         return plaintext;
       },
+      versionedSecretName: (base, generation) => (generation > 0 ? `${base}.v${generation}` : base),
+      secretGeneration: config => (typeof config?.secretGen === 'number' && config.secretGen > 0 ? config.secretGen : 0),
+      discardGeneration: async (store, bases, generation) => {
+        for (const base of bases) {
+          try { await store.deleteSecret(generation > 0 ? `${base}.v${generation}` : base); } catch { /* 尽力清理 */ }
+        }
+      },
+      // 与真实 setSecretsAtomic 同语义:部分写入失败时回滚已写入项。
+      setSecretsAtomic: async (store, entries) => {
+        const previous = new Map();
+        const written = [];
+        try {
+          for (const { name, value } of entries) {
+            previous.set(name, await store.getSecret(name));
+            await store.setSecret(name, value);
+            written.push(name);
+          }
+        } catch (error) {
+          for (const name of written) {
+            const old = previous.get(name);
+            if (old == null) await store.deleteSecret(name);
+            else await store.setSecret(name, old);
+          }
+          throw error;
+        }
+      },
       secretStore: () => secretMap
         ? {
             setSecret: async (key, value) => { secretMap.set(key, value); },
@@ -146,15 +172,21 @@ test('saving puts keys in the vault and stores a scrubbed config', async () => {
   const secretMap = new Map();
   const s = setup({}, {}, 'macos', secretMap);
   await s.api.saveAiConfig({ ...s.api.DEFAULT_AI, baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'new-key' });
-  assert.equal(secretMap.get('clarora.ai.api-key'), 'new-key');
+  // 新一代密钥带代数后缀暂存,配置行记录 secretGen 并抹掉明文。
+  assert.equal(secretMap.get('clarora.ai.api-key.v1'), 'new-key');
   const stored = JSON.parse(s.settingsMap.get('ai_config'));
   assert.equal(stored.apiKey, '');
+  assert.equal(stored.secretGen, 1);
 });
 
-test('platforms without a vault keep the legacy behavior', async () => {
-  const s = setup({ baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'kept' }, {}, 'android');
-  await s.api.saveAiConfig({ ...s.api.DEFAULT_AI, baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'kept' });
-  assert.ok(s.settingsMap.get('ai_config').includes('kept'));
+test('platforms without a vault refuse to save instead of storing plaintext', async () => {
+  const s = setup({ baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'legacy' }, {}, 'android');
+  await assert.rejects(
+    s.api.saveAiConfig({ ...s.api.DEFAULT_AI, baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'kept' }),
+    /保险库不可用/,
+  );
+  // 数据库保持旧值:刚输入的 'kept' 不得以明文进入 ai_config。
+  assert.ok(!s.settingsMap.get('ai_config').includes('kept'));
 });
 
 test('real secrets helper stores once and reuses the vault value', async () => {

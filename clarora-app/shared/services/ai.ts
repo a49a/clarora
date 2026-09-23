@@ -1,12 +1,12 @@
 import { getSetting, setSetting, saveAiRecord, listAiRecords, deleteAiRecord } from '../data/database';
 import { newVaultId } from '../data/vault';
 import { parseSubtitleCues, serializeSubtitleCues } from '../data/subtitles';
-import { SECRET_NAMES, isDevBuild, migrateSecret, secretStore } from './secrets';
+import { SECRET_NAMES, discardGeneration, isDevBuild, secretGeneration, secretStore, setSecretsAtomic, versionedSecretName } from './secrets';
 import { FileSystem, currentPlatform, getNativeModules, nativePath } from './platform';
 import type { OcrPageStatus, OcrPageSummary, SpeakingAttemptDetail, SpeakingAttemptSummary, SpeakingScore, AsrEngineList } from './aiTypes';
 export type * from './aiTypes';
 
-export type AiConfig = { baseUrl: string; apiKey: string; model: string; visionModel: string; asrEngine: 'local' | 'compatible'; localModel: string; asrBaseUrl: string; asrApiKey: string; asrModel: string };
+export type AiConfig = { baseUrl: string; apiKey: string; model: string; visionModel: string; asrEngine: 'local' | 'compatible'; localModel: string; asrBaseUrl: string; asrApiKey: string; asrModel: string; secretGen?: number };
 export const DEFAULT_AI: AiConfig = {
   baseUrl: '', apiKey: '', model: '', visionModel: '',
   asrEngine: currentPlatform === 'macos' || currentPlatform === 'windows' ? 'local' : 'compatible', localModel: 'base.en',
@@ -136,16 +136,23 @@ async function readAiConfig(includeSecrets: boolean): Promise<AiConfig> {
   const config: AiConfig = { ...DEFAULT_AI, ...(raw ? JSON.parse(raw) : {}) };
   const store = !includeSecrets || isDevBuild() ? null : secretStore();
   if (store) {
+    // 密钥按代读取:代数与端点同存于这一行,由数据库行保证成对。
+    const generation = secretGeneration(config);
+    const apiKeyName = versionedSecretName(SECRET_NAMES.aiApiKey, generation);
+    const asrKeyName = versionedSecretName(SECRET_NAMES.aiAsrApiKey, generation);
     // A plaintext value can be a newer save after a vault write failed.
     // Do not replace it with an older (or empty) vault entry.
     const hasPlaintext = !!(config.apiKey || config.asrApiKey);
     try {
-      if (config.apiKey) await store.setSecret(SECRET_NAMES.aiApiKey, config.apiKey);
-      else config.apiKey = await migrateSecret(store, SECRET_NAMES.aiApiKey, '');
-      if (config.asrApiKey) await store.setSecret(SECRET_NAMES.aiAsrApiKey, config.asrApiKey);
-      else config.asrApiKey = await migrateSecret(store, SECRET_NAMES.aiAsrApiKey, '');
       if (hasPlaintext) {
+        if (config.apiKey) await store.setSecret(apiKeyName, config.apiKey);
+        else config.apiKey = (await store.getSecret(apiKeyName)) ?? '';
+        if (config.asrApiKey) await store.setSecret(asrKeyName, config.asrApiKey);
+        else config.asrApiKey = (await store.getSecret(asrKeyName)) ?? '';
         await setSetting('ai_config', JSON.stringify({ ...config, apiKey: '', asrApiKey: '' }));
+      } else {
+        config.apiKey = (await store.getSecret(apiKeyName)) ?? '';
+        config.asrApiKey = (await store.getSecret(asrKeyName)) ?? '';
       }
     } catch {
       if (hasPlaintext) return config;
@@ -178,22 +185,67 @@ async function persistAiConfig(config: AiConfig): Promise<AiConfig> {
   if (trimmed.asrBaseUrl) validateBaseUrl(trimmed.asrBaseUrl);
   if (/[\r\n]/.test(trimmed.apiKey + trimmed.asrApiKey)) throw new Error('API Key 格式错误');
   const store = isDevBuild() ? null : secretStore();
-  const persisted: AiConfig = { ...trimmed };
-  if (store) {
-    // 密钥优先写入系统凭证保险库，数据库不再保存明文；保险库写入被拒
-    // （如钥匙串授权拒绝）时退回数据库明文，保证配置本身不丢。
+  if (!isDevBuild() && !store) {
+    throw new Error('本机系统凭证保险库不可用,为避免密钥明文落库,已拒绝保存;请更新安装包以包含凭证模块');
+  }
+  // 原子切换方案:先按代暂存新一代密钥,全部就绪后由数据库行一次性切换
+  // 端点与 secretGen 引用。提交点只有这一行 SQLite 写入,暂存的旧代/半成品
+  // 只是无引用数据,任何失败路径(含崩溃)都不会出现"端点与密钥来自不同代"。
+  // 读取旧配置失败必须中止:猜错代数会让暂存覆盖正在使用的密钥。
+  const previousRaw = await getSetting('ai_config').catch(() => undefined);
+  if (previousRaw === undefined) {
+    throw new Error('读取当前 AI 配置失败,为避免密钥错代,已中止保存,请重试');
+  }
+  let previousGen = 0;
+  if (previousRaw) {
     try {
-      await store.setSecret(SECRET_NAMES.aiApiKey, trimmed.apiKey);
-      await store.setSecret(SECRET_NAMES.aiAsrApiKey, trimmed.asrApiKey);
-      persisted.apiKey = '';
-      persisted.asrApiKey = '';
-    } catch { /* 沿用数据库明文 */ }
+      previousGen = secretGeneration(JSON.parse(previousRaw) as AiConfig);
+    } catch {
+      throw new Error('当前 AI 配置无法解析,为避免密钥错代,已中止保存,请重试');
+    }
+  }
+  const persisted: AiConfig = { ...trimmed };
+  const nextGen = store ? previousGen + 1 : 0;
+  if (store) {
+    persisted.secretGen = nextGen;
+    persisted.apiKey = '';
+    persisted.asrApiKey = '';
   }
   const serialized = JSON.stringify(persisted);
-  await setSetting('ai_config', serialized);
-  if (await getSetting('ai_config') !== serialized) {
-    throw new Error('AI 配置保存校验失败，请重试；输入内容已保留');
+  const stagedNames = [SECRET_NAMES.aiApiKey, SECRET_NAMES.aiAsrApiKey] as const;
+
+  // 1) 暂存新一代密钥:写失败(含部分失败)只留下无引用的暂存数据,
+  //    数据库仍引用上一代,直接中止即可,无需任何回滚。
+  if (store) {
+    try {
+      await setSecretsAtomic(store, [
+        { name: versionedSecretName(SECRET_NAMES.aiApiKey, nextGen), value: trimmed.apiKey },
+        { name: versionedSecretName(SECRET_NAMES.aiAsrApiKey, nextGen), value: trimmed.asrApiKey },
+      ]);
+    } catch (error) {
+      await discardGeneration(store, stagedNames, nextGen);
+      throw new Error(`系统凭证保险库写入失败,配置未变更,请重试:${(error as Error).message ?? error}`);
+    }
   }
+
+  // 2) 提交点:端点与密钥代数同处一行,SQLite 单写原子生效。
+  await setSetting('ai_config', serialized);
+  const readOnce = async (): Promise<{ ok: boolean; value: string | null }> => {
+    try { return { ok: true, value: await getSetting('ai_config') }; } catch { return { ok: false, value: null }; }
+  };
+  const first = await readOnce();
+  if (!first.ok || first.value !== serialized) {
+    const second = await readOnce();
+    if (!(second.ok && second.value === serialized)) {
+      // 提交结果不确定(回读失败)时保留暂存的新代——它可能已经生效;
+      // 只有确认未提交(读到旧行)才清理。
+      if (store && second.ok) await discardGeneration(store, stagedNames, nextGen);
+      throw new Error('AI 配置保存校验失败,请重试;输入内容已保留');
+    }
+  }
+
+  // 3) 旧代已无引用:尽力清理,失败只留下垃圾数据,不影响正确性。
+  if (store) await discardGeneration(store, stagedNames, previousGen);
   return trimmed;
 }
 async function endpoint(asr = false, vision = false) {
