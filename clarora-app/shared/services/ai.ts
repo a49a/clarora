@@ -224,7 +224,7 @@ async function persistAiConfig(config: AiConfig): Promise<AiConfig> {
       ]);
     } catch (error) {
       await discardGeneration(store, stagedNames, nextGen);
-      throw new Error(`系统凭证保险库写入失败,配置未变更,请重试:${(error as Error).message ?? error}`);
+      throw new Error(`系统凭证保险库写入失败,配置未变更,请重试:${(error as Error).message ?? error}`, { cause: error });
     }
   }
 
