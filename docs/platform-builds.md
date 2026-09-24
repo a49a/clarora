@@ -138,7 +138,7 @@ xcodebuild -workspace Clarora.xcworkspace -scheme Clarora-iOS \
   -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
 ```
 
-真机运行前，在 Xcode Signing & Capabilities 中设置自己的 Team 和唯一 Bundle Identifier。Release 构建会自动打包 JavaScript；分发需使用自己的签名、描述文件和 App Store/TestFlight 配置。
+真机运行前，在 Xcode Signing & Capabilities 中设置自己的 Team 和唯一 Bundle Identifier。Release 构建会自动打包 JavaScript。GitHub Release 提供的 `Clarora-ios-unsigned.ipa` 需要用户自行签名后安装；构建此包无需 Apple 开发者会员。未签名构建命令、免费个人真机开发步骤与可选正式分发见 [移动端发布](mobile-releases.md)。
 
 使用与限制：
 
@@ -153,4 +153,4 @@ xcodebuild -workspace Clarora.xcworkspace -scheme Clarora-iOS \
 
 ## 客户端分发
 
-构建并实际验证安装包后，再添加对应下载渠道。Windows 使用已发布的安装包地址，iOS 使用 TestFlight 或 App Store 链接；生成源码不代表已经可供用户下载。tag 触发的发布流水线（macOS dmg / Windows zip / SHA256SUMS）与发版步骤见 [发布流程](releases.md)。
+构建并实际验证安装包后，再添加对应下载渠道。Windows 使用已发布的安装包地址，iOS 官网渠道使用 TestFlight 或 App Store 链接，GitHub Release 可另提供明确标注、需要用户自行签名的 IPA；未签名 IPA 不代表渠道已开放。tag 触发的发布流水线（macOS dmg / Windows zip / Android APK / 未签名 iOS IPA / SHA256SUMS）与发版步骤见 [发布流程](releases.md)。

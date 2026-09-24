@@ -1,0 +1,41 @@
+name: iOS unsigned IPA
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      build_number:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clarora-app/package-lock.json
+      - run: npm ci
+        working-directory: clarora-app
+      - run: npm run ios:pods
+        working-directory: clarora-app
+      - name: Build device Release IPA without signing
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CLARORA_BUILD_NUMBER: ${{ inputs.build_number }}
+        run: bash clarora-app/scripts/build-ios-unsigned.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Clarora-ios-unsigned
+          path: |
+            clarora-app/dist/mobile/Clarora-ios-unsigned.ipa
+            clarora-app/dist/mobile/ios-unsigned-build.json
+          if-no-files-found: error

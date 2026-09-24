@@ -1,5 +1,6 @@
 buildscript {
     ext {
+        // Keep scripts/build-android-release.sh APK verification tools aligned with this version.
         buildToolsVersion = "36.0.0"
         minSdkVersion = 24
         compileSdkVersion = 36
