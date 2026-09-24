@@ -1,7 +1,8 @@
 # 发布流程（Release Runbook）
 
 版本唯一真源是 git tag（`v0.1.0` 格式）。打 tag 并推送后，Release 工作流自动构建
-macOS dmg 与 Windows zip，生成校验和，并创建 GitHub Release。
+macOS dmg、Windows zip、签名 Android APK 与未签名 iOS IPA，生成校验和，并创建 GitHub Release。
+Android 签名 secrets 为必需配置；默认 iOS IPA 不需要 Apple 账号，下载后须用户自行签名才能安装。可选 iOS 签名构建与渠道交付见 [移动端发布](mobile-releases.md)。
 
 ## 发版步骤
 
@@ -15,11 +16,12 @@ macOS dmg 与 Windows zip，生成校验和，并创建 GitHub Release。
    git push origin v0.1.0
    ```
 
-5. 在 Actions 确认 Release 工作流三个 job（macos / windows / release）全绿，
+5. 在 Actions 确认 Release 工作流各 job（resolve / macos / windows / android / ios / release）全绿，
    GitHub Releases 页面出现产物、`SHA256SUMS.txt` 与 `release-metadata.json`。
+   iOS 资产为 `Clarora-ios-unsigned.ipa`，另附 `ios-unsigned-build.json`，IPA 纳入校验和；Release 说明会注明安装需自行签名。
    Windows job 会对最终 zip 做安装包能力验收（主程序、端侧转写、PDF 运行时），
    缺失即失败，不会发布不完整包。
-6. 官网无需手工更新：`clarora-web` 构建时自动从 GitHub Releases API 拉取最新
+6. 客户端发布后需触发官网构建部署：`clarora-web` 构建时自动从 GitHub Releases API 拉取最新
    版本并渲染下载卡片（`config.js` 是生成产物，不要手改）。也可把 Release 随包
    发布的 `release-metadata.json` 交给官网构建消费，两者是同一 schema。
 
@@ -46,7 +48,7 @@ ASR 步骤总上限为 35 分钟。标准安装包声明端侧转写能力，因
 
 ## 未签名分发的用户提示
 
-当前产物未做代码签名（见下文签名路线），首次打开会有系统拦截：
+当前桌面产物未做代码签名（见下文签名路线），首次打开会有系统拦截：
 
 - **macOS**：下载 dmg 安装后，终端执行 `xattr -cr /Applications/Clarora.app`，
   或在「系统设置 → 隐私与安全性」中允许。

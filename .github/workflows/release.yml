@@ -20,19 +20,23 @@ jobs:
     outputs:
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       source_sha: ${{ steps.resolve.outputs.source_sha }}
+      android_build_number: ${{ steps.resolve.outputs.android_build_number }}
     steps:
       - uses: actions/checkout@v4
       - name: Resolve release tag and source sha
         id: resolve
+        env:
+          REQUESTED_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            tag="${{ github.event.inputs.tag }}"
+          if [ -n "$REQUESTED_TAG" ]; then
+            tag="$REQUESTED_TAG"
           elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             tag="$GITHUB_REF_NAME"
           else
             echo "::error::手动发布必须提供有效 tag(如 v0.1.0)"; exit 1
           fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
           sha="$(git rev-parse "$tag^{commit}")"
           # 应用显示版本必须与 tag 一致,不允许只改 Release 标题。
@@ -42,6 +46,9 @@ jobs:
           fi
           echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
           echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
+          # Stable monotonic code for semantic versions; rebuilding a tag preserves it.
+          code="$(python3 -c 'import sys; a,b,c=map(int,sys.argv[1].split(".")); assert 0<=a<999 and 0<=b<1000 and 0<=c<1000; print(a*1000000+b*1000+c+1)' "$pkg_version")"
+          echo "android_build_number=$code" >> "$GITHUB_OUTPUT"
           echo "resolved: $tag @ $sha"
   macos:
     name: macOS release build
@@ -132,11 +139,26 @@ jobs:
           name: Clarora-windows-x64
           path: clarora-app/Clarora-windows-x64.zip
           if-no-files-found: error
+  android:
+    name: Android release build
+    needs: resolve
+    uses: ./.github/workflows/android-release.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.source_sha }}
+      build_number: ${{ needs.resolve.outputs.android_build_number }}
+    secrets: inherit
+  ios:
+    name: iOS unsigned device IPA
+    needs: resolve
+    uses: ./.github/workflows/ios-unsigned.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.source_sha }}
+      build_number: ${{ needs.resolve.outputs.android_build_number }}
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [resolve, macos, windows]
+    needs: [resolve, macos, windows, android, ios]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -149,13 +171,17 @@ jobs:
           mkdir -p release
           cp dist/Clarora-macos-arm64/Clarora-macos-arm64.dmg release/
           cp dist/Clarora-windows-x64/Clarora-windows-x64.zip release/
-          cd release
-          sha256sum * > SHA256SUMS.txt
+          cp dist/Clarora-android/Clarora-android.apk release/
+          cp dist/Clarora-android/android-build.json release/
+          cp dist/Clarora-ios-unsigned/Clarora-ios-unsigned.ipa release/
+          cp dist/Clarora-ios-unsigned/ios-unsigned-build.json release/
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          IOS_DISTRIBUTION_URL: ${{ vars.IOS_DISTRIBUTION_URL }}
+          IOS_DISTRIBUTION_VERSION: ${{ vars.IOS_DISTRIBUTION_VERSION }}
         run: |
           # 与官网 clarora-web/release-metadata.json 完全同一 schema:官网构建
           # 可通过 CLARORA_RELEASE_METADATA 直接消费本文件。
@@ -169,11 +195,41 @@ jobs:
             "latest_url": "https://github.com/a49a/clarora/releases/tag/$RELEASE_TAG",
             "platforms": {
               "macos": { "status": "released", "arch": "arm64", "asset_name": "Clarora-macos-arm64.dmg", "url": "https://github.com/a49a/clarora/releases/download/$RELEASE_TAG/Clarora-macos-arm64.dmg" },
-              "windows": { "status": "released", "arch": "x64", "asset_name": "Clarora-windows-x64.zip", "url": "https://github.com/a49a/clarora/releases/download/$RELEASE_TAG/Clarora-windows-x64.zip" }
+              "windows": { "status": "released", "arch": "x64", "asset_name": "Clarora-windows-x64.zip", "url": "https://github.com/a49a/clarora/releases/download/$RELEASE_TAG/Clarora-windows-x64.zip" },
+              "android": { "status": "released", "arch": "universal", "asset_name": "Clarora-android.apk", "url": "https://github.com/a49a/clarora/releases/download/$RELEASE_TAG/Clarora-android.apk" },
+              "ios": { "status": "planned" }
             }
           }
           METADATA
+          python3 - <<'PYMETA'
+          import json, os, re
+          from urllib.parse import urlparse
+          path = 'release/release-metadata.json'
+          metadata = json.load(open(path))
+          url = os.environ.get('IOS_DISTRIBUTION_URL', '')
+          if url:
+              assert os.environ.get('IOS_DISTRIBUTION_VERSION') == metadata['version'], 'iOS channel version must match this release'
+              u = urlparse(url)
+              assert u.scheme == 'https' and not u.username and not u.password and not u.port
+              if u.hostname == 'testflight.apple.com' and re.fullmatch(r'/join/[A-Za-z0-9]+', u.path):
+                  channel = 'testflight'
+              elif u.hostname == 'apps.apple.com' and re.search(r'/id[0-9]+$', u.path):
+                  channel = 'app-store'
+              else:
+                  raise ValueError('Invalid iOS distribution URL')
+              metadata['platforms']['ios'] = dict(status='released', channel=channel, url=url)
+              with open(path, 'w') as f: json.dump(metadata, f, indent=2)
+          PYMETA
+          (cd release && sha256sum *.dmg *.zip *.apk *.ipa *.json > SHA256SUMS.txt)
+          cat > release-notes.md <<'NOTES'
+          ### iOS IPA（未签名 / unsigned）
+          `Clarora-ios-unsigned.ipa` 是供自行签名使用的 iOS 真机 Release 包。
+          下载后不能直接安装；需要用户自行使用有效的证书和描述文件重新签名。
+          This IPA requires user signing before installation. It is not a TestFlight or App Store distribution.
+          NOTES
+          printf '\n[Mobile build and distribution instructions](https://github.com/a49a/clarora/blob/%s/docs/mobile-releases.md)\n' "$RELEASE_TAG" >> release-notes.md
           gh release create "$RELEASE_TAG" \
             release/* --verify-tag --generate-notes \
+            --notes-file release-notes.md \
             --title "Clarora $RELEASE_TAG"
         working-directory: .

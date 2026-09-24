@@ -18,6 +18,8 @@ v0.1.0 起提供 macOS 与 Windows 安装包,从 [GitHub Releases](https://githu
 
 安装包未做代码签名:macOS 首次打开如被 Gatekeeper 拦截,右键 App 选「打开」;Windows 如有 SmartScreen 提示,选择「仍要运行」。
 
+移动端签名构建与分发配置见 [移动端发布](docs/mobile-releases.md)。Android APK 以 Release 实际资产为准；iOS Release 将提供 `Clarora-ios-unsigned.ipa`（以实际资产为准），需要用户自行签名后安装，不能下载后直接安装；无需付费账号即可构建该未签名包。
+
 ## 开发
 
 需要 Node.js 24、对应平台开发工具。macOS 还需要 Xcode、CocoaPods、libmpv 和 whisper-cpp（`brew install mpv whisper-cpp`）；当前工程从 `/opt/homebrew` 查找这些库，其他安装路径需要调整 Xcode 的 Header / Library Search Paths。

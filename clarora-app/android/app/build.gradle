@@ -72,6 +72,21 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'org.webkit:android-jsc:+'
 
+def appVersion = new groovy.json.JsonSlurper().parse(file("../../package.json")).version
+// Debug builds stay usable without release credentials. Every Release task fails closed.
+def releaseEnv = ["CLARORA_ANDROID_KEYSTORE", "CLARORA_ANDROID_STORE_PASSWORD",
+                  "CLARORA_ANDROID_KEY_ALIAS", "CLARORA_ANDROID_KEY_PASSWORD", "CLARORA_BUILD_NUMBER"]
+gradle.taskGraph.whenReady { graph ->
+    if (graph.allTasks.any { it.project == project && it.name.toLowerCase().contains("release") }) {
+        releaseEnv.each { name ->
+            if (!System.getenv(name)) throw new GradleException("Missing release configuration: " + name)
+        }
+        if (!(System.getenv("CLARORA_BUILD_NUMBER") ==~ /[1-9][0-9]{0,8}/)) {
+            throw new GradleException("CLARORA_BUILD_NUMBER must be a positive integer, at most 9 digits")
+        }
+    }
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -82,10 +97,18 @@ android {
         applicationId "com.clarora.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode (System.getenv("CLARORA_BUILD_NUMBER") ?: "1").toInteger()
+        versionName appVersion
     }
     signingConfigs {
+        release {
+            if (System.getenv("CLARORA_ANDROID_KEYSTORE")) {
+                storeFile file(System.getenv("CLARORA_ANDROID_KEYSTORE"))
+                storePassword System.getenv("CLARORA_ANDROID_STORE_PASSWORD")
+                keyAlias System.getenv("CLARORA_ANDROID_KEY_ALIAS")
+                keyPassword System.getenv("CLARORA_ANDROID_KEY_PASSWORD")
+            }
+        }
         debug {
             storeFile file('debug.keystore')
             storePassword 'android'
@@ -98,9 +121,7 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }

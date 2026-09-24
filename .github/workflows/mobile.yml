@@ -1,0 +1,91 @@
+name: Mobile release artifacts (no publishing)
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag (v0.1.0)
+        required: true
+        type: string
+      platform:
+        type: choice
+        options: [android, ios]
+        required: true
+      build_number:
+        description: Positive build number, higher than previously distributed builds
+        required: true
+        type: string
+      ios_method:
+        type: choice
+        options: [unsigned, app-store-connect, release-testing]
+        default: unsigned
+permissions:
+  contents: read
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: source
+        env:
+          TAG: ${{ inputs.tag }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]{0,8}$ ]]
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+          sha="$(git rev-parse "$TAG^{commit}")"
+          version="$(git show "$sha:clarora-app/package.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')"
+          test "$TAG" = "v$version"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+  android:
+    if: inputs.platform == 'android'
+    needs: resolve
+    uses: ./.github/workflows/android-release.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+      build_number: ${{ inputs.build_number }}
+    secrets: inherit
+  ios-unsigned:
+    if: inputs.platform == 'ios' && inputs.ios_method == 'unsigned'
+    needs: resolve
+    uses: ./.github/workflows/ios-unsigned.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+      build_number: ${{ inputs.build_number }}
+  ios:
+    if: inputs.platform == 'ios' && inputs.ios_method != 'unsigned'
+    needs: resolve
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clarora-app/package-lock.json
+      - run: npm ci
+        working-directory: clarora-app
+      - run: npm run ios:pods
+        working-directory: clarora-app
+      - name: Archive and export signed IPA
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROFILE_BASE64: ${{ secrets.IOS_PROFILE_BASE64 }}
+          IOS_TEAM_ID: ${{ vars.IOS_TEAM_ID }}
+          IOS_EXPORT_METHOD: ${{ inputs.ios_method }}
+          CLARORA_BUILD_NUMBER: ${{ inputs.build_number }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+        run: bash clarora-app/scripts/build-ios-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Clarora-ios-${{ inputs.ios_method }}
+          path: clarora-app/dist/mobile/
+          if-no-files-found: error
+          retention-days: 7

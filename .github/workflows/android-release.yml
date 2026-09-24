@@ -1,0 +1,64 @@
+name: Android signed package
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      build_number:
+        required: true
+        type: string
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: true
+      ANDROID_STORE_PASSWORD:
+        required: true
+      ANDROID_KEY_ALIAS:
+        required: true
+      ANDROID_KEY_PASSWORD:
+        required: true
+      ANDROID_CERT_SHA256:
+        required: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clarora-app/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npm ci
+        working-directory: clarora-app
+      - name: Build and verify signed APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          CLARORA_ANDROID_KEYSTORE: ${{ runner.temp }}/clarora-release.jks
+          CLARORA_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          CLARORA_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          CLARORA_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          CLARORA_ANDROID_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
+          CLARORA_BUILD_NUMBER: ${{ inputs.build_number }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          trap 'rm -f "$CLARORA_ANDROID_KEYSTORE"' EXIT
+          test -n "$KEYSTORE_BASE64"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$CLARORA_ANDROID_KEYSTORE"
+          bash clarora-app/scripts/build-android-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Clarora-android
+          path: clarora-app/dist/mobile/
+          if-no-files-found: error
