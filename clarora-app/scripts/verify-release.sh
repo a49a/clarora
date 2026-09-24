@@ -41,9 +41,12 @@ elif [ -x /c/Windows/System32/tar.exe ]; then
   list_archive() { /c/Windows/System32/tar.exe -tf "$1"; }
   extract_archive() { mkdir -p "$2"; /c/Windows/System32/tar.exe -xf "$1" -C "$2"; }
 else
-  list_archive() { tar -tf "$1"; }
-  # tar 不会自动创建目标目录,必须先建,否则嵌套包解压直接失败
-  extract_archive() { mkdir -p "$2"; tar -xf "$1" -C "$2"; }
+  # GNU tar 不支持 zip:优先 bsdtar(libarchive),仅在没有它时退回 tar。
+  TAR="tar"
+  command -v bsdtar >/dev/null 2>&1 && TAR="bsdtar"
+  list_archive() { "$TAR" -tf "$1"; }
+  # tar 系不会自动创建目标目录,必须先建,否则嵌套包解压直接失败
+  extract_archive() { mkdir -p "$2"; "$TAR" -xf "$1" -C "$2"; }
 fi
 
 # ── macOS .app 检查 ──────────────────────────────────────────────────────

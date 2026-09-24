@@ -21,6 +21,8 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: clarora-app/package-lock.json
+      - name: Install bsdtar (libarchive-tools) for release package verification
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       - run: npm ci
         working-directory: clarora-app
       - run: npm run typecheck
