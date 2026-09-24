@@ -103,22 +103,15 @@ test('a failed read of the current config aborts saving instead of staging over 
 });
 
 test('an unknown commit outcome keeps the staged generation instead of deleting it', async () => {
-  const vault = new Map();
-  let reads = 0;
-  const { saveStorageConfig } = loader({
-    '../data/database': {
-      getSetting: async () => { if (++reads >= 2) throw new Error('read failed'); return null; },
-      setSetting: async () => {},
-    },
-    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
-      getSecret: async key => vault.get(key) ?? null,
-      setSecret: async (key, value) => { vault.set(key, value); },
-      deleteSecret: async key => { vault.delete(key); },
-    } }) },
-  })(file);
-  await assert.rejects(saveStorageConfig(config), /校验失败/);
-  // 提交结果不确定(两次回读都失败):暂存的新代可能已生效,绝不能清理。
-  assert.equal(vault.get('clarora.storage.secret-access-key.v1'), 'test-secret');
+  const h = makeStorageHarness({ failReadFrom: 2 });
+  h.vault.set('clarora.storage.secret-access-key', 'old-secret');
+  await assert.rejects(h.saveStorageConfig(config), /校验失败/);
+  // 审查复现:两次回读都失败时提交结果不确定,新代可能已生效,绝不能清理。
+  assert.equal(h.vault.get('clarora.storage.secret-access-key.v1'), 'test-secret');
+  // 重建实例:提交已随成功的行写入生效,读到同一代的新端点与新密钥。
+  const loaded = await h.mount().loadStorageConfig();
+  assert.equal(loaded.endpoint, 'https://s3.example.com');
+  assert.equal(loaded.secretAccessKey, 'test-secret');
 });
 
 test('a stale load no longer writes back over a newer saved config', async () => {
@@ -141,4 +134,102 @@ test('a stale load no longer writes back over a newer saved config', async () =>
   await loadStorageConfig();
   // 审查复现:行在读取期间被更新时,旧读取任务必须跳过迁移回写。
   assert.equal(writes.length, 0);
+});
+
+function makeStorageHarness({ failOn = '', gate = null, failReadFrom = 0 } = {}) {
+  const vault = new Map();
+  const stored = [];
+  const events = [];
+  let failed = false;
+  // mount():每次调用创建全新模块实例(共享同一持久状态)。
+  // 读取失败计数按实例独立,新实例的读取不被旧实例的故障配置连坐。
+  const mount = () => {
+    let reads = 0;
+    return loader({
+    '../data/database': {
+      getSetting: async () => {
+        reads += 1;
+        events.push(`read#${reads}`);
+        if (failReadFrom && reads >= failReadFrom) throw new Error('read failed');
+        if (gate && reads === 1) await gate.promise;
+        return stored[stored.length - 1] ?? null;
+      },
+      setSetting: async (_k, v) => { stored.push(v); },
+    },
+    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+      getSecret: async key => { events.push(`get:${key}`); return vault.get(key) ?? null; },
+      setSecret: async (key, value) => {
+        if (key === failOn && !failed) { failed = true; throw new Error('denied'); }
+        events.push(`set:${key}`);
+        vault.set(key, value);
+      },
+      deleteSecret: async key => { events.push(`del:${key}`); vault.delete(key); },
+    } }) },
+  })(file);
+  };
+  const saveStorageConfig = mount().saveStorageConfig;
+  const loadStorageConfig = mount().loadStorageConfig;
+  return { vault, stored, events, mount, saveStorageConfig, loadStorageConfig };
+}
+
+test('a normal save stages a new generation, flips the row and reload returns the same secrets', async () => {
+  const h = makeStorageHarness();
+  await h.saveStorageConfig(config);
+  assert.equal(h.vault.get('clarora.storage.secret-access-key.v1'), 'test-secret');
+  assert.equal(JSON.parse(h.stored[h.stored.length - 1]).secretGen, 1);
+  const loaded = await h.loadStorageConfig();
+  assert.equal(loaded.secretAccessKey, 'test-secret');
+  assert.equal(loaded.endpoint, 'https://s3.example.com');
+  assert.equal(loaded.secretGen, 1);
+  // 重建服务实例后结论仍成立。
+  const reloaded = await h.mount().loadStorageConfig();
+  assert.equal(reloaded.secretAccessKey, 'test-secret');
+});
+
+test('retrying after a staging failure succeeds and the reloaded config matches the input', async () => {
+  const h = makeStorageHarness({ failOn: 'clarora.storage.session-token.v1' });
+  await assert.rejects(h.saveStorageConfig(config), /配置未变更/);
+  assert.equal(h.vault.get('clarora.storage.secret-access-key.v1'), undefined);
+  await h.saveStorageConfig(config);
+  const loaded = await h.loadStorageConfig();
+  assert.equal(loaded.secretAccessKey, 'test-secret');
+  assert.equal(loaded.sessionToken, '');
+  assert.equal(loaded.secretGen, 1);
+});
+
+test('two consecutive saves advance the generation, remove the old one and keep the pair consistent', async () => {
+  const h = makeStorageHarness();
+  await h.saveStorageConfig(config);
+  await h.saveStorageConfig({ ...config, endpoint: 'https://s3.two.example', secretAccessKey: 'second-secret' });
+  assert.equal(h.vault.get('clarora.storage.secret-access-key.v1'), undefined, '旧代应被清理');
+  assert.equal(h.vault.get('clarora.storage.secret-access-key.v2'), 'second-secret');
+  const loaded = await h.loadStorageConfig();
+  assert.equal(loaded.secretAccessKey, 'second-secret');
+  assert.equal(loaded.endpoint, 'https://s3.two.example');
+  assert.equal(loaded.secretGen, 2);
+});
+
+test('a paused in-flight load serializes with the following save and the final pair is consistent', async () => {
+  let release;
+  const gate = { promise: new Promise(resolve => { release = resolve; }) };
+  const h = makeStorageHarness({ gate });
+  // load 与 save 必须来自同一模块实例,否则两者不共享配置锁,验证无从谈起;
+  // 只有最后的重载断言才使用新实例。
+  const service = h.mount();
+  const loadPromise = service.loadStorageConfig().then(() => { h.events.push('load-done'); });
+  // 受控调度:旧行读取已挂起在闸门上,此时启动保存
+  const savePromise = service.saveStorageConfig(config);
+  await new Promise(resolve => setImmediate(resolve));
+  // 旧读取仍挂在闸门上:保存若已开始暂存,说明两者没有共享互斥锁。
+  assert.ok(!h.events.some(event => event.startsWith('set:')), '旧读取释放前保存不得开始暂存');
+  release();
+  await Promise.all([loadPromise, savePromise]);
+  // 保存的暂存写入必须发生在旧读取完全结束之后
+  assert.ok(h.events.indexOf('set:clarora.storage.secret-access-key.v1') > h.events.indexOf('load-done'), '保存应等待旧读取结束');
+  // 重载验证使用新实例:跨实例读到同一持久状态。
+  const loaded = await h.mount().loadStorageConfig();
+  assert.equal(loaded.endpoint, 'https://s3.example.com');
+  assert.equal(loaded.secretAccessKey, 'test-secret');
+  assert.equal(loaded.secretGen, 1);
+  assert.ok(h.vault.has('clarora.storage.secret-access-key.v1'), '最终引用的密钥存在');
 });

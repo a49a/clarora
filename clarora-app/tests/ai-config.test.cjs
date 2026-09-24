@@ -4,23 +4,32 @@ const path = require('node:path');
 const loader = require('./helpers/load-ts.cjs');
 
 function setup({ dev = false, denyRead = false, denyWrite = false, failOn = '', noVaultModule = false, discardWrite = false, failReadOn = 0, failReadFrom = 0, seed = null, status = 200 } = {}) {
+  let failOnUsed = false;
   let stored = seed;
   const vault = new Map();
-  const settingReads = { count: 0 };
   const requests = [];
-  const api = loader({
+  // mount():每次调用都创建全新模块实例(共享同一持久状态),
+  // 用于验证"重建服务实例后结论仍成立"。读取失败计数按实例独立,
+  // 否则新实例的读取会被旧实例的故障配置连坐。
+  const mount = () => {
+    let settingReads = 0;
+    return loader({
     '../data/database': {
       getSetting: async () => {
-        settingReads.count += 1;
-        if (failReadOn && settingReads.count === failReadOn) throw new Error('read failed');
-        if (failReadFrom && settingReads.count >= failReadFrom) throw new Error('read failed');
+        settingReads += 1;
+        if (failReadOn && settingReads === failReadOn) throw new Error('read failed');
+        if (failReadFrom && settingReads >= failReadFrom) throw new Error('read failed');
         return stored;
       },
       setSetting: async (_, value) => { if (!discardWrite) stored = value; },
     },
     './platform': { currentPlatform: 'macos', getNativeModules: () => noVaultModule ? {} : ({ RNMacKeychain: {
       getSecret: async key => { if (denyRead) throw new Error('denied'); return vault.get(key) ?? null; },
-      setSecret: async (key, value) => { if (denyWrite || key === failOn) throw new Error('denied'); vault.set(key, value); },
+      setSecret: async (key, value) => {
+        if (denyWrite) throw new Error('denied');
+        if (key === failOn && !failOnUsed) { failOnUsed = true; throw new Error('denied'); }
+        vault.set(key, value);
+      },
       deleteSecret: async key => { vault.delete(key); },
     } }) },
   }, {
@@ -30,8 +39,10 @@ function setup({ dev = false, denyRead = false, denyWrite = false, failOn = '', 
       return { ok: status === 200, status, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) };
     },
   })(path.join(__dirname, '../shared/services/ai.ts'));
+  };
+  const api = mount();
   const config = { ...api.DEFAULT_AI, baseUrl: 'https://example.com/v1', model: 'test', apiKey: 'test-key' };
-  return { api, config, requests, vault };
+  return { api, mount, config, requests, vault };
 }
 
 for (const dev of [true, false]) {
@@ -40,6 +51,9 @@ for (const dev of [true, false]) {
     const saved = await s.api.saveAiConfig({ ...s.config, apiKey: '  test-key  ' });
     assert.equal(saved.apiKey, 'test-key');
     assert.equal((await s.api.loadAiConfig()).apiKey, 'test-key');
+    // 重建服务实例(新模块实例,同一持久状态)后结论仍成立。
+    const fresh = s.mount();
+    assert.equal((await fresh.loadAiConfig()).apiKey, 'test-key');
     await s.api.askAboutPassage('text', 'question');
     assert.equal(s.requests[0].options.headers.Authorization, 'Bearer test-key');
   });
@@ -75,10 +89,17 @@ test('an unparseable existing config aborts saving instead of guessing generatio
 });
 
 test('an unknown commit outcome keeps the staged generation instead of deleting it', async () => {
-  const s = setup({ failReadFrom: 2 });
+  const s = setup({ failReadFrom: 2, seed: JSON.stringify({ baseUrl: 'https://old.example/v1', apiKey: 'old' }) });
+  s.vault.set('clarora.ai.api-key', 'old-key');
   await assert.rejects(s.api.saveAiConfig(s.config), /校验失败/);
   // 审查复现:两次回读都失败时提交结果不确定,新代可能已生效,绝不能清理。
   assert.equal(s.vault.get('clarora.ai.api-key.v1'), 'test-key');
+  // 重建实例(读取计数独立):提交已随成功的行写入生效,读到的是
+  // 同一代的新地址与新密钥——无论当时提交是否成功,地址与密钥都成对。
+  const fresh = s.mount();
+  const loaded = await fresh.loadAiConfig();
+  assert.equal(loaded.baseUrl, 'https://example.com/v1');
+  assert.equal(loaded.apiKey, 'test-key');
 });
 
 test('a partial staging failure aborts cleanly and keeps the previous generation live', async () => {
@@ -151,4 +172,19 @@ test('server 401 identifies rejected credentials separately from a missing key',
   const s = setup({ dev: true, status: 401 });
   await s.api.saveAiConfig(s.config);
   await assert.rejects(s.api.askAboutPassage('text', 'question'), /拒绝了 API Key（HTTP 401）/);
+});
+
+test('retrying after a staging failure succeeds and lands the referenced generation', async () => {
+  const s = setup({ failOn: 'clarora.ai.asr-api-key.v1' });
+  await assert.rejects(s.api.saveAiConfig(s.config), /配置未变更/);
+  // 失败后无暂存残留;同一代号重试会重建暂存并成功提交。
+  assert.equal(s.vault.get('clarora.ai.api-key.v1'), undefined);
+  await s.api.saveAiConfig(s.config);
+  assert.equal(s.vault.get('clarora.ai.api-key.v1'), 'test-key');
+  const loaded = await s.api.loadAiConfig();
+  assert.equal(loaded.apiKey, 'test-key');
+  assert.equal(loaded.baseUrl, 'https://example.com/v1');
+  assert.equal(loaded.secretGen, 1);
+  const fresh = s.mount();
+  assert.equal((await fresh.loadAiConfig()).apiKey, 'test-key');
 });
