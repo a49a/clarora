@@ -9,7 +9,7 @@
 | Android | `clarora-app/android/` + `clarora-app/shared/` | 复用移动学习页面；系统文件选择、音频播放与变速、上滑切换；macOS 合并的音频经同步下发 |
 | iOS | `clarora-app/ios/` + `clarora-app/shared/` | 复用移动学习页面；新增文件选择、剪贴板、播放/倍速/循环、片段双播放器预加载、跟读录音及休息音乐适配；需设备验证 |
 
-> **Anki 卡组导入**为桌面端能力：macOS 已支持，Windows 随原生二进制写入能力放开。移动端不做 Anki 导入——在桌面端导入的卡片经「同步与备份」下发到移动端。
+> **Anki 卡组导入**为桌面端能力：macOS / Windows 均提供“Anki 卡组”入口，格式和合并规则见 [Anki 导入说明](anki-import.md)。移动端不做 Anki 导入——在桌面端导入的卡片经「同步与备份」下发到移动端。
 
 ## macOS
 

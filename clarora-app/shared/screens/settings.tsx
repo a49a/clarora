@@ -154,13 +154,13 @@ export default function SettingsScreen() {
       <Text style={styles.hint}>凭证保存在本机：正式版存入系统凭证保险库（macOS 钥匙串 / Windows 凭证管理器），开发版与移动端存应用数据库；均不进入云备份。请使用仅可访问该资料库的专用密钥。备份通过 HTTPS 传输，未提供端到端加密。</Text>
       <View style={styles.row}>
         {button('保存并读取备份', () => { void run(async () => { await saveStorageConfig(storage); const list = await refreshBackups(); return `连接成功，找到 ${list.length} 个备份（已验证读取权限）`; }); })}
-        {button('备份本机资料', () => { void run(async () => { await saveStorageConfig(storage); const result = await uploadLibrary(setStatus); await refreshBackups(); return `备份完成：${result.words} 个单词，${result.audios} 个音频，${result.files} 个附件`; }); })}
+        {button('备份本机资料', () => { void run(async () => { await saveStorageConfig(storage); const result = await uploadLibrary(setStatus); await refreshBackups(); return `备份完成：${result.words} 个单词，${result.sentenceCards} 张句子卡，${result.audios} 个音频，${result.files} 个附件`; }); })}
       </View>
       <Text style={styles.hint}>合并保留本机已有内容，补入缺少的记录；复习进度采用较晚评分。不会传播删除，也不会自动覆盖本机编辑。同日统计取较大值，不累加多设备时长。</Text>
       {backups.length > 0 && <>
         <Text style={styles.label}>选择要合并的版本</Text>
         <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled>{backups.map(backup => <View key={backup.key} style={{ marginBottom: 6 }}>
-          {button(`${new Date(parseInt(backup.id.split('-')[0], 36)).toLocaleString()} · ${backup.id.slice(-6)}`, () => { setSelectedBackup(backup.key); void run(async () => { const preview = await inspectBackup(backup.key); setRestorePreview({ operation_id: preview.operation_id, summary: preview.summary, attachments: preview.attachments, local_fingerprint: preview.local_fingerprint, backup_fingerprint: preview.backup_fingerprint, words: preview.summary.words, aiCards: preview.summary.aiCards }); return `预览就绪：${preview.summary.words} 个单词、${preview.summary.aiCards} 张问答卡、${preview.attachments} 个附件`; }); }, selectedBackup === backup.key)}
+          {button(`${new Date(parseInt(backup.id.split('-')[0], 36)).toLocaleString()} · ${backup.id.slice(-6)}`, () => { setSelectedBackup(backup.key); void run(async () => { const preview = await inspectBackup(backup.key); setRestorePreview({ operation_id: preview.operation_id, summary: preview.summary, attachments: preview.attachments, local_fingerprint: preview.local_fingerprint, backup_fingerprint: preview.backup_fingerprint, words: preview.summary.words, aiCards: preview.summary.aiCards }); return `预览就绪：${preview.summary.words} 个单词、${preview.summary.sentenceCards} 张句子卡、${preview.summary.aiCards} 张问答卡、${preview.attachments} 个附件`; }); }, selectedBackup === backup.key)}
         </View>)}</ScrollView>
         {restorePreview && <Text style={styles.hint}>将合并 {restorePreview.words} 个单词、{restorePreview.aiCards} 张问答卡与 {restorePreview.attachments} 个附件；合并前自动创建本机恢复点。</Text>}
         {button('确认合并到本机', () => { if (!selectedBackup || !restorePreview) return; void run(async () => { const { operation_id } = await runRestore(selectedBackup, restorePreview, message => setStatus(message)); setRestorePreview(null); void resumePendingRestore(); setCanRollback(true); return `合并完成（操作 ${operation_id}）。`; }); })}

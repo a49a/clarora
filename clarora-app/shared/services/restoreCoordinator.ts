@@ -56,7 +56,7 @@ async function exclusive<T>(action: () => Promise<T>): Promise<T> {
 
 export type RestorePreview = {
   operation_id: string;
-  summary: { words: number; practices: number; audios: number; clips: number; aiCards: number; schedules: number };
+  summary: { words: number; practices: number; audios: number; clips: number; aiCards: number; sentenceCards: number; schedules: number };
   attachments: number;
   /** 预览时本机资料指纹:提交前校验本机未变。 */
   local_fingerprint: string;
@@ -87,6 +87,7 @@ export async function inspectBackup(backupKey: string): Promise<RestorePreview> 
         audios: manifest.data.listening_audios.length,
         clips: manifest.data.clip_cards.length,
         aiCards: manifest.data.ai_cards.length,
+        sentenceCards: manifest.data.sentence_cards?.length ?? 0,
         schedules: manifest.data.review_schedule.length,
       },
       attachments,

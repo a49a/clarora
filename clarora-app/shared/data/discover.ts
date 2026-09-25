@@ -27,7 +27,7 @@ export function discoverSubtitles(cues: SubtitleCue[], startMs: number, endMs: n
 }
 
 export function fromCard(card: ReviewCard): DiscoverItem | null {
-  if (card.kind === 'video') return null;
+  if (card.kind === 'video' || card.kind === 'sentence') return null;
   return {
     key: `${card.kind}:${card.id}`, kind: card.kind, front: card.front,
     back: card.back, source: card.kind === 'word' ? '单词卡' : card.kind === 'ai' ? 'AI 问答' : '音频片段卡',

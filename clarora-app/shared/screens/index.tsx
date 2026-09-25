@@ -9,6 +9,8 @@ import {
   Easing,
   findNodeHandle,
   NativeModules,
+  KeyboardAvoidingView,
+  TextInput,
   PanResponder,
   Platform,
   Pressable,
@@ -23,6 +25,7 @@ import { NativeVideoPlayer, videoControl } from "../services/nativeVideo";
 
 import {
   getReviewCards,
+  saveSentenceCard,
   getDueReviewCards,
   getSetting,
   setSetting,
@@ -54,6 +57,7 @@ type ScrollSpeed = (typeof SCROLL_SPEEDS)[number]["id"];
 const REVIEW_KINDS = [
   { id: "all", label: "全部" },
   { id: "word", label: "单词" },
+  { id: "sentence", label: "句子" },
   { id: "clip", label: "听力片段" },
   { id: "ai", label: "AI 问答" },
 ] as const;
@@ -69,6 +73,13 @@ const REVIEW_KINDS_ALL: ReadonlyArray<{ id: ReviewKindId; label: string }> =
 export default function HomeScreen() {
   const { theme, scheme } = useAppTheme();
 
+  const [sentenceEditorOpen, setSentenceEditorOpen] = useState(false);
+  const [sentenceText, setSentenceText] = useState("");
+  const [sentenceTranslation, setSentenceTranslation] = useState("");
+  const [sentenceNotes, setSentenceNotes] = useState("");
+  const [sentenceSaving, setSentenceSaving] = useState(false);
+  const [sentenceError, setSentenceError] = useState<string | null>(null);
+  const sentenceSavingRef = useRef(false);
   const [cards, setCards] = useState<ReviewCard[]>([]);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -189,6 +200,26 @@ export default function HomeScreen() {
     refreshCards();
   }, [kindReady, refreshCards]);
 
+  const saveSentence = async () => {
+    if (sentenceSavingRef.current) return;
+    sentenceSavingRef.current = true;
+    setSentenceSaving(true);
+    setSentenceError(null);
+    try {
+      await saveSentenceCard({ text: sentenceText, translation: sentenceTranslation, notes: sentenceNotes });
+      setSentenceText(""); setSentenceTranslation(""); setSentenceNotes("");
+      setSentenceEditorOpen(false);
+      setReviewKind("sentence");
+      if (reviewKind === "sentence") await refreshCards();
+      showToast("句子已加入闪卡，可在计划复习中定期回顾");
+    } catch (e: any) {
+      setSentenceError(String(e?.message ?? e));
+    } finally {
+      sentenceSavingRef.current = false;
+      setSentenceSaving(false);
+    }
+  };
+
   // Import text file
   const importWords = useCallback(async () => {
     setImporting(true);
@@ -237,7 +268,7 @@ export default function HomeScreen() {
     }
   }, [refreshCards, showToast]);
 
-  // Import an Anki deck (.apkg / .colpkg): merge its notes into the deck.
+  // Import an Anki package or UTF-8 text file: merge its notes into the deck.
   const importAnki = useCallback(async () => {
     setImporting(true);
     setError(null);
@@ -248,8 +279,8 @@ export default function HomeScreen() {
       });
       if (result.canceled || !result.assets?.length) return;
       const fileUri = result.assets[0].uri;
-      const { imported } = await importAnkiDeck(fileUri);
-      showToast(`成功导入 ${imported} 张 Anki 卡片`);
+      const { imported, notice } = await importAnkiDeck(fileUri);
+      showToast(imported > 0 ? `成功导入 ${imported} 张 Anki 卡片${notice ? `；${notice}` : ""}` : "没有可导入的文字卡片，请确认笔记包含正面和背面文字");
       await refreshCards();
     } catch (e: any) {
       setError(String(e?.message ?? e));
@@ -495,7 +526,7 @@ export default function HomeScreen() {
           ? "已删除视频片段"
           : card.kind === "ai"
           ? "已删除 AI 问答"
-          : "已删除单词"
+          : card.kind === "sentence" ? "已删除句子" : "已删除单词"
       );
     } catch (e: any) {
       setError(String(e?.message ?? e));
@@ -514,7 +545,7 @@ export default function HomeScreen() {
         ? "视频片段"
         : card.kind === "ai"
         ? "AI 问答"
-        : "单词";
+        : card.kind === "sentence" ? "句子" : "单词";
     Alert.alert(`删除${kindLabel}？`, "删除后不可恢复。", [
       { text: "取消", style: "cancel" },
       {
@@ -665,7 +696,7 @@ export default function HomeScreen() {
   }, [currentCard?.id, showMeaning]);
   const handleKey = useCallback(
     (key: string) => {
-      if (chatOpen) return;
+      if (chatOpen || sentenceEditorOpen) return;
       // 计划复习：翻面后 1/2/3 对应 忘了/模糊/认识。
       if (
         (key === "1" || key === "2" || key === "3") &&
@@ -707,13 +738,13 @@ export default function HomeScreen() {
         scrollMeaning(-1);
       }
     },
-    [chatOpen, currentCard, toggleClipPlayback, toggleMeaning, nextCard, prevCard, scrollMeaning, showMeaning, reviewMode, gradeCurrentCard]
+    [chatOpen, sentenceEditorOpen, currentCard, toggleClipPlayback, toggleMeaning, nextCard, prevCard, scrollMeaning, showMeaning, reviewMode, gradeCurrentCard]
   );
 
   // Native NSEvent monitor: keys are queued natively and pulled via promise
   // (promise resolvers are main-thread safe; direct callbacks are not).
   useEffect(() => {
-    if (chatOpen) return;
+    if (chatOpen || sentenceEditorOpen) return;
     const keyboard = NativeModules.RNKeyboard as
       | {
           startListening: () => void;
@@ -738,7 +769,7 @@ export default function HomeScreen() {
       cancelled = true;
       keyboard.stopListening();
     };
-  }, [handleKey, chatOpen]);
+  }, [handleKey, chatOpen, sentenceEditorOpen]);
 
   const handleKeyDown = useCallback(
     (e: any) => {
@@ -772,9 +803,9 @@ export default function HomeScreen() {
       <StatusBar barStyle={scheme === "dark" ? "light-content" : "dark-content"} />
       <View
         style={styles.container}
-        pointerEvents={chatOpen ? "none" : "auto"}
-        accessibilityElementsHidden={chatOpen}
-        importantForAccessibility={chatOpen ? "no-hide-descendants" : "auto"}
+        pointerEvents={chatOpen || sentenceEditorOpen ? "none" : "auto"}
+        accessibilityElementsHidden={chatOpen || sentenceEditorOpen}
+        importantForAccessibility={chatOpen || sentenceEditorOpen ? "no-hide-descendants" : "auto"}
       >
         {/* Header */}
         <View style={styles.header}>
@@ -829,8 +860,11 @@ export default function HomeScreen() {
           </Text>
         )}
 
-        {/* Toolbar — word import stays desktop-only; phones sync from the server. */}
+        {/* Toolbar — Anki and directory imports are available on desktop. */}
         <View style={styles.toolbar}>
+          <Pressable style={[styles.btn, styles.btnSecondary]} onPress={() => { setSentenceError(null); setSentenceEditorOpen(true); }}>
+            <Text style={styles.btnSecondaryText}>添加句子</Text>
+          </Pressable>
           {Platform.OS !== "android" && (
             <>
           <Pressable
@@ -859,7 +893,7 @@ export default function HomeScreen() {
           >
             <Text style={styles.btnSecondaryText}>导入目录</Text>
           </Pressable>}
-          {Platform.OS === "macos" && <Pressable
+          {(Platform.OS === "macos" || Platform.OS === "windows") && <Pressable
             style={({ pressed }) => [
               styles.btn,
               styles.btnSecondary,
@@ -869,7 +903,7 @@ export default function HomeScreen() {
             onPress={importAnki}
             disabled={importing}
           >
-            <Text style={styles.btnSecondaryText}>Anki 卡组</Text>
+            <Text style={styles.btnSecondaryText}>Anki 导入</Text>
           </Pressable>}
             </>
           )}
@@ -910,6 +944,8 @@ export default function HomeScreen() {
                 ? "今日到期已完成 🎉\n可切到「自刷」自由浏览，或稍后再来"
                 : reviewMode === "scheduled"
                 ? "该类别暂时没有到期的卡片 🎉\n可切到「自刷」自由浏览"
+                : reviewKind === "sentence"
+                ? "还没有句子闪卡\n打开学习选项，点击「添加句子」收藏好句。"
                 : reviewKind === "clip"
                 ? "还没有收藏的听力片段\n听力页选段循环后点「⭐ 收藏到闪卡」"
                 : reviewKind === "ai"
@@ -1174,6 +1210,12 @@ export default function HomeScreen() {
                       ))}
                     </View>
                   </ScrollView>
+                ) : currentCard.kind === "sentence" ? (
+                  <ScrollView style={styles.clipScroll} contentContainerStyle={styles.clipScrollContent} showsVerticalScrollIndicator>
+                    <Text style={styles.aiCardTag}>句子</Text>
+                    <Text selectable style={[styles.aiCardQuestion, { fontSize: cardFontSize, lineHeight: cardFontSize + 10 }]}>{currentCard.front}</Text>
+                    <Pressable onPress={toggleMeaning}><Text style={styles.aiCardFlipHint}>点击翻面查看译文与笔记</Text></Pressable>
+                  </ScrollView>
                 ) : currentCard.kind === "ai" ? (
                   <ScrollView
                     style={styles.clipScroll}
@@ -1236,6 +1278,8 @@ export default function HomeScreen() {
                     ? "点单词或音轨任意位置播放 · ←/→ 切换卡片 · 学会的点 🗑 删除"
                     : currentCard.kind === "video"
                     ? "点单词或进度条定位 · 空格 播放/暂停 · ←/→ 切换卡片 · 学会的点 🗑 删除"
+                    : currentCard.kind === "sentence"
+                    ? "点击翻面查看译文与笔记 · 计划复习中可评分"
                     : currentCard.kind === "ai"
                     ? showMeaning
                       ? `空格 返回问题 · ←/→ 切换卡片 · ↑/↓ ${selectedScrollSpeed.label}速滚动（可在设置中调整）`
@@ -1315,7 +1359,22 @@ export default function HomeScreen() {
           </View>
         )}
       </View>
-
+      {sentenceEditorOpen && (
+          <KeyboardAvoidingView accessibilityViewIsModal behavior={Platform.OS === "ios" ? "padding" : undefined} style={[StyleSheet.absoluteFillObject, { zIndex: 100, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "center", padding: 20 }]}>
+            <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: "85%", width: "100%", maxWidth: 620, alignSelf: "center", backgroundColor: theme.bg, borderRadius: 16 }} contentContainerStyle={{ padding: 20, gap: 14 }}>
+              <Text style={{ color: theme.text, fontSize: 22, fontWeight: "700" }}>添加句子</Text>
+              <Text style={{ color: theme.text }}>正面展示原句，翻面查看译文和笔记。</Text>
+              <TextInput accessibilityLabel="原句" placeholder="原句（必填）" placeholderTextColor={theme.textMuted} value={sentenceText} onChangeText={setSentenceText} multiline maxLength={10000} editable={!sentenceSaving} style={{ color: theme.text, borderColor: theme.textMuted, borderWidth: 1, borderRadius: 8, padding: 12, minHeight: 100, textAlignVertical: "top" }} />
+              <TextInput accessibilityLabel="译文" placeholder="译文（选填）" placeholderTextColor={theme.textMuted} value={sentenceTranslation} onChangeText={setSentenceTranslation} multiline maxLength={10000} editable={!sentenceSaving} style={{ color: theme.text, borderColor: theme.textMuted, borderWidth: 1, borderRadius: 8, padding: 12, minHeight: 80, textAlignVertical: "top" }} />
+              <TextInput accessibilityLabel="笔记" placeholder="笔记、出处或自己的理解（选填）" placeholderTextColor={theme.textMuted} value={sentenceNotes} onChangeText={setSentenceNotes} multiline maxLength={60000} editable={!sentenceSaving} style={{ color: theme.text, borderColor: theme.textMuted, borderWidth: 1, borderRadius: 8, padding: 12, minHeight: 100, textAlignVertical: "top" }} />
+              {sentenceError && <Text accessibilityRole="alert" style={{ color: theme.text }}>{sentenceError}</Text>}
+              <View style={{ flexDirection: "row", gap: 12 }}>
+                <Pressable disabled={sentenceSaving} style={[styles.btn, styles.btnSecondary]} onPress={() => setSentenceEditorOpen(false)}><Text style={styles.btnSecondaryText}>取消</Text></Pressable>
+                <Pressable disabled={sentenceSaving || !sentenceText.trim()} style={[styles.btn, styles.btnSecondary, (sentenceSaving || !sentenceText.trim()) && styles.btnDisabled]} onPress={() => void saveSentence()}><Text style={styles.btnSecondaryText}>{sentenceSaving ? "保存中…" : "保存并加入复习"}</Text></Pressable>
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
+      )}
     </View>
   );
 }

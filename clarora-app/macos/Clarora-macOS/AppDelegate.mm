@@ -2,6 +2,7 @@
 
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <sqlite3.h>
 #import <React/RCTBundleURLProvider.h>
 #import <React/RCTBridgeModule.h>
 #import <React/RCTComponent.h>
@@ -273,6 +274,49 @@ RCT_EXPORT_METHOD(copyFile:(NSString *)source
   resolve(nil);
 }
 
+// Read an external Anki database by its actual path, not SQLite's Documents asset path.
+RCT_EXPORT_METHOD(querySnapshot:(NSString *)path
+                  sql:(NSString *)sql
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  sqlite3 *handle = NULL;
+  sqlite3_stmt *statement = NULL;
+  @try {
+    if (sqlite3_open_v2(path.fileSystemRepresentation, &handle, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+      reject(@"anki_database", @"无法只读打开 Anki 数据库", nil);
+      return;
+    }
+    if (sqlite3_prepare_v2(handle, sql.UTF8String, -1, &statement, NULL) != SQLITE_OK ||
+        statement == NULL || !sqlite3_stmt_readonly(statement)) {
+      reject(@"anki_database", @"无法读取 Anki 数据库，请确认导出时启用了支持旧版本", nil);
+      return;
+    }
+    NSMutableArray *rows = [NSMutableArray array];
+    int status;
+    while ((status = sqlite3_step(statement)) == SQLITE_ROW) {
+      NSMutableDictionary *row = [NSMutableDictionary dictionary];
+      for (int column = 0; column < sqlite3_column_count(statement); column++) {
+        const char *name = sqlite3_column_name(statement, column);
+        const unsigned char *text = sqlite3_column_text(statement, column);
+        row[@(name)] = text ? [NSString stringWithUTF8String:(const char *)text] ?: @"" : @"";
+      }
+      [rows addObject:row];
+    }
+    if (status != SQLITE_DONE) {
+      reject(@"anki_database", @"读取 Anki 数据库失败", nil);
+      return;
+    }
+    NSError *error = nil;
+    NSData *json = [NSJSONSerialization dataWithJSONObject:rows options:0 error:&error];
+    if (!json) { reject(@"anki_database", error.localizedDescription, error); return; }
+    resolve([[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]);
+  } @finally {
+    if (statement) sqlite3_finalize(statement);
+    if (handle) sqlite3_close(handle);
+  }
+}
+
 RCT_EXPORT_METHOD(readFile:(NSString *)path
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
@@ -361,7 +405,7 @@ RCT_EXPORT_METHOD(deleteFile:(NSString *)path
     return @[@"txt", @"srt", @"vtt", @"md", @"csv"];
   }
   if ([type isEqualToString:@"anki"]) {
-    return @[@"apkg", @"colpkg", @"anki2"];
+    return @[@"apkg", @"colpkg", @"txt", @"tsv"];
   }
   if ([type isEqualToString:@"video/*"]) {
     return @[@"mp4", @"mov", @"m4v", @"mkv", @"webm", @"avi"];

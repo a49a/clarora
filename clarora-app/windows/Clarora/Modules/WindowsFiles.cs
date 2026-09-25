@@ -41,7 +41,7 @@ namespace Clarora
                 return await UI(async () => {
                     var picker = new FileOpenPicker();
                     var mime = options["type"].AsString();
-                    var extensions = mime.StartsWith("audio/") ? new[] { ".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg" }
+                    var extensions = mime == "anki" ? new[] { ".apkg", ".colpkg", ".txt", ".tsv" } : mime.StartsWith("audio/") ? new[] { ".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg" }
                         : mime.StartsWith("image/") ? new[] { ".png", ".jpg", ".jpeg", ".webp", ".bmp" } : new[] { "*" };
                     foreach (var extension in extensions) picker.FileTypeFilter.Add(extension);
                     var source = await picker.PickSingleFileAsync();

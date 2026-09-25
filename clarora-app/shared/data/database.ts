@@ -17,6 +17,8 @@ export type SyncedClip = {
   end_ms: number;
   created_at: string;
 };
+export type SyncedSentenceCard = { id: string; text: string; translation: string; notes: string; created_at: string };
+
 export type SyncedAiCard = {
   id: string;
   question: string;
@@ -63,6 +65,7 @@ async function initializeDb(): Promise<SQLiteDatabase> {
       tx.executeSql("CREATE TABLE IF NOT EXISTS listening_practices (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))");
       tx.executeSql("CREATE TABLE IF NOT EXISTS listening_audios (id TEXT PRIMARY KEY, practice_id TEXT NOT NULL, name TEXT NOT NULL, audio_uri TEXT NOT NULL, subtitle_uri TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY (practice_id) REFERENCES listening_practices(id) ON DELETE CASCADE)");
       tx.executeSql("CREATE TABLE IF NOT EXISTS clip_cards (id TEXT PRIMARY KEY, en_text TEXT NOT NULL, zh_text TEXT, audio_uri TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))");
+      tx.executeSql("CREATE TABLE IF NOT EXISTS sentence_cards (id TEXT PRIMARY KEY, text TEXT NOT NULL, translation TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')))");
       tx.executeSql("CREATE TABLE IF NOT EXISTS ai_cards (id TEXT PRIMARY KEY, question TEXT NOT NULL, answer TEXT NOT NULL, context_text TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')))");
       // SM-2 调度表：所有卡片类型共用，card_id 统一按 TEXT 存（words 的整型 id 也转成字符串）。
       tx.executeSql("CREATE TABLE IF NOT EXISTS review_schedule (card_kind TEXT NOT NULL, card_id TEXT NOT NULL, ease REAL NOT NULL DEFAULT 2.5, interval_days REAL NOT NULL DEFAULT 0, due_at TEXT NOT NULL DEFAULT (datetime('now')), reps INTEGER NOT NULL DEFAULT 0, lapses INTEGER NOT NULL DEFAULT 0, suspended INTEGER NOT NULL DEFAULT 0, last_graded_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (card_kind, card_id))");
@@ -113,9 +116,10 @@ export async function setDiscoverFavorite(item: DiscoverItem, saved: boolean): P
   await database.executeSql('INSERT OR REPLACE INTO discover_favorites (key, payload) VALUES (?, ?)', [item.key, JSON.stringify(item)]);
 }
 
-type ReviewKind = "all" | "word" | "clip" | "video" | "ai";
+type ReviewKind = "sentence" | "all" | "word" | "clip" | "video" | "ai";
 
 export type ReviewCard =
+  | { kind: "sentence"; id: string; front: string; back: string }
   | { kind: "word"; id: number; front: string; back: string }
   | {
       kind: "clip";
@@ -399,6 +403,14 @@ export async function getDueReviewCards(
         });
       }
     }
+    if (kind === "all" || kind === "sentence") {
+      const [rows] = await database.executeSql(
+        "SELECT c.*, s.card_id IS NULL AS is_new, s.due_at FROM sentence_cards c LEFT JOIN review_schedule s ON s.card_kind = 'sentence' AND s.card_id = c.id WHERE s.card_id IS NULL OR (s.suspended = 0 AND s.due_at <= ?)", [nowIso]
+      );
+      for (const row of rows.rows.raw() as Array<SyncedSentenceCard & { is_new: number; due_at: string }>) {
+        out.push({ card: sentenceReviewCard(row), isNew: !!row.is_new, dueAt: row.due_at ?? "" });
+      }
+    }
     return out;
   };
 
@@ -496,7 +508,24 @@ export async function getReviewCards(kind: ReviewKind = "all"): Promise<ReviewCa
           contextText: card.context_text ?? "",
         }))
       : [];
-  return [...wordCards, ...clipCards, ...videoCards, ...aiCards];
+  const sentenceCards = kind === "all" || kind === "sentence"
+    ? ((await database.executeSql("SELECT * FROM sentence_cards ORDER BY RANDOM()"))[0].rows.raw() as SyncedSentenceCard[]).map(sentenceReviewCard)
+    : [];
+  return [...wordCards, ...clipCards, ...videoCards, ...aiCards, ...sentenceCards];
+}
+
+function sentenceReviewCard(row: SyncedSentenceCard): ReviewCard {
+  return { kind: "sentence", id: row.id, front: row.text,
+    back: [row.translation, row.notes].filter(Boolean).join("\n\n") || "回想这句话的含义与用法，再为本次复习评分。" };
+}
+
+export async function saveSentenceCard(input: { text: string; translation: string; notes: string }): Promise<void> {
+  const text = input.text.trim();
+  if (!text) throw new Error("请输入原句");
+  if (text.length > 10000 || input.translation.length > 10000 || input.notes.length > 60000) throw new Error("句子或笔记过长，请缩短后保存");
+  const database = await getDb();
+  await database.executeSql("INSERT INTO sentence_cards (id, text, translation, notes) VALUES (?, ?, ?, ?)",
+    [generateId(), text, input.translation.trim(), input.notes.trim()]);
 }
 
 /** Save a captured video segment (video screen A/B loop) as a review card. */
@@ -692,6 +721,7 @@ export async function getLibraryForSync(): Promise<{
   practices: SyncedPractice[];
   clips: Array<Omit<SyncedClip, "audio_id"> & { audio_uri: string }>;
   aiCards: SyncedAiCard[];
+  sentenceCards: SyncedSentenceCard[];
   schedules: SyncedSchedule[];
 }> {
   const database = await getDb();
@@ -712,6 +742,7 @@ export async function getLibraryForSync(): Promise<{
     practices: await listListeningPractices(),
     clips: clipsResult.rows.raw() as Array<Omit<SyncedClip, "audio_id"> & { audio_uri: string }>,
     aiCards: aiCardsResult.rows.raw() as SyncedAiCard[],
+    sentenceCards: (await database.executeSql("SELECT * FROM sentence_cards ORDER BY created_at ASC"))[0].rows.raw() as SyncedSentenceCard[],
     schedules: schedulesResult.rows.raw().map((row: SyncedSchedule) => ({ ...row, suspended: Number(row.suspended) || 0 })),
   };
 }
@@ -722,14 +753,16 @@ export async function mergeSyncedLibrary(input: {
   practices: SyncedPractice[];
   clips: SyncedClip[];
   aiCards?: SyncedAiCard[];
+  sentenceCards?: SyncedSentenceCard[];
   schedules?: SyncedSchedule[];
-}): Promise<{ words: number; practices: number; audios: number; clips: number; aiCards: number; schedules: number }> {
+}): Promise<{ words: number; practices: number; audios: number; clips: number; aiCards: number; sentenceCards: number; schedules: number }> {
   const database = await getDb();
   let words = 0;
   let practices = 0;
   let audios = 0;
   let clips = 0;
   let aiCards = 0;
+  let sentenceCards = 0;
   let schedules = 0;
 
   for (const item of input.words) {
@@ -801,6 +834,15 @@ export async function mergeSyncedLibrary(input: {
     clips += 1;
   }
 
+  for (const card of input.sentenceCards ?? []) {
+    if (!card.id || !card.text.trim()) continue;
+    await database.executeSql(
+      "INSERT INTO sentence_cards (id, text, translation, notes, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET text = excluded.text, translation = excluded.translation, notes = excluded.notes",
+      [card.id, card.text.trim(), card.translation ?? "", card.notes ?? "", card.created_at || new Date().toISOString()]
+    );
+    sentenceCards++;
+  }
+
   for (const card of input.aiCards ?? []) {
     if (!card.id || !card.question.trim() || !card.answer.trim()) continue;
     await database.executeSql(
@@ -830,7 +872,7 @@ export async function mergeSyncedLibrary(input: {
     );
     schedules += 1;
   }
-  return { words, practices, audios, clips, aiCards, schedules };
+  return { words, practices, audios, clips, aiCards, sentenceCards, schedules };
 }
 export async function deleteListeningPractice(practiceId: string): Promise<string[]> {
   const database = await getDb();
@@ -856,6 +898,8 @@ export async function deleteReviewCard(card: ReviewCard): Promise<void> {
   const database = await getDb();
   if (card.kind === "word") {
     await database.executeSql("DELETE FROM words WHERE id = ?", [card.id]);
+  } else if (card.kind === "sentence") {
+    await database.executeSql("DELETE FROM sentence_cards WHERE id = ?", [card.id]);
   } else if (card.kind === "video") {
     await database.executeSql("DELETE FROM video_clips WHERE id = ?", [card.id]);
   } else if (card.kind === "ai") {

@@ -5,7 +5,7 @@ import { ObjectStorage, loadStorageConfig } from './objectStorage';
 
 type Manifest = { version: 2; id: string; createdAt: string; data: VaultData; files: Record<string, string> };
 export type BackupInfo = { key: string; id: string };
-export type SyncSummary = { words: number; practices: number; audios: number; clips: number; aiCards: number; schedules: number; files: number };
+export type SyncSummary = { words: number; practices: number; audios: number; clips: number; aiCards: number; sentenceCards: number; schedules: number; files: number };
 let running = false;
 async function exclusive<T>(action: () => Promise<T>): Promise<T> {
   if (running) throw new Error('已有同步任务正在进行');
@@ -14,7 +14,7 @@ async function exclusive<T>(action: () => Promise<T>): Promise<T> {
 }
 function summary(data: VaultData, files: number): SyncSummary {
   return { words: data.words.length, practices: data.listening_practices.length, audios: data.listening_audios.length,
-    clips: data.clip_cards.length, aiCards: data.ai_cards.length, schedules: data.review_schedule.length, files };
+    clips: data.clip_cards.length, aiCards: data.ai_cards.length, sentenceCards: data.sentence_cards.length, schedules: data.review_schedule.length, files };
 }
 /** Rewrite only known media fields; arbitrary text is never interpreted as a local file. */
 export async function mapVaultMedia(data: VaultData, map: (uri: string) => Promise<string>): Promise<void> {

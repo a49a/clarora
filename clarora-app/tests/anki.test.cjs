@@ -58,7 +58,12 @@ function setup({ platform = 'macos', apkgBase64, failWriteBase64 = false } = {})
         },
       },
     },
-    'react-native': { Platform: { OS: platform } },
+    'react-native': { Platform: { OS: platform }, NativeModules: { RNFilePicker: {
+      querySnapshot: async (target, sql) => {
+        const handle = new DatabaseSync(target, { readOnly: true });
+        try { return JSON.stringify(handle.prepare(sql).all()); } finally { handle.close(); }
+      },
+    } } },
   }, {})(path.join(__dirname, '../shared/data/anki.ts'));
   return { api, documents, upserted, deleted };
 }
@@ -171,4 +176,47 @@ test('imports on Windows through the native read-only snapshot query', async () 
   assert.equal(imported, 1);
   assert.equal(JSON.stringify(upserted), JSON.stringify([{ word: 'Windows front', meaning: 'Windows back' }]));
   assert.ok(deleted.length > 0, 'temp database should be cleaned up');
+});
+
+
+test('modern compressed package with legacy placeholder is rejected before importing', async () => {
+  const fixture = buildApkg([{mid: 1, flds: ['upgrade Anki', 'placeholder']}], {1: {flds: [{name: 'Front'}, {name: 'Back'}]}});
+  const zip = zipSync({'collection.anki2': fs.readFileSync(path.join(fixture.directory, 'collection.anki2')), 'collection.anki21b': Buffer.from('compressed')});
+  const {api, upserted} = setup({apkgBase64: Buffer.from(zip).toString('base64')});
+  await assert.rejects(api.importAnkiDeck('/picked/new.apkg'), /支持旧版本/);
+  assert.equal(upserted.length, 0);
+});
+
+test('corrupt SQLite is rejected and the temporary file is removed', async () => {
+  const zip = zipSync({'collection.anki2': Buffer.from('not a database')});
+  const {api, documents, upserted} = setup({apkgBase64: Buffer.from(zip).toString('base64')});
+  await assert.rejects(api.importAnkiDeck('/picked/broken.apkg'));
+  assert.equal(upserted.length, 0);
+  assert.deepEqual(fs.readdirSync(documents), []);
+});
+
+test('failed binary write leaves no temporary database and can be retried', async () => {
+  const fixture = buildApkg([{mid: 1, flds: ['hello', '你好']}], {1: {flds: [{name: 'Front'}, {name: 'Back'}]}});
+  const denied = setup({apkgBase64: fixture.apkgBase64, failWriteBase64: true});
+  await assert.rejects(denied.api.importAnkiDeck('/picked/deck.apkg'), /denied/);
+  assert.deepEqual(fs.readdirSync(denied.documents), []);
+  const retry = setup({apkgBase64: fixture.apkgBase64});
+  assert.equal((await retry.api.importAnkiDeck('/picked/deck.apkg')).imported, 1);
+});
+
+test('collection.anki21 is preferred to the classic database', async () => {
+  const fixture = buildApkg([{mid: 1, flds: ['中文 front', 'answer']}], {1: {flds: [{name: 'Front'}, {name: 'Back'}]}});
+  const zip = zipSync({'collection.anki2': Buffer.from('placeholder'), 'collection.anki21': fs.readFileSync(path.join(fixture.directory, 'collection.anki2'))});
+  const {api, upserted} = setup({apkgBase64: Buffer.from(zip).toString('base64')});
+  assert.equal((await api.importAnkiDeck('/picked/中文 deck.colpkg')).imported, 1);
+  assert.equal(upserted[0].word, '中文 front');
+});
+
+test('invalid ZIP and missing collection fail without writing cards', async () => {
+  for (const bytes of [Buffer.from('invalid zip'), zipSync({'media': Buffer.from('{}')})]) {
+    const {api, documents, upserted} = setup({apkgBase64: Buffer.from(bytes).toString('base64')});
+    await assert.rejects(api.importAnkiDeck('/picked/broken.apkg'));
+    assert.equal(upserted.length, 0);
+    assert.deepEqual(fs.readdirSync(documents), []);
+  }
 });
