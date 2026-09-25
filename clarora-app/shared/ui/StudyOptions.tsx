@@ -5,11 +5,12 @@ import { useAppTheme } from './ThemeContext';
 // macOS 的 react-native-macos 没有 Modal（RCTModalHostView 未注册），下拉面板用
 // 绝对定位浮层实现。开关状态由使用方持有（受控组件）：open/onVisibilityChange
 // 与使用方渲染的屏幕级遮罩保持同一份状态，点面板外关闭时面板一定同步消失。
-export function StudyOptions({ label, title, children, open, onVisibilityChange, direction = 'down', align = 'left' }: {
+export function StudyOptions({ label, title, children, open, onVisibilityChange, direction = 'down', align = 'left', constrainToParent = false }: {
   open: boolean;
   onVisibilityChange: (visible: boolean) => void;
   direction?: 'down' | 'up';
   align?: 'left' | 'right';
+  constrainToParent?: boolean;
   label: string; title: string; children: ReactNode | ((close: () => void) => ReactNode);
 }) {
   const { theme } = useAppTheme();
@@ -17,7 +18,7 @@ export function StudyOptions({ label, title, children, open, onVisibilityChange,
   const touchHeight = Platform.OS === 'ios' || Platform.OS === 'android' ? 44 : 34;
   const styles = StyleSheet.create({
     panel: {
-      position: 'absolute', width: 380, maxWidth: '100%', maxHeight: 560, zIndex: 30,
+      position: 'absolute', width: 380, maxWidth: constrainToParent ? '100%' : undefined, maxHeight: 560, zIndex: 30,
       ...(direction === 'down' ? { top: touchHeight + 6 } : { bottom: touchHeight + 6 }),
       ...(align === 'left' ? { left: 0 } : { right: 0 }),
       borderRadius: 12, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.surface,
