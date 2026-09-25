@@ -97,7 +97,11 @@ android {
         applicationId "com.clarora.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode (System.getenv("CLARORA_BUILD_NUMBER") ?: "1").toInteger()
+        // Groovy 把 "versionCode (x ?: "1").toInteger()" 解析成对 versionCode
+        // 的返回值再调 toInteger(),评估期即抛 "Value is null";
+        // 先赋局部变量消除歧义,保证传入 versionCode 的是 Integer。
+        def buildNumber = System.getenv("CLARORA_BUILD_NUMBER") ?: "1"
+        versionCode buildNumber.toInteger()
         versionName appVersion
     }
     signingConfigs {

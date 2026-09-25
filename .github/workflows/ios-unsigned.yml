@@ -3,21 +3,62 @@ on:
   workflow_call:
     inputs:
       source_sha:
+        required: false
+        type: string
+      build_number:
+        required: true
+        type: string
+      tag:
+        required: false
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag (v0.1.0)
         required: true
         type: string
       build_number:
+        description: Positive build number, higher than previously distributed builds
         required: true
         type: string
 permissions:
   contents: read
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      build_number: ${{ steps.source.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG: ${{ inputs.tag }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]{0,8}$ ]]
+          if [ -n "$SOURCE_SHA" ]; then
+            echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+            echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+          sha="$(git rev-parse "$TAG^{commit}")"
+          version="$(git show "$sha:clarora-app/package.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')"
+          test "$TAG" = "v$version"
+          echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
   build:
+    needs: resolve
     runs-on: macos-15
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ needs.resolve.outputs.source_sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -29,8 +70,8 @@ jobs:
         working-directory: clarora-app
       - name: Build device Release IPA without signing
         env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
-          CLARORA_BUILD_NUMBER: ${{ inputs.build_number }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          CLARORA_BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
         run: bash clarora-app/scripts/build-ios-unsigned.sh
       - uses: actions/upload-artifact@v4
         with:
