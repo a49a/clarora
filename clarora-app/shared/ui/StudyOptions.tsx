@@ -17,7 +17,7 @@ export function StudyOptions({ label, title, children, open, onVisibilityChange,
   const touchHeight = Platform.OS === 'ios' || Platform.OS === 'android' ? 44 : 34;
   const styles = StyleSheet.create({
     panel: {
-      position: 'absolute', width: 380, maxHeight: 560, zIndex: 30,
+      position: 'absolute', width: 380, maxWidth: '100%', maxHeight: 560, zIndex: 30,
       ...(direction === 'down' ? { top: touchHeight + 6 } : { bottom: touchHeight + 6 }),
       ...(align === 'left' ? { left: 0 } : { right: 0 }),
       borderRadius: 12, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.surface,

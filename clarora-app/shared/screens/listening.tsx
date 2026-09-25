@@ -2229,7 +2229,7 @@ export default function ListeningScreen({
               </View>
               <View style={styles.studyHeadingActions}>
                 {studySidebarStatus}
-                <StudyOptions open={subtitleOptionsOpen} onVisibilityChange={setSubtitleOptionsOpen} label="字幕" title="字幕与阅读设置">
+                <StudyOptions open={subtitleOptionsOpen} onVisibilityChange={setSubtitleOptionsOpen} align="right" label="字幕" title="字幕与阅读设置">
                   {selectedAudio && <StudySubtitleToolbar
                     kind={classifySubtitleLanguage(subtitleCues)} hasSubtitles={subtitleCues.length > 0}
                     busy={!!aiStatus || switchingAudio} status={aiStatus}
