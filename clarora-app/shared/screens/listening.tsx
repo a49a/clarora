@@ -1047,6 +1047,7 @@ export default function ListeningScreen({
             if (soundRef.current === sound) soundRef.current = null;
           }
           if (mountedRef.current && generation === audioGenerationRef.current) {
+            setPendingRate(null); // 加载失败时清除待应用标记,避免徽标长期驻留
             setError(`加载音频失败：${error?.message ?? error}`);
           }
         }

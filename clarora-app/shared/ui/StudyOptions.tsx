@@ -232,7 +232,11 @@ export function StudyOptions({ label, title, children, open, onVisibilityChange,
     />}
     {open && inlineDesktop && geometry && renderPanel({
       position: 'absolute', left: inlinePanelLeft, width: inlinePanelWidth,
-      maxHeight: Math.min(480, Dimensions.get('window').height - SCREEN_MARGIN * 2),
+      maxHeight: Math.max(200, Math.min(480,
+        direction === 'down'
+          ? Dimensions.get('window').height - geometry.anchor.y - geometry.anchor.height - SCREEN_MARGIN * 3
+          : geometry.anchor.y - SCREEN_MARGIN * 3,
+      )),
       ...(direction === 'down' ? { top: TOUCH_HEIGHT_POINTER + 6 } : { bottom: TOUCH_HEIGHT_POINTER + 6 }),
     }, 'anchored')}
     </View>
