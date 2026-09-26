@@ -16,6 +16,9 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: clarora-app/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x

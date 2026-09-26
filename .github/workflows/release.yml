@@ -115,6 +115,19 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: clarora-app/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Use corrected dependency extractor for the already-tagged v0.2.0 source
+        if: github.event_name == 'workflow_dispatch' && needs.resolve.outputs.release_tag == 'v0.2.0'
+        shell: pwsh
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.sha }}"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch release tooling commit.' }
+          git show "${{ github.sha }}:clarora-app/scripts/build-windows-asr.ps1" | Set-Content -Encoding utf8 clarora-app/scripts/build-windows-asr.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read corrected Windows build script.' }
+          git show "${{ github.sha }}:clarora-app/scripts/extract-windows-dependency.py" | Set-Content -Encoding utf8 clarora-app/scripts/extract-windows-dependency.py
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read corrected archive extractor.' }
       - run: npm ci
         working-directory: clarora-app
       - name: Build on-device ASR library (clarora_asr.dll)
@@ -244,6 +257,9 @@ jobs:
           NOTES
           if [ ! -f release/Clarora-android.apk ]; then
             printf '\n### Android\n本次未发布 Android APK；签名发布尚未启用。\n' >> release-notes.md
+          fi
+          if [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ] && [ "$RELEASE_TAG" = 'v0.2.0' ]; then
+            printf '\nWindows 构建使用发布工具修复提交 `%s`；客户端源码仍为 tag 对应的 `%s`。\n' "$GITHUB_SHA" "$SOURCE_SHA" >> release-notes.md
           fi
           printf '\n[Mobile build and distribution instructions](https://github.com/a49a/clarora/blob/%s/docs/mobile-releases.md)\n' "$RELEASE_TAG" >> release-notes.md
           gh release create "$RELEASE_TAG" \

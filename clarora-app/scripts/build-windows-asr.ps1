@@ -22,27 +22,11 @@ function Get-DependencyArchive {
 
 function Expand-DependencyArchive {
     param([string]$Archive, [string]$Destination, [int]$StripComponents = 0)
-    # Avoid selecting Git/MSYS tar from PATH on the Windows runner.
-    $tarPath = Join-Path $env:SystemRoot 'System32/tar.exe'
-    if (-not (Test-Path $tarPath)) { throw "Windows tar not found: $tarPath" }
-    Write-Host "Extracting $Archive with $tarPath (timeout: 300 seconds)..."
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo.FileName = $tarPath
-    # Windows tar detects gzip/bzip2 itself. Close stdin so no subprocess can
-    # wait indefinitely for interactive input in CI.
-    $process.StartInfo.Arguments = "-xf `"$Archive`" -C `"$Destination`" --strip-components=$StripComponents"
-    $process.StartInfo.UseShellExecute = $false
-    $process.StartInfo.RedirectStandardInput = $true
-    try {
-        if (-not $process.Start()) { throw 'Could not start Windows tar.' }
-        $process.StandardInput.Close()
-        if (-not $process.WaitForExit(300000)) {
-            & taskkill.exe /PID $process.Id /T /F | Out-Null
-            throw "Archive extraction timed out after 300 seconds: $Archive"
-        }
-        if ($process.ExitCode -ne 0) { throw "Archive extraction failed (exit $($process.ExitCode)): $Archive" }
-        Write-Host "Extraction completed: $Destination"
-    } finally { $process.Dispose() }
+    $extractor = Join-Path $PSScriptRoot 'extract-windows-dependency.py'
+    Write-Host "Extracting $Archive with Python..."
+    & python $extractor $Archive $Destination $StripComponents
+    if ($LASTEXITCODE -ne 0) { throw "Archive extraction failed (exit $LASTEXITCODE): $Archive" }
+    Write-Host "Extraction completed: $Destination"
 }
 
 Push-Location (Join-Path $PSScriptRoot '..')
