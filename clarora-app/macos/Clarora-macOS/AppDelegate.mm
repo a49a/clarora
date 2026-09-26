@@ -480,6 +480,14 @@ RCT_EXPORT_METHOD(show:(NSString *)title
 
 RCT_EXPORT_MODULE(RNMacAudio);
 
+// AVAudioPlayer is shared by bridge calls and its delegate. Handle bridge
+// operations on the main queue; changing rate on the default module queue can
+// leave the JavaScript promise pending indefinitely on macOS.
+- (dispatch_queue_t)methodQueue
+{
+  return dispatch_get_main_queue();
+}
+
 // Independent two-slot players: preparing the next discovery item must never
 // replace the listening/flashcard player or interrupt the current feed item.
 RCT_EXPORT_METHOD(feedPrepare:(nonnull NSNumber *)slot path:(NSString *)path start:(nonnull NSNumber *)start resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
