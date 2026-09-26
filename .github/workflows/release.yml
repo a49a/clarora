@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要打包的 tag（如 v0.1.0）；留空使用当前 ref"
+        description: "要打包的 tag（如 v0.2.0）；留空使用当前 ref"
         required: false
         default: ""
 permissions:
@@ -34,7 +34,7 @@ jobs:
           elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             tag="$GITHUB_REF_NAME"
           else
-            echo "::error::手动发布必须提供有效 tag(如 v0.1.0)"; exit 1
+            echo "::error::手动发布必须提供有效 tag(如 v0.2.0)"; exit 1
           fi
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
@@ -141,6 +141,7 @@ jobs:
           if-no-files-found: error
   android:
     name: Android release build
+    if: vars.CLARORA_ANDROID_RELEASE_ENABLED == 'true'
     needs: resolve
     uses: ./.github/workflows/android-release.yml
     with:
@@ -159,6 +160,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [resolve, macos, windows, android, ios]
+    if: >-
+      always() &&
+      needs.resolve.result == 'success' &&
+      needs.macos.result == 'success' &&
+      needs.windows.result == 'success' &&
+      needs.ios.result == 'success' &&
+      (needs.android.result == 'success' || needs.android.result == 'skipped')
     steps:
       - uses: actions/checkout@v4
         with:
@@ -171,8 +179,10 @@ jobs:
           mkdir -p release
           cp dist/Clarora-macos-arm64/Clarora-macos-arm64.dmg release/
           cp dist/Clarora-windows-x64/Clarora-windows-x64.zip release/
-          cp dist/Clarora-android/Clarora-android.apk release/
-          cp dist/Clarora-android/android-build.json release/
+          if [ -f dist/Clarora-android/Clarora-android.apk ]; then
+            cp dist/Clarora-android/Clarora-android.apk release/
+            cp dist/Clarora-android/android-build.json release/
+          fi
           cp dist/Clarora-ios-unsigned/Clarora-ios-unsigned.ipa release/
           cp dist/Clarora-ios-unsigned/ios-unsigned-build.json release/
       - name: Create GitHub Release
@@ -185,6 +195,11 @@ jobs:
         run: |
           # 与官网 clarora-web/release-metadata.json 完全同一 schema:官网构建
           # 可通过 CLARORA_RELEASE_METADATA 直接消费本文件。
+          if [ -f release/Clarora-android.apk ]; then
+            android_metadata='{ "status": "released", "arch": "universal", "asset_name": "Clarora-android.apk", "url": "https://github.com/a49a/clarora/releases/download/'"$RELEASE_TAG"'/Clarora-android.apk" }'
+          else
+            android_metadata='{ "status": "planned" }'
+          fi
           cat > release/release-metadata.json <<METADATA
           {
             "version": "${RELEASE_TAG#v}",
@@ -196,7 +211,7 @@ jobs:
             "platforms": {
               "macos": { "status": "released", "arch": "arm64", "asset_name": "Clarora-macos-arm64.dmg", "url": "https://github.com/a49a/clarora/releases/download/$RELEASE_TAG/Clarora-macos-arm64.dmg" },
               "windows": { "status": "released", "arch": "x64", "asset_name": "Clarora-windows-x64.zip", "url": "https://github.com/a49a/clarora/releases/download/$RELEASE_TAG/Clarora-windows-x64.zip" },
-              "android": { "status": "released", "arch": "universal", "asset_name": "Clarora-android.apk", "url": "https://github.com/a49a/clarora/releases/download/$RELEASE_TAG/Clarora-android.apk" },
+              "android": $android_metadata,
               "ios": { "status": "planned" }
             }
           }
@@ -220,13 +235,16 @@ jobs:
               metadata['platforms']['ios'] = dict(status='released', channel=channel, url=url)
               with open(path, 'w') as f: json.dump(metadata, f, indent=2)
           PYMETA
-          (cd release && sha256sum *.dmg *.zip *.apk *.ipa *.json > SHA256SUMS.txt)
+          (cd release && shopt -s nullglob && sha256sum *.dmg *.zip *.apk *.ipa *.json > SHA256SUMS.txt)
           cat > release-notes.md <<'NOTES'
           ### iOS IPA（未签名 / unsigned）
           `Clarora-ios-unsigned.ipa` 是供自行签名使用的 iOS 真机 Release 包。
           下载后不能直接安装；需要用户自行使用有效的证书和描述文件重新签名。
           This IPA requires user signing before installation. It is not a TestFlight or App Store distribution.
           NOTES
+          if [ ! -f release/Clarora-android.apk ]; then
+            printf '\n### Android\n本次未发布 Android APK；签名发布尚未启用。\n' >> release-notes.md
+          fi
           printf '\n[Mobile build and distribution instructions](https://github.com/a49a/clarora/blob/%s/docs/mobile-releases.md)\n' "$RELEASE_TAG" >> release-notes.md
           gh release create "$RELEASE_TAG" \
             release/* --verify-tag --generate-notes \

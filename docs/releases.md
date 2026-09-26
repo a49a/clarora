@@ -1,8 +1,9 @@
 # 发布流程（Release Runbook）
 
-版本唯一真源是 git tag（`v0.1.0` 格式）。打 tag 并推送后，Release 工作流自动构建
-macOS dmg、Windows zip、签名 Android APK 与未签名 iOS IPA，生成校验和，并创建 GitHub Release。
-Android 签名 secrets 为必需配置；默认 iOS IPA 不需要 Apple 账号，下载后须用户自行签名才能安装。可选 iOS 签名构建与渠道交付见 [移动端发布](mobile-releases.md)。
+版本唯一真源是 git tag（`v0.2.0` 格式）。打 tag 并推送后，Release 工作流自动构建
+macOS dmg、Windows zip 与未签名 iOS IPA，生成校验和，并创建 GitHub Release。
+配置 Android 签名 secrets 且将仓库变量 `CLARORA_ANDROID_RELEASE_ENABLED` 设为 `true` 时，工作流还会构建签名 Android APK；未启用时元数据把 Android 标为 `planned`。
+默认 iOS IPA 不需要 Apple 账号，下载后须用户自行签名才能安装。可选 iOS 签名构建与渠道交付见 [移动端发布](mobile-releases.md)。
 
 ## 发版步骤
 
@@ -12,11 +13,11 @@ Android 签名 secrets 为必需配置；默认 iOS IPA 不需要 Apple 账号�
 4. 打 tag 并推送（这一步触发 Release 构建）：
 
    ```sh
-   git tag -a v0.1.0 -m "Clarora v0.1.0"
-   git push origin v0.1.0
+   git tag -a v0.2.0 -m "Clarora v0.2.0"
+   git push origin v0.2.0
    ```
 
-5. 在 Actions 确认 Release 工作流各 job（resolve / macos / windows / android / ios / release）全绿，
+5. 在 Actions 确认 Release 工作流的 resolve / macos / windows / ios / release job 全绿；只有启用 Android 发布时才要求 android job 全绿，
    GitHub Releases 页面出现产物、`SHA256SUMS.txt` 与 `release-metadata.json`。
    iOS 资产为 `Clarora-ios-unsigned.ipa`，另附 `ios-unsigned-build.json`，IPA 纳入校验和；Release 说明会注明安装需自行签名。
    Windows job 会对最终 zip 做安装包能力验收（主程序、端侧转写、PDF 运行时），

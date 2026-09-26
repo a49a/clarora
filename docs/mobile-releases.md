@@ -30,12 +30,13 @@ SOURCE_SHA="$(git rev-parse HEAD)" CLARORA_BUILD_NUMBER=1001 bash scripts/build-
 | Secret | `ANDROID_KEY_ALIAS` | 正式签名 alias |
 | Secret | `ANDROID_KEY_PASSWORD` | 私钥密码 |
 | Secret | `ANDROID_CERT_SHA256` | 正式证书 SHA-256 指纹，支持带冒号格式；与最终 APK 签名核对 |
+| Variable | `CLARORA_ANDROID_RELEASE_ENABLED` | 设为 `true` 才在 GitHub Release 中构建并发布签名 Android APK |
 | Secret | `IOS_CERTIFICATE_BASE64` | 包含私钥的 Apple Distribution `.p12` 的 base64 |
 | Secret | `IOS_CERTIFICATE_PASSWORD` | `.p12` 导出密码 |
 | Secret | `IOS_PROFILE_BASE64` | 对应 `com.clarora.app` 的分发描述文件 base64 |
 | Variable | `IOS_TEAM_ID` | Apple Developer Team ID |
 
-Android 签名资源必须齐全，否则正式 Release 会失败，不能只发布桌面资产然后把 Android 标为成功。iOS 描述文件必须未过期、Team/Bundle ID 匹配；`app-store-connect` 使用商店分发 profile，`release-testing` 使用包含已登记设备的 Ad Hoc profile。工作流临时导入签名材料，结束时清理；不上传 archive、profile 或私钥。
+启用 Android 发布前，签名资源必须齐全；未启用时正式 Release 会把 Android 标为 `planned`，不会上传 APK。iOS 描述文件必须未过期、Team/Bundle ID 匹配；`app-store-connect` 使用商店分发 profile，`release-testing` 使用包含已登记设备的 Ad Hoc profile。工作流临时导入签名材料，结束时清理；不上传 archive、profile 或私钥。
 
 ## 先构建产物，再执行分发
 

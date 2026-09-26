@@ -9,7 +9,7 @@
   <Identity
     Name="8f6b0f1e-a083-4d3a-aadf-39d3bc2e5f5b"
     Publisher="CN=Clarora"
-    Version="0.1.0.0" />
+    Version="0.2.0.0" />
 
   <mp:PhoneIdentity PhoneProductId="8f6b0f1e-a083-4d3a-aadf-39d3bc2e5f5b" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
