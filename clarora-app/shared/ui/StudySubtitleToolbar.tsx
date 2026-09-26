@@ -1,4 +1,4 @@
-import { Pressable, Text, View } from 'react-native';
+import { Platform, Pressable, Text, View } from 'react-native';
 import { useAppTheme } from './ThemeContext';
 import type { SubtitleLanguage } from '../data/subtitles';
 
@@ -8,12 +8,12 @@ export function StudySubtitleToolbar({ kind, hasSubtitles, busy, status, onEngli
 }) {
   const { theme } = useAppTheme();
   const button = (label: string, action: () => void, primary = false) => <Pressable accessibilityRole="button" disabled={busy} onPress={action}
-    style={({ pressed }) => ({ minHeight: 36, justifyContent: 'center', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: primary ? theme.accent : theme.surfaceHover, opacity: busy ? .45 : pressed ? .7 : 1 })}>
+    style={({ pressed }) => ({ minHeight: Platform.OS === 'android' ? 48 : Platform.OS === 'ios' ? 44 : 36, justifyContent: 'center', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: primary ? theme.accent : theme.surfaceHover, opacity: busy ? .45 : pressed ? .7 : 1 })}>
     <Text style={{ color: primary ? '#fff' : theme.accent, fontSize: 13, fontWeight: '600' }}>{label}</Text>
   </Pressable>;
   return <View style={{ gap: 8, marginBottom: 10 }}>
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-      <Text style={{ color: theme.textSecondary, fontSize: 13, marginRight: 8 }}>{!hasSubtitles ? '暂无字幕' : kind === 'bilingual' ? '中英字幕已就绪' : kind === 'chinese' ? '已有中文 · 缺少英文' : '已有英文 · 缺少中文'}</Text>
+      <Text style={{ color: theme.textSecondary, fontSize: 13, marginRight: 8, flexShrink: 1 }}>{!hasSubtitles ? '暂无字幕' : kind === 'bilingual' ? '中英字幕已就绪' : kind === 'chinese' ? '已有中文 · 缺少英文' : '已有英文 · 缺少中文'}</Text>
       {hasSubtitles && kind === 'original' && button('生成中文字幕', onTranslate, true)}
       {!hasSubtitles && button('AI 生成字幕', onGenerate, true)}
       {button('导入英文', onEnglish)}

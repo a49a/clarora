@@ -1,4 +1,5 @@
 import { StudyOptions } from "../ui/StudyOptions";
+import { PopoverRoot } from "../ui/PopoverRoot";
 import { StudySubtitleToolbar } from "../ui/StudySubtitleToolbar";
 import { LibraryActionMenu } from "../ui/LibraryActionMenu";
 import { AudioLibraryManager } from "../ui/AudioLibraryManager";
@@ -366,6 +367,13 @@ export default function ListeningScreen({
 
   // Audio state
   const soundRef = useRef<SoundLike | null>(null);
+  const audioOperationRef = useRef<Promise<void>>(Promise.resolve());
+  const audioGenerationRef = useRef(0);
+  const enqueueAudioOperation = useCallback((operation: () => Promise<void>) => {
+    const result = audioOperationRef.current.then(operation, operation);
+    audioOperationRef.current = result.then(() => {}, () => {});
+    return result;
+  }, []);
   // 听力时长统计：播放中按轮询间隔累计真实秒数，攒够 5 秒落一次库。
   const listenAccumRef = useRef(0);
   const listenLastTickRef = useRef<number | null>(null);
@@ -380,6 +388,7 @@ export default function ListeningScreen({
   const [positionMs, setPositionMs] = useState(0);
   const [durationMs, setDurationMs] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [pendingRate, setPendingRate] = useState<number | null>(null);
   const positionMsRef = useRef(0);
 
   // Repeat playback: off → single audio → whole practice group.
@@ -451,9 +460,19 @@ export default function ListeningScreen({
 
   // AI passage question state. Subtitles are always mouse-selectable on macOS;
   // a right click on the selection chooses either copy or asking AI.
-  const { visible: chatOpen, open: openChat } = useAIChat();
-  const [subtitleOptionsOpen, setSubtitleOptionsOpen] = useState(false);
-  const [speedOptionsOpen, setSpeedOptionsOpen] = useState(false);
+  const { visible: chatOpen, open: openChat, launch: launchChat } = useAIChat();
+  // 设置弹层统一互斥:同一时间只允许一个前景层(字幕/倍速)。
+  const [activeSettings, setActiveSettings] = useState<'subtitle' | 'speed' | null>(null);
+  const subtitleSettingsTriggerRef = useRef<View | null>(null);
+  const speedSettingsTriggerRef = useRef<View | null>(null);
+  const aiTriggerRef = useRef<View | null>(null);
+  const practiceTriggerRef = useRef<View | null>(null);
+  const audioTriggerRef = useRef<View | null>(null);
+  const exitTriggerRef = useRef<View | null>(null);
+  // 最新期望倍速:加载新音频与异步改速都从这里读取,避免闭包拿到旧值。
+  const desiredRateRef = useRef(1);
+  const rateApplyingRef = useRef(false);
+  const [rateApplying, setRateApplying] = useState(false);
 
   // ── 听力跟读：录下当前句的朗读，AI 服务转写对齐打分 ────────────────────────
   const [shadowing, setShadowing] = useState(false);
@@ -717,13 +736,14 @@ export default function ListeningScreen({
 
   const openChatWithSelection = useCallback((text: string) => {
     void soundRef.current?.pauseAsync().catch(() => {});
+    setActiveSettings(null); // AI 面板成为前景前先收起设置
     openChat({ text, source: selectedAudio?.name || "音频学习" });
   }, [openChat, selectedAudio?.name]);
 
   useAIChatEntry(
     subtitleCues.length ? (subtitleCues[activeCueIndex >= 0 ? activeCueIndex : 0]?.text || subtitleTranscript.text) : "",
     selectedAudio?.name || "音频学习",
-    () => { void soundRef.current?.pauseAsync().catch(() => {}); }
+    () => { setActiveSettings(null); void soundRef.current?.pauseAsync().catch(() => {}); }
   );
 
   // ── 听力跟读 ────────────────────────────────────────────────────────────────
@@ -874,7 +894,7 @@ export default function ListeningScreen({
 
   // ── Audio playback ──────────────────────────────────────────────────────────
 
-  const unloadSound = useCallback(async () => {
+  const unloadSoundNow = useCallback(async () => {
     if (soundRef.current) {
       await soundRef.current.unloadAsync();
       soundRef.current = null;
@@ -887,6 +907,10 @@ export default function ListeningScreen({
       setDurationMs(0);
     }
   }, []);
+  const unloadSound = useCallback(async () => {
+    ++audioGenerationRef.current;
+    await enqueueAudioOperation(unloadSoundNow);
+  }, [enqueueAudioOperation, unloadSoundNow]);
 
   const handleExitStudy = useCallback(async () => {
     if (listenAccumRef.current > 0) {
@@ -922,11 +946,12 @@ export default function ListeningScreen({
   useEffect(() => {
     if (Platform.OS !== "android" || isManageMode) return;
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (activeSettings) { setActiveSettings(null); return true; }
       void handleExitStudy();
       return true;
     });
     return () => subscription.remove();
-  }, [handleExitStudy, isManageMode]);
+  }, [activeSettings, handleExitStudy, isManageMode]);
 
   const onPlaybackStatusUpdate = useCallback(
     async (status: AVPlaybackStatus) => {
@@ -988,39 +1013,60 @@ export default function ListeningScreen({
 
   const loadAudio = useCallback(
     async (audio: ListeningAudio) => {
-      await unloadSound();
-
-      try {
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: audio.audio_uri },
-          { rate: playbackRate, progressUpdateIntervalMillis: 100 },
-          onPlaybackStatusUpdate
-        );
-        if (!mountedRef.current) {
-          await sound.unloadAsync();
-          return;
+      const generation = ++audioGenerationRef.current;
+      let loaded = false;
+      await enqueueAudioOperation(async () => {
+        let sound: SoundLike | null = null;
+        try {
+          if (generation !== audioGenerationRef.current) return;
+          await unloadSoundNow();
+          if (generation !== audioGenerationRef.current) return;
+          if (mountedRef.current) setPendingRate(desiredRateRef.current);
+          ({ sound } = await Audio.Sound.createAsync(
+            { uri: audio.audio_uri },
+            { rate: desiredRateRef.current, progressUpdateIntervalMillis: 100 },
+            onPlaybackStatusUpdate
+          ));
+          if (!mountedRef.current || generation !== audioGenerationRef.current) {
+            await sound.unloadAsync().catch(() => {});
+            return;
+          }
+          soundRef.current = sound;
+          await sound.setRateAsync(desiredRateRef.current, true);
+          if (!mountedRef.current || generation !== audioGenerationRef.current) {
+            await sound.unloadAsync().catch(() => {});
+            soundRef.current = null;
+            return;
+          }
+          setPlaybackRate(desiredRateRef.current);
+          setPendingRate(null);
+          loaded = true;
+        } catch (error: any) {
+          if (sound) {
+            await sound.unloadAsync().catch(() => {});
+            if (soundRef.current === sound) soundRef.current = null;
+          }
+          if (mountedRef.current && generation === audioGenerationRef.current) {
+            setError(`加载音频失败：${error?.message ?? error}`);
+          }
         }
-        soundRef.current = sound;
-      } catch (e: any) {
-        if (mountedRef.current) {
-          setError(`加载音频失败：${e?.message ?? e}`);
-        }
-      }
+      });
+      return loaded ? generation : null;
     },
-    [unloadSound, playbackRate, onPlaybackStatusUpdate]
+    [enqueueAudioOperation, unloadSoundNow, onPlaybackStatusUpdate]
   );
 
-  const loadSubtitle = useCallback(async (audio: ListeningAudio) => {
+  const loadSubtitle = useCallback(async (audio: ListeningAudio, generation?: number) => {
     if (!audio.subtitle_uri) {
-      setSubtitleCues([]);
+      if (generation == null || generation === audioGenerationRef.current) setSubtitleCues([]);
       return;
     }
     try {
       const content = await FileSystem.readAsStringAsync(audio.subtitle_uri);
       const cues = parseSubtitleCues(content);
-      if (mountedRef.current) setSubtitleCues(cues);
+      if (mountedRef.current && (generation == null || generation === audioGenerationRef.current)) setSubtitleCues(cues);
     } catch (e: any) {
-      if (mountedRef.current) {
+      if (mountedRef.current && (generation == null || generation === audioGenerationRef.current)) {
         setSubtitleCues([]);
         setError(`加载字幕失败：${e?.message ?? e}`);
       }
@@ -1039,20 +1085,24 @@ export default function ListeningScreen({
       }
       loadingAudioIdRef.current = audio.id;
       try {
-        await loadAudio(audio);
-        await loadSubtitle(audio);
+        const generation = await loadAudio(audio);
+        if (generation == null) return;
+        await loadSubtitle(audio, generation);
+        if (generation !== audioGenerationRef.current) return;
         loadedAudioIdRef.current = audio.id;
         if (autoPlay || pendingAutoPlayAudioIdRef.current === audio.id) {
-          await soundRef.current?.playAsync();
+          await enqueueAudioOperation(async () => {
+            if (generation === audioGenerationRef.current) await soundRef.current?.playAsync();
+          });
         }
       } finally {
         if (pendingAutoPlayAudioIdRef.current === audio.id) {
           pendingAutoPlayAudioIdRef.current = null;
         }
-        loadingAudioIdRef.current = null;
+        if (loadingAudioIdRef.current === audio.id) loadingAudioIdRef.current = null;
       }
     },
-    [loadAudio, loadSubtitle]
+    [enqueueAudioOperation, loadAudio, loadSubtitle]
   );
 
   const selectAudioItem = useCallback(
@@ -1157,7 +1207,7 @@ export default function ListeningScreen({
   useEffect(() => {
     // A React Native management prompt is an editable field, so it must own
     // Space and arrow keys instead of the player monitor consuming them.
-    if (mode !== "study" || !selectedAudio || promptVisible || libraryMenu || chatOpen || subtitleOptionsOpen || speedOptionsOpen) return;
+    if (mode !== "study" || !selectedAudio || promptVisible || libraryMenu || chatOpen || activeSettings) return;
     const keyboard = NativeModules.RNKeyboard as
       | {
           startPlaybackListening?: () => void;
@@ -1198,7 +1248,7 @@ export default function ListeningScreen({
       cancelled = true;
       keyboard.stopListening?.();
     };
-  }, [chatOpen, subtitleOptionsOpen, speedOptionsOpen, libraryMenu, mode, promptVisible, seekBy, selectedAudio, togglePlayback]);
+  }, [activeSettings, chatOpen, libraryMenu, mode, promptVisible, seekBy, selectedAudio, togglePlayback]);
 
   const seekToCue = useCallback(
     async (cueIndex: number) => {
@@ -1246,12 +1296,39 @@ export default function ListeningScreen({
 
   const changeRate = useCallback(
     async (rate: number) => {
-      setPlaybackRate(rate);
-      if (soundRef.current) {
-        await soundRef.current.setRateAsync(rate, true);
+      if (rateApplyingRef.current) return; // 快速连点:忽略重复提交
+      rateApplyingRef.current = true;
+      setRateApplying(true);
+      try {
+        await enqueueAudioOperation(async () => {
+          const sound = soundRef.current;
+          if (!sound) {
+            if (!selectedAudioId) throw new Error("请先选择音频");
+            desiredRateRef.current = rate;
+            if (mountedRef.current) {
+              setPendingRate(rate);
+              setActiveSettings(null);
+            }
+            return;
+          }
+          await sound.setRateAsync(rate, true);
+          // 只在当前播放器确认成功后提交期望速度和显示档位。
+          desiredRateRef.current = rate;
+          if (mountedRef.current) {
+            setPlaybackRate(rate);
+            setPendingRate(null);
+            setActiveSettings(null);
+          }
+        });
+      } catch (error: any) {
+        // 失败保留旧档,提示原因并允许重试。
+        if (mountedRef.current) setError(`设置播放速度失败：${error?.message ?? error}`);
+      } finally {
+        rateApplyingRef.current = false;
+        if (mountedRef.current) setRateApplying(false);
       }
     },
-    []
+    [enqueueAudioOperation, selectedAudioId]
   );
 
   // ── Segment loop (选段循环) ────────────────────────────────────────────────
@@ -2072,6 +2149,7 @@ export default function ListeningScreen({
     setSwitchingAudio(true);
     setShowAudioPicker(false);
     setShowPracticePicker(false);
+    setActiveSettings(null);
     try { await selectAudioItem(selectedPractice, next, isPlaying); }
     catch (error: any) { setError(`切换音频失败：${error?.message ?? error}`); }
     finally { setSwitchingAudio(false); }
@@ -2094,8 +2172,51 @@ export default function ListeningScreen({
   const [showCurrentCue, setShowCurrentCue] = useState(false);
   const compactStudy = studyWidth < 760;
   const styles = makeStyles(theme, subtitleSize);
+  const hitTrigger = (ref: { current: View | null }, pageX: number, pageY: number) =>
+    new Promise<boolean>(resolve => {
+      if (!ref.current) { resolve(false); return; }
+      ref.current.measureInWindow((x, y, width, height) => {
+        resolve(pageX >= x && pageX <= x + width && pageY >= y && pageY <= y + height);
+      });
+    });
+  const handleSettingsBackdropPress = async (pageX: number, pageY: number) => {
+    if (await hitTrigger(subtitleSettingsTriggerRef, pageX, pageY)) {
+      if (activeSettings === 'subtitle') return false;
+      setActiveSettings('subtitle');
+      return true;
+    }
+    if (await hitTrigger(speedSettingsTriggerRef, pageX, pageY)) {
+      if (activeSettings === 'speed') return false;
+      setActiveSettings('speed');
+      return true;
+    }
+    if (await hitTrigger(aiTriggerRef, pageX, pageY)) {
+      setActiveSettings(null);
+      launchChat();
+      return true;
+    }
+    if (await hitTrigger(practiceTriggerRef, pageX, pageY) && !aiStatus) {
+      setActiveSettings(null);
+      setShowAudioPicker(false);
+      setShowPracticePicker(true);
+      return true;
+    }
+    if (await hitTrigger(audioTriggerRef, pageX, pageY) && selectedPractice && !aiStatus) {
+      setActiveSettings(null);
+      setShowPracticePicker(false);
+      setShowAudioPicker(true);
+      return true;
+    }
+    if (await hitTrigger(exitTriggerRef, pageX, pageY)) {
+      setActiveSettings(null);
+      void handleExitStudy();
+      return true;
+    }
+    return false;
+  };
 
   return (
+    <PopoverRoot>
     <View
       style={styles.safeArea}
       onLayout={event => setStudyWidth(event.nativeEvent.layout.width)}
@@ -2105,12 +2226,13 @@ export default function ListeningScreen({
         {!isManageMode && (showPracticePicker || showAudioPicker) && <Pressable
           accessibilityRole="button" accessibilityLabel="关闭音频选择列表"
           style={[StyleSheet.absoluteFill, { zIndex: 5 }]}
-          onPress={() => { setShowPracticePicker(false); setShowAudioPicker(false); setSubtitleOptionsOpen(false); setSpeedOptionsOpen(false); }} />}
+          onPress={() => { setShowPracticePicker(false); setShowAudioPicker(false); setActiveSettings(null); }} />}
         {!isManageMode && (
           <View style={styles.focusSidebar}>
             <View style={[styles.focusSelectorRow, compactStudy && styles.focusSelectorRowCompact]}>
               <View style={styles.focusSelectorSection}>
                 <Pressable
+                  ref={practiceTriggerRef}
                   accessibilityRole="button"
                   accessibilityLabel="选择练习组"
                   disabled={!!aiStatus}
@@ -2168,6 +2290,7 @@ export default function ListeningScreen({
 
               <View style={styles.focusSelectorSection}>
                 <Pressable
+                  ref={audioTriggerRef}
                   accessibilityRole="button"
                   accessibilityLabel="选择音频"
                   accessibilityState={{ expanded: showAudioPicker }}
@@ -2229,7 +2352,9 @@ export default function ListeningScreen({
               </View>
               <View style={styles.studyHeadingActions}>
                 {studySidebarStatus}
-                <StudyOptions open={subtitleOptionsOpen} onVisibilityChange={setSubtitleOptionsOpen} align="right" constrainToParent label="字幕" title="字幕与阅读设置">
+                <StudyOptions open={activeSettings === "subtitle"} onVisibilityChange={(visible) => setActiveSettings(visible ? "subtitle" : null)}
+                  triggerRef={subtitleSettingsTriggerRef} onBackdropPress={handleSettingsBackdropPress} suppressReturnFocus={chatOpen}
+                  align="right" label="字幕" title="字幕与阅读设置">
                   {selectedAudio && <StudySubtitleToolbar
                     kind={classifySubtitleLanguage(subtitleCues)} hasSubtitles={subtitleCues.length > 0}
                     busy={!!aiStatus || switchingAudio} status={aiStatus}
@@ -2252,8 +2377,8 @@ export default function ListeningScreen({
                     ? '长按字幕可复制。开启截取后，拖动 A/B 标记设置片段。'
                     : '拖选字幕后右键可复制或向 AI 提问。开启截取后，点击字幕设置 A/B 边界。'}</Text>
                 </StudyOptions>
-                <AIChatInlineButton />
-                {onExitStudy && <Pressable accessibilityRole="button" accessibilityLabel="退出音频学习"
+                <View ref={aiTriggerRef} collapsable={false}><AIChatInlineButton /></View>
+                {onExitStudy && <Pressable ref={exitTriggerRef} accessibilityRole="button" accessibilityLabel="退出音频学习"
                   style={({ pressed }) => [styles.studyExitBtn, pressed && styles.buttonPressed]}
                   onPress={() => void handleExitStudy()}>
                   <Text style={styles.studyExitText}>退出学习</Text>
@@ -2685,12 +2810,15 @@ export default function ListeningScreen({
               </Pressable>
 
               <View style={styles.playerToolsFixed}>
-              <StudyOptions open={speedOptionsOpen} onVisibilityChange={setSpeedOptionsOpen} direction="up" align="left" label={`${playbackRate}×`} title="播放速度">
-                {close => <View style={styles.speedOptions}>
+              <StudyOptions open={activeSettings === "speed"} onVisibilityChange={(visible) => setActiveSettings(visible ? "speed" : null)}
+                triggerRef={speedSettingsTriggerRef} onBackdropPress={handleSettingsBackdropPress} suppressReturnFocus={chatOpen}
+                direction="up" align="left" label="播放速度" badge={pendingRate == null ? `当前 ${playbackRate}×` : `待应用 ${pendingRate}×`} title="播放速度">
+                {<View style={styles.speedOptions}>
                   {[0.6, 0.7, 0.8, 1.0, 1.2].map(rate => <Pressable key={rate} accessibilityRole="button"
-                    accessibilityLabel={`${rate} 倍速`} accessibilityState={{ selected: playbackRate === rate }}
+                    accessibilityLabel={`${rate} 倍速`} accessibilityState={{ selected: playbackRate === rate, busy: rateApplying && playbackRate !== rate }}
+                    disabled={rateApplying}
                     style={[styles.speedBtn, playbackRate === rate && styles.speedBtnActive]}
-                    onPress={() => { changeRate(rate); close(); }}>
+                    onPress={() => { void changeRate(rate); }}>
                     <Text style={[styles.speedBtnText, playbackRate === rate && styles.speedBtnTextActive]}>{rate}×</Text>
                   </Pressable>)}
                 </View>}
@@ -2997,6 +3125,7 @@ export default function ListeningScreen({
         </View>
       </View>
     </View>
+    </PopoverRoot>
   );
 }
 
@@ -3028,8 +3157,8 @@ function makeStyles(
     studyExitBtn: { minHeight: Platform.OS === 'ios' || Platform.OS === 'android' ? 44 : 34, justifyContent: 'center', paddingHorizontal: 8, borderRadius: 8 },
     studyExitText: { color: theme.textSecondary, fontSize: 12 },
     studyStatus: { color: theme.accent, fontSize: 12, paddingVertical: 4 },
-    subtitleSettingRow: { minHeight: 44, justifyContent: 'center' },
-    focusSelectorBtn: { flexDirection: 'row', alignItems: 'center', minHeight: Platform.OS === 'ios' || Platform.OS === 'android' ? 44 : 34, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, backgroundColor: theme.surfaceHover },
+    subtitleSettingRow: { minHeight: Platform.OS === 'android' ? 48 : 44, justifyContent: 'center' },
+    focusSelectorBtn: { flexDirection: 'row', alignItems: 'center', minHeight: Platform.OS === 'android' ? 48 : Platform.OS === 'ios' ? 44 : 34, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, backgroundColor: theme.surfaceHover },
     focusSelectorBtnDisabled: { opacity: 0.52 },
     focusSelectorBtnText: {
       flex: 1,
@@ -3458,7 +3587,7 @@ function makeStyles(
       color: theme.textMuted,
     },
     subtitleSizeBtn: {
-      minHeight: 44, minWidth: 44, justifyContent: "center", alignItems: "center",
+      minHeight: Platform.OS === 'android' ? 48 : 44, minWidth: Platform.OS === 'android' ? 48 : 44, justifyContent: "center", alignItems: "center",
       paddingHorizontal: 8,
       paddingVertical: 2,
       borderRadius: 6,
@@ -3637,7 +3766,7 @@ function makeStyles(
     playerToolsFixed: { zIndex: 30 },
     playerToolsContent: { flexGrow: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
     speedOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-    speedBtn: { minWidth: 58, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: theme.surfaceHover },
+    speedBtn: { minWidth: 58, minHeight: Platform.OS === 'android' ? 48 : 44, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: theme.surfaceHover },
     speedBtnActive: { backgroundColor: theme.accent },
     speedBtnText: { color: theme.text, fontSize: 12, fontWeight: "500" },
     speedBtnTextActive: { color: "#fff" },
