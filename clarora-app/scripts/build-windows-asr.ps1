@@ -95,6 +95,7 @@ try {
     Write-Host 'Configuring clarora_asr with CMake...'
     & cmake -S $asrDir -B $buildDir -A x64 `
         "-DCMAKE_TOOLCHAIN_FILE=$(Join-Path $vcpkgRoot 'scripts/buildsystems/vcpkg.cmake')" `
+        '-DCMAKE_CXX_FLAGS=/DMINIAUDIO_IMPLEMENTATION /DMA_NO_DEVICE_IO' `
         "-DSHERPA_INCLUDE_DIR=$sherpaInclude" `
         "-DSHERPA_LIB_DIR=$sherpaLib"
     if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }

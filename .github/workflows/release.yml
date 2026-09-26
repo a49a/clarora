@@ -131,7 +131,6 @@ jobs:
       - run: npm ci
         working-directory: clarora-app
       - name: Build on-device ASR library (clarora_asr.dll)
-        continue-on-error: true  # 端侧转写为可选组件;失败时由最终包验证拦截
         timeout-minutes: 35
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-asr.ps1
         working-directory: clarora-app
