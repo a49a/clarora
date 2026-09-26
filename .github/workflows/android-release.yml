@@ -40,6 +40,21 @@ jobs:
           java-version: 17
       - run: npm ci
         working-directory: clarora-app
+      - name: Restore matching Hermes compiler for Linux
+        working-directory: clarora-app
+        run: |
+          set -euo pipefail
+          # The react-native-macos npm alias omits hermesc. Upstream RN 0.81.6
+          # ships it with the same Hermes revision as react-native-macos 0.81.9.
+          package="$(npm pack react-native@0.81.6 --registry=https://registry.npmjs.org --pack-destination "$RUNNER_TEMP" --silent)"
+          installed_version="$(cat node_modules/react-native/sdks/.hermesversion)"
+          compiler_version="$(tar -xOzf "$RUNNER_TEMP/$package" package/sdks/.hermesversion)"
+          test "$installed_version" = "$compiler_version"
+          compiler=node_modules/react-native/sdks/hermesc/linux64-bin/hermesc
+          mkdir -p "$(dirname "$compiler")"
+          tar -xOzf "$RUNNER_TEMP/$package" package/sdks/hermesc/linux64-bin/hermesc > "$compiler"
+          test -s "$compiler"
+          chmod +x "$compiler"
       - name: Build and verify signed APK
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
