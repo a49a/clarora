@@ -11,6 +11,23 @@ updates:
           - react-native*
       dev-tools:
         dependency-type: development
+    # 迁移型大版本不自动开 PR:RN 生态跨版本与 TS7 需要专项升级
+    # (postinstall 补丁脚本、tsconfig、metro/babel 与 RN 版本互相锁定)
+    ignore:
+      - dependency-name: "react-native"
+        versions: [">=0.82"]
+      - dependency-name: "react-native-macos"
+        versions: [">=0.82"]
+      - dependency-name: "react-native-windows"
+        versions: [">=0.82"]
+      - dependency-name: "@react-native/babel-preset"
+        versions: [">=0.82"]
+      - dependency-name: "metro-config"
+        versions: [">=0.82"]
+      - dependency-name: "@babel/core"
+        versions: [">=8"]
+      - dependency-name: "typescript"
+        versions: [">=6"]
 
   - package-ecosystem: github-actions
     directory: /
