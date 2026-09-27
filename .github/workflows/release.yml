@@ -96,7 +96,7 @@ jobs:
           hdiutil create -volname "Clarora" -srcfolder /tmp/clarora-stage \
             -ov -format UDZO "Clarora-macos-arm64.zip.dmg" >/dev/null
           mv "Clarora-macos-arm64.zip.dmg" "Clarora-macos-arm64.dmg"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Clarora-macos-arm64
           path: clarora-app/Clarora-macos-arm64.dmg
@@ -146,7 +146,7 @@ jobs:
       - name: Verify final package capabilities
         working-directory: clarora-app
         run: bash scripts/verify-release.sh Clarora-windows-x64.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Clarora-windows-x64
           path: clarora-app/Clarora-windows-x64.zip

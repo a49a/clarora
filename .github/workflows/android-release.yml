@@ -72,7 +72,7 @@ jobs:
           test -n "$KEYSTORE_BASE64"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$CLARORA_ANDROID_KEYSTORE"
           bash clarora-app/scripts/build-android-release.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Clarora-android
           path: clarora-app/dist/mobile/
