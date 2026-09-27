@@ -1,5 +1,6 @@
 import { StudyOptions } from "../ui/StudyOptions";
 import { PopoverRoot } from "../ui/PopoverRoot";
+import { resolveStudySettingsMaskTap, type StudySettingsTrigger } from "../ui/studySettingsMask";
 import { StudySubtitleToolbar } from "../ui/StudySubtitleToolbar";
 import { LibraryActionMenu } from "../ui/LibraryActionMenu";
 import { AudioLibraryManager } from "../ui/AudioLibraryManager";
@@ -2181,37 +2182,48 @@ export default function ListeningScreen({
       });
     });
   const handleSettingsBackdropPress = async (pageX: number, pageY: number) => {
-    if (await hitTrigger(subtitleSettingsTriggerRef, pageX, pageY)) {
-      if (activeSettings === 'subtitle') return false;
-      setActiveSettings('subtitle');
-      return true;
-    }
-    if (await hitTrigger(speedSettingsTriggerRef, pageX, pageY)) {
-      if (activeSettings === 'speed') return false;
-      setActiveSettings('speed');
-      return true;
-    }
-    if (await hitTrigger(aiTriggerRef, pageX, pageY)) {
-      setActiveSettings(null);
-      launchChat();
-      return true;
-    }
-    if (await hitTrigger(practiceTriggerRef, pageX, pageY) && !aiStatus) {
-      setActiveSettings(null);
-      setShowAudioPicker(false);
-      setShowPracticePicker(true);
-      return true;
-    }
-    if (await hitTrigger(audioTriggerRef, pageX, pageY) && selectedPractice && !aiStatus) {
-      setActiveSettings(null);
-      setShowPracticePicker(false);
-      setShowAudioPicker(true);
-      return true;
-    }
-    if (await hitTrigger(exitTriggerRef, pageX, pageY)) {
-      setActiveSettings(null);
-      void handleExitStudy();
-      return true;
+    const triggers: [StudySettingsTrigger, { current: View | null }][] = [
+      ['subtitle', subtitleSettingsTriggerRef],
+      ['speed', speedSettingsTriggerRef],
+      ['ai', aiTriggerRef],
+      ['practice', practiceTriggerRef],
+      ['audio', audioTriggerRef],
+      ['exit', exitTriggerRef],
+    ];
+    for (const [trigger, ref] of triggers) {
+      if (!(await hitTrigger(ref, pageX, pageY))) continue;
+      const action = resolveStudySettingsMaskTap(trigger, {
+        activeSettings,
+        aiBusy: !!aiStatus,
+        hasSelectedPractice: !!selectedPractice,
+      });
+      switch (action.kind) {
+        case 'close':
+          return false;
+        case 'open':
+          setActiveSettings(action.settings);
+          return true;
+        case 'ai':
+          setActiveSettings(null);
+          launchChat();
+          return true;
+        case 'practice':
+          setActiveSettings(null);
+          setShowAudioPicker(false);
+          setShowPracticePicker(true);
+          return true;
+        case 'audio':
+          setActiveSettings(null);
+          setShowPracticePicker(false);
+          setShowAudioPicker(true);
+          return true;
+        case 'exit':
+          setActiveSettings(null);
+          void handleExitStudy();
+          return true;
+        default:
+          return false;
+      }
     }
     return false;
   };
