@@ -115,7 +115,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: clarora-app/package-lock.json
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Use corrected dependency extractor for the already-tagged v0.2.0 source
