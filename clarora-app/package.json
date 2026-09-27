@@ -40,18 +40,18 @@
     "react-native-windows": "0.81.35"
   },
   "devDependencies": {
-    "@babel/core": "^7.25.0",
+    "@babel/core": "^7.29.7",
     "@eslint/js": "^10.0.1",
-    "@react-native-community/cli": "20.0.0",
+    "@react-native-community/cli": "20.2.0",
     "@types/react": "~19.3.0",
-    "eslint": "^10.10.0",
+    "eslint": "^10.11.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.12.0",
     "metro-config": "^0.81.5",
-    "prettier": "^3.9.7",
+    "prettier": "^3.9.9",
     "typescript": "^5.7.0",
-    "typescript-eslint": "^8.70.0"
+    "typescript-eslint": "^8.70.1"
   },
   "react-native-windows": {
     "init-windows": {
