@@ -61,7 +61,7 @@ jobs:
           # 按 resolve 出的提交 SHA 固定检出,而非 tag 名:tag 在流水线中途被
           # 移动也不会造成"构建的代码与校验的来源不一致"。
           ref: ${{ needs.resolve.outputs.source_sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -110,7 +110,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve.outputs.source_sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
