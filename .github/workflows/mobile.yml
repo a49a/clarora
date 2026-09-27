@@ -26,7 +26,7 @@ jobs:
     outputs:
       sha: ${{ steps.source.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: source
         env:
           TAG: ${{ inputs.tag }}
@@ -61,7 +61,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.sha }}
       - uses: actions/setup-node@v7
