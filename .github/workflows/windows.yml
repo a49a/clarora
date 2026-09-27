@@ -23,7 +23,7 @@ jobs:
         with:
           dotnet-version: 8.0.x
       - uses: microsoft/setup-msbuild@v3
-      - uses: nuget/setup-nuget@v2
+      - uses: nuget/setup-nuget@v4
       - run: npm ci
         working-directory: clarora-app
       - name: Build on-device ASR library (clarora_asr.dll)
