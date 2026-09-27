@@ -26,6 +26,8 @@ updates:
         versions: [">=0.82"]
       - dependency-name: "metro-config"
         versions: [">=0.82"]
+      - dependency-name: "@babel/runtime"
+        versions: [">=8"]
       - dependency-name: "@babel/core"
         versions: [">=8"]
       - dependency-name: "typescript"
