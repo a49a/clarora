@@ -30,7 +30,7 @@ jobs:
       source_sha: ${{ steps.source.outputs.source_sha }}
       build_number: ${{ steps.source.outputs.build_number }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: source
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
@@ -56,7 +56,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.source_sha }}
       - uses: actions/setup-node@v7
