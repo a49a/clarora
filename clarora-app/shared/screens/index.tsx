@@ -718,7 +718,8 @@ export default function HomeScreen() {
           toggleMeaning();
         }
       } else if (key === "Enter" || key === "Return") {
-        toggleMeaning();
+        if (currentCard?.kind === "clip") setShowMeaning(true);
+        else toggleMeaning();
       } else if (key.toLowerCase() === "p") {
         if (currentCard?.kind === "clip") toggleClipPlayback();
         else if (currentCard?.kind === "video") toggleVideoClipPlayback();
@@ -779,9 +780,9 @@ export default function HomeScreen() {
   );
 
   useAIChatEntry(currentCard ? [
-    currentCard.front,
+    currentCard.kind === "clip" && !showMeaning ? "" : currentCard.front,
     currentCard.kind === "ai" ? currentCard.contextText : "",
-    currentCard.kind === "clip" || currentCard.kind === "video" ? currentCard.zhText : "",
+    (currentCard.kind === "clip" && showMeaning) || currentCard.kind === "video" ? currentCard.zhText : "",
     showMeaning ? currentCard.back : "",
   ].filter(Boolean).join("\n\n") : "", "闪卡复习", () => {
     ++clipPlaybackRequestRef.current;
@@ -966,10 +967,12 @@ export default function HomeScreen() {
                   ]}
               {...(showMeaning
                 ? {
-                    onTouchStart: (e: any) =>
-                      handleMeaningTouchStart(e.nativeEvent.pageX, e.nativeEvent.pageY),
-                    onTouchEnd: (e: any) =>
-                      handleMeaningTouchEnd(e.nativeEvent.pageX, e.nativeEvent.pageY),
+                    ...(currentCard.kind === "clip" ? {} : {
+                      onTouchStart: (e: any) =>
+                        handleMeaningTouchStart(e.nativeEvent.pageX, e.nativeEvent.pageY),
+                      onTouchEnd: (e: any) =>
+                        handleMeaningTouchEnd(e.nativeEvent.pageX, e.nativeEvent.pageY),
+                    }),
                   }
                 : {
                     onPress: toggleMeaning,
@@ -984,7 +987,7 @@ export default function HomeScreen() {
                   { transform: [{ translateX: cardSlide }], opacity: cardFade },
                 ]}
               >
-                {showMeaning ? (
+                {showMeaning && currentCard.kind !== "clip" ? (
                   <View style={styles.meaningScrollContainer}>
                     <ScrollView
                       ref={meaningScrollRef}
@@ -1025,7 +1028,8 @@ export default function HomeScreen() {
                     contentContainerStyle={styles.clipScrollContent}
                     showsVerticalScrollIndicator={false}
                   >
-                  <View style={styles.clipWordsWrap}>
+                  {showMeaning ? <View style={styles.clipWordsWrap}>
+                    {!currentCard.front.trim() && <Text style={styles.clipZhText}>这段音频暂无原文</Text>}
                     {tokenizeClipText(currentCard.front).map((tok, tokIndex) =>
                       tok.isWord ? (
                         <Pressable
@@ -1048,9 +1052,9 @@ export default function HomeScreen() {
                         </Text>
                       )
                     )}
-                  </View>
+                  </View> : <Text style={styles.clipRecallPrompt}>先听一遍，回想原文和意思</Text>}
                     {/* Chinese translation subtitle under the clip text */}
-                    {currentCard.zhText ? (
+                    {showMeaning ? (
                       <Text
                         style={[
                           styles.clipZhText,
@@ -1060,7 +1064,7 @@ export default function HomeScreen() {
                           },
                         ]}
                       >
-                        {currentCard.zhText}
+                        {currentCard.zhText || "这段音频暂无中文翻译"}
                       </Text>
                     ) : null}
                     {/* In-card audio track: click/drag anywhere to play
@@ -1117,6 +1121,16 @@ export default function HomeScreen() {
                         </Pressable>
                       ))}
                     </View>
+                    {!showMeaning && (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="显示原文和翻译"
+                        style={[styles.clipActionBtn, styles.clipRevealBtn]}
+                        onPress={() => setShowMeaning(true)}
+                      >
+                        <Text style={[styles.clipActionText, styles.clipActionTextActive]}>显示原文和翻译</Text>
+                      </Pressable>
+                    )}
                   </ScrollView>
                 ) : currentCard.kind === "video" ? (
                   <ScrollView
@@ -1275,7 +1289,9 @@ export default function HomeScreen() {
                 )}
                 <Text style={styles.cardHint}>
                   {currentCard.kind === "clip"
-                    ? "点单词或音轨任意位置播放 · ←/→ 切换卡片 · 学会的点 🗑 删除"
+                    ? showMeaning
+                      ? "点单词或音轨任意位置播放 · 计划复习中可评分 · ←/→ 切换卡片"
+                      : "先听再揭晓 · 空格 播放/暂停 · Enter 显示答案 · ←/→ 切换卡片"
                     : currentCard.kind === "video"
                     ? "点单词或进度条定位 · 空格 播放/暂停 · ←/→ 切换卡片 · 学会的点 🗑 删除"
                     : currentCard.kind === "sentence"
@@ -1791,6 +1807,13 @@ function makeStyles(theme: ReturnType<typeof useAppTheme>["theme"]) {
       backgroundColor: `${theme.accent}33`,
       borderRadius: 4,
     },
+    clipRecallPrompt: {
+      color: theme.text,
+      fontSize: 18,
+      fontWeight: "600",
+      textAlign: "center",
+      marginBottom: 12,
+    },
     clipTrack: {
       alignSelf: "stretch",
       height: 26,
@@ -1831,6 +1854,11 @@ function makeStyles(theme: ReturnType<typeof useAppTheme>["theme"]) {
     clipActionBtnActive: {
       borderColor: theme.accent,
       backgroundColor: `${theme.accent}22`,
+    },
+    clipRevealBtn: {
+      alignSelf: "center",
+      marginTop: 18,
+      borderColor: theme.accent,
     },
     clipActionText: {
       color: theme.textSecondary,
