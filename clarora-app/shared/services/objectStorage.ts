@@ -1,6 +1,6 @@
-import { sha256 } from '@noble/hashes/sha256';
-import { hmac } from '@noble/hashes/hmac';
-import { bytesToHex } from '@noble/hashes/utils';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { hmac } from '@noble/hashes/hmac.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { XMLParser } from 'fast-xml-parser';
 import { getSetting, setSetting } from '../data/database';
 import { FileSystem } from './platform';
