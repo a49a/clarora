@@ -20,6 +20,8 @@ updates:
         versions: [">=0.82"]
       - dependency-name: "react-native-windows"
         versions: [">=0.82"]
+      - dependency-name: "@react-native/metro-config"
+        versions: [">=0.82"]
       - dependency-name: "@react-native/babel-preset"
         versions: [">=0.82"]
       - dependency-name: "metro-config"
