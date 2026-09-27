@@ -43,11 +43,13 @@ SOURCE_SHA="$(git rev-parse HEAD)" CLARORA_BUILD_NUMBER=1001 bash scripts/build-
 1. 在包含这些脚本的提交上创建版本 tag，保证 tag 的 `v<版本>` 与 `clarora-app/package.json` 一致。运行旧 tag 不会自动使用新脚本；不要移动已经发布的 tag。
 2. Actions → **Mobile release artifacts (no publishing)**：填写 tag、platform 和 build_number。工作流解析 tag 的完整 SHA，再按此 SHA 构建。选择 iOS 时填写 `ios_method`：默认 `unsigned`，无需任何 Apple secrets；已有付费会员和分发资源时可选 `app-store-connect` 或 `release-testing`。
 3. 下载该 run 的 `Clarora-android` 或 `Clarora-ios-<method>` artifact，核对 `android-build.json`／`ios-unsigned-build.json`／`ios-build.json` 的 SHA、版本、构建号和产物 SHA-256。正式签名 iOS artifact 保留 7 天，应及时保存到受控位置。
-4. Android 安装最终签名 APK，验证首次安装、覆盖升级和用户数据保留。正式 Release 工作流使用相同构建入口并上传 `Clarora-android.apk`、构建报告及校验和。
+4. Android 安装最终签名 APK，验证首次安装、覆盖升级和用户数据保留。正式 Release 工作流使用相同构建入口并上传 `Clarora-android.apk`、构建报告及校验和。若这是首个正式签名版本，没有可覆盖的旧版，应记录“升级待下版”，不能把首次安装写成升级通过。
 5. `unsigned` 产物须自行签名后安装；它不能上传商店作为正式签名包。iOS 商店导出的 IPA 交由有权限的发布者通过 Apple Transporter 上传 App Store Connect，等待处理后配置 TestFlight 或提交 App Store 审核；Ad Hoc IPA 只在 profile 登记设备上验收。当前工作流只导出，不自动上传 Apple 或公开 IPA。
 6. 在实际可用的分发渠道上完成安装、升级、凭证重启读取、文件选择、播放/录音及备份恢复验证，保留构建号和截图。缺账号、证书或设备时记录未完成项。
 
 Android 正式 tag 构建的 `versionName` 读取 package.json，`versionCode = major × 1000000 + minor × 1000 + patch + 1`（major < 999，minor/patch < 1000）。例如 0.1.0 为 1001。手动 Android 构建应填写相同代码；不要分发大于下一正式版本的手动构建号。同一 tag 重建不会提高版本代码。iOS build_number 由执行者指定，必须满足所选渠道版本递增要求；脚本接受 1～9 位正整数。
+
+下一次 Android 发布前，在同一台设备先安装 v0.2.0 正式 APK 并创建可辨认的闪卡、学习进度和设置；保持应用已安装，直接用新版本 APK 覆盖安装。核对两个 APK 的签名证书相同、新版 `versionCode` 更高，并在升级后确认应用启动、原有数据及文件引用仍可用。将设备型号、Android 版本、两版构建号、签名指纹和验收结果归档；没有完成这项验证时，不宣称覆盖升级与数据保留已通过。
 
 ## 官网 iOS 渠道入口
 

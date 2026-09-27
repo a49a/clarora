@@ -197,9 +197,8 @@ jobs:
           fi
           cp dist/Clarora-ios-unsigned/Clarora-ios-unsigned.ipa release/
           cp dist/Clarora-ios-unsigned/ios-unsigned-build.json release/
-      - name: Create GitHub Release
+      - name: Prepare release metadata and notes
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           IOS_DISTRIBUTION_URL: ${{ vars.IOS_DISTRIBUTION_URL }}
@@ -254,15 +253,91 @@ jobs:
           下载后不能直接安装；需要用户自行使用有效的证书和描述文件重新签名。
           This IPA requires user signing before installation. It is not a TestFlight or App Store distribution.
           NOTES
-          if [ ! -f release/Clarora-android.apk ]; then
+          if [ -f release/Clarora-android.apk ]; then
+            printf '\n### Android\n`Clarora-android.apk` 是已签名的 Android %s 安装包。下载后可按 `SHA256SUMS.txt` 校验文件完整性。\n' "$RELEASE_TAG" >> release-notes.md
+          else
             printf '\n### Android\n本次未发布 Android APK；签名发布尚未启用。\n' >> release-notes.md
           fi
           if [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ] && [ "$RELEASE_TAG" = 'v0.2.0' ]; then
             printf '\nWindows 构建使用发布工具修复提交 `%s`；客户端源码仍为 tag 对应的 `%s`。\n' "$GITHUB_SHA" "$SOURCE_SHA" >> release-notes.md
           fi
           printf '\n[Mobile build and distribution instructions](https://github.com/a49a/clarora/blob/%s/docs/mobile-releases.md)\n' "$RELEASE_TAG" >> release-notes.md
+      - name: Validate release payload before publishing
+        env:
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          ANDROID_BUILD_NUMBER: ${{ needs.resolve.outputs.android_build_number }}
+          ANDROID_JOB_RESULT: ${{ needs.android.result }}
+        run: |
+          python3 - <<'PYVALIDATE'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          def sha256_file(path):
+              hasher = hashlib.sha256()
+              with path.open('rb') as asset:
+                  for chunk in iter(lambda: asset.read(1024 * 1024), b''):
+                      hasher.update(chunk)
+              return hasher.hexdigest()
+
+          root = Path('release')
+          tag = os.environ['RELEASE_TAG']
+          source_sha = os.environ['SOURCE_SHA']
+          android_result = os.environ['ANDROID_JOB_RESULT']
+          require(android_result in ('success', 'skipped'), f'Unexpected Android job result: {android_result}')
+          android_released = android_result == 'success'
+          common = {
+              'Clarora-macos-arm64.dmg', 'Clarora-windows-x64.zip',
+              'Clarora-ios-unsigned.ipa', 'ios-unsigned-build.json',
+              'release-metadata.json', 'SHA256SUMS.txt',
+          }
+          android_files = {'Clarora-android.apk', 'android-build.json'}
+          expected = common | (android_files if android_released else set())
+          actual = {path.name for path in root.iterdir()}
+          require(actual == expected, f'Release asset set mismatch: expected {sorted(expected)}, got {sorted(actual)}')
+
+          metadata = json.loads((root / 'release-metadata.json').read_text())
+          require(metadata['tag'] == tag and metadata['version'] == tag.removeprefix('v'), 'Release metadata version/tag mismatch')
+          require(metadata['source_sha'] == source_sha, 'Release metadata source SHA mismatch')
+          android = metadata['platforms']['android']
+          notes = Path('release-notes.md').read_text()
+          require(notes.count('### Android\n') == 1, 'Release notes need exactly one Android section')
+          if android_released:
+              asset = 'Clarora-android.apk'
+              url = f'https://github.com/a49a/clarora/releases/download/{tag}/{asset}'
+              require(android.get('status') == 'released' and android.get('asset_name') == asset and android.get('url') == url, 'Android release metadata does not match the APK')
+              report = json.loads((root / 'android-build.json').read_text())
+              require(report.get('version') == metadata['version'] and str(report.get('build_number')) == os.environ['ANDROID_BUILD_NUMBER'], 'Android build version/code mismatch')
+              require(report.get('source_sha') == source_sha and report.get('asset_name') == asset, 'Android build source/asset mismatch')
+              require(report.get('sha256') == sha256_file(root / asset), 'Android APK SHA-256 differs from build report')
+              require('`Clarora-android.apk` 是已签名的 Android' in notes and '未发布 Android APK' not in notes, 'Release notes contradict Android APK publication')
+          else:
+              require(android.get('status') == 'planned' and not android.get('asset_name') and not android.get('url'), 'Android is marked released without an APK')
+              require('本次未发布 Android APK' in notes and '已签名的 Android' not in notes, 'Release notes contradict skipped Android build')
+
+          checksums = {}
+          for line in (root / 'SHA256SUMS.txt').read_text().splitlines():
+              digest, separator, name = line.partition('  ')
+              require(separator and len(digest) == 64 and all(c in '0123456789abcdef' for c in digest), f'Invalid checksum line: {line!r}')
+              require(name not in checksums, f'Duplicate checksum entry: {name}')
+              checksums[name] = digest
+          require(set(checksums) == expected - {'SHA256SUMS.txt'}, 'Checksum entries do not cover exactly the uploaded assets')
+          for name, expected_digest in checksums.items():
+              require(sha256_file(root / name) == expected_digest, f'Checksum mismatch: {name}')
+          print(f'Validated {tag}: Android {android["status"]}; {len(checksums)} asset checksums')
+          PYVALIDATE
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
           gh release create "$RELEASE_TAG" \
             release/* --verify-tag --generate-notes \
             --notes-file release-notes.md \
             --title "Clarora $RELEASE_TAG"
-        working-directory: .
