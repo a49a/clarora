@@ -2,6 +2,14 @@ import { StudyOptions } from "../ui/StudyOptions";
 import { PopoverRoot } from "../ui/PopoverRoot";
 import { resolveStudySettingsMaskTap, type StudySettingsTrigger } from "../ui/studySettingsMask";
 import { StudySubtitleToolbar } from "../ui/StudySubtitleToolbar";
+import { BlindListeningPanel, type RevealDisabledReason } from "../ui/BlindListeningPanel";
+import {
+  createBlindListeningMachine,
+  resolveCueAtPosition,
+  useBlindListening,
+  type BlindCue,
+  type BlindListeningMachine,
+} from "../ui/blindListening";
 import { LibraryActionMenu } from "../ui/LibraryActionMenu";
 import { AudioLibraryManager } from "../ui/AudioLibraryManager";
 import { NativeSelectableSubtitleView } from "../ui/NativeSelectableSubtitle";
@@ -381,6 +389,7 @@ export default function ListeningScreen({
   const mountedRef = useRef(true);
   const loadedAudioIdRef = useRef<string | null>(null);
   const loadingAudioIdRef = useRef<string | null>(null);
+  const [readyAudioId, setReadyAudioId] = useState<string | null>(null);
   // React may run the selected-audio effect while a group transition is still
   // loading the same item. Keep an auto-play request through that overlap so
   // the effect's ordinary load cannot turn a group transition into a pause.
@@ -391,6 +400,15 @@ export default function ListeningScreen({
   const [playbackRate, setPlaybackRate] = useState(1);
   const [pendingRate, setPendingRate] = useState<number | null>(null);
   const positionMsRef = useRef(0);
+  const isPlayingRef = useRef(false);
+
+  // ── 盲听(先听后核对)───────────────────────────────────────────────────
+  // 呈现模式与揭晓快照集中在状态机;播放位置/倍速/播放状态以播放器为权威。
+  const blindMachineRef = useRef<BlindListeningMachine | null>(null);
+  if (!blindMachineRef.current) blindMachineRef.current = createBlindListeningMachine();
+  const blindMachine = blindMachineRef.current;
+  const blind = useBlindListening(blindMachine);
+  const [blindEnded, setBlindEnded] = useState(false);
 
   // Repeat playback: off → single audio → whole practice group.
   const [repeatMode, setRepeatMode] = useState<"off" | "one" | "practice" | "pass">("off");
@@ -422,7 +440,18 @@ export default function ListeningScreen({
   );
 
   // Subtitle state
-  const [subtitleCues, setSubtitleCues] = useState<SubtitleCue[]>([]);
+  const [subtitleState, setSubtitleState] = useState<{
+    audioId: string | null; generation: number; revision: number; cues: SubtitleCue[];
+  }>({ audioId: null, generation: 0, revision: 0, cues: [] });
+  const subtitleStateRef = useRef(subtitleState);
+  const subtitleReadRef = useRef(0);
+  const subtitleCues = subtitleState.cues;
+  const setSubtitleCues = useCallback((cues: SubtitleCue[], audioId: string | null = null, generation = audioGenerationRef.current) => {
+    const next = { audioId, generation, revision: subtitleStateRef.current.revision + 1, cues };
+    subtitleStateRef.current = next;
+    blindMachine.invalidate();
+    setSubtitleState(next);
+  }, [blindMachine]);
   // Derived from playback position so the highlight always tracks the audio
   // (avoids stale subtitle closures inside the playback status callback).
   const activeCueIndex = useMemo(() => {
@@ -461,7 +490,7 @@ export default function ListeningScreen({
 
   // AI passage question state. Subtitles are always mouse-selectable on macOS;
   // a right click on the selection chooses either copy or asking AI.
-  const { visible: chatOpen, open: openChat, launch: launchChat } = useAIChat();
+  const { visible: chatOpen, open: openChat, resetContext: resetChatContext, launch: launchChat } = useAIChat();
   // 设置弹层统一互斥:同一时间只允许一个前景层(字幕/倍速)。
   const [activeSettings, setActiveSettings] = useState<'subtitle' | 'speed' | null>(null);
   const subtitleSettingsTriggerRef = useRef<View | null>(null);
@@ -736,20 +765,52 @@ export default function ListeningScreen({
   );
 
   const openChatWithSelection = useCallback((text: string) => {
+    // 盲听中字幕视图已卸载,不存在选区;防御旧回调迟到注入。
+    if (blindMachineRef.current?.isBlind()) return;
     void soundRef.current?.pauseAsync().catch(() => {});
     setActiveSettings(null); // AI 面板成为前景前先收起设置
     openChat({ text, source: selectedAudio?.name || "音频学习" });
   }, [openChat, selectedAudio?.name]);
 
+  // ── 盲听派生状态 ──────────────────────────────────────────────────────
+  // cue 秒 → 毫秒,只在盲听边界转换(§7:避免把 cue 秒值直接传给 seek)。
+  const blindCues = useMemo<BlindCue[]>(
+    () => subtitleCues.map((cue) => ({ id: cue.id, startMs: cue.start * 1000, endMs: cue.end * 1000, text: cue.text })),
+    [subtitleCues]
+  );
+  const blindHasValidCues = useMemo(
+    () => blindCues.some((cue) => Number.isFinite(cue.startMs) && Number.isFinite(cue.endMs) && cue.startMs >= 0 && cue.startMs < cue.endMs && (durationMs <= 0 || cue.endMs <= durationMs)),
+    [blindCues, durationMs]
+  );
+  // 揭晓快照仅在当前音频上有效(切音频由 invalidate 清理,这里再按 audioId 防御)。
+  const blindRevealed = useMemo(() => {
+    const revealed = blind.revealed;
+    if (!revealed || !selectedAudio || revealed.audioId !== selectedAudio.id) return null;
+    return {
+      text: revealed.text,
+      timeRange: `${formatTime(revealed.startMs / 1000)} → ${formatTime(revealed.endMs / 1000)}`,
+      sparse: revealed.sparse,
+    };
+  }, [blind.revealed, selectedAudio]);
+
   useAIChatEntry(
-    subtitleCues.length ? (subtitleCues[activeCueIndex >= 0 ? activeCueIndex : 0]?.text || subtitleTranscript.text) : "",
+    // 盲听:隐藏态只能自由提问;查看态只引用明确揭晓的那句快照。
+    blind.presentation === 'blind'
+      ? blindRevealed?.text ?? ''
+      : subtitleCues.length ? (subtitleCues[activeCueIndex >= 0 ? activeCueIndex : 0]?.text || subtitleTranscript.text) : "",
     selectedAudio?.name || "音频学习",
-    () => { setActiveSettings(null); void soundRef.current?.pauseAsync().catch(() => {}); }
+    () => { setActiveSettings(null); void soundRef.current?.pauseAsync().catch(() => {}); },
+    // 盲听入口优先于重新选文;隐藏态新建对话,查看态只使用已揭晓引用。
+    { isolateReference: blind.presentation === 'blind' }
   );
 
   // ── 听力跟读 ────────────────────────────────────────────────────────────────
 
   const startShadowing = useCallback(async () => {
+    if (blindMachineRef.current?.isBlind()) {
+      showToast("切换到字幕模式后使用");
+      return;
+    }
     if (subtitleCues.length === 0) {
       showToast("该音频没有字幕，无法跟读");
       return;
@@ -838,6 +899,10 @@ export default function ListeningScreen({
   }, []);
 
   const markKeyPoints = useCallback(async () => {
+    if (blindMachineRef.current?.isBlind()) {
+      showToast("切换到字幕模式后使用");
+      return;
+    }
     const passage = subtitleTranscript.text.trim();
     if (!passage) {
       showToast("当前音频没有字幕文本");
@@ -893,6 +958,115 @@ export default function ListeningScreen({
     }
   }, [subtitleTranscript, keyLoading, showToast]);
 
+  // ── 盲听:模式切换与面板动作(§4.1/§4.3) ────────────────────────────────
+
+  const enterBlindMode = useCallback(async () => {
+    if (blindMachine.isBlind()) return;
+    // 跟读录音尚未完成:先走现有停止/清理;清理未完成时不进入盲听。
+    if (shadowingRef.current) {
+      await stopShadowing();
+      if (shadowingRef.current) return;
+    }
+    setActiveSettings(null);
+    setSubtitleViewerVisible(false);
+    resetChatContext();
+    // 仅设 A、尚未设 B 的截取:取消未完成选段;完整 A/B 范围保留。
+    if (loopStartMs != null && loopEndMs == null) {
+      setLoopStartMs(null);
+      if (loopStage === 'B') setLoopStage('A');
+      showToast('已取消未完成的截取');
+    }
+    setBlindEnded(false);
+    blindMachine.enterBlind();
+  }, [blindMachine, stopShadowing, resetChatContext, loopStartMs, loopEndMs, loopStage, showToast]);
+
+  const exitBlindMode = useCallback(() => {
+    setBlindEnded(false);
+    blindMachine.exitBlind();
+  }, [blindMachine]);
+
+  const getBlindPlaybackContext = useCallback(() => {
+    const sound = soundRef.current;
+    const source = subtitleStateRef.current;
+    const generation = audioGenerationRef.current;
+    const audioId = selectedAudio?.id;
+    const isCurrent = () => !!audioId && mountedRef.current && blindMachine.isBlind()
+      && sound != null && soundRef.current === sound
+      && audioGenerationRef.current === generation
+      && loadingAudioIdRef.current == null && loadedAudioIdRef.current === audioId
+      && !subtitleTaskRef.current && subtitleStateRef.current === source
+      && source.audioId === audioId && source.generation === generation
+      && source.cues === subtitleCues;
+    return isCurrent() ? { sound: sound!, source, generation, isCurrent } : null;
+  }, [selectedAudio?.id, subtitleCues, blindMachine]);
+
+  const handleBlindReveal = useCallback(async () => {
+    const context = getBlindPlaybackContext();
+    if (!context || !selectedAudio) return;
+    const outcome = await blindMachine.requestReveal({
+      audioId: selectedAudio.id,
+      cues: context.source.cues.map(cue => ({ id: cue.id, startMs: cue.start * 1000, endMs: cue.end * 1000, text: cue.text })),
+      positionMs: positionMsRef.current,
+      durationMs,
+      isPlaying: isPlayingRef.current,
+      isCurrent: context.isCurrent,
+      pause: requestIsCurrent => enqueueAudioOperation(async () => {
+        // A queued reveal must not pause after a seek, switch or mode change.
+        if (!requestIsCurrent() || !context.isCurrent()) return;
+        if (isPlayingRef.current) await context.sound.pauseAsync();
+      }),
+    });
+    if (!outcome.ok && outcome.reason === 'pause-failed') showToast('暂停失败，请重试');
+  }, [selectedAudio, blindMachine, durationMs, showToast, getBlindPlaybackContext, enqueueAudioOperation]);
+
+  const playBlindAudio = useCallback(async (restart: boolean) => {
+    const sound = soundRef.current;
+    const generation = audioGenerationRef.current;
+    const audioId = selectedAudio?.id;
+    const current = () => mountedRef.current && blindMachine.isBlind()
+      && sound != null && soundRef.current === sound && generation === audioGenerationRef.current
+      && loadedAudioIdRef.current === audioId && loadingAudioIdRef.current == null;
+    if (!current()) return;
+    blindMachine.clearReveal();
+    setBlindEnded(false);
+    try {
+      await enqueueAudioOperation(async () => {
+        if (!current()) return;
+        if (restart) await sound!.setPositionAsync(0);
+        if (current()) await sound!.playAsync();
+      });
+    } catch { showToast('播放失败，请重试'); }
+  }, [selectedAudio?.id, blindMachine, enqueueAudioOperation, showToast]);
+  const handleBlindResume = useCallback(() => playBlindAudio(false), [playBlindAudio]);
+  const handleBlindRestart = useCallback(() => playBlindAudio(true), [playBlindAudio]);
+
+  // Every route that hides an answer also detaches its pending AI reference.
+  useEffect(() => {
+    let previous = blindMachine.getSnapshot();
+    return blindMachine.subscribe(() => {
+      const next = blindMachine.getSnapshot();
+      if (previous.revealed && !next.revealed) resetChatContext();
+      previous = next;
+    });
+  }, [blindMachine, resetChatContext]);
+
+  // 播放恢复(任何入口,含外部事件):先隐藏已揭晓内容、清掉结束态。
+  useEffect(() => {
+    if (!isPlaying) return;
+    if (blindMachine.getSnapshot().revealed) blindMachine.clearReveal();
+    setBlindEnded(false);
+  }, [isPlaying, blindMachine]);
+
+  // 切后台回前台:收起已揭晓内容(§4.1);不新增自动播放。
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && blindMachine.isBlind()) {
+        blindMachine.clearReveal();
+      }
+    });
+    return () => subscription.remove();
+  }, [blindMachine]);
+
   // ── Audio playback ──────────────────────────────────────────────────────────
 
   const unloadSoundNow = useCallback(async () => {
@@ -901,6 +1075,7 @@ export default function ListeningScreen({
       soundRef.current = null;
     }
     loadedAudioIdRef.current = null;
+    isPlayingRef.current = false;
     positionMsRef.current = 0;
     if (mountedRef.current) {
       setIsPlaying(false);
@@ -910,10 +1085,17 @@ export default function ListeningScreen({
   }, []);
   const unloadSound = useCallback(async () => {
     ++audioGenerationRef.current;
+    loadingAudioIdRef.current = null;
+    blindMachine.invalidate();
+    setReadyAudioId(null);
+    setSubtitleCues([]);
     await enqueueAudioOperation(unloadSoundNow);
-  }, [enqueueAudioOperation, unloadSoundNow]);
+  }, [enqueueAudioOperation, unloadSoundNow, blindMachine, setSubtitleCues]);
 
   const handleExitStudy = useCallback(async () => {
+    // 退出学习:回到默认字幕模式,清空揭晓状态(§4.1,重进不保留盲听)。
+    blindMachine.exitBlind();
+    setBlindEnded(false);
     if (listenAccumRef.current > 0) {
       const flushed = listenAccumRef.current;
       listenAccumRef.current = 0;
@@ -926,7 +1108,7 @@ export default function ListeningScreen({
     } finally {
       onExitStudy?.();
     }
-  }, [onExitStudy, unloadSound]);
+  }, [blindMachine, onExitStudy, unloadSound]);
 
   // Keep Android swipe-to-exit inside the transcript so horizontal player
   // tools and A/B handles can own their gestures. The exit button remains visible.
@@ -977,11 +1159,14 @@ export default function ListeningScreen({
       positionMsRef.current = status.positionMillis;
       setPositionMs(status.positionMillis);
       setDurationMs(status.durationMillis ?? 0);
+      isPlayingRef.current = !!status.isPlaying;
       setIsPlaying(status.isPlaying);
 
       // Repeat handling. The status callback is registered once per loaded
       // sound, so the current repeat mode and queue step are read through refs.
       if (status.didJustFinish) {
+        // 盲听到末尾:保持隐藏,由面板提供「从头再听/查看全文」。
+        if (blindMachineRef.current?.isBlind()) setBlindEnded(true);
         const now = Date.now();
         if (repeatAdvancingRef.current || now - lastRepeatAtRef.current < 800) return;
         lastRepeatAtRef.current = now;
@@ -1058,34 +1243,40 @@ export default function ListeningScreen({
     [enqueueAudioOperation, unloadSoundNow, onPlaybackStatusUpdate]
   );
 
-  const loadSubtitle = useCallback(async (audio: ListeningAudio, generation?: number) => {
-    if (!audio.subtitle_uri) {
-      if (generation == null || generation === audioGenerationRef.current) setSubtitleCues([]);
-      return;
-    }
+  const loadSubtitle = useCallback(async (audio: ListeningAudio, generation = audioGenerationRef.current) => {
+    if (generation !== audioGenerationRef.current) return;
+    const read = ++subtitleReadRef.current;
+    setSubtitleCues([]);
+    const current = () => mountedRef.current && generation === audioGenerationRef.current && read === subtitleReadRef.current;
     try {
-      const content = await FileSystem.readAsStringAsync(audio.subtitle_uri);
-      const cues = parseSubtitleCues(content);
-      if (mountedRef.current && (generation == null || generation === audioGenerationRef.current)) setSubtitleCues(cues);
+      const cues = audio.subtitle_uri
+        ? parseSubtitleCues(await FileSystem.readAsStringAsync(audio.subtitle_uri)) : [];
+      if (current()) setSubtitleCues(cues, audio.id, generation);
     } catch (e: any) {
-      if (mountedRef.current && (generation == null || generation === audioGenerationRef.current)) {
+      if (current()) {
         setSubtitleCues([]);
         setError(`加载字幕失败：${e?.message ?? e}`);
       }
     }
-  }, []);
+  }, [setSubtitleCues]);
 
   const prepareAudioForStudy = useCallback(
     async (audio: ListeningAudio, autoPlay = false) => {
-      if (loadedAudioIdRef.current === audio.id) {
+      if (loadedAudioIdRef.current === audio.id && loadingAudioIdRef.current == null) {
         if (autoPlay) await soundRef.current?.playAsync();
         return;
       }
+      // 兜底清理(selectAudioItem 已清理;直接调用本函数的路径也覆盖)。
+      blindMachine.invalidate();
+      setBlindEnded(false);
       if (loadingAudioIdRef.current === audio.id) {
         if (autoPlay) pendingAutoPlayAudioIdRef.current = audio.id;
         return;
       }
       loadingAudioIdRef.current = audio.id;
+      setReadyAudioId(null);
+      setSubtitleCues([]);
+      const expectedGeneration = audioGenerationRef.current + 1;
       try {
         const generation = await loadAudio(audio);
         if (generation == null) return;
@@ -1101,15 +1292,22 @@ export default function ListeningScreen({
         if (pendingAutoPlayAudioIdRef.current === audio.id) {
           pendingAutoPlayAudioIdRef.current = null;
         }
-        if (loadingAudioIdRef.current === audio.id) loadingAudioIdRef.current = null;
+        if (audioGenerationRef.current === expectedGeneration && loadingAudioIdRef.current === audio.id) {
+          loadingAudioIdRef.current = null;
+          if (mountedRef.current) setReadyAudioId(loadedAudioIdRef.current === audio.id ? audio.id : null);
+        }
       }
     },
-    [enqueueAudioOperation, loadAudio, loadSubtitle]
+    [enqueueAudioOperation, loadAudio, loadSubtitle, blindMachine, setSubtitleCues]
   );
 
   const selectAudioItem = useCallback(
     async (practice: ListeningPractice, audio: ListeningAudio, autoPlay = false) => {
       if (subtitleTaskRef.current) return;
+      // 切音频:立即同步清理盲听揭晓与结束态,不等字幕 effect——旧音频的
+      // 字幕不得被保存为新音频的答案(§4.1)。
+      blindMachine.invalidate();
+      setBlindEnded(false);
       setSelectedPracticeId(practice.id);
       setSelectedAudioId(audio.id);
       setLoopStartMs(null);
@@ -1123,7 +1321,7 @@ export default function ListeningScreen({
         setSubtitleCues([]);
       }
     },
-    [mode, prepareAudioForStudy, clearKeyPoints]
+    [mode, prepareAudioForStudy, clearKeyPoints, blindMachine, setSubtitleCues]
   );
 
   // Android 端的转写是普通 Text，把重点区间切成嵌套 Text 段落渲染下划线。
@@ -1185,15 +1383,29 @@ export default function ListeningScreen({
     if (isPlaying) {
       await soundRef.current.pauseAsync();
     } else {
+      // 盲听:任何播放入口恢复播放前先隐藏答案(§4.1)。
+      if (blindMachine.getSnapshot().presentation === 'blind') {
+        blindMachine.clearReveal();
+        setBlindEnded(false);
+      }
       await soundRef.current.playAsync();
     }
-  }, [isPlaying]);
+  }, [isPlaying, blindMachine]);
 
   const seekTo = useCallback(async (ms: number) => {
-    if (!soundRef.current) return;
+    const sound = soundRef.current;
+    const generation = audioGenerationRef.current;
+    if (!sound) return;
+    if (blindMachine.isBlind()) {
+      blindMachine.invalidate();
+      setBlindEnded(false);
+    }
     positionMsRef.current = ms;
-    await soundRef.current.setPositionAsync(ms);
-  }, []);
+    await enqueueAudioOperation(async () => {
+      if (generation !== audioGenerationRef.current || soundRef.current !== sound || !mountedRef.current) return;
+      await sound.setPositionAsync(ms);
+    });
+  }, [blindMachine, enqueueAudioOperation]);
 
   const seekBy = useCallback(
     async (deltaMs: number) => {
@@ -1203,6 +1415,15 @@ export default function ListeningScreen({
     },
     [durationMs, seekTo]
   );
+
+  // ── 盲听:回退与揭晓可用性 ──────────────────────────────────────────────
+  const handleBlindBackFive = useCallback(async () => {
+    // §4.3:回退保持播放/暂停状态;有完整 A/B 选段时限制在该范围内。
+    // seekTo 内部会先隐藏答案并使待完成揭晓失效。
+    const floor = loopStartMs != null && loopEndMs != null ? Math.min(loopStartMs, loopEndMs) : 0;
+    const target = Math.max(floor, positionMsRef.current - 5000);
+    await seekTo(target);
+  }, [loopStartMs, loopEndMs, seekTo]);
 
   // In the focused macOS listening view: Space plays/pauses, and ←/→ move
   // through the passage in five-second steps without changing playback state.
@@ -1802,6 +2023,8 @@ export default function ListeningScreen({
   // 直接翻看当前音频的字幕转录结果（生成/导入后均可查看）。
   const openSubtitleViewer = useCallback(async () => {
     if (!selectedAudio?.subtitle_uri) return;
+    // 盲听中字幕查看器不得打开(§4.1);入口在管理模式,防御性拦截。
+    if (blindMachineRef.current?.isBlind()) return;
     setSubtitleViewerVisible(true);
     setSubtitleViewerLoading(true);
     try {
@@ -1891,7 +2114,7 @@ export default function ListeningScreen({
     setSubtitleCues([]);
     await refreshPractices();
     showToast("练习组已删除");
-  }, [selectedPractice, unloadSound, refreshPractices, showToast, cleanupFiles]);
+  }, [selectedPractice, unloadSound, refreshPractices, showToast, cleanupFiles, setSubtitleCues]);
 
   const handleDeleteAudio = useCallback(async () => {
     if (!selectedAudio) return;
@@ -1902,7 +2125,7 @@ export default function ListeningScreen({
     setSubtitleCues([]);
     await refreshPractices();
     showToast("音频已删除");
-  }, [selectedAudio, unloadSound, refreshPractices, showToast, cleanupFiles]);
+  }, [selectedAudio, unloadSound, refreshPractices, showToast, cleanupFiles, setSubtitleCues]);
 
   // ── Batch practice management ───────────────────────────────────────────────
 
@@ -1955,7 +2178,7 @@ export default function ListeningScreen({
         },
       ]
     );
-  }, [batchSelected, selectedPracticeId, unloadSound, refreshPractices, showToast, cleanupFiles]);
+  }, [batchSelected, selectedPracticeId, unloadSound, refreshPractices, showToast, cleanupFiles, setSubtitleCues]);
 
   // ── Batch audio management ──────────────────────────────────────────────
 
@@ -2013,7 +2236,7 @@ export default function ListeningScreen({
         },
       ]
     );
-  }, [batchAudioSelected, selectedAudioId, unloadSound, cleanupFiles, refreshPractices, showToast]);
+  }, [batchAudioSelected, selectedAudioId, unloadSound, cleanupFiles, refreshPractices, showToast, setSubtitleCues]);
 
   // Concatenate the selected audios (in practice order) into one new audio so
   // short recordings can be studied as a single continuous item. Subtitles are
@@ -2144,6 +2367,20 @@ export default function ListeningScreen({
   // ── Render ──────────────────────────────────────────────────────────────────────
 
   const [switchingAudio, setSwitchingAudio] = useState(false);
+
+  // 盲听「看刚才一句」可用性(§4.2):切换中/请求中/无有效字幕/首段前/时长未知。
+  const blindRevealDisabledReason = useMemo<RevealDisabledReason | null>(() => {
+    if (blind.presentation !== 'blind' || !selectedAudio) return 'switching';
+    if (switchingAudio || aiStatus || readyAudioId !== selectedAudio.id || !getBlindPlaybackContext()) return 'switching';
+    if (blind.revealPending) return 'pending';
+    if (!blindHasValidCues) return 'no-subtitles';
+    if (durationMs <= 0) return 'unavailable';
+    const target = resolveCueAtPosition(blindCues, positionMs, durationMs);
+    if (target.kind === 'unavailable') return 'unavailable';
+    if (target.kind === 'before-first') return 'before-first';
+    return null;
+  }, [blind.presentation, blind.revealPending, selectedAudio, switchingAudio, aiStatus, readyAudioId, getBlindPlaybackContext, blindHasValidCues, blindCues, durationMs, positionMs]);
+
   const audioIndex = selectedPractice?.audios.findIndex(audio => audio.id === selectedAudioId) ?? -1;
   const changeStudyAudio = async (offset: number) => {
     const next = selectedPractice?.audios[audioIndex + offset];
@@ -2540,6 +2777,43 @@ export default function ListeningScreen({
 
         {!isManageMode && (
           <>
+          {selectedAudio && (
+          <View style={styles.presentationToggleRow} accessibilityRole="tablist">
+            <Pressable accessibilityRole="tab" accessibilityState={{ selected: blind.presentation === 'subtitles' }}
+              style={[styles.presentationToggleBtn, blind.presentation === 'subtitles' && styles.presentationToggleBtnActive]}
+              onPress={exitBlindMode}>
+              <Text style={[styles.presentationToggleText, blind.presentation === 'subtitles' && styles.presentationToggleTextActive]}>字幕</Text>
+            </Pressable>
+            <Pressable accessibilityRole="tab" accessibilityState={{ selected: blind.presentation === 'blind' }}
+              style={[styles.presentationToggleBtn, blind.presentation === 'blind' && styles.presentationToggleBtnActive]}
+              onPress={() => void enterBlindMode()}>
+              <Text style={[styles.presentationToggleText, blind.presentation === 'blind' && styles.presentationToggleTextActive]}>盲听</Text>
+            </Pressable>
+          </View>
+          )}
+          {blind.presentation === 'blind' && selectedAudio ? (
+          <BlindListeningPanel
+            audioTitle={selectedAudio.name}
+            hasSubtitles={blindHasValidCues}
+            revealDisabledReason={blindRevealDisabledReason}
+            revealed={blindRevealed}
+            finished={blindEnded}
+            onBackFive={() => void handleBlindBackFive()}
+            onReveal={() => void handleBlindReveal()}
+            onHideText={() => blindMachine.clearReveal()}
+            onResumeBlind={() => void handleBlindResume()}
+            onRestart={() => void handleBlindRestart()}
+            onViewFull={exitBlindMode}
+            onManageSubtitles={exitBlindMode}
+          />
+          ) : blind.presentation === 'blind' ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyText}>
+              选择练习组和音频后开始学习
+            </Text>
+          </View>
+          ) : (
+          <>
           {!!aiStatus && <Text accessibilityLiveRegion="polite" style={styles.studyStatus}>{aiStatus}</Text>}
           {selectedAudio && subtitleCues.length === 0 && <StudySubtitleToolbar
             kind={classifySubtitleLanguage(subtitleCues)} hasSubtitles={false}
@@ -2739,6 +3013,8 @@ export default function ListeningScreen({
             </Text>
           </View>
         )}
+          </>
+          )}
 
           {/* Player controls */}
           {selectedAudio && (
@@ -2859,9 +3135,12 @@ export default function ListeningScreen({
               </Pressable>
 
               <Pressable
-                accessibilityLabel="跟读录音并评分"
-                style={[styles.loopBtn, shadowing && styles.shadowBtnActive]}
-                onPress={() => void (shadowing ? stopShadowing() : startShadowing())}
+                accessibilityLabel={blind.presentation === 'blind' ? '跟读（切换到字幕模式后使用）' : '跟读录音并评分'}
+                style={[styles.loopBtn, shadowing && styles.shadowBtnActive, blind.presentation === 'blind' && !shadowing && styles.toolBtnDisabled]}
+                onPress={() => {
+                  if (blind.presentation === 'blind' && !shadowing) { showToast('切换到字幕模式后使用'); return; }
+                  void (shadowing ? stopShadowing() : startShadowing());
+                }}
               >
                 <Text style={[styles.loopBtnText, shadowing && styles.shadowBtnTextActive]}>
                   {shadowing ? `⏹ 停止跟读 ${shadowElapsed}s` : "🎤 跟读"}
@@ -2869,9 +3148,10 @@ export default function ListeningScreen({
               </Pressable>
 
               <Pressable
-                accessibilityLabel="AI 标记重点"
-                style={[styles.loopBtn, keyMarks.length > 0 && styles.loopBtnActive]}
+                accessibilityLabel={blind.presentation === 'blind' ? '标重点（切换到字幕模式后使用）' : 'AI 标记重点'}
+                style={[styles.loopBtn, keyMarks.length > 0 && styles.loopBtnActive, blind.presentation === 'blind' && styles.toolBtnDisabled]}
                 onPress={() => {
+                  if (blind.presentation === 'blind') { showToast('切换到字幕模式后使用'); return; }
                   if (keyLoading) {
                     cancelKeyPoints();
                   } else if (keyMarks.length > 0) {
@@ -3400,6 +3680,38 @@ function makeStyles(
     },
     toolRowLast: { borderBottomWidth: 0 },
     toolBtnDisabled: { opacity: 0.4 },
+    presentationToggleRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      marginBottom: 10,
+    },
+    presentationToggleBtn: {
+      flex: 1,
+      maxWidth: 180,
+      minHeight: 34,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.surfaceHover,
+      paddingHorizontal: 14,
+      paddingVertical: 6,
+    },
+    presentationToggleBtnActive: {
+      borderColor: theme.accent,
+      backgroundColor: `${theme.accent}22`,
+    },
+    presentationToggleText: {
+      color: theme.textSecondary,
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    presentationToggleTextActive: {
+      color: theme.accent,
+    },
     toolRowTitle: { color: theme.text, fontSize: 14, fontWeight: "600" },
     toolRowCaption: { color: theme.textMuted, fontSize: 12, flexShrink: 1, textAlign: "right" },
     selectorBtn: {
