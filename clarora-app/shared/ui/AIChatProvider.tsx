@@ -7,7 +7,7 @@ import { useAppTheme } from './ThemeContext';
 import { ChatPanel } from './ChatPanel';
 import { newChat, openReference, appendReference, restoreChats, chatHistory, type ChatSession as Session, type ChatReference as Reference } from '../data/chat';
 
-const ChatContext = createContext<{ visible: boolean; open: (reference?: Reference) => void; collecting: boolean; launch: () => void; registerInlineLauncher: () => () => void; registerEntry: (entry: () => void) => () => void } | null>(null);
+const ChatContext = createContext<{ visible: boolean; open: (reference?: Reference, replaceReference?: boolean) => void; close: () => void; fresh: () => void; resetContext: () => void; collecting: boolean; launch: () => void; registerInlineLauncher: () => () => void; registerEntry: (entry: () => void, overrideCollecting?: boolean) => () => void } | null>(null);
 export function useAIChat() {
   const value = useContext(ChatContext);
   if (!value) throw new Error('AIChatProvider is missing');
@@ -17,12 +17,21 @@ const storageKey = 'ai_chat_sessions_v1';
 const LauncherContainer = Platform.OS === 'ios' ? SafeAreaView : View;
 
 // The single global button uses the currently mounted learning page's material.
-export function useAIChatEntry(text: string, source: string, onOpen?: () => void) {
-  const { open, registerEntry } = useAIChat();
+// isolateReference: 无引用时不再复用旧会话(旧会话可能带着上一个
+// 场景的字幕引用),而是新建对话——盲听隐藏态用它保证 AI 面板不泄露旧字幕。
+export function useAIChatEntry(
+  text: string,
+  source: string,
+  onOpen?: () => void,
+  opts?: { isolateReference?: boolean },
+) {
+  const { open, fresh, registerEntry } = useAIChat();
   useEffect(() => registerEntry(() => {
     onOpen?.();
-    open(text.trim() ? { text, source } : undefined);
-  }), [open, registerEntry, text, source, onOpen]);
+    if (text.trim()) open({ text, source }, opts?.isolateReference);
+    else if (opts?.isolateReference) fresh();
+    else open(undefined);
+  }, opts?.isolateReference), [open, fresh, registerEntry, text, source, onOpen, opts?.isolateReference]);
 }
 
 // A learning screen may host the same global entry in its own toolbar.
@@ -58,8 +67,9 @@ export function AIChatProvider({ children }: { children: ReactNode }) {
   const request = useRef<AbortController | null>(null);
   const changed = useRef(false);
   const writes = useRef(Promise.resolve());
-  const entryRef = useRef<(() => void) | null>(null);
-  const registerEntry = useCallback((entry: () => void) => {
+  const entryRef = useRef<{ run: () => void; overrideCollecting: boolean } | null>(null);
+  const registerEntry = useCallback((run: () => void, overrideCollecting = false) => {
+    const entry = { run, overrideCollecting };
     entryRef.current = entry;
     return () => { if (entryRef.current === entry) entryRef.current = null; };
   }, []);
@@ -102,10 +112,11 @@ export function AIChatProvider({ children }: { children: ReactNode }) {
     const listener = BackHandler.addEventListener('hardwareBackPress', () => { close(); return true; });
     return () => listener.remove();
   }, [visible, close]);
-  const open = useCallback((reference?: Reference) => {
+  const open = useCallback((reference?: Reference, replaceReference = false) => {
     changed.current = true;
     setVisible(true);
-    if (collecting) {
+    if (replaceReference) setCollecting(false);
+    if (collecting && !replaceReference) {
       setCollecting(false);
       if (reference) {
         try {
@@ -121,6 +132,23 @@ export function AIChatProvider({ children }: { children: ReactNode }) {
     cancel(); setError(null); setNotice('');
     setSessions(previous => openReference(previous, reference));
   }, [cancel, active, collecting]);
+  // 新建对话并打开面板(与面板内「新对话」一致,不携带任何引用)。
+  const fresh = useCallback(() => {
+    setCollecting(false);
+    cancel(); setError(null); setNotice('');
+    changed.current = true;
+    setSessions(prev => [newChat(), ...prev].slice(0, 12));
+    setVisible(true);
+  }, [cancel]);
+  // End pending reference collection without deleting any saved conversation.
+  const resetContext = useCallback(() => {
+    cancel(); setError(null); setNotice('');
+    setCollecting(false);
+    setVisible(false);
+    changed.current = true;
+    setSessions(prev => prev[0].text || prev[0].messages.length || prev[0].draft
+      ? [newChat(), ...prev].slice(0, 12) : prev);
+  }, [cancel]);
   const updateDraft = (draft: string) => {
     changed.current = true;
     setSessions(previous => previous.map((s, i) => i === 0 ? { ...s, draft } : s));
@@ -176,8 +204,14 @@ export function AIChatProvider({ children }: { children: ReactNode }) {
       if (request.current === controller) { request.current = null; setBusy(false); setPending(''); setStream(null); }
     }
   };
-  const launch = () => collecting ? open() : entryRef.current ? entryRef.current() : open();
-  return <ChatContext.Provider value={{ visible, open, registerEntry, collecting, launch, registerInlineLauncher }}>
+  const launch = () => {
+    const entry = entryRef.current;
+    if (entry?.overrideCollecting) entry.run();
+    else if (collecting) open();
+    else if (entry) entry.run();
+    else open();
+  };
+  return <ChatContext.Provider value={{ visible, open, close, fresh, resetContext, registerEntry, collecting, launch, registerInlineLauncher }}>
     <View style={{ flex: 1, backgroundColor: theme.bg }}>
       <View style={{ flex: 1, minHeight: 0 }} pointerEvents={visible ? 'none' : 'auto'} accessibilityElementsHidden={visible} importantForAccessibility={visible ? 'no-hide-descendants' : 'auto'}>{children}</View>
       {/* Reserve real layout space so the launcher cannot cover page actions or navigation. */}
