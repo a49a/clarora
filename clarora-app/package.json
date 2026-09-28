@@ -32,7 +32,7 @@
     "@react-native/metro-config": "0.81.6",
     "fast-xml-parser": "5.11.1",
     "fflate": "^0.8.3",
-    "react": "19.1.4",
+    "react": "19.1.9",
     "react-native": "npm:react-native-macos@0.81.9",
     "react-native-fs": "^2.20.0",
     "react-native-macos": "0.81.9",
