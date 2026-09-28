@@ -25,6 +25,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       - run: npm ci
         working-directory: clarora-app
+      - run: npm run check:react-renderer
+        working-directory: clarora-app
       - run: npm run typecheck
         working-directory: clarora-app
       - run: npm run lint

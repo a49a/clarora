@@ -14,6 +14,10 @@ updates:
     # 迁移型大版本不自动开 PR:RN 生态跨版本与 TS7 需要专项升级
     # (postinstall 补丁脚本、tsconfig、metro/babel 与 RN 版本互相锁定)
     ignore:
+      # React must match the renderer bundled with react-native-macos 0.81.9.
+      # Upgrade them together and remove this rule during that migration.
+      - dependency-name: "react"
+        versions: [">=19.2"]
       - dependency-name: "react-native"
         versions: [">=0.82"]
       - dependency-name: "react-native-macos"
