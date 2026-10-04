@@ -48,11 +48,11 @@
     "eslint": "^10.11.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.1.1",
-    "globals": "^17.12.0",
+    "globals": "^17.13.0",
     "metro-config": "^0.81.5",
     "prettier": "^3.9.9",
     "typescript": "^5.7.0",
-    "typescript-eslint": "^8.70.1"
+    "typescript-eslint": "^8.71.0"
   },
   "react-native-windows": {
     "init-windows": {
