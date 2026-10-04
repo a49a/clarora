@@ -30,7 +30,7 @@
     "@react-native-community/cli-platform-ios": "20.2.0",
     "@react-native/babel-preset": "0.81.6",
     "@react-native/metro-config": "0.81.6",
-    "fast-xml-parser": "5.11.1",
+    "fast-xml-parser": "5.11.2",
     "fflate": "^0.8.3",
     "react": "19.1.4",
     "react-native": "npm:react-native-macos@0.81.9",
