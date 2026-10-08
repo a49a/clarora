@@ -72,6 +72,11 @@ jobs:
         run: |
           test "$(uname -m)" = arm64
           test "$(sw_vers -productVersion | cut -d. -f1)" = 14
+      - name: Select Xcode 16.2 for React Native
+        run: |
+          test -d /Applications/Xcode_16.2.app/Contents/Developer
+          sudo xcode-select --switch /Applications/Xcode_16.2.app/Contents/Developer
+          xcodebuild -version
       - run: brew install mpv whisper-cpp
       - name: Install sherpa-onnx libraries
         run: sh clarora-app/scripts/install-macos-asr-libs.sh
@@ -275,6 +280,9 @@ jobs:
           fi
           if [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ] && [ "$RELEASE_TAG" = 'v0.2.0' ]; then
             printf '\nWindows 构建使用发布工具修复提交 `%s`；客户端源码仍为 tag 对应的 `%s`。\n' "$GITHUB_SHA" "$SOURCE_SHA" >> release-notes.md
+          fi
+          if [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ] && [ "$GITHUB_SHA" != "$SOURCE_SHA" ]; then
+            printf '\n发布流水线来自提交 `%s`；客户端源码来自 tag 对应的 `%s`。\n' "$GITHUB_SHA" "$SOURCE_SHA" >> release-notes.md
           fi
           printf '\n[Mobile build and distribution instructions](https://github.com/a49a/clarora/blob/%s/docs/mobile-releases.md)\n' "$RELEASE_TAG" >> release-notes.md
       - name: Validate release payload before publishing

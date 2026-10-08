@@ -33,6 +33,10 @@ runner 安装 Homebrew 依赖：在 macOS 15 上安装的预编译库可能要�
 即使 Xcode 的 `MACOSX_DEPLOYMENT_TARGET` 设为 14.0 也不会重新编译这些库。
 不能通过修改 dylib 的版本标记修复缺失的系统符号。
 
+macOS 14 runner 默认 Xcode 15.4，React Native 0.81 要求至少 16.1；发布 job
+显式选择镜像内的 Xcode 16.2，再安装 Pods 和编译。切换 Xcode 不改变宿主系统
+及 Homebrew bottle 的系统版本。
+
 `verify-release.sh` 调用 `verify-macos-compatibility.py` 检查包内所有 Mach-O
 文件（包括嵌套 framework），任何库缺少 arm64、最低系统版本信息或要求高于
 14.0 都会阻断发布。随后在 macOS 14 上直接启动已打包的 Release，确认存活
