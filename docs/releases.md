@@ -26,6 +26,31 @@ macOS dmg、Windows zip 与未签名 iOS IPA，生成校验和，并创建 GitHu
    版本并渲染下载卡片（`config.js` 是生成产物，不要手改）。也可把 Release 随包
    发布的 `release-metadata.json` 交给官网构建消费，两者是同一 schema。
 
+## macOS 最低系统版本验收
+
+客户端支持 macOS 14.0+（Apple Silicon）。macOS Release 暂时使用 `macos-14`
+runner 安装 Homebrew 依赖：在 macOS 15 上安装的预编译库可能要求 macOS 15，
+即使 Xcode 的 `MACOSX_DEPLOYMENT_TARGET` 设为 14.0 也不会重新编译这些库。
+不能通过修改 dylib 的版本标记修复缺失的系统符号。
+
+`verify-release.sh` 调用 `verify-macos-compatibility.py` 检查包内所有 Mach-O
+文件（包括嵌套 framework），任何库缺少 arm64、最低系统版本信息或要求高于
+14.0 都会阻断发布。随后在 macOS 14 上直接启动已打包的 Release，确认存活
+至少 10 秒；`Clarora-macos-smoke` artifact 保存兼容性清单、启动日志和结果。
+此检查验证启动，不代表音视频播放、转写等完整功能已经验收。
+
+GitHub 将于 2026-11-02 移除 `macos-14` runner；此前需迁移为自建 macOS 14
+runner，或为新版 runner 提供按 macOS 14 编译且经过真实系统验证的依赖闭包。
+迁移时保留上述兼容性检查，不得直接切回新版 Homebrew bottle。
+参见 [GitHub runner 退役公告](https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/)。
+
+本机复现验收：
+
+```sh
+bash clarora-app/scripts/verify-release.sh /path/to/Clarora.app
+python3 clarora-app/scripts/smoke-macos-release.py /path/to/Clarora.app /tmp/clarora-macos-smoke
+```
+
 ## Windows 依赖步骤长时间无输出
 
 `All requested installations completed successfully` 表示 vcpkg 已结束；下一阶段是

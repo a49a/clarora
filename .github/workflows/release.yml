@@ -53,7 +53,9 @@ jobs:
   macos:
     name: macOS release build
     needs: resolve
-    runs-on: macos-15
+    # Homebrew bottles follow the host OS, not Xcode's deployment target.
+    # Build on the supported baseline until compatible dependencies are vendored.
+    runs-on: macos-14
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -66,6 +68,10 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: clarora-app/package-lock.json
+      - name: Require macOS 14 arm64 dependency host
+        run: |
+          test "$(uname -m)" = arm64
+          test "$(sw_vers -productVersion | cut -d. -f1)" = 14
       - run: brew install mpv whisper-cpp
       - name: Install sherpa-onnx libraries
         run: sh clarora-app/scripts/install-macos-asr-libs.sh
@@ -86,6 +92,15 @@ jobs:
       - name: Verify release capabilities
         run: bash scripts/verify-release.sh macos/build/release/Build/Products/Release/Clarora.app
         working-directory: clarora-app
+      - name: Smoke test packaged app on macOS 14
+        working-directory: clarora-app
+        run: python3 scripts/smoke-macos-release.py macos/build/release/Build/Products/Release/Clarora.app macos-smoke
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: Clarora-macos-smoke
+          path: clarora-app/macos-smoke/
+          if-no-files-found: ignore
       - name: Package dmg
         working-directory: clarora-app
         run: |

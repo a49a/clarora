@@ -61,6 +61,9 @@ BIN="$APP/Contents/MacOS/Clarora"
   JSB="$APP/Contents/Resources/main.jsbundle"
   [ -f "$JSB" ] || fail "JS bundle 缺失: $JSB"
 
+  # Inspect every Mach-O slice, including nested frameworks such as Hermes.
+  python3 "$(dirname "$0")/verify-macos-compatibility.py" "$APP" || fail "macOS 最低系统版本或架构不兼容"
+
   # 所有第三方动态库已内置(复审问题:绝对路径 dylib 导致启动崩溃)
   abs_deps=0
   while IFS= read -r dep; do
