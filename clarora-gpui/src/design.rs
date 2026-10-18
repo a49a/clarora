@@ -88,6 +88,12 @@ fn paths(name: &str) -> Option<&'static str> {
         "settings" => {
             "<path d='M4 6h16M4 12h16M4 18h16'/><circle cx='9' cy='6' r='2' fill='white'/><circle cx='15' cy='12' r='2' fill='white'/><circle cx='8' cy='18' r='2' fill='white'/>"
         }
+        "play" => "<path d='m9 5 11 7-11 7Z' fill='black' stroke='none'/>",
+        "pause" => "<path d='M8 5v14M16 5v14' stroke-width='4'/>",
+        "rewind" => "<path d='M4 8a8 8 0 1 1-1 8M4 3v5h5'/>",
+        "forward" => "<path d='M20 8a8 8 0 1 0 1 8m-1-13v5h-5'/>",
+        "volume" => "<path d='m11 4-5 4H3v8h3l5 4ZM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14'/>",
+        "muted" => "<path d='m11 4-5 4H3v8h3l5 4Zm5 5 6 6m0-6-6 6'/>",
         "arrow" => "<path d='M4 12h16m-6-6 6 6-6 6'/>",
         "check" => "<path d='m5 12 4 4L19 6'/>",
         "sun" => {
