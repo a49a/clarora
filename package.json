@@ -12,6 +12,10 @@
     "windows:build": "npm --prefix clarora-app run windows:build",
     "macos": "npm --prefix clarora-app run macos",
     "android": "npm --prefix clarora-app run android",
-    "ios": "npm --prefix clarora-app run ios"
+    "ios": "npm --prefix clarora-app run ios",
+    "gpui": "node clarora-gpui/scripts/run.mjs",
+    "gpui:check": "cargo check --manifest-path clarora-gpui/Cargo.toml --locked",
+    "gpui:build": "cargo build --manifest-path clarora-gpui/Cargo.toml --release --locked",
+    "gpui:e2e": "cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- clarora-gpui/e2e-artifacts"
   }
 }

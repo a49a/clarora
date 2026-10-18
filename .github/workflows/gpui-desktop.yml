@@ -1,0 +1,63 @@
+name: GPUI desktop
+on:
+  push:
+    branches: [master]
+    paths: ['clarora-gpui/**', '.github/workflows/gpui-desktop.yml']
+  pull_request:
+    paths: ['clarora-gpui/**', '.github/workflows/gpui-desktop.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: clarora-gpui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.93.1'
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo check --locked --all-targets
+      - run: cargo build --locked
+        if: runner.os == 'macOS'
+      - name: Package Windows desktop executable
+        if: runner.os == 'Windows'
+        run: ./scripts/build-windows.ps1
+      - name: Install Windows PDF runtime
+        if: runner.os == 'Windows'
+        run: python scripts/install-pdfium.py target/package
+      - name: Install macOS media dependencies
+        if: runner.os == 'macOS'
+        run: brew install mpv ffmpeg
+      - name: Install pinned PDF runtime
+        if: runner.os == 'macOS'
+        run: python3 scripts/install-pdfium.py target/debug
+      - name: Run native workflow E2E
+        if: runner.os == 'macOS'
+        env:
+          PDFIUM_LIB_PATH: ${{ github.workspace }}/clarora-gpui/target/debug
+        run: cargo run --locked --bin e2e -- e2e-artifacts
+      - uses: actions/upload-artifact@v7
+        if: always() && runner.os == 'macOS'
+        with:
+          name: Clarora-GPUI-macos-E2E
+          path: |
+            clarora-gpui/e2e-artifacts/e2e-report.json
+            clarora-gpui/e2e-artifacts/*.png
+            clarora-gpui/e2e-artifacts/waveform.json
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Windows'
+        with:
+          name: Clarora-GPUI-Windows-x64
+          path: clarora-gpui/target/package/
+          if-no-files-found: error

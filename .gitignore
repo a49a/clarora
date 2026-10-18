@@ -45,3 +45,7 @@ clarora-app/windows/Clarora/Downloader/
 clarora-app/windows/Clarora.Downloader/bin/
 clarora-app/windows/Clarora.Downloader/obj/
 clarora-app/bilibili-native-report/
+
+# Rust desktop build outputs
+clarora-gpui/target/
+clarora-gpui/e2e-artifacts/
