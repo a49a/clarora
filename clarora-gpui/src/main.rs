@@ -53,6 +53,11 @@ actions!(
         DownloadLocalModel,
         CancelTask,
         OpenSettings,
+        ToggleVideoFullscreen,
+        ExitVideoFullscreen,
+        FullscreenPlayPause,
+        FullscreenSeekBack,
+        FullscreenSeekForward,
         ToggleVideoPrecision,
         MarkVideoA,
         MarkVideoB,
@@ -111,6 +116,8 @@ enum Action {
     Volume(f64),
     Mark(bool),
     Repeat,
+    VideoFullscreen,
+    VideoExitFullscreen,
     VideoPrecision,
     VideoClearLoop,
     VideoRepeatCue,
@@ -231,6 +238,9 @@ struct AppView {
     parts_scroll: UniformListScrollHandle,
     video_active: Option<usize>,
     video_follow: bool,
+    video_fullscreen: bool,
+    video_fullscreen_owned: bool,
+    video_fullscreen_seen: bool,
     video_precision: bool,
     video_seek_dragging: bool,
     video_volume_dragging: bool,
@@ -371,6 +381,9 @@ impl AppView {
             parts_scroll: UniformListScrollHandle::new(),
             video_active: None,
             video_follow: true,
+            video_fullscreen: false,
+            video_fullscreen_owned: false,
+            video_fullscreen_seen: false,
             video_precision: false,
             video_seek_dragging: false,
             video_volume_dragging: false,
@@ -1806,6 +1819,24 @@ impl AppView {
                     self.volume = volume.clamp(0., 100.);
                     self.player.set("volume", self.volume);
                 }
+                Action::VideoFullscreen => {
+                    ensure!(
+                        self.page == "video" && self.current_path.is_some(),
+                        "请先打开视频"
+                    );
+                    if self.video_fullscreen {
+                        self.leave_video_fullscreen(window, cx);
+                    } else {
+                        self.video_fullscreen_owned = !window.is_fullscreen();
+                        self.video_fullscreen_seen = window.is_fullscreen();
+                        self.video_fullscreen = true;
+                        window.focus(&self.focus);
+                        if self.video_fullscreen_owned {
+                            window.toggle_fullscreen();
+                        }
+                    }
+                }
+                Action::VideoExitFullscreen => self.leave_video_fullscreen(window, cx),
                 Action::VideoPrecision => self.video_precision = !self.video_precision,
                 Action::VideoClearLoop => {
                     self.loop_a = None;
@@ -3045,6 +3076,134 @@ impl AppView {
                 cx.listener(|this, _, _, _| this.video_volume_dragging = false),
             )
     }
+    fn leave_video_fullscreen(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
+        if !self.video_fullscreen {
+            return;
+        }
+        if self.video_fullscreen_owned && window.is_fullscreen() {
+            window.toggle_fullscreen();
+        }
+        self.video_fullscreen = false;
+        self.video_fullscreen_owned = false;
+        self.video_fullscreen_seen = false;
+        window.focus(&self.focus);
+    }
+    fn video_picture(&self, height: Option<Pixels>, cx: &Context<Self>) -> impl IntoElement {
+        let active_caption = video_subtitles::active(&self.video_cues, self.playback.position)
+            .map(|i| self.video_cues[i].text.clone())
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| self.playback.subtitle.clone());
+        div()
+            .relative()
+            .w_full()
+            .id("video-picture")
+            .when_some(height, |view, height| view.h(height).flex_shrink_0())
+            .when(height.is_none(), |view| view.flex_1().min_h_0())
+            .overflow_hidden()
+            .bg(rgb(0x090e0c))
+            .when_some(self.playback.frame.clone(), |v, image| {
+                // Keep the intrinsic image ratio out of the flex flow. The
+                // decoder frame must fit entirely inside the available viewport.
+                v.child(
+                    img(image)
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w_full()
+                        .when_some(height, |image, height| image.h(height))
+                        .when(height.is_none(), |image| image.h_full())
+                        .object_fit(ObjectFit::Contain),
+                )
+            })
+            .when(self.playback.frame.is_none(), |v| {
+                v.child(
+                    div()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(rgb(0x9bafa4))
+                        .child("打开本地视频，或从 bilibili 导入"),
+                )
+            })
+            .when(!active_caption.is_empty(), |v| {
+                v.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .px_5()
+                        .py_3()
+                        .id("video-current-caption")
+                        .max_h(px(96.))
+                        .overflow_y_scroll()
+                        .bg(rgba(0x050a08c9))
+                        .text_color(rgb(0xffffff))
+                        .text_base()
+                        .text_center()
+                        .child(active_caption),
+                )
+            })
+            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                if event.click_count() == 2 {
+                    this.handle(Action::VideoFullscreen, window, cx);
+                }
+            }))
+    }
+    fn fullscreen_video(&self, cx: &Context<Self>) -> AnyElement {
+        div()
+            .id("video-fullscreen")
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(0x090e0c))
+            .track_focus(&self.focus)
+            .key_context("VideoFullscreen")
+            .on_action(cx.listener(|this, _: &ToggleVideoFullscreen, window, cx| {
+                this.handle(Action::VideoFullscreen, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExitVideoFullscreen, window, cx| {
+                this.handle(Action::VideoExitFullscreen, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FullscreenPlayPause, window, cx| {
+                this.handle(Action::Play, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FullscreenSeekBack, window, cx| {
+                this.handle(Action::Seek(-10.), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FullscreenSeekForward, window, cx| {
+                this.handle(Action::Seek(10.), window, cx)
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_4()
+                    .py_1()
+                    .flex_shrink_0()
+                    .text_color(rgb(0xb9c9c1))
+                    .child(
+                        div().flex_1().min_w_0().text_xs().truncate().child(
+                            self.current_path
+                                .as_ref()
+                                .and_then(|p| p.file_name())
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default(),
+                        ),
+                    )
+                    .child(self.transport_button(
+                        "exit-video-fullscreen",
+                        "退出全屏 · Esc",
+                        Action::VideoExitFullscreen,
+                        cx,
+                    )),
+            )
+            .child(self.video_picture(None, cx))
+            .child(self.video_controls(cx))
+            .into_any_element()
+    }
     fn video_controls(&self, cx: &Context<Self>) -> AnyElement {
         let valid_loop = self.loop_a.zip(self.loop_b).is_some_and(|(a, b)| b > a);
         let current_cue =
@@ -3158,7 +3317,28 @@ impl AppView {
                         },
                         Action::VideoPrecision,
                         cx,
-                    )),
+                    ))
+                    .child(
+                        self.transport_button(
+                            "video-fullscreen-toggle",
+                            if self.video_fullscreen {
+                                "退出全屏"
+                            } else {
+                                "全屏"
+                            },
+                            Action::VideoFullscreen,
+                            cx,
+                        )
+                        .icon(
+                            Icon::new(IconName::ChevronDown).path(if self.video_fullscreen {
+                                "ui/fullscreen-exit.svg"
+                            } else {
+                                "ui/fullscreen.svg"
+                            }),
+                        )
+                        .tooltip("全屏 / 退出全屏 · F11；也可双击画面")
+                        .disabled(self.current_path.is_none()),
+                    ),
             )
             .when(self.video_precision, |v| {
                 v.child(
@@ -3849,62 +4029,7 @@ impl AppView {
                                 cx,
                             )),
                     );
-                let active_caption =
-                    video_subtitles::active(&self.video_cues, self.playback.position)
-                        .map(|i| self.video_cues[i].text.clone())
-                        .filter(|text| !text.is_empty())
-                        .unwrap_or_else(|| self.playback.subtitle.clone());
-                let picture = div()
-                    .relative()
-                    .w_full()
-                    .h(px(300.))
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .bg(rgb(0x090e0c))
-                    .when_some(self.playback.frame.clone(), |v, image| {
-                        // Keep the intrinsic image ratio out of the flex flow. The
-                        // decoder frame must fit entirely inside this 300px viewport.
-                        v.child(
-                            img(image)
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .w_full()
-                                .h(px(300.))
-                                .object_fit(ObjectFit::Contain),
-                        )
-                    })
-                    .when(self.playback.frame.is_none(), |v| {
-                        v.child(
-                            div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_color(rgb(0x9bafa4))
-                                .child("打开本地视频，或从 bilibili 导入"),
-                        )
-                    })
-                    .when(!active_caption.is_empty(), |v| {
-                        v.child(
-                            div()
-                                .absolute()
-                                .bottom_0()
-                                .left_0()
-                                .right_0()
-                                .px_5()
-                                .py_3()
-                                .id("video-current-caption")
-                                .max_h(px(96.))
-                                .overflow_y_scroll()
-                                .bg(rgba(0x050a08c9))
-                                .text_color(rgb(0xffffff))
-                                .text_base()
-                                .text_center()
-                                .child(active_caption),
-                        )
-                    });
-                stage = stage.child(picture);
+                stage = stage.child(self.video_picture(Some(px(300.)), cx));
                 stage = stage.child(self.transport(cx));
                 let transcript = uniform_list(
                     "video-transcript",
@@ -5169,6 +5294,22 @@ impl Render for AppView {
             .find(|(key, _, _)| *key == self.page)
             .map(|(_, a, b)| (*a, *b))
             .unwrap_or(("Clarora", ""));
+        if self.video_fullscreen {
+            if window.is_fullscreen() {
+                if !self.video_fullscreen_seen {
+                    window.focus(&self.focus);
+                }
+                self.video_fullscreen_seen = true;
+            } else if self.video_fullscreen_seen {
+                // The user may exit through the native window controls.
+                self.video_fullscreen = false;
+                self.video_fullscreen_owned = false;
+                self.video_fullscreen_seen = false;
+            }
+        }
+        if self.video_fullscreen && self.page == "video" {
+            return self.fullscreen_video(cx);
+        }
         let content = self.content(window, cx);
         let assistant = if self.assistant_open {
             Some(self.assistant_view(window, cx))
@@ -5385,6 +5526,9 @@ impl Render for AppView {
                 if this.page == "video" {
                     this.handle(Action::ReadParts, window, cx);
                 }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleVideoFullscreen, window, cx| {
+                this.handle(Action::VideoFullscreen, window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleVideoPrecision, window, cx| {
                 if this.page == "video" {
@@ -5682,6 +5826,7 @@ impl Render for AppView {
                     ),
             )
             .when_some(assistant, |view, assistant| view.child(assistant))
+            .into_any_element()
     }
 }
 fn main() -> Result<()> {
@@ -5716,6 +5861,11 @@ fn main() -> Result<()> {
             design::apply(cx);
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.bind_keys([
+                KeyBinding::new("f11", ToggleVideoFullscreen, None),
+                KeyBinding::new("space", FullscreenPlayPause, Some("VideoFullscreen")),
+                KeyBinding::new("left", FullscreenSeekBack, Some("VideoFullscreen")),
+                KeyBinding::new("right", FullscreenSeekForward, Some("VideoFullscreen")),
+                KeyBinding::new("escape", ExitVideoFullscreen, Some("VideoFullscreen")),
                 KeyBinding::new("cmd-,", OpenSettings, None),
                 KeyBinding::new("ctrl-,", OpenSettings, None),
                 KeyBinding::new("cmd-q", Quit, None),
@@ -5766,6 +5916,7 @@ fn main() -> Result<()> {
                         MenuItem::action("打开或导入…", OpenFile),
                         MenuItem::action("新建句子卡", ComposeSentence),
                         MenuItem::action("生成视频字幕", TranscribeVideo),
+                        MenuItem::action("视频全屏 / 退出全屏", ToggleVideoFullscreen),
                         MenuItem::action("展开或收起 A–B 精听", ToggleVideoPrecision),
                         MenuItem::action("设置视频 A 起点", MarkVideoA),
                         MenuItem::action("设置视频 B 终点", MarkVideoB),
