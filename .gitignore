@@ -39,3 +39,9 @@ dist/
 # Python caches
 __pycache__/
 *.py[cod]
+
+# Windows desktop download companion build outputs
+clarora-app/windows/Clarora/Downloader/
+clarora-app/windows/Clarora.Downloader/bin/
+clarora-app/windows/Clarora.Downloader/obj/
+clarora-app/bilibili-native-report/

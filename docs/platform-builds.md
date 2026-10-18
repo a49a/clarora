@@ -154,3 +154,7 @@ xcodebuild -workspace Clarora.xcworkspace -scheme Clarora-iOS \
 ## 客户端分发
 
 构建并实际验证安装包后，再添加对应下载渠道。Windows 使用已发布的安装包地址，iOS 官网渠道使用 TestFlight 或 App Store 链接，GitHub Release 可另提供明确标注、需要用户自行签名的 IPA；未签名 IPA 不代表渠道已开放。tag 触发的发布流水线（macOS dmg / Windows zip / Android APK / 未签名 iOS IPA / SHA256SUMS）与发版步骤见 [发布流程](releases.md)。
+
+## bilibili 视频下载导入
+
+macOS 与 Windows 的视频学习页提供链接下载入口。依赖安装、Windows 包内桌面助手与验证方式见 [bilibili 导入说明](bilibili-import.md)。

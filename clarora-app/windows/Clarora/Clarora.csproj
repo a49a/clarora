@@ -98,6 +98,9 @@
     <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
   </PropertyGroup>
   <ItemGroup>
+    <SDKReference Include="WindowsDesktop, Version=$(TargetPlatformVersion)" />
+  </ItemGroup>
+  <ItemGroup>
     <Compile Include="App.xaml.cs">
       <DependentUpon>App.xaml</DependentUpon>
     </Compile>
@@ -150,6 +153,15 @@
   <ImportGroup Label="ReactNativeWindowsTargets">
     <Import Project="$(ReactNativeWindowsDir)\PropertySheets\External\Microsoft.ReactNative.Uwp.CSharpApp.targets" Condition="Exists('$(ReactNativeWindowsDir)\PropertySheets\External\Microsoft.ReactNative.Uwp.CSharpApp.targets')" />
   </ImportGroup>
+  <!-- Publish during every build, including Visual Studio and CI packaging. -->
+  <Target Name="BuildBilibiliDownloader" BeforeTargets="PrepareForBuild">
+    <Exec Command="dotnet publish &quot;$(MSBuildProjectDirectory)\..\Clarora.Downloader\Clarora.Downloader.csproj&quot; -c Release -o &quot;$(MSBuildProjectDirectory)\Downloader&quot;" />
+    <ItemGroup>
+      <Content Include="Downloader\Clarora.Downloader.exe">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </Content>
+    </ItemGroup>
+  </Target>
   <Target Name="EnsureReactNativeWindowsTargets" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>This project references targets in your node_modules\react-native-windows folder that are missing. The missing file is {0}.</ErrorText>

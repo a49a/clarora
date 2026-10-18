@@ -19,6 +19,7 @@ import { useAppTheme } from "../ui/ThemeContext";
 import { getSetting, setSetting, saveVideoClip } from "../data/database";
 import { DocumentPicker, FileSystem, runCommandArgs } from "../services/platform";
 import { NativeVideoPlayer } from "../services/nativeVideo";
+import { downloadBilibiliVideo, cancelBilibiliDownload } from "../services/bilibili";
 
 // English video learning is a desktop feature: the phone screen is too small
 // for comfortable caption study, so Android never shows this tab.
@@ -79,6 +80,20 @@ export default function VideoLearningScreen() {
 
   const playerRef = useRef<any>(null);
   const trackWidthRef = useRef(0);
+  const [bilibiliInput, setBilibiliInput] = useState("");
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const [downloadStatus, setDownloadStatus] = useState("");
+  const downloadRef = useRef({ active: false, cancelled: false, mounted: true });
+  useEffect(() => {
+    downloadRef.current.mounted = true;
+    return () => {
+      downloadRef.current.mounted = false;
+      if (downloadRef.current.active) {
+        downloadRef.current.cancelled = true;
+        cancelBilibiliDownload();
+      }
+    };
+  }, []);
   const [recents, setRecents] = useState<RecentVideo[]>([]);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -189,6 +204,33 @@ export default function VideoLearningScreen() {
       setError(String(e?.message ?? e));
     }
   }, [openVideo]);
+
+  const downloadVideo = useCallback(async () => {
+    if (downloadRef.current.active) return;
+    downloadRef.current.active = true;
+    downloadRef.current.cancelled = false;
+    setDownloadBusy(true);
+    setDownloadStatus("正在下载并合并音画，请稍候…");
+    setError(null);
+    try {
+      const path = await downloadBilibiliVideo(bilibiliInput);
+      if (!downloadRef.current.mounted || downloadRef.current.cancelled) {
+        // Cancellation may arrive after the native process has finished.
+        await FileSystem.deleteAsync(path).catch(() => {});
+        if (downloadRef.current.mounted) setDownloadStatus("已取消下载");
+        return;
+      }
+      openVideo(path);
+      setDownloadStatus("已下载并导入，文件保存在本机。");
+    } catch (error) {
+      if (!downloadRef.current.mounted) return;
+      setDownloadStatus(downloadRef.current.cancelled ? "已取消下载" : "下载失败，可重试。");
+      if (!downloadRef.current.cancelled) setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      downloadRef.current.active = false;
+      if (downloadRef.current.mounted) setDownloadBusy(false);
+    }
+  }, [bilibiliInput, openVideo]);
 
   const seekTo = useCallback((ms: number) => {
     const tag = findNodeHandle(playerRef.current);
@@ -487,6 +529,40 @@ export default function VideoLearningScreen() {
           </View>
           </Details>
         )}
+
+        {(Platform.OS === "macos" || Platform.OS === "windows") && <Details title="从 bilibili 下载导入">
+          <View style={styles.panel}>
+            <Text style={styles.libraryCaption}>粘贴完整视频链接或 BV 号，下载当前分 P 后直接学习。仅下载无需登录即可访问的视频；可用字幕会一并嵌入。</Text>
+            <TextInput
+              testID="bilibili-url"
+              accessibilityLabel="bilibili 视频链接或 BV 号"
+              style={styles.downloadInput}
+              value={bilibiliInput}
+              onChangeText={setBilibiliInput}
+              editable={!downloadBusy}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="https://www.bilibili.com/video/BV…?p=1"
+              placeholderTextColor={theme.textMuted}
+            />
+            <View style={styles.libraryRow}>
+              <Pressable testID="bilibili-download" accessibilityRole="button" disabled={downloadBusy || !bilibiliInput.trim()}
+                style={[styles.pickBtn, (downloadBusy || !bilibiliInput.trim()) && { opacity: 0.5 }]}
+                onPress={() => { void downloadVideo(); }}>
+                <Text style={styles.pickBtnText}>{downloadBusy ? "下载中…" : "下载并导入"}</Text>
+              </Pressable>
+              {downloadBusy && <Pressable accessibilityRole="button" onPress={() => {
+                downloadRef.current.cancelled = true;
+                setDownloadStatus("正在取消并清理文件…");
+                cancelBilibiliDownload();
+              }}><Text style={styles.libraryCaption}>取消下载</Text></Pressable>}
+            </View>
+            {!!downloadStatus && <Text accessibilityLiveRegion="polite" style={styles.libraryCaption}>{downloadStatus}</Text>}
+            <Text style={styles.libraryCaption}>{Platform.OS === "windows"
+              ? "首次使用请安装 yt-dlp 和 ffmpeg 并加入 PATH，再重启 Clarora。可用 winget install yt-dlp.yt-dlp 和 winget install Gyan.FFmpeg。"
+              : "首次使用需安装 yt-dlp 和 ffmpeg：brew install yt-dlp ffmpeg。"}短链接请先在浏览器打开，再复制完整视频链接。</Text>
+          </View>
+        </Details>}
 
         <View style={styles.panel}>
           <View style={styles.libraryRow}>
@@ -831,6 +907,7 @@ function makeStyles(
       ...ui.label,
     },
 
+    downloadInput: { color: theme.text, borderColor: theme.border, borderWidth: 1, borderRadius: 8, padding: 10, fontSize: 13 },
     libraryRow: { flexDirection: "row", alignItems: "center", gap: 12 },
     pickBtn: {
       paddingVertical: 9,

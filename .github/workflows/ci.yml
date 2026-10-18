@@ -69,6 +69,15 @@ jobs:
         working-directory: clarora-app
       - run: npm ci
         working-directory: clarora-app
+      - name: Check bilibili native process lifecycle
+        run: python3 scripts/check-bilibili-native.py bilibili-native-report
+        working-directory: clarora-app
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: Clarora-bilibili-native-report
+          path: clarora-app/bilibili-native-report/*.json
+          if-no-files-found: ignore
       - run: node scripts/ensure-macos-pods.cjs
         working-directory: clarora-app
       - run: >-
