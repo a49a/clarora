@@ -119,6 +119,7 @@ enum Action {
     VideoFullscreen,
     VideoExitFullscreen,
     VideoPrecision,
+    VideoSubtitleSize(u8),
     VideoClearLoop,
     VideoRepeatCue,
     VideoSentence(bool),
@@ -193,6 +194,12 @@ enum TaskScope {
     Material,
     Application,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VideoCaptionSource {
+    Transcript,
+    Track,
+    Hidden,
+}
 struct AppView {
     lib: Library,
     page: String,
@@ -232,6 +239,7 @@ struct AppView {
     video_series: Option<bilibili::Series>,
     auto_next_part: bool,
     video_cues: Vec<Cue>,
+    video_caption_source: VideoCaptionSource,
     video_material: Option<video_qa::Material>,
     video_material_error: String,
     video_scroll: UniformListScrollHandle,
@@ -242,6 +250,7 @@ struct AppView {
     video_fullscreen_owned: bool,
     video_fullscreen_seen: bool,
     video_precision: bool,
+    video_subtitle_size: u8,
     video_seek_dragging: bool,
     video_volume_dragging: bool,
     volume_before_mute: f64,
@@ -375,6 +384,7 @@ impl AppView {
             video_series: None,
             auto_next_part: true,
             video_cues: vec![],
+            video_caption_source: VideoCaptionSource::Transcript,
             video_material: None,
             video_material_error: String::new(),
             video_scroll: UniformListScrollHandle::new(),
@@ -385,6 +395,7 @@ impl AppView {
             video_fullscreen_owned: false,
             video_fullscreen_seen: false,
             video_precision: false,
+            video_subtitle_size: 16,
             video_seek_dragging: false,
             video_volume_dragging: false,
             volume_before_mute: 100.,
@@ -435,6 +446,13 @@ impl AppView {
                 ScrollStrategy::Center,
             );
         }
+        this.video_subtitle_size = this
+            .lib
+            .setting("video_subtitle_size")
+            .ok()
+            .and_then(|value| value.parse::<u8>().ok())
+            .filter(|size| [14, 16, 20, 24, 28, 32].contains(size))
+            .unwrap_or(16);
         this.auto_next_part = this.lib.setting("video_auto_next").ok().as_deref() != Some("false");
         if let Some(series) = &this.video_series {
             let base = series.base.clone();
@@ -904,6 +922,7 @@ impl AppView {
                                     && self.current_path.as_ref() == Some(&video)
                                 {
                                     self.video_cues = cues;
+                                    self.video_caption_source = VideoCaptionSource::Transcript;
                                     self.video_material = None;
                                     self.video_material_error.clear();
                                     self.video_active = None;
@@ -1154,6 +1173,7 @@ impl AppView {
         }
     }
     fn load_video_subtitles(&mut self, path: &std::path::Path) {
+        self.video_caption_source = VideoCaptionSource::Transcript;
         self.video_material = None;
         self.video_material_error.clear();
         self.video_cues = match video_subtitles::load(&self.lib, path) {
@@ -1837,6 +1857,12 @@ impl AppView {
                     }
                 }
                 Action::VideoExitFullscreen => self.leave_video_fullscreen(window, cx),
+                Action::VideoSubtitleSize(size) => {
+                    ensure!([14, 16, 20, 24, 28, 32].contains(&size), "无效字幕字号");
+                    self.lib
+                        .set_setting("video_subtitle_size", &size.to_string())?;
+                    self.video_subtitle_size = size;
+                }
                 Action::VideoPrecision => self.video_precision = !self.video_precision,
                 Action::VideoClearLoop => {
                     self.loop_a = None;
@@ -1951,14 +1977,23 @@ impl AppView {
                 Action::Repeat => {
                     self.repeat = (self.repeat + 1) % if self.page == "video" { 3 } else { 5 };
                 }
-                Action::Subtitle(key, secondary) => self.player.set(
-                    if secondary { "secondary-sid" } else { "sid" },
-                    if key == 0 {
-                        "no".into()
-                    } else {
-                        key.to_string()
-                    },
-                ),
+                Action::Subtitle(key, secondary) => {
+                    self.player.set(
+                        if secondary { "secondary-sid" } else { "sid" },
+                        if key == 0 {
+                            "no".into()
+                        } else {
+                            key.to_string()
+                        },
+                    );
+                    if !secondary {
+                        self.video_caption_source = if key == 0 {
+                            VideoCaptionSource::Hidden
+                        } else {
+                            VideoCaptionSource::Track
+                        };
+                    }
+                }
                 Action::SubtitleImport(zh) => {
                     self.pick(if zh { "subtitle-zh" } else { "subtitle-en" }, cx)
                 }
@@ -3089,10 +3124,18 @@ impl AppView {
         window.focus(&self.focus);
     }
     fn video_picture(&self, height: Option<Pixels>, cx: &Context<Self>) -> impl IntoElement {
-        let active_caption = video_subtitles::active(&self.video_cues, self.playback.position)
-            .map(|i| self.video_cues[i].text.clone())
-            .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| self.playback.subtitle.clone());
+        let active_caption = if self.playback.subtitle_is_bitmap
+            || self.video_caption_source == VideoCaptionSource::Hidden
+        {
+            String::new()
+        } else if self.video_caption_source == VideoCaptionSource::Track {
+            self.playback.subtitle.clone()
+        } else {
+            video_subtitles::active(&self.video_cues, self.playback.position)
+                .map(|i| self.video_cues[i].text.clone())
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| self.playback.subtitle.clone())
+        };
         div()
             .relative()
             .w_full()
@@ -3136,11 +3179,11 @@ impl AppView {
                         .px_5()
                         .py_3()
                         .id("video-current-caption")
-                        .max_h(px(96.))
+                        .max_h(px(f32::from(self.video_subtitle_size) * 3.8 + 24.))
                         .overflow_y_scroll()
                         .bg(rgba(0x050a08c9))
                         .text_color(rgb(0xffffff))
-                        .text_base()
+                        .text_size(px(f32::from(self.video_subtitle_size)))
                         .text_center()
                         .child(active_caption),
                 )
@@ -3287,6 +3330,27 @@ impl AppView {
                         clock(self.playback.duration)
                     )))
                     .child(div().flex_1())
+                    .child(
+                        self.player_menu(
+                            "video-subtitle-size",
+                            format!("字幕 {}px ▾", self.video_subtitle_size),
+                            [14, 16, 20, 24, 28, 32]
+                                .into_iter()
+                                .map(|size| {
+                                    (
+                                        format!(
+                                            "{size}px{}",
+                                            if size == 16 { "（默认）" } else { "" }
+                                        ),
+                                        Action::VideoSubtitleSize(size),
+                                        self.video_subtitle_size == size,
+                                        false,
+                                    )
+                                })
+                                .collect(),
+                            cx,
+                        ),
+                    )
                     .child(self.player_menu("video-speed", format!("{}× ▾", self.rate), rates, cx))
                     .child(
                         div()

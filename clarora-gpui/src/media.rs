@@ -171,6 +171,7 @@ pub struct Playback {
     pub eof: bool,
     pub path: String,
     pub subtitle: String,
+    pub subtitle_is_bitmap: bool,
     pub tracks: Vec<Value>,
     pub frame: Option<Arc<gpui::RenderImage>>,
     pub error: String,
@@ -297,6 +298,8 @@ fn worker(
             ("idle", "yes"),
             ("keep-open", "yes"),
             ("pause", "yes"),
+            // GPUI draws the primary text subtitle; keep decoding for sub-text.
+            ("sub-visibility", "no"),
         ] {
             (api.option)(handle, CString::new(k)?.as_ptr(), CString::new(v)?.as_ptr());
         }
@@ -321,6 +324,7 @@ fn worker(
         (api.update_callback)(owned.render, Some(wake), std::ptr::null_mut());
         let mut pixels = vec![0u64; 960 * 540 / 2];
         let mut tick = 0;
+        let mut subtitle_is_bitmap = false;
         loop {
             match rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(Message::Close) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -434,6 +438,30 @@ fn worker(
                     tracks = node_json(&node).as_array().cloned().unwrap_or_default();
                     (api.node_free)(&mut node);
                 }
+                let mut sid = 0i64;
+                (api.property)(handle, c"sid".as_ptr(), 4, &mut sid as *mut _ as _);
+                let bitmap = tracks.iter().any(|track| {
+                    track["type"] == "sub"
+                        && track["id"].as_i64() == Some(sid)
+                        && matches!(
+                            track["codec"].as_str(),
+                            Some("dvd_subtitle" | "dvb_subtitle" | "hdmv_pgs_subtitle" | "xsub")
+                        )
+                });
+                if bitmap != subtitle_is_bitmap {
+                    // Bitmap subtitles have no sub-text; mpv must draw those.
+                    let status = (api.set)(
+                        handle,
+                        c"sub-visibility".as_ptr(),
+                        if bitmap {
+                            c"yes".as_ptr()
+                        } else {
+                            c"no".as_ptr()
+                        },
+                    );
+                    ensure!(status >= 0, "无法设置字幕显示方式 ({status})");
+                    subtitle_is_bitmap = bitmap;
+                }
                 let mut media_path = String::new();
                 if (api.property)(handle, c"path".as_ptr(), 6, &mut node as *mut _ as _) >= 0 {
                     media_path = node_json(&node).as_str().unwrap_or("").into();
@@ -452,6 +480,7 @@ fn worker(
                 s.path = media_path;
                 s.tracks = tracks;
                 s.subtitle = subtitle;
+                s.subtitle_is_bitmap = subtitle_is_bitmap;
             }
         }
         Ok(())
