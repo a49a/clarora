@@ -29,7 +29,7 @@ use std::{
     fs,
     path::PathBuf,
     sync::{atomic::Ordering, mpsc},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 actions!(
     clarora_gpui_actions,
@@ -204,6 +204,7 @@ struct AppView {
     lib: Library,
     page: String,
     navigation_open: bool,
+    navigation_motion: Option<(Instant, f32)>,
     inputs: BTreeMap<String, Entity<InputState>>,
     status: String,
     busy: Option<Cancel>,
@@ -349,6 +350,7 @@ impl AppView {
             lib,
             page: "flashcard".into(),
             navigation_open: true,
+            navigation_motion: None,
             inputs,
             status: "准备好了，开始今天的学习。".into(),
             busy: None,
@@ -1788,7 +1790,9 @@ impl AppView {
                     let open = !self.navigation_open;
                     self.lib
                         .set_setting("navigation_open", if open { "true" } else { "false" })?;
+                    let from = self.navigation_progress();
                     self.navigation_open = open;
+                    self.navigation_motion = Some((Instant::now(), from));
                 }
                 Action::Assistant => {
                     self.assistant_open = !self.assistant_open;
@@ -3122,6 +3126,15 @@ impl AppView {
         self.video_fullscreen_owned = false;
         self.video_fullscreen_seen = false;
         window.focus(&self.focus);
+    }
+    fn navigation_progress(&self) -> f32 {
+        let target = if self.navigation_open { 1. } else { 0. };
+        let Some((started, from)) = self.navigation_motion else {
+            return target;
+        };
+        let elapsed = (started.elapsed().as_secs_f32() / 0.24).clamp(0., 1.);
+        let eased = 1. - (1. - elapsed).powi(3);
+        from + (target - from) * eased
     }
     fn video_picture(&self, height: Option<Pixels>, cx: &Context<Self>) -> impl IntoElement {
         let active_caption = if self.playback.subtitle_is_bitmap
@@ -5374,6 +5387,14 @@ impl Render for AppView {
         if self.video_fullscreen && self.page == "video" {
             return self.fullscreen_video(cx);
         }
+        let navigation_progress = self.navigation_progress();
+        if let Some((started, _)) = self.navigation_motion {
+            if started.elapsed() < Duration::from_millis(240) {
+                window.request_animation_frame();
+            } else {
+                self.navigation_motion = None;
+            }
+        }
         let content = self.content(window, cx);
         let assistant = if self.assistant_open {
             Some(self.assistant_view(window, cx))
@@ -5759,7 +5780,22 @@ impl Render for AppView {
                     }
                 }
             }))
-            .when(self.navigation_open, |view| view.child(nav))
+            .when(navigation_progress > 0., |view| {
+                view.child(
+                    div()
+                        .id("navigation-slide")
+                        .relative()
+                        .w(px(224. * navigation_progress))
+                        .flex_shrink_0()
+                        .h_full()
+                        .overflow_hidden()
+                        .child(
+                            nav.absolute()
+                                .top_0()
+                                .left(px(224. * (navigation_progress - 1.))),
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -5791,14 +5827,39 @@ impl Render for AppView {
                                                 self.button(
                                                     "navigation-toggle",
                                                     if self.navigation_open {
-                                                        "‹ 收起导航"
+                                                        "收起导航"
                                                     } else {
-                                                        "☰ 展开导航"
+                                                        "展开导航"
                                                     },
                                                     Action::Navigation,
                                                     cx,
                                                 )
-                                                .ghost(),
+                                                .icon(
+                                                    Icon::new(IconName::ChevronDown)
+                                                        .path(if self.navigation_open {
+                                                            "ui/sidebar-close.svg"
+                                                        } else {
+                                                            "ui/sidebar-open.svg"
+                                                        })
+                                                        .size(px(22.)),
+                                                )
+                                                .h(px(36.))
+                                                .px_3()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .cursor_pointer()
+                                                .custom(
+                                                    ButtonCustomVariant::new(cx)
+                                                        .color(cx.theme().accent)
+                                                        .foreground(cx.theme().primary)
+                                                        .border(cx.theme().primary.opacity(0.45))
+                                                        .hover(cx.theme().primary.opacity(0.16))
+                                                        .active(cx.theme().primary.opacity(0.24)),
+                                                )
+                                                .tooltip(if cfg!(target_os = "macos") {
+                                                    "显示或隐藏左侧导航 · ⌘B"
+                                                } else {
+                                                    "显示或隐藏左侧导航 · Ctrl+B"
+                                                }),
                                             )
                                             .child(
                                                 div()

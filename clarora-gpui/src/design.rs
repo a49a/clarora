@@ -90,6 +90,8 @@ fn paths(name: &str) -> Option<&'static str> {
         }
         "fullscreen" => "<path d='M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6'/>",
         "fullscreen-exit" => "<path d='M3 9h6V3m6 0v6h6M9 21v-6H3m18 0h-6v6'/>",
+        "sidebar-open" => "<path d='M3 4v16M7 6l6 6-6 6m7-12 6 6-6 6' stroke-width='2.5'/>",
+        "sidebar-close" => "<path d='M21 4v16M17 6l-6 6 6 6M10 6l-6 6 6 6' stroke-width='2.5'/>",
         "play" => "<path d='m9 5 11 7-11 7Z' fill='black' stroke='none'/>",
         "pause" => "<path d='M8 5v14M16 5v14' stroke-width='4'/>",
         "rewind" => "<path d='M4 8a8 8 0 1 1-1 8M4 3v5h5'/>",
