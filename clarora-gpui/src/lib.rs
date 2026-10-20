@@ -19,3 +19,5 @@ pub mod bilibili;
 pub mod model_download;
 
 pub mod video_qa;
+
+pub mod blind_listening;

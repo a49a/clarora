@@ -1,6 +1,8 @@
 //! End-to-end library workflows using real SQLite, ZIP, filesystem, processes and HTTP.
 #[path = "support/bilibili_parts.rs"]
 mod bilibili_parts;
+#[path = "support/blind_listening.rs"]
+mod blind_listening;
 #[path = "support/model_progress.rs"]
 mod model_progress;
 #[path = "support/protocol.rs"]
@@ -410,6 +412,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
         "恢复失败留下了部分数据库写入"
     );
     results.push(json!({"workflow":"只读 RN 快照导入与跨表恢复失败事务回滚","passed":true}));
+    blind_listening::run(&lib, &video, results)?;
     bilibili_parts::run(&lib, results)?;
     model_progress::run(&lib, results)?;
     video_qa::run(&lib, results)?;

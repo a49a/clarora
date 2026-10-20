@@ -2,7 +2,7 @@
 mod design;
 use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::{
-    ai, backup, bilibili,
+    ai, backup, bilibili, blind_listening,
     data::{Card, Library, Row, id, now, text},
     documents,
     media::{Playback, Player},
@@ -41,6 +41,11 @@ actions!(
         ToggleNavigation,
         AskAi,
         NewChat,
+        ToggleBlindListening,
+        RevealBlindSentence,
+        ResumeBlindListening,
+        RestartBlindListening,
+        ViewAudioTranscript,
         Forward,
         Backward,
         PdfZoomIn,
@@ -92,6 +97,14 @@ enum Action {
     Audio(String),
     Practice(String),
     AudioPractice(String),
+    AudioBlind(bool),
+    AudioBlindChinese(bool),
+    AudioBlindReveal,
+    AudioBlindRevealCue(String, Cue),
+    AudioBlindHide,
+    AudioBlindResume(bool),
+    AudioBlindSentence(i8),
+    AudioBlindRow(String, Cue, Option<usize>),
     AudioClipMode,
     AudioTools,
     AudioFont(u8),
@@ -274,6 +287,10 @@ struct AppView {
     audio_scroll: ListState,
     audio_active: Option<usize>,
     audio_follow: bool,
+    audio_blind: blind_listening::State,
+    audio_blind_chinese: bool,
+    audio_blind_pending: Option<(Instant, String, blind_listening::Revealed)>,
+    audio_blind_settle_until: Option<Instant>,
     audio_clip_mode: bool,
     audio_tools_open: bool,
     audio_show_current: bool,
@@ -431,6 +448,10 @@ impl AppView {
             audio_scroll: ListState::new(0, ListAlignment::Top, px(120.)),
             audio_active: None,
             audio_follow: true,
+            audio_blind: blind_listening::State::default(),
+            audio_blind_chinese: false,
+            audio_blind_pending: None,
+            audio_blind_settle_until: None,
             audio_clip_mode: false,
             audio_tools_open: false,
             audio_show_current: true,
@@ -495,6 +516,8 @@ impl AppView {
             .and_then(|v| v.parse::<u8>().ok())
             .filter(|n| [14, 16, 18, 20, 24, 28, 32].contains(n))
             .unwrap_or(18);
+        this.audio_blind_chinese =
+            this.lib.setting("blind_chinese_hint").ok().as_deref() == Some("true");
         this.auto_next_part = this.lib.setting("video_auto_next").ok().as_deref() != Some("false");
         if let Some(series) = &this.video_series {
             let base = series.base.clone();
@@ -606,6 +629,16 @@ impl AppView {
                 .current_card()
                 .map(|c| format!("{}:{}", c.kind, c.id))
                 .unwrap_or_default(),
+            "listening" if self.audio_blind.enabled => format!(
+                "blind:{}:{}:{}",
+                self.current_audio,
+                self.audio_blind_chinese,
+                self.audio_blind
+                    .revealed
+                    .as_ref()
+                    .map(|r| format!("{}:{}:{}", r.cue.start, r.cue.end, r.cue.text))
+                    .unwrap_or_else(|| "hidden".into())
+            ),
             "listening" => self.current_audio.clone(),
             "video" if self.video_material.is_some() => {
                 self.video_material.as_ref().unwrap().key.clone()
@@ -773,6 +806,7 @@ impl AppView {
                 .ok()
                 .map(|body| subtitles::parse(&body))
                 .unwrap_or_default();
+            self.invalidate_blind();
             self.audio_scroll.reset(self.cues.len());
             self.audio_active = None;
         }
@@ -874,12 +908,53 @@ impl AppView {
                 }
             }
         }
+        let mut blind_changed = false;
+        if self.audio_blind.enabled {
+            if let Some((started, audio, target)) = self.audio_blind_pending.clone() {
+                let valid = self.page == "listening"
+                    && audio == self.current_audio
+                    && self.busy.is_none()
+                    && self
+                        .current_path
+                        .as_ref()
+                        .is_some_and(|p| p.to_string_lossy() == self.playback.path)
+                    && self.cues.iter().any(|c| {
+                        c.start == target.cue.start
+                            && c.end == target.cue.end
+                            && c.text == target.cue.text
+                    });
+                if !valid
+                    || started.elapsed() > Duration::from_secs(2)
+                    || !self.playback.error.is_empty()
+                {
+                    self.invalidate_blind();
+                    self.status = "未能确认暂停，请重试查看原文".into();
+                    blind_changed = true;
+                } else if self.playback.paused && started.elapsed() >= Duration::from_millis(80) {
+                    if let Some(i) = self.cues.iter().position(|c| {
+                        c.start == target.cue.start
+                            && c.end == target.cue.end
+                            && c.text == target.cue.text
+                    }) {
+                        self.audio_scroll.scroll_to_reveal_item(i);
+                    }
+                    self.audio_blind.revealed = Some(target);
+                    self.audio_blind_pending = None;
+                    self.status = "已暂停并显示所选字幕".into();
+                    blind_changed = true;
+                }
+            } else if !self.playback.paused && self.audio_blind.revealed.is_some() {
+                self.invalidate_blind();
+                blind_changed = true;
+            }
+        }
         let frame_changed = match (&old_frame, &self.playback.frame) {
             (Some(a), Some(b)) => !std::sync::Arc::ptr_eq(a, b),
             (None, Some(_)) => true,
             _ => false,
         };
-        let mut changed = frame_changed
+        let mut changed = blind_changed
+            || frame_changed
             || old_pause != self.playback.paused
             || (old_pos - self.playback.position).abs() > 0.01;
         if !self.playback.paused && self.playback.duration > 0. && self.page != "meditation" {
@@ -922,6 +997,7 @@ impl AppView {
                         }
                     }
                     Event::Done(result) => {
+                        let completed_chat = self.chat_running;
                         let cancelled =
                             self.busy.as_ref().is_some_and(|t| t.load(Ordering::SeqCst));
                         self.busy = None;
@@ -1035,7 +1111,11 @@ impl AppView {
                             Err(e) => self.status = e,
                             _ => self.status = "已取消".into(),
                         }
-                        self.refresh();
+                        // Chat only updates its persisted conversation. Refreshing materials
+                        // here would invalidate the revealed cue and switch its chat context.
+                        if !completed_chat {
+                            self.refresh();
+                        }
                         if !self.chat_id.is_empty() {
                             if let Some(record) = documents::records(&self.lib, "chat")
                                 .unwrap_or_default()
@@ -1249,6 +1329,8 @@ impl AppView {
     }
 
     fn open_audio(&mut self, row: &Row) {
+        self.invalidate_blind();
+        self.audio_blind_settle_until = Some(Instant::now() + Duration::from_millis(250));
         let path = PathBuf::from(text(row, "audio_uri"));
         self.player.open(&path);
         self.current_path = Some(path);
@@ -1269,6 +1351,7 @@ impl AppView {
             .ok()
             .map(|s| subtitles::parse(&s))
             .unwrap_or_default();
+        self.invalidate_blind();
         self.audio_scroll.reset(self.cues.len());
         self.audio_active = None;
         self.audio_clip_mode = false;
@@ -1576,6 +1659,8 @@ impl AppView {
                 Action::GraphSelect(node) => self.graph_node = node,
                 Action::GraphList(list) => self.graph_list = list,
                 Action::Page(page) => {
+                    self.audio_blind.enabled = false;
+                    self.invalidate_blind();
                     let previous = self.page.clone();
                     self.save_media_position();
                     if self.task_scope == TaskScope::Material {
@@ -1638,6 +1723,7 @@ impl AppView {
                             .ok()
                             .map(|s| subtitles::parse(&s))
                             .unwrap_or_default();
+                        self.invalidate_blind();
                         self.audio_scroll.reset(self.cues.len());
                         self.audio_active = None;
                     }
@@ -1676,6 +1762,7 @@ impl AppView {
                 }
                 Action::Practice(key) => self.practice_id = key,
                 Action::AudioPractice(key) => {
+                    self.invalidate_blind();
                     ensure!(self.busy.is_none(), "请等待当前任务完成");
                     self.practice_id = key;
                     if let Some(row) = self
@@ -1706,7 +1793,223 @@ impl AppView {
                         self.loop_b = None;
                     }
                 }
+                Action::AudioBlind(enabled) => {
+                    ensure!(self.page == "listening", "请先进入音频学习");
+                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    self.audio_blind.enabled = enabled;
+                    self.invalidate_blind();
+                    self.assistant_open = false;
+                    self.output.clear();
+                    self.reasoning.clear();
+                    if enabled {
+                        if self.loop_a.is_none() || self.loop_b.is_none() {
+                            self.loop_a = None;
+                            self.loop_b = None;
+                            if self.repeat == 2 {
+                                self.repeat = 0;
+                            }
+                        }
+                        self.audio_tools_open = false;
+                        self.status = "盲听已开启，字幕已隐藏".into();
+                    } else {
+                        self.player.set("pause", "yes");
+                        self.status = "已切回字幕模式，保持暂停".into();
+                    }
+                    self.sync_chat(window, cx);
+                    window.focus(&self.focus);
+                }
+                Action::AudioBlindChinese(enabled) => {
+                    ensure!(
+                        self.page == "listening" && self.audio_blind.enabled,
+                        "请先开启盲听"
+                    );
+                    self.lib.set_setting(
+                        "blind_chinese_hint",
+                        if enabled { "true" } else { "false" },
+                    )?;
+                    self.audio_blind_chinese = enabled;
+                    self.invalidate_blind();
+                    self.assistant_open = false;
+                    self.sync_chat(window, cx);
+                    window.focus(&self.focus);
+                    self.status = if enabled {
+                        "查看时仅显示中文；平时中英文均遮挡"
+                    } else {
+                        "查看时显示中英字幕；平时均遮挡"
+                    }
+                    .into();
+                }
+                action @ (Action::AudioBlindReveal | Action::AudioBlindRevealCue(..)) => {
+                    ensure!(
+                        self.page == "listening" && self.audio_blind.enabled,
+                        "请先开启盲听"
+                    );
+                    ensure!(
+                        self.busy.is_none() && self.audio_blind_pending.is_none(),
+                        "请等待当前操作完成"
+                    );
+                    ensure!(
+                        self.audio_blind_settle_until
+                            .is_none_or(|t| Instant::now() >= t),
+                        "正在定位，请稍候重试"
+                    );
+                    let playback = self.player.snapshot();
+                    ensure!(
+                        !self.current_audio.is_empty()
+                            && self
+                                .current_path
+                                .as_ref()
+                                .is_some_and(|p| p.to_string_lossy() == playback.path),
+                        "音频正在切换，请稍候"
+                    );
+                    let target = if let Action::AudioBlindRevealCue(audio_id, cue) = action {
+                        ensure!(audio_id == self.current_audio, "音频已切换，请重新选择");
+                        blind_listening::row_target(&self.cues, &cue, playback.duration)
+                            .context("字幕已变化或时间无效，请重新选择")?;
+                        blind_listening::Revealed { cue, sparse: false }
+                    } else {
+                        blind_listening::resolve(&self.cues, playback.position, playback.duration)
+                            .context("播放到有字幕的部分后再查看")?
+                    };
+                    self.invalidate_blind();
+                    self.assistant_open = false;
+                    self.sync_chat(window, cx);
+                    self.audio_blind_pending =
+                        Some((Instant::now(), self.current_audio.clone(), target));
+                    self.player.set("pause", "yes");
+                    self.status = "正在暂停，确认后显示所选字幕…".into();
+                }
+                Action::AudioBlindHide => {
+                    self.invalidate_blind();
+                    self.sync_chat(window, cx);
+                    window.focus(&self.focus);
+                }
+                Action::AudioBlindResume(restart) => {
+                    ensure!(
+                        self.page == "listening"
+                            && self.audio_blind.enabled
+                            && !self.current_audio.is_empty(),
+                        "请先选择音频并开启盲听"
+                    );
+                    self.invalidate_blind();
+                    self.assistant_open = false;
+                    if restart {
+                        self.player.command(["seek", "0", "absolute+exact"]);
+                    }
+                    self.player.set("pause", "no");
+                    self.status = "正在盲听，字幕已隐藏".into();
+                    self.audio_blind_settle_until =
+                        Some(Instant::now() + Duration::from_millis(200));
+                    self.sync_chat(window, cx);
+                    window.focus(&self.focus);
+                }
+                Action::AudioBlindRow(audio_id, cue, word_index) => {
+                    ensure!(
+                        self.page == "listening" && self.audio_blind.enabled,
+                        "请先开启盲听"
+                    );
+                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    let playback = self.player.snapshot();
+                    ensure!(
+                        audio_id == self.current_audio
+                            && !audio_id.is_empty()
+                            && self
+                                .current_path
+                                .as_ref()
+                                .is_some_and(|p| p.to_string_lossy() == playback.path),
+                        "音频正在切换，请重试"
+                    );
+                    let start = match word_index {
+                        Some(index) => {
+                            blind_listening::word_target(&self.cues, &cue, index, playback.duration)
+                        }
+                        None => blind_listening::row_target(&self.cues, &cue, playback.duration),
+                    }
+                    .context("字幕已变化或时间无效，请重新选择")?;
+                    self.invalidate_blind();
+                    self.assistant_open = false;
+                    let outside_loop = self.repeat == 2
+                        && self
+                            .loop_a
+                            .zip(self.loop_b)
+                            .is_some_and(|(a, b)| start < a || start >= b);
+                    if outside_loop {
+                        self.repeat = 0;
+                        self.loop_a = None;
+                        self.loop_b = None;
+                    }
+                    self.player.command([
+                        "seek".into(),
+                        start.to_string(),
+                        "absolute+exact".into(),
+                    ]);
+                    self.player.set("pause", "no");
+                    self.audio_blind_settle_until =
+                        Some(Instant::now() + Duration::from_millis(250));
+                    self.status = if outside_loop {
+                        "已退出 A–B 循环，从所选句开始盲听"
+                    } else {
+                        "已从所选位置开始盲听，字幕保持遮挡"
+                    }
+                    .into();
+                    self.sync_chat(window, cx);
+                    window.focus(&self.focus);
+                }
+                Action::AudioBlindSentence(direction) => {
+                    ensure!(
+                        self.page == "listening" && self.audio_blind.enabled,
+                        "请先开启盲听"
+                    );
+                    ensure!(
+                        self.busy.is_none() && self.audio_blind_pending.is_none(),
+                        "请等待当前操作完成"
+                    );
+                    ensure!(
+                        self.audio_blind_settle_until
+                            .is_none_or(|t| Instant::now() >= t),
+                        "正在定位，请稍候重试"
+                    );
+                    let playback = self.player.snapshot();
+                    ensure!(
+                        !self.current_audio.is_empty()
+                            && self
+                                .current_path
+                                .as_ref()
+                                .is_some_and(|p| p.to_string_lossy() == playback.path),
+                        "音频正在切换，请稍候"
+                    );
+                    let target = blind_listening::sentence_target(
+                        &self.cues,
+                        playback.position,
+                        playback.duration,
+                        self.audio_blind.revealed.as_ref(),
+                        direction,
+                        self.loop_a
+                            .zip(self.loop_b)
+                            .filter(|(a, b)| self.repeat == 2 && b > a),
+                    )
+                    .context("当前范围内没有可播放的字幕句")?;
+                    self.invalidate_blind();
+                    self.assistant_open = false;
+                    self.player.command([
+                        "seek".into(),
+                        target.cue.start.to_string(),
+                        "absolute+exact".into(),
+                    ]);
+                    self.player.set("pause", "no");
+                    self.audio_blind_settle_until =
+                        Some(Instant::now() + Duration::from_millis(250));
+                    self.status = match direction {
+                        -1 => "已从上一句开始盲听",
+                        1 => "已从下一句开始盲听",
+                        _ => "已隐藏文字，从句首重听",
+                    }
+                    .into();
+                    self.sync_chat(window, cx);
+                    window.focus(&self.focus);
+                }
                 Action::AudioClipMode => {
+                    ensure!(!self.audio_blind.enabled, "请先切回字幕模式");
                     self.audio_clip_mode = !self.audio_clip_mode;
                     if !self.audio_clip_mode {
                         self.loop_a = None;
@@ -1716,7 +2019,10 @@ impl AppView {
                         }
                     }
                 }
-                Action::AudioTools => self.audio_tools_open = !self.audio_tools_open,
+                Action::AudioTools => {
+                    ensure!(!self.audio_blind.enabled, "请先切回字幕模式");
+                    self.audio_tools_open = !self.audio_tools_open;
+                }
                 Action::AudioCurrent => self.audio_show_current = !self.audio_show_current,
                 Action::AudioFollow => {
                     self.audio_follow = !self.audio_follow;
@@ -1731,6 +2037,7 @@ impl AppView {
                     self.audio_font_size = size;
                     self.lib
                         .set_setting("subtitle_font_size", &size.to_string())?;
+                    self.invalidate_blind();
                     self.audio_scroll.reset(self.cues.len());
                 }
                 Action::AudioRepeat(mode) => {
@@ -1863,14 +2170,27 @@ impl AppView {
                     self.refresh();
                     self.status = "句子卡已保存".into();
                 }
-                Action::Play => self
-                    .player
-                    .set("pause", if self.playback.paused { "no" } else { "yes" }),
+                Action::Play => {
+                    if self.page == "listening" {
+                        self.invalidate_blind();
+                    }
+                    self.player
+                        .set("pause", if self.playback.paused { "no" } else { "yes" });
+                }
                 Action::Seek(delta) => {
+                    if self.page == "listening" {
+                        self.invalidate_blind();
+                        self.audio_blind_settle_until =
+                            Some(Instant::now() + Duration::from_millis(200));
+                    }
                     self.player
                         .command(["seek".into(), delta.to_string(), "relative+exact".into()])
                 }
                 Action::Word(start, end, word, extend) => {
+                    ensure!(
+                        !(self.page == "listening" && self.audio_blind.enabled),
+                        "请先切回字幕模式"
+                    );
                     if !self.audio_clip_mode {
                         self.player.command([
                             "seek".into(),
@@ -1929,6 +2249,11 @@ impl AppView {
                     }
                 }
                 Action::SeekTo(time) => {
+                    if self.page == "listening" {
+                        self.invalidate_blind();
+                        self.audio_blind_settle_until =
+                            Some(Instant::now() + Duration::from_millis(200));
+                    }
                     self.player
                         .command(["seek".into(), time.to_string(), "absolute+exact".into()])
                 }
@@ -2225,6 +2550,10 @@ impl AppView {
                     }
                 }
                 Action::Clip => {
+                    ensure!(
+                        !(self.page == "listening" && self.audio_blind.enabled),
+                        "请先切回字幕模式再保存片段"
+                    );
                     let path = self.current_path.clone().context("请先打开媒体")?;
                     let a = self.loop_a.context("请先设置 A 点")?;
                     let b = self.loop_b.context("请先设置 B 点")?;
@@ -2283,6 +2612,10 @@ impl AppView {
                         .set_setting(&format!("key_points_{}", self.current_audio), "[]")?;
                 }
                 Action::Highlight => {
+                    ensure!(
+                        !(self.page == "listening" && self.audio_blind.enabled),
+                        "请先切回字幕模式"
+                    );
                     let audio = self.current_audio.clone();
                     let cues = self.cues.clone();
                     ensure!(
@@ -3090,6 +3423,9 @@ impl AppView {
                 .current_card()
                 .map(|c| format!("{}\n{}", c.front, c.back))
                 .unwrap_or_default(),
+            "listening" if self.audio_blind.enabled => {
+                self.audio_blind.reference_for(self.audio_blind_chinese)
+            }
             "listening" if self.loop_a.is_some() && self.loop_b.is_some() => {
                 let (front, back) =
                     subtitles::excerpt(&self.cues, self.loop_a.unwrap(), self.loop_b.unwrap());
@@ -3130,7 +3466,13 @@ impl AppView {
             .label(label)
             .small()
             .on_click(cx.listener(move |this, _, window, cx| {
-                if matches!(action, Action::VideoAsk(_) | Action::VideoCopySubtitle(_)) {
+                if matches!(
+                    action,
+                    Action::VideoAsk(_)
+                        | Action::VideoCopySubtitle(_)
+                        | Action::AudioBlindRevealCue(..)
+                        | Action::AudioBlindHide
+                ) {
                     cx.stop_propagation();
                 }
                 this.handle(action.clone(), window, cx)
@@ -3835,6 +4177,179 @@ impl AppView {
             })
             .into_any_element()
     }
+    fn blind_panel(&self, cx: &Context<Self>) -> AnyElement {
+        let ready = !self.current_audio.is_empty()
+            && self.busy.is_none()
+            && self.audio_blind_pending.is_none()
+            && self
+                .audio_blind_settle_until
+                .is_none_or(|t| Instant::now() >= t)
+            && self
+                .current_path
+                .as_ref()
+                .is_some_and(|p| p.to_string_lossy() == self.playback.path);
+        let target =
+            blind_listening::resolve(&self.cues, self.playback.position, self.playback.duration);
+        let loop_range = self
+            .loop_a
+            .zip(self.loop_b)
+            .filter(|(a, b)| self.repeat == 2 && b > a);
+        let can_sentence = |direction| {
+            ready
+                && blind_listening::sentence_target(
+                    &self.cues,
+                    self.playback.position,
+                    self.playback.duration,
+                    self.audio_blind.revealed.as_ref(),
+                    direction,
+                    loop_range,
+                )
+                .is_some()
+        };
+        div()
+            .id("blind-listening-controls")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_5()
+            .py_3()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        self.player_menu(
+                            "blind-caption-display",
+                            if self.audio_blind_chinese {
+                                "查看：仅中文 ▾"
+                            } else {
+                                "查看：中英字幕 ▾"
+                            }
+                            .into(),
+                            vec![
+                                (
+                                    "中英字幕".into(),
+                                    Action::AudioBlindChinese(false),
+                                    !self.audio_blind_chinese,
+                                    false,
+                                ),
+                                (
+                                    "仅中文".into(),
+                                    Action::AudioBlindChinese(true),
+                                    self.audio_blind_chinese,
+                                    false,
+                                ),
+                            ],
+                            cx,
+                        ),
+                    )
+                    .child(
+                        self.button("blind-back-five", "回退 5 秒", Action::Seek(-5.), cx)
+                            .disabled(!ready),
+                    )
+                    .child(
+                        self.button(
+                            "blind-previous-sentence",
+                            "上一句 ↑",
+                            Action::AudioBlindSentence(-1),
+                            cx,
+                        )
+                        .disabled(!can_sentence(-1)),
+                    )
+                    .child(
+                        self.button(
+                            "blind-repeat-sentence",
+                            "从句首重听 R",
+                            Action::AudioBlindSentence(0),
+                            cx,
+                        )
+                        .disabled(!can_sentence(0)),
+                    )
+                    .child(
+                        self.button(
+                            "blind-next-sentence",
+                            "下一句 ↓",
+                            Action::AudioBlindSentence(1),
+                            cx,
+                        )
+                        .disabled(!can_sentence(1)),
+                    )
+                    .child(
+                        self.button(
+                            "blind-reveal",
+                            if self.audio_blind_pending.is_some() {
+                                "正在暂停…"
+                            } else if self.audio_blind.revealed.is_some() {
+                                "收起文字 H"
+                            } else if self.audio_blind_chinese {
+                                "看中文 H"
+                            } else {
+                                "看刚才一句 H"
+                            },
+                            if self.audio_blind.revealed.is_some() {
+                                Action::AudioBlindHide
+                            } else {
+                                Action::AudioBlindReveal
+                            },
+                            cx,
+                        )
+                        .primary()
+                        .disabled(
+                            !ready || (self.audio_blind.revealed.is_none() && target.is_none()),
+                        ),
+                    )
+                    .when(self.audio_blind.revealed.is_some(), |v| {
+                        v.child(
+                            self.button(
+                                "blind-resume",
+                                "继续盲听 C",
+                                Action::AudioBlindResume(false),
+                                cx,
+                            )
+                            .disabled(!ready),
+                        )
+                    })
+                    .when(self.playback.eof, |v| {
+                        v.child(
+                            self.button(
+                                "blind-restart",
+                                "从头再听",
+                                Action::AudioBlindResume(true),
+                                cx,
+                            )
+                            .disabled(!ready),
+                        )
+                    })
+                    .child(
+                        self.button("blind-full", "查看全文", Action::AudioBlind(false), cx)
+                            .ghost()
+                            .disabled(self.busy.is_some()),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(if self.cues.is_empty() {
+                        "暂无字幕，仍可盲听；切回字幕模式可导入字幕。"
+                    } else if self.audio_blind_chinese {
+                        "查看时仅显示刚才一句的中文，英文保持遮挡；继续播放后重新遮住中文。"
+                    } else if self.audio_blind.revealed.as_ref().is_some_and(|r| r.sparse) {
+                        "已显示上一条字幕；继续播放会自动遮住文字。"
+                    } else {
+                        "点击词块从对应单词播放，点击时间戳从句首播放；词时间为估算。"
+                    }),
+            )
+            .into_any_element()
+    }
+    fn invalidate_blind(&mut self) {
+        self.audio_blind.invalidate();
+        self.audio_blind_pending = None;
+    }
     fn audio_study(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let group = self
             .practices
@@ -3929,6 +4444,14 @@ impl AppView {
                 false,
             )
         }));
+        if self.audio_blind.enabled {
+            subtitle_options = vec![(
+                "管理字幕（退出盲听）".into(),
+                Action::AudioBlind(false),
+                false,
+                self.busy.is_some(),
+            )];
+        }
         let header = div()
             .flex()
             .items_center()
@@ -3938,6 +4461,16 @@ impl AppView {
             .py_3()
             .border_b_1()
             .border_color(cx.theme().border)
+            .child(
+                self.button("audio-subtitle-mode", "字幕", Action::AudioBlind(false), cx)
+                    .selected(!self.audio_blind.enabled)
+                    .disabled(self.busy.is_some()),
+            )
+            .child(
+                self.button("audio-blind-mode", "盲听", Action::AudioBlind(true), cx)
+                    .selected(self.audio_blind.enabled)
+                    .disabled(self.busy.is_some()),
+            )
             .child(self.player_menu(
                 "audio-practice-picker",
                 format!("{} ▾", group.chars().take(20).collect::<String>()),
@@ -4011,6 +4544,197 @@ impl AppView {
                     return div().into_any_element();
                 };
                 let active = video_subtitles::active(&this.cues, this.playback.position) == Some(i);
+                if this.audio_blind.enabled {
+                    let revealed = this.audio_blind.revealed.as_ref().filter(|r| {
+                        r.cue.start == cue.start && r.cue.end == cue.end && r.cue.text == cue.text
+                    });
+                    let mut word_line = div().flex().flex_wrap().gap_x_1().gap_y_2().items_center();
+                    let show_original = revealed.is_some() && !this.audio_blind_chinese;
+                    let words = subtitles::words(cue);
+                    let no_words = words.is_empty();
+                    for (j, word) in words.into_iter().enumerate() {
+                        let audio_id = this.current_audio.clone();
+                        let source_cue = cue.clone();
+                        let current = active
+                            && word.start <= this.playback.position
+                            && this.playback.position < word.end;
+                        let label = format!("第 {} 个词，从这里播放", j + 1);
+                        let mut token = div()
+                            .id(("blind-audio-word", i * 100000 + j))
+                            .cursor_pointer()
+                            .rounded_sm()
+                            .px_1()
+                            .py_1()
+                            .text_size(px(this.audio_font_size as f32))
+                            .bg(if current {
+                                cx.theme().accent
+                            } else {
+                                cx.theme().border
+                            })
+                            .hover(|v| v.bg(cx.theme().accent))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(label.clone()).build(window, cx)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.handle(
+                                    Action::AudioBlindRow(
+                                        audio_id.clone(),
+                                        source_cue.clone(),
+                                        Some(j),
+                                    ),
+                                    window,
+                                    cx,
+                                );
+                            }));
+                        if show_original {
+                            token = token.child(word.text);
+                        } else {
+                            token = token
+                                .w(px((word.text.chars().count() as f32
+                                    * this.audio_font_size as f32
+                                    * 0.55
+                                    + 8.)
+                                    .clamp(24., 280.)))
+                                .h(px(this.audio_font_size as f32 + 12.));
+                        }
+                        word_line = word_line.child(token);
+                    }
+                    let mut content = div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .py_1()
+                        .child(word_line)
+                        .when(no_words, |v| {
+                            v.child(
+                                div()
+                                    .w(px(180.))
+                                    .h(px(this.audio_font_size as f32 + 4.))
+                                    .rounded_sm()
+                                    .bg(cx.theme().border),
+                            )
+                        });
+                    if let Some(revealed) = revealed {
+                        let chinese = if this.audio_blind_chinese {
+                            blind_listening::chinese_hint(&revealed.cue.text)
+                        } else {
+                            subtitles::languages(std::slice::from_ref(&revealed.cue)).1
+                        };
+                        if !chinese.is_empty() || this.audio_blind_chinese {
+                            content = content.child(
+                                div()
+                                    .text_size(px((this.audio_font_size as f32 - 2.).max(12.)))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .whitespace_normal()
+                                    .child(if chinese.is_empty() {
+                                        "本句暂无中文".into()
+                                    } else {
+                                        chinese
+                                    }),
+                            );
+                        }
+                    } else {
+                        content = content.child(
+                            div()
+                                .w_full()
+                                .max_w(px(380.))
+                                .h(px((this.audio_font_size as f32 - 2.).max(12.)))
+                                .rounded_sm()
+                                .bg(cx.theme().border),
+                        );
+                    }
+                    let clicked_audio = this.current_audio.clone();
+                    let clicked_cue = cue.clone();
+                    let reveal_audio = this.current_audio.clone();
+                    let reveal_cue = cue.clone();
+                    return div()
+                        .id(("blind-audio-cue", i))
+                        .cursor_pointer()
+                        .hover(|v| v.bg(cx.theme().accent))
+                        .tooltip(|window, cx| {
+                            Tooltip::new("左键播放，右键查看／收起这句").build(window, cx)
+                        })
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                let is_revealed = reveal_audio == this.current_audio
+                                    && this.audio_blind.revealed.as_ref().is_some_and(|r| {
+                                        r.cue.start == reveal_cue.start
+                                            && r.cue.end == reveal_cue.end
+                                            && r.cue.text == reveal_cue.text
+                                    });
+                                this.handle(
+                                    if is_revealed {
+                                        Action::AudioBlindHide
+                                    } else {
+                                        Action::AudioBlindRevealCue(
+                                            reveal_audio.clone(),
+                                            reveal_cue.clone(),
+                                        )
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.handle(
+                                Action::AudioBlindRow(
+                                    clicked_audio.clone(),
+                                    clicked_cue.clone(),
+                                    None,
+                                ),
+                                window,
+                                cx,
+                            );
+                        }))
+                        .w_full()
+                        .flex()
+                        .gap_3()
+                        .px_5()
+                        .py_3()
+                        .border_l_2()
+                        .border_color(if active {
+                            cx.theme().primary
+                        } else {
+                            cx.theme().background
+                        })
+                        .when(active, |v| v.bg(cx.theme().accent))
+                        .child(
+                            div()
+                                .w(px(40.))
+                                .flex_shrink_0()
+                                .pt_1()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(clock(cue.start)),
+                        )
+                        .child(div().flex_1().min_w_0().child(content))
+                        .child(
+                            this.button(
+                                format!("blind-row-reveal-{i}"),
+                                if revealed.is_some() {
+                                    "收起"
+                                } else {
+                                    "查看"
+                                },
+                                if revealed.is_some() {
+                                    Action::AudioBlindHide
+                                } else {
+                                    Action::AudioBlindRevealCue(
+                                        this.current_audio.clone(),
+                                        cue.clone(),
+                                    )
+                                },
+                                cx,
+                            )
+                            .ghost()
+                            .disabled(this.busy.is_some() || this.audio_blind_pending.is_some()),
+                        )
+                        .into_any_element();
+                }
                 let (_, translation) = subtitles::languages(std::slice::from_ref(cue));
                 let mut line = div().flex().flex_wrap().gap_x_1().gap_y_1().items_center();
                 for (j, word) in subtitles::words(cue).into_iter().enumerate() {
@@ -4113,37 +4837,44 @@ impl AppView {
         .flex_1()
         .min_h_0()
         .w_full();
-        let reading = div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .when(self.audio_show_current && active.is_some(), |v| {
-                v.child(
-                    div()
-                        .px_5()
-                        .py_3()
-                        .bg(cx.theme().accent)
-                        .text_size(px(self.audio_font_size as f32))
-                        .child(self.cues[active.unwrap()].text.clone()),
+        let reading = {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .when(
+                    !self.audio_blind.enabled && self.audio_show_current && active.is_some(),
+                    |v| {
+                        v.child(
+                            div()
+                                .px_5()
+                                .py_3()
+                                .bg(cx.theme().accent)
+                                .text_size(px(self.audio_font_size as f32))
+                                .child(self.cues[active.unwrap()].text.clone()),
+                        )
+                    },
                 )
-            })
-            .when(self.cues.is_empty(), |v| {
-                v.child(
-                    div()
-                        .flex_1()
-                        .p_8()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(if available {
-                            "在右上角“字幕”菜单导入字幕或生成原文，开始逐句学习。"
-                        } else {
-                            "选择练习组和音频后开始学习，也可前往“管理音频”导入材料。"
-                        }),
-                )
-            })
-            .when(!self.cues.is_empty(), |v| v.child(transcript));
+                .when(self.cues.is_empty(), |v| {
+                    v.child(
+                        div()
+                            .flex_1()
+                            .p_8()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if available {
+                                "在右上角“字幕”菜单导入字幕或生成原文，开始逐句学习。"
+                            } else {
+                                "选择练习组和音频后开始学习，也可前往“管理音频”导入材料。"
+                            }),
+                    )
+                })
+                .when(!self.cues.is_empty(), |v| v.child(transcript))
+                .when(self.audio_blind.enabled, |v| v.child(self.blind_panel(cx)))
+                .into_any_element()
+        };
         let valid = self.loop_a.zip(self.loop_b).is_some_and(|(a, b)| b > a);
         let rates = [0.6, 0.7, 0.8, 1., 1.2, 1.25, 1.5, 2.]
             .into_iter()
@@ -4256,7 +4987,7 @@ impl AppView {
                     .child(
                         self.button(
                             "audio-clip-mode",
-                            if self.audio_clip_mode {
+                            if self.audio_clip_mode && !self.audio_blind.enabled {
                                 "截取片段 ✓"
                             } else {
                                 "截取片段"
@@ -4265,7 +4996,7 @@ impl AppView {
                             cx,
                         )
                         .selected(self.audio_clip_mode)
-                        .disabled(!available),
+                        .disabled(!available || self.audio_blind.enabled),
                     )
                     .child(
                         self.button(
@@ -4283,7 +5014,9 @@ impl AppView {
                             cx,
                         )
                         .ghost()
-                        .disabled(self.busy.is_some() || self.cues.is_empty()),
+                        .disabled(
+                            self.busy.is_some() || self.cues.is_empty() || self.audio_blind.enabled,
+                        ),
                     )
                     .child(self.player_icon(
                         "audio-mute",
@@ -4294,7 +5027,7 @@ impl AppView {
                     ))
                     .child(self.player_volume(cx)),
             );
-        if self.audio_clip_mode {
+        if self.audio_clip_mode && !self.audio_blind.enabled {
             footer = footer.child(
                 div()
                     .flex()
@@ -6663,6 +7396,21 @@ impl Render for AppView {
             .on_action(
                 cx.listener(|this, _: &AskAi, window, cx| this.handle(Action::Chat, window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ToggleBlindListening, window, cx| {
+                this.handle(Action::AudioBlind(!this.audio_blind.enabled), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RevealBlindSentence, window, cx| {
+                this.handle(Action::AudioBlindReveal, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ResumeBlindListening, window, cx| {
+                this.handle(Action::AudioBlindResume(false), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RestartBlindListening, window, cx| {
+                this.handle(Action::AudioBlindResume(true), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ViewAudioTranscript, window, cx| {
+                this.handle(Action::AudioBlind(false), window, cx);
+            }))
             .on_action(cx.listener(|this, _: &NewChat, window, cx| {
                 if this.page == "video" {
                     this.handle(Action::VideoPanel(2), window, cx);
@@ -6711,6 +7459,29 @@ impl Render for AppView {
                     return;
                 }
                 if window.focused(cx) == Some(this.focus.clone()) {
+                    if this.page == "listening"
+                        && this.audio_blind.enabled
+                        && !event.keystroke.modifiers.alt
+                        && !event.keystroke.modifiers.shift
+                    {
+                        let action = match event.keystroke.key.as_str() {
+                            "r" => Some(Action::AudioBlindSentence(0)),
+                            "up" => Some(Action::AudioBlindSentence(-1)),
+                            "down" => Some(Action::AudioBlindSentence(1)),
+                            "h" => Some(if this.audio_blind.revealed.is_some() {
+                                Action::AudioBlindHide
+                            } else {
+                                Action::AudioBlindReveal
+                            }),
+                            "c" => Some(Action::AudioBlindResume(false)),
+                            _ => None,
+                        };
+                        if let Some(action) = action {
+                            this.handle(action, window, cx);
+                            cx.stop_propagation();
+                            return;
+                        }
+                    }
                     match event.keystroke.key.as_str() {
                         "space" => this.handle(
                             if ["flashcard", "discover"].contains(&this.page.as_str()) {
@@ -7028,6 +7799,16 @@ fn main() -> Result<()> {
                         MenuItem::action("下一项", Forward),
                         MenuItem::action("放大 PDF", PdfZoomIn),
                         MenuItem::action("缩小 PDF", PdfZoomOut),
+                    ],
+                },
+                Menu {
+                    name: "听力".into(),
+                    items: vec![
+                        MenuItem::action("切换字幕 / 盲听", ToggleBlindListening),
+                        MenuItem::action("看刚才一句", RevealBlindSentence),
+                        MenuItem::action("继续盲听", ResumeBlindListening),
+                        MenuItem::action("从头再听", RestartBlindListening),
+                        MenuItem::action("查看全文（暂停）", ViewAudioTranscript),
                     ],
                 },
                 Menu {
