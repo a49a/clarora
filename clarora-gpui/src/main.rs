@@ -124,6 +124,7 @@ enum Action {
     VideoRepeatCue,
     VideoSentence(bool),
     VideoPlayCue(usize),
+    VideoCopySubtitle(Option<usize>),
     LoopMode(usize),
     Mute,
     Subtitle(i64, bool),
@@ -144,6 +145,8 @@ enum Action {
     VideoTranscribe,
     VideoAsk(video_qa::Scope),
     VideoFollow,
+    VideoPanel(usize),
+    VideoTools,
     VideoSubtitleExport,
     Translate,
     Record,
@@ -243,7 +246,11 @@ struct AppView {
     video_caption_source: VideoCaptionSource,
     video_material: Option<video_qa::Material>,
     video_material_error: String,
-    video_scroll: UniformListScrollHandle,
+    video_scroll: ListState,
+    video_tab: usize,
+    video_tools_open: bool,
+    video_panel_width: f32,
+    video_resize: Option<(Pixels, f32)>,
     parts_scroll: UniformListScrollHandle,
     video_active: Option<usize>,
     video_follow: bool,
@@ -389,7 +396,11 @@ impl AppView {
             video_caption_source: VideoCaptionSource::Transcript,
             video_material: None,
             video_material_error: String::new(),
-            video_scroll: UniformListScrollHandle::new(),
+            video_scroll: ListState::new(0, ListAlignment::Top, px(200.)),
+            video_tab: 0,
+            video_tools_open: false,
+            video_panel_width: 360.,
+            video_resize: None,
             parts_scroll: UniformListScrollHandle::new(),
             video_active: None,
             video_follow: true,
@@ -816,7 +827,7 @@ impl AppView {
                 self.video_active = active;
                 if self.video_follow {
                     if let Some(i) = active {
-                        self.video_scroll.scroll_to_item(i, ScrollStrategy::Center);
+                        self.video_scroll.scroll_to_reveal_item(i);
                     }
                 }
             }
@@ -887,6 +898,9 @@ impl AppView {
                                     ScrollStrategy::Center,
                                 );
                                 self.video_series = Some(series);
+                                if self.page == "video" {
+                                    self.video_tab = 1;
+                                }
                             }
                             Ok(Outcome::PartVideo(mut series, index, path, new_file, origin)) => {
                                 if cancelled {
@@ -924,6 +938,8 @@ impl AppView {
                                     && self.current_path.as_ref() == Some(&video)
                                 {
                                     self.video_cues = cues;
+                                    self.video_scroll.reset(self.video_cues.len());
+                                    self.video_tab = 0;
                                     self.video_caption_source = VideoCaptionSource::Transcript;
                                     self.video_material = None;
                                     self.video_material_error.clear();
@@ -1186,7 +1202,8 @@ impl AppView {
             }
         };
         self.video_active = None;
-        self.video_scroll = UniformListScrollHandle::new();
+        self.video_scroll.reset(self.video_cues.len());
+        self.video_tab = 0;
     }
 
     fn open_audio(&mut self, row: &Row) {
@@ -1794,6 +1811,13 @@ impl AppView {
                     self.navigation_open = open;
                     self.navigation_motion = Some((Instant::now(), from));
                 }
+                Action::Assistant if self.page == "video" => {
+                    self.handle(
+                        Action::VideoPanel(if self.video_tab == 2 { 0 } else { 2 }),
+                        window,
+                        cx,
+                    );
+                }
                 Action::Assistant => {
                     self.assistant_open = !self.assistant_open;
                     if self.assistant_open {
@@ -2238,7 +2262,7 @@ impl AppView {
                     if scope != video_qa::Scope::All {
                         self.player.set("pause", "yes");
                     }
-                    self.assistant_open = true;
+                    self.video_tab = 2;
                     self.sync_chat(window, cx);
                     self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
                     self.status = "已引用字幕；输入问题后发送给设置中的聊天模型".into();
@@ -2254,13 +2278,49 @@ impl AppView {
                         },
                     );
                 }
+                Action::VideoTools => self.video_tools_open = !self.video_tools_open,
+                Action::VideoPanel(tab) => {
+                    ensure!(tab < 3, "无效学习面板");
+                    self.video_tab = tab;
+                    if tab == 2 {
+                        if self.video_material.is_none() {
+                            let _ = self.prepare_video_material(video_qa::Scope::All);
+                        }
+                        self.sync_chat(window, cx);
+                        self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
+                    } else {
+                        window.focus(&self.focus);
+                    }
+                }
                 Action::VideoFollow => {
                     self.video_follow = !self.video_follow;
                     if self.video_follow {
                         if let Some(i) = self.video_active {
-                            self.video_scroll.scroll_to_item(i, ScrollStrategy::Center);
+                            self.video_scroll.scroll_to_reveal_item(i);
                         }
                     }
+                }
+                Action::VideoCopySubtitle(index) => {
+                    let body = match index {
+                        Some(index) => self
+                            .video_cues
+                            .get(index)
+                            .context("字幕已改变，请重试")?
+                            .text
+                            .clone(),
+                        None => self
+                            .video_cues
+                            .iter()
+                            .map(|cue| cue.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    };
+                    ensure!(!body.trim().is_empty(), "没有可复制的字幕");
+                    cx.write_to_clipboard(ClipboardItem::new_string(body));
+                    self.status = match index {
+                        Some(index) => format!("已复制第 {} 句字幕", index + 1),
+                        None => format!("已复制全部 {} 句字幕", self.video_cues.len()),
+                    };
                 }
                 Action::VideoSubtitleExport => {
                     ensure!(!self.video_cues.is_empty(), "请先生成字幕");
@@ -2622,6 +2682,9 @@ impl AppView {
             .bg(cx.theme().background)
             .border_l_1()
             .border_color(cx.theme().border)
+            .when(self.page == "video", |v| {
+                v.w_full().max_w(relative(1.)).border_l_0().p_3().gap_2()
+            })
             .child(
                 div()
                     .flex()
@@ -2834,7 +2897,7 @@ impl AppView {
             .label(label)
             .small()
             .on_click(cx.listener(move |this, _, window, cx| {
-                if matches!(action, Action::VideoAsk(_)) {
+                if matches!(action, Action::VideoAsk(_) | Action::VideoCopySubtitle(_)) {
                     cx.stop_propagation();
                 }
                 this.handle(action.clone(), window, cx)
@@ -3275,17 +3338,35 @@ impl AppView {
                 )
             })
             .collect();
-        let loops = [("关闭循环", 0), ("单集循环", 1), ("A–B 片段循环", 2)]
+        let mut options = [14, 16, 20, 24, 28, 32]
             .into_iter()
-            .map(|(label, mode)| {
+            .map(|size| {
                 (
-                    label.into(),
-                    Action::LoopMode(mode),
-                    self.repeat == mode,
-                    mode == 2 && !valid_loop,
+                    format!("字幕 {size}px"),
+                    Action::VideoSubtitleSize(size),
+                    self.video_subtitle_size == size,
+                    false,
                 )
             })
-            .collect();
+            .collect::<Vec<_>>();
+        options.extend(
+            [("关闭循环", 0), ("单集循环", 1), ("A–B 片段循环", 2)]
+                .into_iter()
+                .map(|(label, mode)| {
+                    (
+                        label.into(),
+                        Action::LoopMode(mode),
+                        self.repeat == mode,
+                        mode == 2 && !valid_loop,
+                    )
+                }),
+        );
+        options.push((
+            "A–B 精听工具".into(),
+            Action::VideoPrecision,
+            self.video_precision,
+            false,
+        ));
         div()
             .flex_shrink_0()
             .px_4()
@@ -3343,27 +3424,6 @@ impl AppView {
                         clock(self.playback.duration)
                     )))
                     .child(div().flex_1())
-                    .child(
-                        self.player_menu(
-                            "video-subtitle-size",
-                            format!("字幕 {}px ▾", self.video_subtitle_size),
-                            [14, 16, 20, 24, 28, 32]
-                                .into_iter()
-                                .map(|size| {
-                                    (
-                                        format!(
-                                            "{size}px{}",
-                                            if size == 16 { "（默认）" } else { "" }
-                                        ),
-                                        Action::VideoSubtitleSize(size),
-                                        self.video_subtitle_size == size,
-                                        false,
-                                    )
-                                })
-                                .collect(),
-                            cx,
-                        ),
-                    )
                     .child(self.player_menu("video-speed", format!("{}× ▾", self.rate), rates, cx))
                     .child(
                         div()
@@ -3379,41 +3439,19 @@ impl AppView {
                             ))
                             .child(self.player_volume(cx)),
                     )
-                    .child(self.player_menu(
-                        "video-loop",
-                        format!("{} ▾", ["循环", "单集循环", "A–B 循环"][self.repeat.min(2)]),
-                        loops,
-                        cx,
-                    ))
-                    .child(self.transport_button(
-                        "video-precision",
-                        if self.video_precision {
-                            "收起精听 ▴"
-                        } else {
-                            "A–B 精听 ▾"
-                        },
-                        Action::VideoPrecision,
-                        cx,
-                    ))
+                    .child(self.player_menu("video-options", "设置 ▾".into(), options, cx))
                     .child(
-                        self.transport_button(
+                        self.player_icon(
                             "video-fullscreen-toggle",
                             if self.video_fullscreen {
-                                "退出全屏"
+                                "fullscreen-exit"
                             } else {
-                                "全屏"
+                                "fullscreen"
                             },
+                            "全屏 / 退出全屏 · F11；双击画面也可全屏",
                             Action::VideoFullscreen,
                             cx,
                         )
-                        .icon(
-                            Icon::new(IconName::ChevronDown).path(if self.video_fullscreen {
-                                "ui/fullscreen-exit.svg"
-                            } else {
-                                "ui/fullscreen.svg"
-                            }),
-                        )
-                        .tooltip("全屏 / 退出全屏 · F11；也可双击画面")
                         .disabled(self.current_path.is_none()),
                     ),
             )
@@ -4050,8 +4088,23 @@ impl AppView {
                             .text_color(cx.theme().muted_foreground)
                             .child("自动识别分P；点击选集，未下载的集数会先下载再播放。"),
                     );
+                let available = (f32::from(window.viewport_size().width)
+                    - if self.navigation_open { 224. } else { 0. }
+                    - 32.)
+                    .max(300.);
+                let stacked = available < 780.;
+                let side_width = self
+                    .video_panel_width
+                    .clamp(300., (available * 0.48).max(300.));
+                let picture_height = if stacked {
+                    (available * 9. / 16.).clamp(220., 360.)
+                } else {
+                    ((available - side_width - 12.) * 9. / 16.).clamp(260., 410.)
+                };
+                let board_height = picture_height + 114.;
                 let mut stage = div()
                     .flex_1()
+                    .when(stacked, |v| v.w_full().flex_none())
                     .min_w_0()
                     .flex()
                     .flex_col()
@@ -4083,270 +4136,504 @@ impl AppView {
                                     .as_ref()
                                     .and_then(|s| s.current.map(|i| (i, s.parts.len()))),
                                 |v, (i, count)| {
-                                    v.child(div().text_xs().child(format!(
-                                        "P{} / {}",
-                                        i + 1,
-                                        count
-                                    )))
+                                    v.child(self.button(
+                                        "player-parts",
+                                        format!("P{} / {} ▾", i + 1, count),
+                                        Action::VideoPanel(1),
+                                        cx,
+                                    ))
+                                    .child(
+                                        self.button(
+                                            "player-prev-part",
+                                            "‹",
+                                            Action::SelectPart(i.saturating_sub(1)),
+                                            cx,
+                                        )
+                                        .tooltip("上一 P")
+                                        .disabled(self.busy.is_some() || i == 0),
+                                    )
                                     .child(
                                         self.button(
                                             "player-next-part",
-                                            "下一P",
+                                            "›",
                                             Action::SelectPart(i + 1),
                                             cx,
                                         )
+                                        .tooltip("下一 P")
                                         .disabled(self.busy.is_some() || i + 1 >= count),
                                     )
                                 },
                             )
                             .child(self.button(
-                                "open-video",
-                                "打开视频",
-                                Action::Pick("video".into()),
+                                "video-more",
+                                if self.video_tools_open {
+                                    "收起更多 ▴"
+                                } else {
+                                    "更多 ▾"
+                                },
+                                Action::VideoTools,
                                 cx,
                             )),
                     );
-                stage = stage.child(self.video_picture(Some(px(300.)), cx));
+                stage = stage.child(self.video_picture(Some(px(picture_height)), cx));
                 stage = stage.child(self.transport(cx));
-                let transcript = uniform_list(
-                    "video-transcript",
-                    self.video_cues.len(),
-                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                        range
-                            .map(|i| {
-                                let cue = &this.video_cues[i];
+                let count = self.video_series.as_ref().map_or(0, |s| s.parts.len());
+                let tabs = div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .p_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .children(
+                        [
+                            (0, format!("字幕 · {}", self.video_cues.len())),
+                            (1, format!("选集 · {count}")),
+                            (2, "AI 提问".into()),
+                        ]
+                        .into_iter()
+                        .map(|(tab, label)| {
+                            self.button(
+                                format!("video-tab-{tab}"),
+                                label,
+                                Action::VideoPanel(tab),
+                                cx,
+                            )
+                            .selected(self.video_tab == tab)
+                            .flex_1()
+                        }),
+                    );
+                let mut study = div()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .rounded_2xl()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .when(stacked, |v| v.w_full().h(px(480.)))
+                    .when(!stacked, |v| {
+                        v.w(px(side_width)).h(px(board_height)).flex_shrink_0()
+                    })
+                    .child(tabs);
+                match self.video_tab {
+                    0 => {
+                        let transcript = list(
+                            self.video_scroll.clone(),
+                            cx.processor(|this, i: usize, _, cx| {
+                                let Some(cue) = this.video_cues.get(i) else {
+                                    return div().into_any_element();
+                                };
                                 let active = Some(i)
                                     == video_subtitles::active(
                                         &this.video_cues,
                                         this.playback.position,
                                     );
-                                let start = cue.start;
                                 div()
                                     .id(("video-cue", i))
                                     .w_full()
-                                    .overflow_hidden()
-                                    .h(px(76.))
                                     .px_3()
                                     .py_2()
                                     .flex()
-                                    .gap_3()
-                                    .rounded_lg()
+                                    .gap_2()
                                     .cursor_pointer()
+                                    .border_l_2()
+                                    .border_color(if active {
+                                        cx.theme().primary
+                                    } else {
+                                        cx.theme().background
+                                    })
                                     .bg(if active {
                                         cx.theme().accent
                                     } else {
                                         cx.theme().background
                                     })
-                                    .text_color(if active {
-                                        cx.theme().accent_foreground
-                                    } else {
-                                        cx.theme().foreground
-                                    })
                                     .child(
                                         div()
-                                            .w(px(54.))
+                                            .w(px(38.))
                                             .flex_shrink_0()
+                                            .pt_1()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
-                                            .child(clock(start)),
+                                            .child(clock(cue.start)),
                                     )
                                     .child(
                                         div()
                                             .flex_1()
                                             .min_w_0()
-                                            .text_sm()
-                                            .whitespace_normal()
-                                            .line_clamp(3)
-                                            .child(cue.text.clone()),
-                                    )
-                                    .child(
-                                        this.button(
-                                            format!("video-cue-ask-{i}"),
-                                            "问 AI",
-                                            Action::VideoAsk(video_qa::Scope::Cue(i)),
-                                            cx,
-                                        )
-                                        .disabled(this.chat_running)
-                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                            cx.stop_propagation()
-                                        }),
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .whitespace_normal()
+                                                    .child(cue.text.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .gap_2()
+                                                    .child(
+                                                        this.button(
+                                                            format!("video-cue-copy-{i}"),
+                                                            "复制",
+                                                            Action::VideoCopySubtitle(Some(i)),
+                                                            cx,
+                                                        )
+                                                        .ghost()
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            |_, _, cx| cx.stop_propagation(),
+                                                        ),
+                                                    )
+                                                    .child(
+                                                        this.button(
+                                                            format!("video-cue-ask-{i}"),
+                                                            "问 AI",
+                                                            Action::VideoAsk(video_qa::Scope::Cue(
+                                                                i,
+                                                            )),
+                                                            cx,
+                                                        )
+                                                        .ghost()
+                                                        .disabled(this.chat_running)
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            |_, _, cx| cx.stop_propagation(),
+                                                        ),
+                                                    ),
+                                            ),
                                     )
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.handle(Action::VideoPlayCue(i), window, cx)
                                     }))
-                            })
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::FitList)
-                .track_scroll(self.video_scroll.clone())
-                .h(px(300.))
-                .w_full();
-                let transcript_panel=panel(cx).w(relative(0.43)).max_w(px(430.)).min_w(px(240.)).flex_shrink_0()
-                    .child(div().flex().items_center().gap_2().flex_wrap()
-                        .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(format!("同步字幕 · {} 句",self.video_cues.len())))
-                        .child(self.button("video-transcribe","生成视频字幕",Action::VideoTranscribe,cx).primary().disabled(self.busy.is_some()||self.current_path.is_none()))
-                        .child(self.button("video-ask-current","问当前句",Action::VideoAsk(video_qa::Scope::Current),cx).disabled(self.chat_running))
-                        .child(self.button("video-ask-all","问整段字幕",Action::VideoAsk(video_qa::Scope::All),cx).disabled(self.chat_running||self.video_cues.is_empty()))
-                        .child(self.button("video-follow",if self.video_follow{"跟随播放 ✓"}else{"跟随播放"},Action::VideoFollow,cx))
-                        .child(self.button("video-export-srt","导出 SRT",Action::VideoSubtitleExport,cx).disabled(self.video_cues.is_empty())))
-                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("按设置中的本地或远端转写模型生成时间轴；点击字幕即从该句开始播放，滚动浏览时可关闭跟随。"))
-                    .when(self.video_cues.is_empty(),|v|v.child(div().p_5().text_color(cx.theme().muted_foreground).child("导入视频后，点击“生成视频字幕”。生成结果会自动保存。")))
-                    .when(!self.video_cues.is_empty(),|v|v.child(transcript));
+                                    .into_any_element()
+                            }),
+                        )
+                        .flex_1()
+                        .min_h_0()
+                        .w_full();
+                        study = study.child(div().px_3().py_2().flex().items_center().gap_1().flex_wrap()
+                            .child(self.button("video-follow", if self.video_follow { "跟随 ✓" } else { "跟随" }, Action::VideoFollow, cx).ghost())
+                            .child(div().flex_1())
+                            .child(self.button("video-copy-all", "复制全部", Action::VideoCopySubtitle(None), cx).ghost().disabled(self.video_cues.is_empty()))
+                            .child(self.button("video-transcribe", if self.video_cues.is_empty() { "生成字幕" } else { "重新生成" }, Action::VideoTranscribe, cx)
+                                .disabled(self.busy.is_some() || self.current_path.is_none())))
+                            .when(self.video_cues.is_empty(), |v| v.child(div().p_5().text_sm().text_color(cx.theme().muted_foreground)
+                                .child("生成或导入字幕后，点击句子即可播放。复制与 AI 提问位于每句下方。")))
+                            .when(!self.video_cues.is_empty(), |v| v.child(transcript));
+                    }
+                    1 => {
+                        if let Some(series) = &self.video_series {
+                            let current = series.current;
+                            let parts = uniform_list(
+                                "bilibili-parts",
+                                count,
+                                cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                                    range
+                                        .map(|i| {
+                                            let series = this.video_series.as_ref().unwrap();
+                                            let part = &series.parts[i];
+                                            let playing = series.current == Some(i)
+                                                && part.path.as_ref() == this.current_path.as_ref();
+                                            div()
+                                                .id(("bili-part", i))
+                                                .h(px(64.))
+                                                .w_full()
+                                                .px_3()
+                                                .py_2()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .cursor_pointer()
+                                                .bg(if playing {
+                                                    cx.theme().accent
+                                                } else {
+                                                    cx.theme().background
+                                                })
+                                                .child(
+                                                    div()
+                                                        .w(px(32.))
+                                                        .flex_shrink_0()
+                                                        .text_sm()
+                                                        .text_color(cx.theme().primary)
+                                                        .child(format!("P{}", part.number)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .gap_1()
+                                                        .child(
+                                                            div()
+                                                                .text_sm()
+                                                                .truncate()
+                                                                .child(part.title.clone()),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_xs()
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child(format!(
+                                                                    "{} · {}",
+                                                                    clock(part.duration),
+                                                                    if playing {
+                                                                        "正在播放"
+                                                                    } else if series
+                                                                        .cached(i)
+                                                                        .is_some()
+                                                                    {
+                                                                        "已下载"
+                                                                    } else {
+                                                                        "点击下载并播放"
+                                                                    }
+                                                                )),
+                                                        ),
+                                                )
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        if this.busy.is_none() {
+                                                            this.handle(
+                                                                Action::SelectPart(i),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    },
+                                                ))
+                                                .into_any_element()
+                                        })
+                                        .collect::<Vec<_>>()
+                                }),
+                            )
+                            .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::FitList)
+                            .track_scroll(self.parts_scroll.clone())
+                            .size_full()
+                            .pr_3();
+                            study = study
+                                .child(
+                                    div()
+                                        .px_3()
+                                        .py_2()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .flex_wrap()
+                                        .child(
+                                            self.button(
+                                                "previous-part",
+                                                "上一P",
+                                                Action::SelectPart(
+                                                    current.unwrap_or(0).saturating_sub(1),
+                                                ),
+                                                cx,
+                                            )
+                                            .disabled(
+                                                self.busy.is_some()
+                                                    || current.is_none_or(|i| i == 0),
+                                            ),
+                                        )
+                                        .child(
+                                            self.button(
+                                                "next-part",
+                                                "下一P",
+                                                Action::SelectPart(current.unwrap_or(0) + 1),
+                                                cx,
+                                            )
+                                            .disabled(
+                                                self.busy.is_some()
+                                                    || current.is_none_or(|i| i + 1 >= count),
+                                            ),
+                                        )
+                                        .child(
+                                            self.button(
+                                                "auto-next-part",
+                                                if self.auto_next_part {
+                                                    "自动连播 ✓"
+                                                } else {
+                                                    "自动连播"
+                                                },
+                                                Action::AutoNextPart,
+                                                cx,
+                                            )
+                                            .ghost(),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("bilibili-parts-viewport")
+                                        .relative()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .overflow_hidden()
+                                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                                        .child(parts)
+                                        .child(
+                                            Scrollbar::vertical(&self.parts_scroll)
+                                                .scrollbar_show(ScrollbarShow::Always),
+                                        ),
+                                );
+                        } else {
+                            study = study
+                                .child(
+                                    div()
+                                        .p_5()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("从 bilibili 导入或读取分P后，在这里选择集数。"),
+                                )
+                                .child(self.button(
+                                    "show-import",
+                                    "导入视频",
+                                    Action::VideoTools,
+                                    cx,
+                                ));
+                        }
+                    }
+                    _ => study = study.child(self.assistant_view(window, cx)),
+                }
+                let divider = div()
+                    .id("video-panel-resize")
+                    .w(px(12.))
+                    .h(px(board_height))
+                    .flex_shrink_0()
+                    .cursor(CursorStyle::ResizeLeftRight)
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(3.))
+                            .h(px(40.))
+                            .rounded_full()
+                            .bg(cx.theme().border),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                            this.video_resize = Some((event.position.x, side_width));
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, _| this.video_resize = None),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, _| this.video_resize = None),
+                    );
                 content = content.child(
                     div()
                         .flex()
-                        .gap_4()
                         .items_start()
+                        .when(stacked, |v| v.flex_col().gap_3())
                         .child(stage)
-                        .child(transcript_panel),
+                        .when(!stacked, |v| v.child(divider))
+                        .child(study),
                 );
-                if let Some(series) = &self.video_series {
-                    let count = series.parts.len();
-                    let current = series.current;
-                    let list = uniform_list(
-                        "bilibili-parts",
-                        count,
-                        cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                            range
-                                .map(|i| {
-                                    let series = this.video_series.as_ref().unwrap();
-                                    let part = &series.parts[i];
-                                    let playing = series.current == Some(i)
-                                        && part.path.as_ref() == this.current_path.as_ref();
-                                    this.button(
-                                        format!("bili-part-{i}"),
-                                        format!(
-                                            "{} P{} · {} · {}{}",
-                                            if playing { "▶" } else { "" },
-                                            part.number,
-                                            part.title,
-                                            clock(part.duration),
-                                            if series.cached(i).is_some() {
-                                                " · 已下载"
-                                            } else {
-                                                ""
-                                            }
-                                        ),
-                                        Action::SelectPart(i),
-                                        cx,
-                                    )
-                                    .selected(playing)
-                                    .disabled(this.busy.is_some())
-                                    .w_full()
-                                    .h(px(40.))
-                                    .into_any_element()
-                                })
-                                .collect::<Vec<_>>()
-                        }),
-                    )
-                    .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::FitList)
-                    .track_scroll(self.parts_scroll.clone())
-                    .when(count > 5, |list| list.pr_4())
-                    .size_full();
-                    let list = div()
-                        .id("bilibili-parts-viewport")
-                        .relative()
-                        .w_full()
-                        .h(px((count.min(5) * 40) as f32))
-                        .flex_shrink_0()
-                        .overflow_hidden()
-                        // Children process the wheel first during bubbling. Keep the
-                        // surrounding page still, including at the list boundaries.
-                        .when(count > 5, |view| {
-                            view.on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                        })
-                        .child(list)
-                        .when(count > 5, |view| {
-                            view.child(
-                                Scrollbar::vertical(&self.parts_scroll)
-                                    .scrollbar_show(ScrollbarShow::Always),
-                            )
-                        });
-                    content=content.child(panel(cx)
-                        .child(div().flex().gap_2().items_center().flex_wrap()
-                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(format!("视频选集 · 共 {count} P")))
-                            .child(self.button("previous-part","上一P",Action::SelectPart(current.unwrap_or(0).saturating_sub(1)),cx).disabled(self.busy.is_some()||current.is_none_or(|i|i==0)))
-                            .child(self.button("next-part","下一P",Action::SelectPart(current.unwrap_or(0)+1),cx).disabled(self.busy.is_some()||current.is_none_or(|i|i+1>=count)))
-                            .child(self.button("auto-next-part",if self.auto_next_part{"自动下一P ✓"}else{"自动下一P：关"},Action::AutoNextPart,cx)))
-                        .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("{} · 点击选集播放；单集 / A-B 循环优先，最后一集播完停止。",series.base)))
-                        .child(list));
-                }
-                content = content.child(download_panel);
-                let mut tracks = div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child("字幕轨道 · 主字幕 / 第二字幕")
-                    .child(self.button(
-                        "video-external-sub",
-                        "加载外部字幕",
-                        Action::Pick("video-subtitle".into()),
-                        cx,
-                    ))
-                    .child(
+                if self.video_tools_open || self.current_path.is_none() {
+                    content = content.child(
                         div()
                             .flex()
+                            .items_center()
                             .gap_2()
                             .child(self.button(
-                                "sub-off",
-                                "关闭主字幕",
-                                Action::Subtitle(0, false),
+                                "open-video",
+                                "打开本地视频",
+                                Action::Pick("video".into()),
                                 cx,
                             ))
-                            .child(self.button(
-                                "secondary-off",
-                                "关闭第二字幕",
-                                Action::Subtitle(0, true),
-                                cx,
-                            )),
+                            .child(
+                                self.button(
+                                    "video-export-srt",
+                                    "导出 SRT",
+                                    Action::VideoSubtitleExport,
+                                    cx,
+                                )
+                                .disabled(self.video_cues.is_empty()),
+                            ),
                     );
-                for track in &self.playback.tracks {
-                    if track["type"] == "sub" {
-                        let key = track["id"].as_i64().unwrap_or(0);
-                        let label = track["title"]
-                            .as_str()
-                            .or(track["lang"].as_str())
-                            .unwrap_or("字幕");
-                        tracks = tracks.child(
+                    content = content.child(download_panel);
+                    let mut tracks = div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child("字幕轨道 · 主字幕 / 第二字幕")
+                        .child(self.button(
+                            "video-external-sub",
+                            "加载外部字幕",
+                            Action::Pick("video-subtitle".into()),
+                            cx,
+                        ))
+                        .child(
                             div()
                                 .flex()
                                 .gap_2()
                                 .child(self.button(
-                                    format!("sub-{key}"),
-                                    format!("主：{label}"),
-                                    Action::Subtitle(key, false),
+                                    "sub-off",
+                                    "关闭主字幕",
+                                    Action::Subtitle(0, false),
                                     cx,
                                 ))
                                 .child(self.button(
-                                    format!("secondary-{key}"),
-                                    format!("副：{label}"),
-                                    Action::Subtitle(key, true),
+                                    "secondary-off",
+                                    "关闭第二字幕",
+                                    Action::Subtitle(0, true),
                                     cx,
                                 )),
                         );
+                    for track in &self.playback.tracks {
+                        if track["type"] == "sub" {
+                            let key = track["id"].as_i64().unwrap_or(0);
+                            let label = track["title"]
+                                .as_str()
+                                .or(track["lang"].as_str())
+                                .unwrap_or("字幕");
+                            tracks = tracks.child(
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(self.button(
+                                        format!("sub-{key}"),
+                                        format!("主：{label}"),
+                                        Action::Subtitle(key, false),
+                                        cx,
+                                    ))
+                                    .child(self.button(
+                                        format!("secondary-{key}"),
+                                        format!("副：{label}"),
+                                        Action::Subtitle(key, true),
+                                        cx,
+                                    )),
+                            );
+                        }
                     }
+                    content = content
+                        .child(tracks)
+                        .child(self.field("front", "片段原文"))
+                        .child(self.field("back", "片段翻译"));
+                    let mut recent = panel(cx).child("最近打开");
+                    for (i, path) in self.recents.iter().enumerate() {
+                        recent = recent.child(
+                            self.button(
+                                format!("recent-{i}"),
+                                PathBuf::from(path)
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string(),
+                                Action::Open(path.into()),
+                                cx,
+                            ),
+                        );
+                    }
+                    content = content.child(recent);
                 }
-                content = content
-                    .child(tracks)
-                    .child(self.field("front", "片段原文"))
-                    .child(self.field("back", "片段翻译"));
-                let mut recent = panel(cx).child("最近打开");
-                for (i, path) in self.recents.iter().enumerate() {
-                    recent = recent.child(
-                        self.button(
-                            format!("recent-{i}"),
-                            PathBuf::from(path)
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string(),
-                            Action::Open(path.into()),
-                            cx,
-                        ),
-                    );
-                }
-                content = content.child(recent);
             }
             "library" => {
                 content = content.child(
@@ -5396,7 +5683,7 @@ impl Render for AppView {
             }
         }
         let content = self.content(window, cx);
-        let assistant = if self.assistant_open {
+        let assistant = if self.assistant_open && self.page != "video" {
             Some(self.assistant_view(window, cx))
         } else {
             None
@@ -5572,6 +5859,21 @@ impl Render for AppView {
             .id("app")
             .track_focus(&self.focus)
             .key_context("Clarora")
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                if let Some((start, width)) = this.video_resize {
+                    if event.dragging() {
+                        let available = (f32::from(window.viewport_size().width)
+                            - if this.navigation_open { 224. } else { 0. }
+                            - 32.)
+                            .max(300.);
+                        this.video_panel_width = (width - f32::from(event.position.x - start))
+                            .clamp(300., (available * 0.48).max(300.));
+                        cx.notify();
+                    } else {
+                        this.video_resize = None;
+                    }
+                }
+            }))
             .on_action(cx.listener(|this, _: &OpenFile, _, cx| {
                 let kind = match this.page.as_str() {
                     "pdf" => "pdf",
@@ -5702,7 +6004,11 @@ impl Render for AppView {
                 cx.listener(|this, _: &AskAi, window, cx| this.handle(Action::Chat, window, cx)),
             )
             .on_action(cx.listener(|this, _: &NewChat, window, cx| {
-                this.assistant_open = true;
+                if this.page == "video" {
+                    this.handle(Action::VideoPanel(2), window, cx);
+                } else {
+                    this.assistant_open = true;
+                }
                 this.handle(Action::ChatSession(String::new()), window, cx);
             }))
             .on_action(cx.listener(|this, _: &Forward, window, cx| {
@@ -5807,6 +6113,7 @@ impl Render for AppView {
                         div()
                             .px_8()
                             .py_6()
+                            .when(self.page == "video", |v| v.py_3())
                             .border_b_1()
                             .border_color(cx.theme().border)
                             .bg(design::canvas(cx))
@@ -5900,6 +6207,7 @@ impl Render for AppView {
                             .overflow_y_scroll()
                             .when(self.page == "pdf", |view| view.overflow_x_scroll())
                             .p_8()
+                            .when(self.page == "video", |v| v.p_4())
                             .child(content),
                     )
                     .child(
