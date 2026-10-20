@@ -22,6 +22,7 @@ use gpui_component::{
     progress::Progress,
     scroll::{Scrollbar, ScrollbarShow},
     text::TextView,
+    tooltip::Tooltip,
 };
 use serde_json::{Value, json};
 use std::{
@@ -90,6 +91,13 @@ enum Action {
     Open(PathBuf),
     Audio(String),
     Practice(String),
+    AudioPractice(String),
+    AudioClipMode,
+    AudioTools,
+    AudioFont(u8),
+    AudioCurrent,
+    AudioFollow,
+    AudioRepeat(usize),
     CreatePractice,
     Delete(String, String),
     Rename(String, String),
@@ -263,6 +271,13 @@ struct AppView {
     video_volume_dragging: bool,
     volume_before_mute: f64,
     cues: Vec<Cue>,
+    audio_scroll: ListState,
+    audio_active: Option<usize>,
+    audio_follow: bool,
+    audio_clip_mode: bool,
+    audio_tools_open: bool,
+    audio_show_current: bool,
+    audio_font_size: u8,
     key_points: Vec<ai::KeyPoint>,
     recents: Vec<String>,
     loop_a: Option<f64>,
@@ -413,6 +428,13 @@ impl AppView {
             video_volume_dragging: false,
             volume_before_mute: 100.,
             cues: vec![],
+            audio_scroll: ListState::new(0, ListAlignment::Top, px(120.)),
+            audio_active: None,
+            audio_follow: true,
+            audio_clip_mode: false,
+            audio_tools_open: false,
+            audio_show_current: true,
+            audio_font_size: 18,
             key_points: vec![],
             recents: vec![],
             loop_a: None,
@@ -466,6 +488,13 @@ impl AppView {
             .and_then(|value| value.parse::<u8>().ok())
             .filter(|size| [14, 16, 20, 24, 28, 32].contains(size))
             .unwrap_or(16);
+        this.audio_font_size = this
+            .lib
+            .setting("subtitle_font_size")
+            .ok()
+            .and_then(|v| v.parse::<u8>().ok())
+            .filter(|n| [14, 16, 18, 20, 24, 28, 32].contains(n))
+            .unwrap_or(18);
         this.auto_next_part = this.lib.setting("video_auto_next").ok().as_deref() != Some("false");
         if let Some(series) = &this.video_series {
             let base = series.base.clone();
@@ -744,6 +773,8 @@ impl AppView {
                 .ok()
                 .map(|body| subtitles::parse(&body))
                 .unwrap_or_default();
+            self.audio_scroll.reset(self.cues.len());
+            self.audio_active = None;
         }
     }
     fn segment(&mut self, row: &Row, cues: &[Cue]) {
@@ -821,6 +852,17 @@ impl AppView {
         let old_pause = self.playback.paused;
         let old_frame = self.playback.frame.clone();
         self.playback = self.player.snapshot();
+        if self.page == "listening" {
+            let active = video_subtitles::active(&self.cues, self.playback.position);
+            if active != self.audio_active {
+                self.audio_active = active;
+                if self.audio_follow {
+                    if let Some(i) = active {
+                        self.audio_scroll.scroll_to_reveal_item(i);
+                    }
+                }
+            }
+        }
         if self.page == "video" {
             let active = video_subtitles::active(&self.video_cues, self.playback.position);
             if active != self.video_active {
@@ -1227,6 +1269,13 @@ impl AppView {
             .ok()
             .map(|s| subtitles::parse(&s))
             .unwrap_or_default();
+        self.audio_scroll.reset(self.cues.len());
+        self.audio_active = None;
+        self.audio_clip_mode = false;
+        self.audio_tools_open = false;
+        if self.repeat == 2 {
+            self.repeat = 0;
+        }
         self.loop_a = None;
         self.loop_b = None;
     }
@@ -1589,6 +1638,8 @@ impl AppView {
                             .ok()
                             .map(|s| subtitles::parse(&s))
                             .unwrap_or_default();
+                        self.audio_scroll.reset(self.cues.len());
+                        self.audio_active = None;
                     }
                 }
                 Action::Pick(kind) => {
@@ -1624,6 +1675,74 @@ impl AppView {
                     self.lib.set_setting("last_page", "listening")?;
                 }
                 Action::Practice(key) => self.practice_id = key,
+                Action::AudioPractice(key) => {
+                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    self.practice_id = key;
+                    if let Some(row) = self
+                        .audios
+                        .iter()
+                        .find(|r| text(r, "practice_id") == self.practice_id)
+                        .cloned()
+                    {
+                        self.open_audio(&row);
+                    } else {
+                        self.player.set("pause", "yes");
+                        self.current_audio.clear();
+                        self.current_path = None;
+                        self.cues.clear();
+                        self.audio_scroll.reset(0);
+                        self.audio_active = None;
+                        self.waveform = None;
+                        self.key_points.clear();
+                        if let Some(cancel) = self.waveform_cancel.take() {
+                            cancel.store(true, Ordering::SeqCst);
+                        }
+                        self.waveform_rx = None;
+                        self.lib.set_setting("last_listening_audio", "")?;
+                        if self.repeat == 2 {
+                            self.repeat = 0;
+                        }
+                        self.loop_a = None;
+                        self.loop_b = None;
+                    }
+                }
+                Action::AudioClipMode => {
+                    self.audio_clip_mode = !self.audio_clip_mode;
+                    if !self.audio_clip_mode {
+                        self.loop_a = None;
+                        self.loop_b = None;
+                        if self.repeat == 2 {
+                            self.repeat = 0;
+                        }
+                    }
+                }
+                Action::AudioTools => self.audio_tools_open = !self.audio_tools_open,
+                Action::AudioCurrent => self.audio_show_current = !self.audio_show_current,
+                Action::AudioFollow => {
+                    self.audio_follow = !self.audio_follow;
+                    if self.audio_follow {
+                        if let Some(i) = self.audio_active {
+                            self.audio_scroll.scroll_to_reveal_item(i);
+                        }
+                    }
+                }
+                Action::AudioFont(size) => {
+                    ensure!([14, 16, 18, 20, 24, 28, 32].contains(&size), "无效字幕字号");
+                    self.audio_font_size = size;
+                    self.lib
+                        .set_setting("subtitle_font_size", &size.to_string())?;
+                    self.audio_scroll.reset(self.cues.len());
+                }
+                Action::AudioRepeat(mode) => {
+                    ensure!(mode <= 4, "无效循环方式");
+                    if mode == 2 {
+                        ensure!(
+                            self.loop_a.zip(self.loop_b).is_some_and(|(a, b)| b > a),
+                            "先截取有效片段"
+                        );
+                    }
+                    self.repeat = mode;
+                }
                 Action::CreatePractice => {
                     self.practice_id = self.lib.practice(&self.value("group", cx))?;
                     self.refresh();
@@ -1752,35 +1871,45 @@ impl AppView {
                         .command(["seek".into(), delta.to_string(), "relative+exact".into()])
                 }
                 Action::Word(start, end, word, extend) => {
-                    let start = if extend {
-                        self.loop_a.unwrap_or(start).min(start)
+                    if !self.audio_clip_mode {
+                        self.player.command([
+                            "seek".into(),
+                            start.to_string(),
+                            "absolute+exact".into(),
+                        ]);
+                        self.player.set("pause", "no");
                     } else {
-                        start
-                    };
-                    let end = if extend {
-                        self.loop_b.unwrap_or(end).max(end)
-                    } else {
-                        end
-                    };
-                    self.loop_a = Some(start);
-                    self.loop_b = Some(end);
-                    self.repeat = 2;
-                    let (front, back) = subtitles::excerpt(&self.cues, start, end);
-                    self.set(
-                        "front",
-                        if front.is_empty() { word } else { front },
-                        window,
-                        cx,
-                    );
-                    self.set("back", back, window, cx);
-                    self.player.command([
-                        "seek".into(),
-                        start.to_string(),
-                        "absolute+exact".into(),
-                    ]);
-                    self.player.set("pause", "no");
-                    self.status =
-                        "已选中词语，可调整 A/B 边界、保存片段或询问 AI；时间按字幕长度估算".into();
+                        let start = if extend {
+                            self.loop_a.unwrap_or(start).min(start)
+                        } else {
+                            start
+                        };
+                        let end = if extend {
+                            self.loop_b.unwrap_or(end).max(end)
+                        } else {
+                            end
+                        };
+                        self.loop_a = Some(start);
+                        self.loop_b = Some(end);
+                        self.repeat = 2;
+                        let (front, back) = subtitles::excerpt(&self.cues, start, end);
+                        self.set(
+                            "front",
+                            if front.is_empty() { word } else { front },
+                            window,
+                            cx,
+                        );
+                        self.set("back", back, window, cx);
+                        self.player.command([
+                            "seek".into(),
+                            start.to_string(),
+                            "absolute+exact".into(),
+                        ]);
+                        self.player.set("pause", "no");
+                        self.status =
+                            "已选中词语，可调整 A/B 边界、保存片段或询问 AI；时间按字幕长度估算"
+                                .into();
+                    }
                 }
                 Action::Boundary(time, start) => {
                     let time = time.clamp(0., self.playback.duration.max(time));
@@ -1971,10 +2100,10 @@ impl AppView {
                     self.player.set("volume", self.volume);
                 }
                 Action::Mark(start) => {
-                    if self.page == "video" {
+                    if self.page == "video" || self.page == "listening" {
                         ensure!(
                             self.current_path.is_some() && self.playback.duration > 0.,
-                            "请先打开可播放的视频"
+                            "请先打开可播放的媒体"
                         );
                         if start {
                             self.loop_a = Some(self.playback.position);
@@ -2000,6 +2129,11 @@ impl AppView {
                     if let (Some(a), Some(b)) = (self.loop_a, self.loop_b) {
                         ensure!(b > a, "B 点必须晚于 A 点");
                         self.repeat = 2;
+                        if self.page == "listening" {
+                            let (front, back) = subtitles::excerpt(&self.cues, a, b);
+                            self.set("front", front, window, cx);
+                            self.set("back", back, window, cx);
+                        }
                     }
                 }
                 Action::Repeat => {
@@ -2813,42 +2947,141 @@ impl AppView {
         let b = self.loop_b;
         let bounds_cell = self.waveform_bounds.clone();
         let color = cx.theme().primary;
-        panel(cx).child("真实音频波形 · 点击/拖动定位；拖动 A/B 标记调整范围；Shift 点击设置 A，Alt 点击设置 B")
-            .child(div().id("audio-waveform").w_full().h(px(100.)).cursor_pointer()
-                .child(canvas(move |bounds,_,_| bounds_cell.set(bounds),move |bounds,_,window,_| {
-                    let width = f32::from(bounds.size.width);
-                    let height = f32::from(bounds.size.height);
-                    if let (Some(a),Some(b)) = (a,b) {
-                        window.paint_quad(fill(Bounds::new(point(bounds.left()+px((a/duration) as f32*width),bounds.top()),size(px(((b-a)/duration) as f32*width),bounds.size.height)),rgba(0x36a58022)));
-                    }
-                    let step = width/peaks.len().max(1) as f32;
-                    for (i,peak) in peaks.iter().enumerate() {
-                        let h = (peak*height*0.8).max(1.);
-                        window.paint_quad(fill(Bounds::new(point(bounds.left()+px(i as f32*step),bounds.top()+px((height-h)/2.)),size(px(step.max(1.)*0.7),px(h))),color));
-                    }
-                    for (time,color) in [(Some(position),rgb(0xe87240)),(a,rgb(0x2a9465)),(b,rgb(0x3b70be))] {
-                        if let Some(time) = time { window.paint_quad(fill(Bounds::new(point(bounds.left()+px((time/duration).clamp(0.,1.) as f32*width),bounds.top()),size(px(2.),bounds.size.height)),color)); }
-                    }
-                }).size_full())
-                .on_mouse_down(MouseButton::Left,cx.listener(|this,event:&MouseDownEvent,window,cx| {
-                    let bounds = this.waveform_bounds.get();
-                    if bounds.size.width <= px(0.) { return; }
-                    let duration = this.waveform.as_ref().map(|w|w.duration).unwrap_or(0.);
-                    let time = ((event.position.x-bounds.left())/bounds.size.width).clamp(0.,1.) as f64*duration;
-                    let threshold = duration*8./f64::from(f32::from(bounds.size.width));
-                    this.waveform_drag = if event.modifiers.shift {Some(true)} else if event.modifiers.alt {Some(false)} else if this.loop_a.is_some_and(|a|(a-time).abs()<threshold) {Some(true)} else if this.loop_b.is_some_and(|b|(b-time).abs()<threshold) {Some(false)} else {None};
-                    this.handle(if let Some(start)=this.waveform_drag {Action::Boundary(time,start)}else{Action::SeekTo(time)},window,cx);
-                }))
-                .on_mouse_move(cx.listener(|this,event:&MouseMoveEvent,window,cx| {
-                    if !event.dragging() {return;}
-                    let bounds = this.waveform_bounds.get();
-                    if bounds.size.width <= px(0.) {return;}
-                    let duration = this.waveform.as_ref().map(|w|w.duration).unwrap_or(0.);
-                    let time = ((event.position.x-bounds.left())/bounds.size.width).clamp(0.,1.) as f64*duration;
-                    this.handle(if let Some(start)=this.waveform_drag {Action::Boundary(time,start)}else{Action::SeekTo(time)},window,cx);
-                }))
-                .on_mouse_up(MouseButton::Left,cx.listener(|this,_,_,_|this.waveform_drag=None))
-                .on_mouse_up_out(MouseButton::Left,cx.listener(|this,_,_,_|this.waveform_drag=None)))
+        div()
+            .w_full()
+            .child(
+                div()
+                    .id("audio-waveform")
+                    .w_full()
+                    .h(px(48.))
+                    .cursor_pointer()
+                    .child(
+                        canvas(
+                            move |bounds, _, _| bounds_cell.set(bounds),
+                            move |bounds, _, window, _| {
+                                let width = f32::from(bounds.size.width);
+                                let height = f32::from(bounds.size.height);
+                                if let (Some(a), Some(b)) = (a, b) {
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(
+                                                bounds.left() + px((a / duration) as f32 * width),
+                                                bounds.top(),
+                                            ),
+                                            size(
+                                                px(((b - a) / duration) as f32 * width),
+                                                bounds.size.height,
+                                            ),
+                                        ),
+                                        rgba(0x36a58022),
+                                    ));
+                                }
+                                let step = width / peaks.len().max(1) as f32;
+                                for (i, peak) in peaks.iter().enumerate() {
+                                    let h = (peak * height * 0.8).max(1.);
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(
+                                                bounds.left() + px(i as f32 * step),
+                                                bounds.top() + px((height - h) / 2.),
+                                            ),
+                                            size(px(step.max(1.) * 0.7), px(h)),
+                                        ),
+                                        color,
+                                    ));
+                                }
+                                for (time, color) in [
+                                    (Some(position), rgb(0xe87240)),
+                                    (a, rgb(0x2a9465)),
+                                    (b, rgb(0x3b70be)),
+                                ] {
+                                    if let Some(time) = time {
+                                        window.paint_quad(fill(
+                                            Bounds::new(
+                                                point(
+                                                    bounds.left()
+                                                        + px((time / duration).clamp(0., 1.)
+                                                            as f32
+                                                            * width),
+                                                    bounds.top(),
+                                                ),
+                                                size(px(2.), bounds.size.height),
+                                            ),
+                                            color,
+                                        ));
+                                    }
+                                }
+                            },
+                        )
+                        .size_full(),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            let bounds = this.waveform_bounds.get();
+                            if bounds.size.width <= px(0.) {
+                                return;
+                            }
+                            let duration = this.waveform.as_ref().map(|w| w.duration).unwrap_or(0.);
+                            let time = ((event.position.x - bounds.left()) / bounds.size.width)
+                                .clamp(0., 1.) as f64
+                                * duration;
+                            let threshold = duration * 8. / f64::from(f32::from(bounds.size.width));
+                            this.waveform_drag = if !this.audio_clip_mode {
+                                None
+                            } else if event.modifiers.shift {
+                                Some(true)
+                            } else if event.modifiers.alt {
+                                Some(false)
+                            } else if this.loop_a.is_some_and(|a| (a - time).abs() < threshold) {
+                                Some(true)
+                            } else if this.loop_b.is_some_and(|b| (b - time).abs() < threshold) {
+                                Some(false)
+                            } else {
+                                None
+                            };
+                            this.handle(
+                                if let Some(start) = this.waveform_drag {
+                                    Action::Boundary(time, start)
+                                } else {
+                                    Action::SeekTo(time)
+                                },
+                                window,
+                                cx,
+                            );
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                        if !event.dragging() {
+                            return;
+                        }
+                        let bounds = this.waveform_bounds.get();
+                        if bounds.size.width <= px(0.) {
+                            return;
+                        }
+                        let duration = this.waveform.as_ref().map(|w| w.duration).unwrap_or(0.);
+                        let time = ((event.position.x - bounds.left()) / bounds.size.width)
+                            .clamp(0., 1.) as f64
+                            * duration;
+                        this.handle(
+                            if let Some(start) = this.waveform_drag {
+                                Action::Boundary(time, start)
+                            } else {
+                                Action::SeekTo(time)
+                            },
+                            window,
+                            cx,
+                        );
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, _| this.waveform_drag = None),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, _| this.waveform_drag = None),
+                    ),
+            )
             .into_any_element()
     }
     fn reference(&self, cx: &App) -> String {
@@ -2923,8 +3156,16 @@ impl AppView {
         };
         let loop_range = self.loop_a.zip(self.loop_b).filter(|(a, b)| b > a);
         let markers = [self.loop_a, self.loop_b];
-        let color: Hsla = rgb(0x7dd8b5).into();
-        let background: Hsla = rgb(0x345045).into();
+        let color: Hsla = if self.page == "listening" {
+            cx.theme().primary
+        } else {
+            rgb(0x7dd8b5).into()
+        };
+        let background: Hsla = if self.page == "listening" {
+            cx.theme().border
+        } else {
+            rgb(0x345045).into()
+        };
         div()
             .id("video-timeline")
             .w_full()
@@ -3052,9 +3293,21 @@ impl AppView {
             .h(px(32.))
             .custom(
                 ButtonCustomVariant::new(cx)
-                    .foreground(rgb(0xe8f0eb).into())
-                    .hover(rgb(0x303c38).into())
-                    .active(rgb(0x41554b).into()),
+                    .foreground(if self.page == "listening" {
+                        cx.theme().foreground
+                    } else {
+                        rgb(0xe8f0eb).into()
+                    })
+                    .hover(if self.page == "listening" {
+                        cx.theme().accent
+                    } else {
+                        rgb(0x303c38).into()
+                    })
+                    .active(if self.page == "listening" {
+                        cx.theme().accent
+                    } else {
+                        rgb(0x41554b).into()
+                    }),
             )
             .on_click(
                 cx.listener(move |this, _, window, cx| this.handle(action.clone(), window, cx)),
@@ -3074,9 +3327,21 @@ impl AppView {
             .small()
             .custom(
                 ButtonCustomVariant::new(cx)
-                    .foreground(rgb(0xe8f0eb).into())
-                    .hover(rgb(0x303c38).into())
-                    .active(rgb(0x41554b).into()),
+                    .foreground(if self.page == "listening" {
+                        cx.theme().foreground
+                    } else {
+                        rgb(0xe8f0eb).into()
+                    })
+                    .hover(if self.page == "listening" {
+                        cx.theme().accent
+                    } else {
+                        rgb(0x303c38).into()
+                    })
+                    .active(if self.page == "listening" {
+                        cx.theme().accent
+                    } else {
+                        rgb(0x41554b).into()
+                    }),
             )
             .dropdown_menu_with_anchor(Corner::BottomRight, move |mut menu, _, _| {
                 for (label, action, checked, disabled) in options.clone() {
@@ -3568,6 +3833,554 @@ impl AppView {
                         ),
                 )
             })
+            .into_any_element()
+    }
+    fn audio_study(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let group = self
+            .practices
+            .iter()
+            .find(|r| text(r, "id") == self.practice_id)
+            .map(|r| text(r, "name"))
+            .unwrap_or_else(|| "选择练习组".into());
+        let audios = self
+            .audios
+            .iter()
+            .filter(|r| text(r, "practice_id") == self.practice_id)
+            .collect::<Vec<_>>();
+        let index = audios
+            .iter()
+            .position(|r| text(r, "id") == self.current_audio);
+        let title = index
+            .map(|i| text(audios[i], "name"))
+            .unwrap_or_else(|| "选择音频".into());
+        let group_options = self
+            .practices
+            .iter()
+            .map(|r| {
+                let key = text(r, "id");
+                (
+                    text(r, "name"),
+                    Action::AudioPractice(key.clone()),
+                    key == self.practice_id,
+                    self.busy.is_some(),
+                )
+            })
+            .collect();
+        let audio_options = audios
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                (
+                    format!("{}  {}", i + 1, text(r, "name")),
+                    Action::Audio(text(r, "id")),
+                    Some(i) == index,
+                    self.busy.is_some(),
+                )
+            })
+            .collect();
+        let previous = index
+            .and_then(|i| i.checked_sub(1))
+            .map(|i| text(audios[i], "id"));
+        let next = index
+            .filter(|i| i + 1 < audios.len())
+            .map(|i| text(audios[i + 1], "id"));
+        let page = index
+            .map(|i| format!("{} / {}", i + 1, audios.len()))
+            .unwrap_or_else(|| format!("0 / {}", audios.len()));
+        let available = !self.current_audio.is_empty();
+        let mut subtitle_options = vec![
+            (
+                "导入英文字幕".into(),
+                Action::SubtitleImport(false),
+                false,
+                !available || self.busy.is_some(),
+            ),
+            (
+                "导入中文字幕".into(),
+                Action::SubtitleImport(true),
+                false,
+                !available || self.busy.is_some(),
+            ),
+            (
+                "生成原文字幕".into(),
+                Action::Transcribe,
+                false,
+                !available || self.busy.is_some(),
+            ),
+            (
+                "生成中文字幕".into(),
+                Action::Translate,
+                false,
+                self.cues.is_empty() || self.busy.is_some(),
+            ),
+            ("刷新字幕".into(), Action::Refresh, false, !available),
+            (
+                "单独显示当前句".into(),
+                Action::AudioCurrent,
+                self.audio_show_current,
+                false,
+            ),
+        ];
+        subtitle_options.extend([14, 16, 18, 20, 24, 28, 32].into_iter().map(|n| {
+            (
+                format!("字幕 {n}px"),
+                Action::AudioFont(n),
+                self.audio_font_size == n,
+                false,
+            )
+        }));
+        let header = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .flex_wrap()
+            .px_4()
+            .py_3()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(self.player_menu(
+                "audio-practice-picker",
+                format!("{} ▾", group.chars().take(20).collect::<String>()),
+                group_options,
+                cx,
+            ))
+            .child(self.player_menu(
+                "audio-picker",
+                format!("{} ▾", title.chars().take(24).collect::<String>()),
+                audio_options,
+                cx,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(page),
+            )
+            .child(
+                self.button(
+                    "audio-previous",
+                    "‹",
+                    Action::Audio(previous.clone().unwrap_or_default()),
+                    cx,
+                )
+                .disabled(previous.is_none() || self.busy.is_some()),
+            )
+            .child(
+                self.button(
+                    "audio-next",
+                    "›",
+                    Action::Audio(next.clone().unwrap_or_default()),
+                    cx,
+                )
+                .disabled(next.is_none() || self.busy.is_some()),
+            )
+            .child(div().flex_1())
+            .child(
+                self.button(
+                    "audio-follow",
+                    if self.audio_follow {
+                        "跟随 ✓"
+                    } else {
+                        "跟随"
+                    },
+                    Action::AudioFollow,
+                    cx,
+                )
+                .ghost(),
+            )
+            .child(self.player_menu(
+                "audio-subtitle-options",
+                "字幕 ▾".into(),
+                subtitle_options,
+                cx,
+            ))
+            .child(
+                self.button(
+                    "audio-manage",
+                    "管理音频",
+                    Action::Page("library".into()),
+                    cx,
+                )
+                .ghost(),
+            );
+        let active = video_subtitles::active(&self.cues, self.playback.position);
+        let transcript = list(
+            self.audio_scroll.clone(),
+            cx.processor(|this, i: usize, _, cx| {
+                let Some(cue) = this.cues.get(i) else {
+                    return div().into_any_element();
+                };
+                let active = video_subtitles::active(&this.cues, this.playback.position) == Some(i);
+                let (_, translation) = subtitles::languages(std::slice::from_ref(cue));
+                let mut line = div().flex().flex_wrap().gap_x_1().gap_y_1().items_center();
+                for (j, word) in subtitles::words(cue).into_iter().enumerate() {
+                    let current = active
+                        && word.start <= this.playback.position
+                        && this.playback.position < word.end;
+                    let marked = this.key_points.iter().find(|p| {
+                        p.text.split_whitespace().any(|w| {
+                            w.trim_matches(|c: char| !c.is_alphanumeric())
+                                .eq_ignore_ascii_case(
+                                    word.text.trim_matches(|c: char| !c.is_alphanumeric()),
+                                )
+                        })
+                    });
+                    let tip = marked.map(|p| format!("{} · {}", p.text, p.translation));
+                    let selected = this.audio_clip_mode
+                        && this
+                            .loop_a
+                            .zip(this.loop_b)
+                            .is_some_and(|(a, b)| word.start < b && word.end > a);
+                    line = line.child(
+                        div()
+                            .id(("audio-word", i * 100000 + j))
+                            .text_size(px(this.audio_font_size as f32))
+                            .px_0p5()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .text_color(if current {
+                                cx.theme().primary
+                            } else {
+                                cx.theme().foreground
+                            })
+                            .when(current || selected, |v| v.bg(cx.theme().accent))
+                            .when(marked.is_some(), |v| {
+                                v.border_b_2().border_color(rgb(0xd8a947))
+                            })
+                            .when_some(tip, |v, tip| {
+                                v.tooltip(move |window, cx| {
+                                    Tooltip::new(tip.clone()).build(window, cx)
+                                })
+                            })
+                            .hover(|v| v.bg(cx.theme().accent))
+                            .child(word.text.clone())
+                            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                this.handle(
+                                    Action::Word(
+                                        word.start,
+                                        word.end,
+                                        word.text.clone(),
+                                        event.modifiers().shift,
+                                    ),
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    );
+                }
+                div()
+                    .id(("audio-cue", i))
+                    .w_full()
+                    .flex()
+                    .gap_3()
+                    .px_5()
+                    .py_3()
+                    .border_l_2()
+                    .border_color(if active {
+                        cx.theme().primary
+                    } else {
+                        cx.theme().background
+                    })
+                    .child(
+                        div()
+                            .w(px(40.))
+                            .flex_shrink_0()
+                            .pt_1()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(clock(cue.start)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(line)
+                            .when(!translation.is_empty(), |v| {
+                                v.child(
+                                    div()
+                                        .text_size(px((this.audio_font_size as f32 - 2.).max(12.)))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(translation),
+                                )
+                            }),
+                    )
+                    .into_any_element()
+            }),
+        )
+        .flex_1()
+        .min_h_0()
+        .w_full();
+        let reading = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .when(self.audio_show_current && active.is_some(), |v| {
+                v.child(
+                    div()
+                        .px_5()
+                        .py_3()
+                        .bg(cx.theme().accent)
+                        .text_size(px(self.audio_font_size as f32))
+                        .child(self.cues[active.unwrap()].text.clone()),
+                )
+            })
+            .when(self.cues.is_empty(), |v| {
+                v.child(
+                    div()
+                        .flex_1()
+                        .p_8()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(if available {
+                            "在右上角“字幕”菜单导入字幕或生成原文，开始逐句学习。"
+                        } else {
+                            "选择练习组和音频后开始学习，也可前往“管理音频”导入材料。"
+                        }),
+                )
+            })
+            .when(!self.cues.is_empty(), |v| v.child(transcript));
+        let valid = self.loop_a.zip(self.loop_b).is_some_and(|(a, b)| b > a);
+        let rates = [0.6, 0.7, 0.8, 1., 1.2, 1.25, 1.5, 2.]
+            .into_iter()
+            .map(|r| {
+                (
+                    format!("{r}×"),
+                    Action::Rate(r),
+                    (self.rate - r).abs() < 0.001,
+                    false,
+                )
+            })
+            .collect();
+        let repeat = ["不循环", "单曲循环", "A–B 循环", "组循环", "单次连播"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, n)| {
+                (
+                    n.into(),
+                    Action::AudioRepeat(i),
+                    self.repeat == i,
+                    i == 2 && !valid,
+                )
+            })
+            .collect();
+        let mut footer = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_4()
+            .py_3()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().muted)
+            .flex_shrink_0()
+            .when(available, |v| {
+                v.child(self.waveform_view(cx))
+                    .child(self.video_timeline(cx))
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        self.player_icon(
+                            "audio-back10",
+                            "rewind",
+                            "后退 10 秒",
+                            Action::Seek(-10.),
+                            cx,
+                        )
+                        .disabled(!available),
+                    )
+                    .child(
+                        self.player_icon(
+                            "audio-play",
+                            "play",
+                            if self.playback.paused {
+                                "播放 · 空格"
+                            } else {
+                                "暂停 · 空格"
+                            },
+                            Action::Play,
+                            cx,
+                        )
+                        .icon(
+                            Icon::new(IconName::ChevronDown).path(if self.playback.paused {
+                                "ui/play.svg"
+                            } else {
+                                "ui/pause.svg"
+                            }),
+                        )
+                        .w(px(40.))
+                        .h(px(40.))
+                        .rounded_full()
+                        .primary()
+                        .disabled(!available),
+                    )
+                    .child(
+                        self.player_icon(
+                            "audio-forward10",
+                            "forward",
+                            "前进 10 秒",
+                            Action::Seek(10.),
+                            cx,
+                        )
+                        .disabled(!available),
+                    )
+                    .child(div().text_xs().child(if available {
+                        format!(
+                            "{} / {}",
+                            clock(self.playback.position),
+                            clock(self.playback.duration)
+                        )
+                    } else {
+                        "00:00 / 00:00".into()
+                    }))
+                    .child(self.player_menu("audio-speed", format!("{}× ▾", self.rate), rates, cx))
+                    .child(div().flex_1())
+                    .child(self.player_menu(
+                        "audio-repeat",
+                        format!(
+                            "{} ▾",
+                            ["不循环", "单曲循环", "A–B 循环", "组循环", "单次连播"][self.repeat]
+                        ),
+                        repeat,
+                        cx,
+                    ))
+                    .child(
+                        self.button(
+                            "audio-clip-mode",
+                            if self.audio_clip_mode {
+                                "截取片段 ✓"
+                            } else {
+                                "截取片段"
+                            },
+                            Action::AudioClipMode,
+                            cx,
+                        )
+                        .selected(self.audio_clip_mode)
+                        .disabled(!available),
+                    )
+                    .child(
+                        self.button(
+                            "audio-highlights",
+                            if self.key_points.is_empty() {
+                                "✦ 标重点"
+                            } else {
+                                "清除重点"
+                            },
+                            if self.key_points.is_empty() {
+                                Action::Highlight
+                            } else {
+                                Action::ClearHighlights
+                            },
+                            cx,
+                        )
+                        .ghost()
+                        .disabled(self.busy.is_some() || self.cues.is_empty()),
+                    )
+                    .child(self.player_icon(
+                        "audio-mute",
+                        if self.volume == 0. { "muted" } else { "volume" },
+                        "静音 / 恢复音量",
+                        Action::Mute,
+                        cx,
+                    ))
+                    .child(self.player_volume(cx)),
+            );
+        if self.audio_clip_mode {
+            footer = footer.child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .items_center()
+                    .flex_wrap()
+                    .child(self.button(
+                        "audio-mark-a",
+                        format!(
+                            "A {}",
+                            self.loop_a.map(clip_clock).unwrap_or_else(|| "起点".into())
+                        ),
+                        Action::Mark(true),
+                        cx,
+                    ))
+                    .child(self.button(
+                        "audio-mark-b",
+                        format!(
+                            "B {}",
+                            self.loop_b.map(clip_clock).unwrap_or_else(|| "终点".into())
+                        ),
+                        Action::Mark(false),
+                        cx,
+                    ))
+                    .child(
+                        self.button("audio-clear-ab", "清除", Action::VideoClearLoop, cx)
+                            .ghost(),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("点击单词选片段；Shift 点击扩展，拖动波形 A/B 调整"),
+                    )
+                    .child(self.button(
+                        "audio-clip-editor",
+                        if self.audio_tools_open {
+                            "收起编辑"
+                        } else {
+                            "编辑片段"
+                        },
+                        Action::AudioTools,
+                        cx,
+                    ))
+                    .child(
+                        self.button("audio-save-clip", "保存为闪卡", Action::Clip, cx)
+                            .primary()
+                            .disabled(!valid || self.busy.is_some()),
+                    ),
+            );
+            if self.audio_tools_open {
+                footer = footer.child(
+                    div()
+                        .flex()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(self.field("front", "片段原文")),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(self.field("back", "片段翻译")),
+                        ),
+                );
+            }
+        }
+        div()
+            .w_full()
+            .h(px(
+                (f32::from(window.viewport_size().height) - 206.).max(360.)
+            ))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .rounded_2xl()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .child(header)
+            .child(reading)
+            .child(footer)
             .into_any_element()
     }
     fn transport(&self, cx: &Context<Self>) -> AnyElement {
@@ -4760,160 +5573,7 @@ impl AppView {
                 }
             }
             "listening" => {
-                let mut rows = div().flex().gap_2().flex_wrap();
-                for row in self
-                    .audios
-                    .iter()
-                    .filter(|r| text(r, "practice_id") == self.practice_id)
-                {
-                    rows = rows.child(self.button(
-                        format!("select-audio-{}", text(row, "id")),
-                        text(row, "name"),
-                        Action::Audio(text(row, "id")),
-                        cx,
-                    ));
-                }
-                content = content
-                    .child(rows)
-                    .child(self.transport(cx))
-                    .child(self.waveform_view(cx));
-                content = content.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .flex_wrap()
-                        .child(self.button(
-                            "import-en",
-                            "导入英文字幕",
-                            Action::SubtitleImport(false),
-                            cx,
-                        ))
-                        .child(self.button(
-                            "import-zh",
-                            "导入中文字幕",
-                            Action::SubtitleImport(true),
-                            cx,
-                        ))
-                        .child(
-                            self.button("transcribe", "生成原文字幕", Action::Transcribe, cx)
-                                .disabled(self.busy.is_some()),
-                        )
-                        .child(
-                            self.button("translate", "生成中文字幕", Action::Translate, cx)
-                                .disabled(self.busy.is_some()),
-                        )
-                        .child(
-                            self.button("highlight", "AI 标重点", Action::Highlight, cx)
-                                .disabled(self.busy.is_some()),
-                        )
-                        .child(self.button("reload-subtitles", "刷新字幕", Action::Refresh, cx)),
-                );
-                if !self.key_points.is_empty() {
-                    let mut points = panel(cx).child(self.button(
-                        "clear-key-points",
-                        "清除 AI 重点",
-                        Action::ClearHighlights,
-                        cx,
-                    ));
-                    for point in &self.key_points {
-                        points = points.child(format!("{} · {}", point.text, point.translation));
-                    }
-                    content = content.child(points);
-                }
-                content = content
-                    .child("点击单词选择 A/B 片段；Shift 点击另一单词可扩展选区。词语时间为估算。");
-                let mut cues = div()
-                    .id("subtitle-list")
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .max_h(px(550.))
-                    .overflow_y_scroll();
-                for (i, cue) in self.cues.iter().enumerate() {
-                    let current =
-                        cue.start <= self.playback.position && self.playback.position < cue.end;
-                    cues = cues.child(
-                        div()
-                            .id(("cue", i))
-                            .p_3()
-                            .rounded_md()
-                            .bg(if current {
-                                cx.theme().accent
-                            } else {
-                                cx.theme().muted
-                            })
-                            .flex()
-                            .gap_3()
-                            .child(self.button(
-                                format!("seek-cue-{i}"),
-                                clock(cue.start),
-                                Action::SeekTo(cue.start),
-                                cx,
-                            ))
-                            .child({
-                                let mut words = div().flex_1().flex().flex_col().gap_2();
-                                let (_, translation) =
-                                    subtitles::languages(std::slice::from_ref(cue));
-                                let mut line = div().flex().gap_1().flex_wrap();
-                                for (j, word) in subtitles::words(cue).into_iter().enumerate() {
-                                    let active = self.playback.position >= word.start
-                                        && self.playback.position < word.end;
-                                    let marked =
-                                        self.key_points.iter().find(|p| {
-                                            p.text.split_whitespace().any(|w| {
-                                                w.trim_matches(|c: char| !c.is_alphanumeric())
-                                                    .eq_ignore_ascii_case(word.text.trim_matches(
-                                                        |c: char| !c.is_alphanumeric(),
-                                                    ))
-                                            })
-                                        });
-                                    let label = word.text.clone();
-                                    let mut button = Button::new(ElementId::Name(
-                                        format!("cue-{i}-word-{j}").into(),
-                                    ))
-                                    .label(label)
-                                    .on_click(cx.listener(
-                                        move |this, event: &ClickEvent, window, cx| {
-                                            this.handle(
-                                                Action::Word(
-                                                    word.start,
-                                                    word.end,
-                                                    word.text.clone(),
-                                                    event.modifiers().shift,
-                                                ),
-                                                window,
-                                                cx,
-                                            )
-                                        },
-                                    ));
-                                    if active {
-                                        button = button.primary();
-                                    } else if marked.is_some() {
-                                        button = button.warning();
-                                    }
-                                    if let Some(point) = marked {
-                                        button = button.tooltip(format!(
-                                            "{} · {}",
-                                            point.text, point.translation
-                                        ));
-                                    }
-                                    line = line.child(button);
-                                }
-                                words = words.child(line);
-                                if !translation.is_empty() {
-                                    words = words.child(translation);
-                                }
-                                words
-                            }),
-                    );
-                }
-                if self.cues.is_empty() {
-                    cues = cues.child("暂无字幕。选择音频后导入 SRT / VTT / TXT，或生成原文。");
-                }
-                content = content
-                    .child(cues)
-                    .child(self.field("front", "片段原文"))
-                    .child(self.field("back", "片段翻译"));
+                content = content.child(self.audio_study(window, cx));
             }
             "speaking" => {
                 content = content
@@ -6113,7 +6773,9 @@ impl Render for AppView {
                         div()
                             .px_8()
                             .py_6()
-                            .when(self.page == "video", |v| v.py_3())
+                            .when(self.page == "video" || self.page == "listening", |v| {
+                                v.py_3()
+                            })
                             .border_b_1()
                             .border_color(cx.theme().border)
                             .bg(design::canvas(cx))
@@ -6207,7 +6869,9 @@ impl Render for AppView {
                             .overflow_y_scroll()
                             .when(self.page == "pdf", |view| view.overflow_x_scroll())
                             .p_8()
-                            .when(self.page == "video", |v| v.p_4())
+                            .when(self.page == "video" || self.page == "listening", |v| {
+                                v.p_4()
+                            })
                             .child(content),
                     )
                     .child(
