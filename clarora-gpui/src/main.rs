@@ -1,8 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod design;
+mod library_ui;
 use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::{
-    ai, backup, bilibili, blind_listening,
+    ai, audio_library, backup, bilibili, blind_listening,
     data::{Card, Library, Row, id, now, text},
     documents,
     media::{Playback, Player},
@@ -112,9 +113,18 @@ enum Action {
     AudioFollow,
     AudioCopySubtitle(String, Option<Cue>),
     AudioRepeat(usize),
-    CreatePractice,
-    Delete(String, String),
-    Rename(String, String),
+    LibrarySelect(String),
+    LibraryTool(String),
+    LibrarySaveName,
+    LibraryFilter(u8),
+    LibrarySort(u8),
+    LibraryBatch,
+    LibrarySelectAll,
+    LibraryReset,
+    LibraryMove(String),
+    LibraryDelete(Vec<String>),
+    LibraryConfirmDelete,
+    LibraryStudy(bool),
     Flip,
     Next,
     Previous,
@@ -197,7 +207,6 @@ enum Action {
     TtsPlay,
     MergeAudios,
     CheckAudio(String),
-    BatchDelete,
     Suspend(bool),
     CommandImport,
     Refresh,
@@ -236,6 +245,7 @@ enum VideoCaptionSource {
 }
 struct AppView {
     lib: Library,
+    library: audio_library::State,
     tts_voice: i32,
     tts_speed: f32,
     tts_last: Option<Row>,
@@ -353,6 +363,9 @@ impl AppView {
         let mut inputs = BTreeMap::new();
         for (key, placeholder, multi, masked) in [
             ("search", "搜索内容", false, false),
+            ("library_search", "搜索当前组的音频", false, false),
+            ("library_groups", "搜索练习组", false, false),
+            ("library_name", "输入名称", false, false),
             ("group", "练习组名称", false, false),
             ("front", "原文 / 单词", true, false),
             ("back", "翻译 / 释义", true, false),
@@ -417,6 +430,7 @@ impl AppView {
                 .filter(|v| v.is_finite() && (0.5..=2.).contains(v))
                 .unwrap_or(1.),
             tts_last: None,
+            library: Default::default(),
             lib,
             page: "flashcard".into(),
             navigation_open: true,
@@ -568,6 +582,9 @@ impl AppView {
             .filter(|p| PAGES.iter().any(|(k, _, _)| k == p))
             .unwrap_or("flashcard".into());
         this.navigation_open = this.lib.setting("navigation_open").ok().as_deref() != Some("false");
+        if this.page == "library" {
+            this.practice_id = this.lib.setting("library_group").unwrap_or_default();
+        }
         this.refresh();
         let ai_result = ai::load(&this.lib);
         match ai_result {
@@ -778,6 +795,22 @@ impl AppView {
                 .unwrap_or_default();
         }
         self.audios = self.lib.list("listening_audios").unwrap_or_default();
+        if !self
+            .practices
+            .iter()
+            .any(|r| text(r, "id") == self.practice_id)
+        {
+            self.practice_id = self
+                .practices
+                .first()
+                .map(|r| text(r, "id"))
+                .unwrap_or_default();
+        }
+        self.checked_audio =
+            audio_library::scoped_ids(&self.audios, &self.practice_id, &self.checked_audio)
+                .into_iter()
+                .collect();
+        self.library.sync(&self.practice_id, &self.audios);
         self.cards = self
             .lib
             .cards(self.due && self.page == "flashcard")
@@ -1042,6 +1075,9 @@ impl AppView {
                             Ok(Outcome::TtsReady(row)) => {
                                 self.status =
                                     "音频及逐句字幕已保存到生成时选择的练习组，点击试听查看".into();
+                                if text(&row, "practice_id") == self.practice_id {
+                                    self.library.selected = text(&row, "id");
+                                }
                                 self.tts_last = Some(row);
                             }
                             Ok(Outcome::Parts(series)) if !cancelled => {
@@ -1546,6 +1582,7 @@ impl AppView {
     fn pick(&self, kind: &str, cx: &mut Context<Self>) {
         let kind = kind.to_string();
         let directory = kind == "directory";
+        let audio_group = self.practice_id.clone();
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: !directory,
             directories: directory,
@@ -1555,7 +1592,11 @@ impl AppView {
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picker.await {
                 let _ = this.update(cx, |this, cx| {
-                    this.picked(&kind, paths);
+                    if kind == "audio" && this.practice_id != audio_group {
+                        this.status = "选择文件期间练习组已切换，请在目标组重新导入".into();
+                    } else {
+                        this.picked(&kind, paths);
+                    }
                     cx.notify();
                 });
             }
@@ -1725,6 +1766,10 @@ impl AppView {
                     self.audio_blind.enabled = false;
                     self.invalidate_blind();
                     let previous = self.page.clone();
+                    self.library.pending_delete.clear();
+                    if self.library.tool == "delete" {
+                        self.library.tool.clear();
+                    }
                     self.save_media_position();
                     if self.task_scope == TaskScope::Material {
                         if let Some(cancel) = &self.busy {
@@ -1735,6 +1780,12 @@ impl AppView {
                     self.preloader.set("pause", "yes");
                     self.preloaded_index = None;
                     self.page = page;
+                    if self.page == "library" {
+                        let group = self.lib.setting("library_group")?;
+                        if self.practices.iter().any(|r| text(r, "id") == group) {
+                            self.practice_id = group;
+                        }
+                    }
                     self.page_scroll.set_offset(point(px(0.), px(0.)));
                     if self.page == "discover" {
                         self.card_filter = "all".into();
@@ -1823,7 +1874,21 @@ impl AppView {
                     self.page = "listening".into();
                     self.lib.set_setting("last_page", "listening")?;
                 }
-                Action::Practice(key) => self.practice_id = key,
+                Action::Practice(key) => {
+                    ensure!(
+                        self.practices.iter().any(|r| text(r, "id") == key),
+                        "练习组不存在"
+                    );
+                    self.lib.set_setting("library_group", &key)?;
+                    self.practice_id = key;
+                    self.checked_audio.clear();
+                    self.library.selected.clear();
+                    self.library.filter = 0;
+                    self.library.tool.clear();
+                    self.library.pending_delete.clear();
+                    self.set("library_search", "", window, cx);
+                    self.library.sync(&self.practice_id, &self.audios);
+                }
                 Action::AudioPractice(key) => {
                     self.invalidate_blind();
                     ensure!(self.busy.is_none(), "请等待当前任务完成");
@@ -2113,28 +2178,170 @@ impl AppView {
                     }
                     self.repeat = mode;
                 }
-                Action::CreatePractice => {
-                    self.practice_id = self.lib.practice(&self.value("group", cx))?;
-                    self.refresh();
-                    self.status = "练习组已创建".into();
-                }
-                Action::Delete(table, key) => {
-                    self.lib.delete(&table, &key)?;
-                    self.refresh();
-                    self.status = "已删除所选记录".into();
-                }
-                Action::Rename(table, key) => {
+                Action::LibrarySelect(key) => {
                     ensure!(
-                        ["listening_practices", "listening_audios"].contains(&table.as_str()),
-                        "不能重命名此记录"
+                        self.audios
+                            .iter()
+                            .any(|r| text(r, "id") == key
+                                && text(r, "practice_id") == self.practice_id),
+                        "音频已不存在"
                     );
-                    let name = self.value("group", cx);
-                    ensure!(!name.trim().is_empty(), "请在名称栏填写新名称");
-                    self.lib.db()?.execute(
-                        &format!("UPDATE {table} SET name=? WHERE id=?"),
-                        rusqlite::params![name, key],
-                    )?;
+                    self.library.selected = key;
+                    self.library.tool = "detail".into();
+                    self.page_scroll.set_offset(point(px(0.), px(0.)));
+                    self.library.pending_delete.clear();
+                    self.library.sync(&self.practice_id, &self.audios);
+                }
+                Action::LibraryTool(tool) => {
+                    self.library.pending_delete.clear();
+                    let name = match tool.as_str() {
+                        "group-rename" => self
+                            .practices
+                            .iter()
+                            .find(|r| text(r, "id") == self.practice_id)
+                            .map(|r| text(r, "name"))
+                            .unwrap_or_default(),
+                        "audio-rename" => self
+                            .audios
+                            .iter()
+                            .find(|r| text(r, "id") == self.library.selected)
+                            .map(|r| text(r, "name"))
+                            .unwrap_or_default(),
+                        _ => String::new(),
+                    };
+                    self.set("library_name", name, window, cx);
+                    self.library.tool = tool;
+                    self.page_scroll.set_offset(point(px(0.), px(0.)));
+                    let field = if self.library.tool == "tts" {
+                        Some("tts_text")
+                    } else if ["group-new", "group-rename", "audio-rename"]
+                        .contains(&self.library.tool.as_str())
+                    {
+                        Some("library_name")
+                    } else {
+                        None
+                    };
+                    if let Some(field) = field {
+                        self.inputs[field].update(cx, |state, cx| state.focus(window, cx));
+                    }
+                }
+                Action::LibrarySaveName => {
+                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    let name = self.value("library_name", cx);
+                    match self.library.tool.as_str() {
+                        "group-new" => {
+                            ensure!(
+                                !name.trim().is_empty() && name.chars().count() <= 120,
+                                "名称需为 1–120 字"
+                            );
+                            ensure!(
+                                !self.practices.iter().any(|r| text(r, "name")
+                                    .trim()
+                                    .eq_ignore_ascii_case(name.trim())),
+                                "已有同名练习组，请直接选择或换一个名称"
+                            );
+                            self.practice_id = self.lib.practice(name.trim())?;
+                            self.checked_audio.clear();
+                            self.library.selected.clear();
+                            self.library.filter = 0;
+                            self.set("library_search", "", window, cx);
+                        }
+                        "group-rename" => audio_library::rename(
+                            &self.lib,
+                            "listening_practices",
+                            &self.practice_id,
+                            &name,
+                        )?,
+                        "audio-rename" => audio_library::rename(
+                            &self.lib,
+                            "listening_audios",
+                            &self.library.selected,
+                            &name,
+                        )?,
+                        _ => anyhow::bail!("请重新打开名称编辑"),
+                    }
+                    self.lib.set_setting("library_group", &self.practice_id)?;
+                    self.library.tool.clear();
                     self.refresh();
+                    self.status = "名称已保存".into();
+                }
+                Action::LibraryFilter(filter) => {
+                    self.library.filter = filter;
+                }
+                Action::LibrarySort(sort) => {
+                    self.library.sort = sort;
+                }
+                Action::LibraryBatch => {
+                    self.library.batch = !self.library.batch;
+                    self.checked_audio.clear();
+                    self.library.pending_delete.clear();
+                }
+                Action::LibraryReset => {
+                    self.library.filter = 0;
+                    self.set("library_search", "", window, cx);
+                }
+                Action::LibrarySelectAll => {
+                    let ids = self
+                        .library
+                        .visible(
+                            &self.audios,
+                            &self.practice_id,
+                            &self.value("library_search", cx),
+                        )
+                        .into_iter()
+                        .map(|r| text(r, "id"))
+                        .collect::<Vec<_>>();
+                    if !ids.is_empty() && ids.iter().all(|id| self.checked_audio.contains(id)) {
+                        for id in ids {
+                            self.checked_audio.remove(&id);
+                        }
+                    } else {
+                        self.checked_audio.extend(ids);
+                    }
+                    self.library.pending_delete.clear();
+                }
+                Action::LibraryMove(destination) => {
+                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    let ids = audio_library::scoped_ids(
+                        &self.audios,
+                        &self.practice_id,
+                        &self.checked_audio,
+                    );
+                    audio_library::move_records(&self.lib, &self.practice_id, &destination, &ids)?;
+                    self.checked_audio.clear();
+                    self.library.tool.clear();
+                    self.refresh();
+                    self.status = format!("已移动 {} 条音频", ids.len());
+                }
+                Action::LibraryDelete(ids) => {
+                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    self.library.pending_delete = ids;
+                    self.library.tool = "delete".into();
+                }
+                Action::LibraryConfirmDelete => {
+                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    let ids = self.library.pending_delete.clone();
+                    audio_library::delete_records(&self.lib, &self.practice_id, &ids)?;
+                    self.checked_audio.clear();
+                    self.library.pending_delete.clear();
+                    self.library.tool.clear();
+                    self.refresh();
+                    self.status = format!("已移除 {} 条记录，附件文件保留", ids.len());
+                }
+                Action::LibraryStudy(paused) => {
+                    let key = self.library.selected.clone();
+                    ensure!(
+                        self.audios
+                            .iter()
+                            .any(|r| text(r, "id") == key
+                                && text(r, "practice_id") == self.practice_id),
+                        "请先选择音频"
+                    );
+                    self.audio_blind.enabled = false;
+                    self.handle(Action::Audio(key), window, cx);
+                    if paused {
+                        self.player.set("pause", "yes");
+                    }
                 }
                 Action::Saved(saved) => {
                     self.saved_only = saved;
@@ -3107,17 +3314,17 @@ impl AppView {
                     design::apply(cx);
                 }
                 Action::CheckAudio(key) => {
+                    ensure!(
+                        self.audios
+                            .iter()
+                            .any(|r| text(r, "id") == key
+                                && text(r, "practice_id") == self.practice_id),
+                        "音频不属于当前组"
+                    );
+                    self.library.pending_delete.clear();
                     if !self.checked_audio.insert(key.clone()) {
                         self.checked_audio.remove(&key);
                     }
-                }
-                Action::BatchDelete => {
-                    for key in self.checked_audio.clone() {
-                        self.lib.delete("listening_audios", &key)?;
-                    }
-                    self.checked_audio.clear();
-                    self.refresh();
-                    self.status = "已删除所选音频记录".into();
                 }
                 Action::Suspend(suspend) => {
                     let card = self.current_card().context("当前没有卡片")?;
@@ -3156,6 +3363,9 @@ impl AppView {
                 }
                 Action::TtsGenerate => {
                     let body = self.value("tts_text", cx);
+                    self.library.filter = 0;
+                    self.library.sort = 0;
+                    self.set("library_search", "", window, cx);
                     ensure!(!body.trim().is_empty(), "请先输入要合成的文字");
                     ensure!(!self.practice_id.is_empty(), "请先新建或选择练习组");
                     let mut name = self.value("tts_name", cx);
@@ -3198,7 +3408,10 @@ impl AppView {
                     let rows = self
                         .audios
                         .iter()
-                        .filter(|r| self.checked_audio.contains(&text(r, "id")))
+                        .filter(|r| {
+                            text(r, "practice_id") == self.practice_id
+                                && self.checked_audio.contains(&text(r, "id"))
+                        })
                         .cloned()
                         .collect::<Vec<_>>();
                     ensure!(rows.len() >= 2, "请至少勾选两条音频");
@@ -3653,7 +3866,8 @@ impl AppView {
             .on_click(cx.listener(move |this, _, window, cx| {
                 if matches!(
                     action,
-                    Action::VideoAsk(_)
+                    Action::CheckAudio(_)
+                        | Action::VideoAsk(_)
                         | Action::VideoCopySubtitle(_)
                         | Action::AudioCopySubtitle(..)
                         | Action::AudioBlindRevealCue(..)
@@ -6512,129 +6726,7 @@ impl AppView {
                 }
             }
             "library" => {
-                content = content.child(
-                    panel(cx)
-                        .child(self.field("group", "练习组名称 / 新名称"))
-                        .child(
-                            div()
-                                .flex()
-                                .gap_2()
-                                .child(
-                                    self.button(
-                                        "create-group",
-                                        "新建练习组",
-                                        Action::CreatePractice,
-                                        cx,
-                                    )
-                                    .primary(),
-                                )
-                                .child(self.button(
-                                    "rename-group",
-                                    "重命名所选组",
-                                    Action::Rename(
-                                        "listening_practices".into(),
-                                        self.practice_id.clone(),
-                                    ),
-                                    cx,
-                                )),
-                        ),
-                );
-                let mut groups = div().flex().gap_2().flex_wrap();
-                for row in &self.practices {
-                    groups = groups.child(self.button(
-                        format!("group-{}", text(row, "id")),
-                        format!(
-                            "{}{}",
-                            if text(row, "id") == self.practice_id {
-                                "● "
-                            } else {
-                                ""
-                            },
-                            text(row, "name")
-                        ),
-                        Action::Practice(text(row, "id")),
-                        cx,
-                    ));
-                }
-                content = content
-                    .child(groups)
-                    .child(Input::new(&self.inputs["search"]));
-                content = content.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .flex_wrap()
-                        .child(
-                            self.button(
-                                "import-audio",
-                                "导入音频",
-                                Action::Pick("audio".into()),
-                                cx,
-                            )
-                            .primary(),
-                        )
-                        .child(self.button("merge-audio", "合并已选音频", Action::MergeAudios, cx))
-                        .child(self.button("batch-delete", "删除已选记录", Action::BatchDelete, cx))
-                        .child(self.button(
-                            "command-import",
-                            "命令导入",
-                            Action::CommandImport,
-                            cx,
-                        )),
-                );
-                content = content.child(self.tts_panel(cx));
-                let query = self.value("search", cx).to_lowercase();
-                for row in self.audios.iter().filter(|r| {
-                    text(r, "practice_id") == self.practice_id
-                        && text(r, "name").to_lowercase().contains(&query)
-                }) {
-                    let key = text(row, "id");
-                    content = content.child(
-                        panel(cx)
-                            .child(div().text_lg().child(text(row, "name")))
-                            .child(if text(row, "subtitle_uri").is_empty() {
-                                "待配字幕"
-                            } else {
-                                "字幕已就绪"
-                            })
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap_2()
-                                    .child(self.button(
-                                        format!("check-{key}"),
-                                        if self.checked_audio.contains(&key) {
-                                            "✓ 已选"
-                                        } else {
-                                            "勾选"
-                                        },
-                                        Action::CheckAudio(key.clone()),
-                                        cx,
-                                    ))
-                                    .child(
-                                        self.button(
-                                            format!("audio-{key}"),
-                                            "开始学习",
-                                            Action::Audio(key.clone()),
-                                            cx,
-                                        )
-                                        .primary(),
-                                    )
-                                    .child(self.button(
-                                        format!("rename-audio-{key}"),
-                                        "重命名",
-                                        Action::Rename("listening_audios".into(), key.clone()),
-                                        cx,
-                                    ))
-                                    .child(self.button(
-                                        format!("delete-audio-{key}"),
-                                        "删除记录",
-                                        Action::Delete("listening_audios".into(), key),
-                                        cx,
-                                    )),
-                            ),
-                    );
-                }
+                content = content.child(self.audio_library_view(window, cx));
             }
             "listening" => {
                 content = content.child(self.audio_study(window, cx));
