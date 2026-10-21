@@ -21,6 +21,17 @@ if [ -f "$root/target/native/clarora-asr" ]; then
   mkdir -p "$output/Contents/MacOS/tools"
   cp "$root/target/native/clarora-asr" "$output/Contents/MacOS/tools/clarora-asr"
 fi
+if [ -f "$root/target/tts/clarora-tts" ]; then
+  mkdir -p "$output/Contents/MacOS/tools"
+  cp "$root/target/tts/clarora-tts" "$output/Contents/MacOS/tools/clarora-tts.new"
+  mv -f "$output/Contents/MacOS/tools/clarora-tts.new" "$output/Contents/MacOS/tools/clarora-tts"
+  for runtime in "$root/target/tts/"*.dylib; do
+    [ -f "$runtime" ] || continue
+    name=$(basename "$runtime")
+    cp "$runtime" "$output/Contents/MacOS/tools/$name.new"
+    mv -f "$output/Contents/MacOS/tools/$name.new" "$output/Contents/MacOS/tools/$name"
+  done
+fi
 cat > "$output/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

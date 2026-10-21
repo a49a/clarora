@@ -3,6 +3,8 @@
 mod bilibili_parts;
 #[path = "support/blind_listening.rs"]
 mod blind_listening;
+#[path = "support/kokoro.rs"]
+mod kokoro;
 #[path = "support/model_progress.rs"]
 mod model_progress;
 #[path = "support/protocol.rs"]
@@ -422,6 +424,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     blind_listening::run(&lib, &video, results)?;
     bilibili_parts::run(&lib, results)?;
     model_progress::run(&lib, results)?;
+    kokoro::run(&lib, results)?;
     video_qa::run(&lib, results)?;
     video_translation::run(&lib, &video, results)?;
     ensure!(

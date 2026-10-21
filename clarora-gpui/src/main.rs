@@ -10,7 +10,7 @@ use clarora_gpui::{
     process::{self, Cancel},
     recording::Recorder,
     subtitles::{self, Cue},
-    video_qa, video_subtitles,
+    tts, video_qa, video_subtitles,
     waveform::{self, Waveform},
 };
 use gpui::{prelude::*, *};
@@ -190,6 +190,11 @@ enum Action {
     Theme,
     Highlight,
     ClearHighlights,
+    TtsDownload,
+    TtsGenerate,
+    TtsVoice(i32),
+    TtsSpeed(f32),
+    TtsPlay,
     MergeAudios,
     CheckAudio(String),
     BatchDelete,
@@ -211,6 +216,7 @@ enum Outcome {
     KeyPoints(String, Vec<ai::KeyPoint>),
     Backups(Vec<String>),
     Recording(PathBuf),
+    TtsReady(Row),
 }
 enum Event {
     Done(std::result::Result<Outcome, String>),
@@ -230,6 +236,9 @@ enum VideoCaptionSource {
 }
 struct AppView {
     lib: Library,
+    tts_voice: i32,
+    tts_speed: f32,
+    tts_last: Option<Row>,
     page: String,
     navigation_open: bool,
     navigation_motion: Option<(Instant, f32)>,
@@ -355,6 +364,13 @@ impl AppView {
             ),
             ("question", "向 AI 提问", true, false),
             ("reference", "朗读参考原文", true, false),
+            (
+                "tts_text",
+                "输入要合成的中文或英文（最多 10,000 字）",
+                true,
+                false,
+            ),
+            ("tts_name", "生成音频的名称", false, false),
             ("base_url", "https://api.example.com/v1", false, false),
             ("model", "聊天／转写共用模型 ID", false, false),
             ("vision_model", "视觉模型", false, false),
@@ -388,6 +404,19 @@ impl AppView {
             );
         }
         let mut this = Self {
+            tts_voice: lib
+                .setting("tts_voice")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v| (0..54).contains(v))
+                .unwrap_or(0),
+            tts_speed: lib
+                .setting("tts_speed")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite() && (0.5..=2.).contains(v))
+                .unwrap_or(1.),
+            tts_last: None,
             lib,
             page: "flashcard".into(),
             navigation_open: true,
@@ -1010,6 +1039,11 @@ impl AppView {
                         self.model_progress = None;
                         self.chat_running = false;
                         match result {
+                            Ok(Outcome::TtsReady(row)) => {
+                                self.status =
+                                    "音频及逐句字幕已保存到生成时选择的练习组，点击试听查看".into();
+                                self.tts_last = Some(row);
+                            }
                             Ok(Outcome::Parts(series)) if !cancelled => {
                                 self.status =
                                     format!("已识别 {} P，点击列表选集播放", series.parts.len());
@@ -3096,6 +3130,70 @@ impl AppView {
                     }
                     .into();
                 }
+                Action::TtsVoice(voice) => {
+                    ensure!((0..54).contains(&voice), "音色编号无效");
+                    self.tts_voice = voice;
+                    self.lib.set_setting("tts_voice", &voice.to_string())?;
+                }
+                Action::TtsSpeed(speed) => {
+                    ensure!(speed.is_finite() && (0.5..=2.).contains(&speed), "语速无效");
+                    self.tts_speed = speed;
+                    self.lib.set_setting("tts_speed", &speed.to_string())?;
+                }
+                Action::TtsDownload => {
+                    self.begin_scoped(
+                        TaskScope::Application,
+                        "正在下载 Kokoro 中英模型…",
+                        |lib, cancel, tx| {
+                            tts::install(&lib, &cancel, &mut |p| {
+                                let _ = tx.send(Event::ModelProgress(p));
+                            })?;
+                            Ok(Outcome::Message(
+                                "Kokoro 中英模型已安装，可离线生成音频".into(),
+                            ))
+                        },
+                    );
+                }
+                Action::TtsGenerate => {
+                    let body = self.value("tts_text", cx);
+                    ensure!(!body.trim().is_empty(), "请先输入要合成的文字");
+                    ensure!(!self.practice_id.is_empty(), "请先新建或选择练习组");
+                    let mut name = self.value("tts_name", cx);
+                    if name.trim().is_empty() {
+                        name =
+                            format!("Kokoro · {}", chrono::Local::now().format("%m-%d %H:%M:%S"));
+                    }
+                    let group = self.practice_id.clone();
+                    let voice = self.tts_voice;
+                    let speed = self.tts_speed;
+                    self.begin_scoped(
+                        TaskScope::Application,
+                        "正在本机生成语音（首次加载模型需稍候）…",
+                        move |lib, cancel, _| {
+                            let row = tts::generate(
+                                &lib,
+                                &tts::model_dir(&lib),
+                                &group,
+                                &name,
+                                &body,
+                                voice,
+                                speed,
+                                &cancel,
+                            )?;
+                            Ok(Outcome::TtsReady(row))
+                        },
+                    );
+                }
+                Action::TtsPlay => {
+                    let row = self.tts_last.clone().context("请先生成音频")?;
+                    ensure!(
+                        PathBuf::from(text(&row, "audio_uri")).is_file(),
+                        "生成的音频已被移除"
+                    );
+                    self.audio_blind.enabled = false;
+                    self.page_scroll.set_offset(point(px(0.), px(0.)));
+                    self.handle(Action::Audio(text(&row, "id")), window, cx);
+                }
                 Action::MergeAudios => {
                     let rows = self
                         .audios
@@ -3566,6 +3664,96 @@ impl AppView {
                 this.handle(action.clone(), window, cx)
             }))
     }
+    fn tts_panel(&self, cx: &Context<Self>) -> AnyElement {
+        let ready = tts::validate_model(&tts::model_dir(&self.lib)).is_ok();
+        let voice = tts::VOICES
+            .iter()
+            .find(|(sid, _)| *sid == self.tts_voice)
+            .map(|(_, name)| name.to_string())
+            .unwrap_or_else(|| format!("音色 {}", self.tts_voice));
+        let mut content = panel(cx)
+            .child(div().text_lg().child("文字转音频 · Kokoro ONNX"))
+            .child(div().text_sm().child(if ready {
+                "中英模型已就绪 · 本机离线生成 WAV 和逐句字幕 · 自动保存到当前练习组"
+            } else {
+                "首次下载约 334 MiB，下载后可离线生成；需安装 clarora-tts 运行程序"
+            }))
+            .child(self.field("tts_name", "音频名称（留空自动命名）"))
+            .child(self.field("tts_text", "要合成的文字"))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        self.player_menu(
+                            "tts-voice",
+                            voice,
+                            tts::VOICES
+                                .iter()
+                                .map(|(sid, name)| {
+                                    (
+                                        name.to_string(),
+                                        Action::TtsVoice(*sid),
+                                        *sid == self.tts_voice,
+                                        false,
+                                    )
+                                })
+                                .collect(),
+                            cx,
+                        ),
+                    )
+                    .child(
+                        self.player_menu(
+                            "tts-speed",
+                            format!("语速 {:.2}×", self.tts_speed),
+                            [0.5, 0.75, 1., 1.25, 1.5, 2.]
+                                .into_iter()
+                                .map(|rate| {
+                                    (
+                                        format!("{rate:.2}×"),
+                                        Action::TtsSpeed(rate),
+                                        rate == self.tts_speed,
+                                        false,
+                                    )
+                                })
+                                .collect(),
+                            cx,
+                        ),
+                    )
+                    .child(
+                        self.button(
+                            "tts-download",
+                            if ready {
+                                "模型已下载"
+                            } else {
+                                "下载中英模型"
+                            },
+                            Action::TtsDownload,
+                            cx,
+                        )
+                        .disabled(ready || self.busy.is_some()),
+                    )
+                    .child(
+                        self.button("tts-generate", "生成并保存音频", Action::TtsGenerate, cx)
+                            .primary()
+                            .disabled(!ready || self.practice_id.is_empty() || self.busy.is_some()),
+                    ),
+            );
+        if let Some(row) = &self.tts_last {
+            content = content
+                .child(
+                    div()
+                        .text_sm()
+                        .child(format!("最近生成：{}", text(row, "name"))),
+                )
+                .child(
+                    self.button("tts-play", "试听 / 开始学习", Action::TtsPlay, cx)
+                        .disabled(self.busy.is_some()),
+                );
+        }
+        content.into_any_element()
+    }
     fn field(&self, key: &str, label: &str) -> impl IntoElement {
         div()
             .flex()
@@ -3757,17 +3945,17 @@ impl AppView {
             .small()
             .custom(
                 ButtonCustomVariant::new(cx)
-                    .foreground(if self.page == "listening" {
+                    .foreground(if self.page == "listening" || self.page == "library" {
                         cx.theme().foreground
                     } else {
                         rgb(0xe8f0eb).into()
                     })
-                    .hover(if self.page == "listening" {
+                    .hover(if self.page == "listening" || self.page == "library" {
                         cx.theme().accent
                     } else {
                         rgb(0x303c38).into()
                     })
-                    .active(if self.page == "listening" {
+                    .active(if self.page == "listening" || self.page == "library" {
                         cx.theme().accent
                     } else {
                         rgb(0x41554b).into()
@@ -6394,6 +6582,7 @@ impl AppView {
                             cx,
                         )),
                 );
+                content = content.child(self.tts_panel(cx));
                 let query = self.value("search", cx).to_lowercase();
                 for row in self.audios.iter().filter(|r| {
                     text(r, "practice_id") == self.practice_id

@@ -34,6 +34,8 @@ keyring = { version = "3", features = ["apple-native", "windows-native"] }
 pdfium-render = "0.8"
 cpal = "0.16"
 hound = "3.5"
+tar = "0.4"
+bzip2 = "0.6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

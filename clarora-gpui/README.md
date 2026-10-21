@@ -52,6 +52,24 @@ python ./clarora-gpui/scripts/install-pdfium.py ./clarora-gpui/target/package
 - 本地转写支持 Whisper 模型和 SenseVoice。模型由设置页下载。点击“选用”后，模型行高亮并显示“已选择 · 待保存”；点击“保存 AI 与学习设置”成功后显示“已选用”和“当前生效”，重启后保留。Whisper 可使用 PATH 中的 `whisper-cli`；SenseVoice 需要下述原生辅助程序。
 - `Cmd/Ctrl+1…9` 切换前九个页面；`Cmd/Ctrl+O` 按当前页面打开/导入文件，`Cmd/Ctrl+J` 切换 AI 侧栏，`Cmd/Ctrl+Enter` 发送问题，`Cmd/Ctrl+N` 新会话，`Cmd/Ctrl+←/→` 上一项/下一项（PDF 为翻页）。页面获得焦点后空格翻面/播放，方向键切卡/快进，`1/2/3` 评分。输入框编辑时不拦截无修饰键的输入。
 
+## 本地文字转音频：Kokoro ONNX
+
+在“音频管理”选择或新建练习组，找到“文字转音频 · Kokoro ONNX”。首次点击“下载中英模型”（约 334 MiB），完成后输入文字，选择中英文音色和 0.5–2.0 倍语速，点击“生成并保存音频”。文字最多 10,000 字；名称留空会自动命名。“试听 / 开始学习”打开生成结果，生成的 WAV 也会保存在音频库，可重命名、导出备份。音色与语速选择重启后保留，正文不发送到远端，不需要 API Key。
+
+使用固定的 [sherpa-onnx Kokoro multi-lang v1.0](https://k2-fsa.github.io/sherpa/onnx/tts/all/Chinese-English/kokoro-multi-lang-v1_0.html)。音色菜单提供常用美式、英式和中文音色；不是音色克隆。首次下载联网，SHA-256 校验通过后才解压安装；之后生成全程离线。模型保存在资料目录 `models/kokoro-multi-lang-v1_0/`，模型包内许可证随模型保留。生成耗时取决于本机 CPU 和文字长度，可通过底部“取消任务”停止；切换页面后任务继续，结果保存到启动生成时选择的组，不自动开始播放。生成失败或取消不保存半成品。生成时按句合成并按每句真实采样长度保存 SRT，进入音频学习即可显示原文、逐句定位；原文随字幕附件保存。句级时间来自实际合成片段，单词时间仍沿用已有字符插值，不代表声学逐词对齐。此前版本生成的音频未保存原文，需在“音频学习→字幕→生成原文字幕”使用 ASR 补字幕，或用原文重新生成。
+
+Kokoro 需要独立原生程序 `clarora-tts` 和启用 TTS 的 sherpa-onnx C API 运行库。**下载模型不会安装运行库。** macOS 开发环境已安装 sherpa-onnx 时可执行：
+
+```sh
+cmake -S clarora-gpui/native/tts -B clarora-gpui/target/tts -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/path/to/sherpa-onnx
+cmake --build clarora-gpui/target/tts --config Release
+sh clarora-gpui/scripts/package-macos.sh
+```
+
+macOS CMake 构建会将对应 sherpa-onnx C API / ONNX Runtime 动态库复制到辅助程序旁，打包脚本将它们与 `target/tts/clarora-tts` 一起放入 `.app/Contents/MacOS/tools/`。必须使用启用 TTS 的运行库，文件名含 `no-tts` 的发行包无法生成语音；若本机默认运行库仅用于 ASR，可用 `-DSHERPA_LIBRARY=/absolute/tts-enabled/lib/libsherpa-onnx-c-api.dylib` 显式指定。请同时提供与运行库版本匹配的头文件；二进制再分发需一并保留相关许可证。Windows 使用同一 CMake 项目与 MSVC，构建后将 `target/tts/Release/clarora-tts.exe` 和对应运行库放到桌面程序旁的 `tools/`；Windows 实机验证尚未完成。直接 `cargo run` 时将辅助程序目录加入 PATH。
+
+运行默认 E2E 会检查输入校验、缺失模型、预取消；设置 `CLARORA_KOKORO_MODEL=/absolute/model-dir` 后额外实际生成中英文 WAV 和逐句 SRT，检查非静音、原文覆盖、连续时间、SQLite 重开、附件备份恢复及 libmpv 逐句定位，验证生成中取消清理。可额外设置 `CLARORA_KOKORO_ARCHIVE=/absolute/kokoro-multi-lang-v1_0.tar.bz2` 验证同一安装链的 SHA-256 / 安全解压。证据目录保留 `kokoro-english.wav`、`kokoro-chinese.wav` 和 `kokoro-evidence.json`。未配置模型时真实推理明确标记跳过。
+
 ## 端侧语音模型：名称、语言和运行要求
 
 这里的“端侧模型”指 **ASR（语音识别）模型**，用于音频转写、视频字幕和跟读文本识别。模型文件下载后，本地转写不上传音轨；聊天、图片识字和 AI 点评仍调用设置中的远端 API。`engine=local` 使用下面的本地模型，`engine=compatible` 使用设置中保存的共用远端模型，两者的模型 ID 不可混用。
