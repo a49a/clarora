@@ -114,7 +114,12 @@ fn mock_ai() -> Result<(String, Arc<AtomicBool>, thread::JoinHandle<Vec<String>>
             let (kind, payload) = if first.contains("/audio/transcriptions") {
                 (
                     "application/json",
-                    json!({"segments":[{"start":0.0,"end":1.5,"text":"Hello world"}]}).to_string(),
+                    if body.contains("shared-fixture") && !body.contains("legacy-asr") {
+                        json!({"segments":[{"start":0.0,"end":1.5,"text":"Hello world"}]})
+                            .to_string()
+                    } else {
+                        json!({"error":"wrong shared ASR model"}).to_string()
+                    },
                 )
             } else if body.contains("image_url") {
                 (
@@ -461,14 +466,46 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let (address, stop, server) = mock_ai()?;
     let config = ai::Config {
         base_url: address.clone(),
-        model: "mock".into(),
+        model: "shared-fixture".into(),
         vision_model: "mock".into(),
-        asr_base_url: address,
-        asr_model: "mock".into(),
+        asr_base_url: "http://127.0.0.1:1/legacy".into(),
+        asr_model: "legacy-asr".into(),
         engine: "compatible".into(),
         ..Default::default()
     };
+    let (shared, shared_key) = ai::shared_settings(
+        config.clone(),
+        "shared-fixture-key".into(),
+        "legacy-asr-key".into(),
+    );
+    ensure!(
+        shared.base_url == config.base_url && shared_key == "shared-fixture-key",
+        "共用设置混用了旧转写密钥"
+    );
+    let legacy = ai::Config {
+        asr_base_url: config.base_url.clone(),
+        asr_model: "legacy-only".into(),
+        ..Default::default()
+    };
+    let (legacy, legacy_key) = ai::shared_settings(legacy, String::new(), "asr-only-key".into());
+    ensure!(
+        legacy.base_url == config.base_url
+            && legacy.model == "legacy-only"
+            && legacy_key == "asr-only-key",
+        "只有旧转写配置时未沿用完整一组"
+    );
+    let config = config.shared_api();
+    ensure!(
+        config.asr_base_url == config.base_url && config.asr_model == config.model,
+        "URL或模型未共用"
+    );
     lib.set_setting("ai_config", &serde_json::to_string(&config)?)?;
+    let reopened = Library::open(lib.root.clone())?;
+    let loaded = ai::load(&reopened)?.0;
+    ensure!(
+        loaded.asr_base_url == loaded.base_url && loaded.asr_model == loaded.model,
+        "重开配置不一致"
+    );
     let answer = ai::chat(&lib, "说明", "Hello", &[], &cancel, |_| {})?;
     ensure!(answer == "Hello world", "SSE 输出不完整");
     let transcript = ai::transcribe(&lib, &video, &cancel)?;
@@ -478,6 +515,12 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     stop.store(true, Ordering::SeqCst);
     let requests = server.join().unwrap();
     ensure!(requests.len() == 3, "AI HTTP 链路缺少请求");
+    fs::write(
+        output.join("shared-ai-settings.json"),
+        serde_json::to_vec_pretty(
+            &json!({"shared_model":loaded.model,"same_endpoint":loaded.base_url==loaded.asr_base_url,"chat_reply":answer,"transcript_cues":transcript.len(),"requests":requests,"legacy_asr_only_loaded":true,"credentials_in_config":false}),
+        )?,
+    )?;
     let session = data::id();
     let first = vec![
         json!({"role":"user","content":"hello"}),

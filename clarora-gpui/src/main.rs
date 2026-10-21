@@ -351,12 +351,9 @@ impl AppView {
             ("question", "向 AI 提问", true, false),
             ("reference", "朗读参考原文", true, false),
             ("base_url", "https://api.example.com/v1", false, false),
-            ("model", "聊天模型", false, false),
+            ("model", "聊天／转写共用模型 ID", false, false),
             ("vision_model", "视觉模型", false, false),
-            ("chat_key", "聊天 API Key", false, true),
-            ("asr_url", "转写 API 地址", false, false),
-            ("asr_model", "转写模型", false, false),
-            ("asr_key", "转写 API Key", false, true),
+            ("chat_key", "共用 API Key", false, true),
             ("local_model", "base.en", false, false),
             ("engine", "local / compatible", false, false),
             ("provider", "s3 / oss", false, false),
@@ -536,16 +533,14 @@ impl AppView {
         let ai_result = ai::load(&this.lib);
         match ai_result {
             Ok((c, key, asr)) => {
+                let (c, key) = ai::shared_settings(c, key, asr);
                 for (k, v) in [
                     ("base_url", c.base_url),
                     ("model", c.model),
                     ("vision_model", c.vision_model),
-                    ("asr_url", c.asr_base_url),
-                    ("asr_model", c.asr_model),
                     ("local_model", c.local_model),
                     ("engine", c.engine),
                     ("chat_key", key),
-                    ("asr_key", asr),
                 ] {
                     this.set(k, v, window, cx);
                 }
@@ -2881,14 +2876,11 @@ impl AppView {
                         base_url: self.value("base_url", cx),
                         model: self.value("model", cx),
                         vision_model: self.value("vision_model", cx),
-                        asr_base_url: self.value("asr_url", cx),
-                        asr_model: self.value("asr_model", cx),
                         local_model: self.value("local_model", cx),
                         engine: self.value("engine", cx),
-                        credential_id: String::new(),
+                        ..Default::default()
                     };
-                    let chat = self.value("chat_key", cx);
-                    let asr = self.value("asr_key", cx);
+                    let key = self.value("chat_key", cx);
                     let limit = self.value("daily_limit", cx);
                     ensure!(limit.parse::<usize>().is_ok(), "每日新卡上限无效");
                     self.lib.set_setting("new_cards_per_day", &limit)?;
@@ -2896,9 +2888,9 @@ impl AppView {
                     self.lib
                         .set_setting("command", &self.value("command", cx))?;
                     self.begin("正在保存到系统凭证库…", move |lib, _, _| {
-                        ai::save(&lib, config, &chat, &asr)?;
+                        ai::save_shared(&lib, config, &key)?;
                         Ok(Outcome::Message(
-                            "AI 设置已保存，密钥保存在系统凭证库".into(),
+                            "AI 设置已保存，聊天与远端转写共用配置，密钥保存在系统凭证库".into(),
                         ))
                     });
                 }
@@ -6936,13 +6928,12 @@ impl AppView {
                 content = content.child(
                     panel(cx)
                         .child(div().text_lg().child("AI 服务"))
-                        .child(self.field("base_url", "兼容 API Base URL"))
-                        .child(self.field("model", "聊天模型"))
-                        .child(self.field("vision_model", "视觉模型"))
-                        .child(self.field("chat_key", "聊天密钥 · 系统凭证库"))
-                        .child(self.field("asr_url", "转写 Base URL"))
-                        .child(self.field("asr_model", "远端转写模型 ID（compatible 引擎使用）"))
-                        .child(self.field("asr_key", "转写密钥"))
+                        .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                            .child("聊天与远端转写共用下面一组设置，模型需支持这两种能力。保存后统一生效。"))
+                        .child(self.field("base_url", "共用 API Base URL"))
+                        .child(self.field("model", "聊天／远端转写共用模型 ID"))
+                        .child(self.field("chat_key", "共用 API Key · 系统凭证库"))
+                        .child(self.field("vision_model", "视觉模型（可选，留空使用共用模型）"))
                         .child(
                             self.field("engine", "转写引擎：local = 本机；compatible = 远端 API"),
                         )

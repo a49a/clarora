@@ -25,6 +25,28 @@ pub struct Config {
     pub engine: String,
     pub credential_id: String,
 }
+impl Config {
+    /// Keep legacy fields in sync so existing transcription consumers keep working.
+    pub fn shared_api(mut self) -> Self {
+        self.asr_base_url = self.base_url.clone();
+        self.asr_model = self.model.clone();
+        self
+    }
+}
+/// Select an existing complete group for the simplified settings form.
+/// Never pair one provider's URL with another provider's credential.
+pub fn shared_settings(mut config: Config, chat_key: String, asr_key: String) -> (Config, String) {
+    if config.base_url.trim().is_empty() && config.model.trim().is_empty() && chat_key.is_empty() {
+        config.base_url = config.asr_base_url.clone();
+        config.model = config.asr_model.clone();
+        (config, asr_key)
+    } else {
+        (config, chat_key)
+    }
+}
+pub fn save_shared(lib: &Library, config: Config, key: &str) -> Result<()> {
+    save(lib, config.shared_api(), key, key)
+}
 fn config_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
