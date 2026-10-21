@@ -142,6 +142,8 @@ enum Action {
     VideoExitFullscreen,
     VideoPrecision,
     VideoSubtitleSize(u8),
+    VideoCaptions,
+    VideoTranslate,
     VideoClearLoop,
     VideoRepeatCue,
     VideoSentence(bool),
@@ -203,6 +205,7 @@ enum Outcome {
     PartVideo(bilibili::Series, usize, PathBuf, bool, Option<PathBuf>),
     Output(String),
     VideoSubtitles(PathBuf, String, Vec<Cue>),
+    VideoTranslated(PathBuf, String, Vec<Cue>, Vec<Cue>),
     Pdf(documents::PdfPage),
     Ocr(String),
     KeyPoints(String, Vec<ai::KeyPoint>),
@@ -266,6 +269,7 @@ struct AppView {
     auto_next_part: bool,
     video_cues: Vec<Cue>,
     video_caption_source: VideoCaptionSource,
+    video_captions_enabled: bool,
     video_material: Option<video_qa::Material>,
     video_material_error: String,
     video_scroll: ListState,
@@ -424,6 +428,7 @@ impl AppView {
             auto_next_part: true,
             video_cues: vec![],
             video_caption_source: VideoCaptionSource::Transcript,
+            video_captions_enabled: true,
             video_material: None,
             video_material_error: String::new(),
             video_scroll: ListState::new(0, ListAlignment::Top, px(200.)),
@@ -500,6 +505,10 @@ impl AppView {
                 ScrollStrategy::Center,
             );
         }
+        this.video_captions_enabled =
+            this.lib.setting("video_captions_enabled").ok().as_deref() != Some("false");
+        this.player
+            .set_subtitles_visible(this.video_captions_enabled);
         this.video_subtitle_size = this
             .lib
             .setting("video_subtitle_size")
@@ -1063,6 +1072,30 @@ impl AppView {
                                         .command(["sub-add".into(), path, "select".into()]);
                                 }
                                 self.status = "视频字幕已生成并保存，播放时自动高亮".into();
+                            }
+                            Ok(Outcome::VideoTranslated(video, path, source, cues))
+                                if !cancelled =>
+                            {
+                                let same_source = self.video_cues.len() == source.len()
+                                    && self.video_cues.iter().zip(&source).all(|(a, b)| {
+                                        a.start == b.start && a.end == b.end && a.text == b.text
+                                    });
+                                if self.page == "video"
+                                    && self.current_path.as_ref() == Some(&video)
+                                    && same_source
+                                {
+                                    self.video_cues = cues;
+                                    self.video_scroll.reset(self.video_cues.len());
+                                    self.video_active = None;
+                                    self.video_caption_source = VideoCaptionSource::Transcript;
+                                    self.video_material = None;
+                                    self.video_material_error.clear();
+                                    self.player
+                                        .command(["sub-add".into(), path, "select".into()]);
+                                    self.status = "中文字幕已生成并保存，英文和时间轴已保留".into();
+                                } else {
+                                    self.status = "翻译已完成，当前材料已改变，未切换显示".into();
+                                }
                             }
                             Ok(Outcome::Output(s)) if !cancelled => {
                                 self.output = s;
@@ -2335,6 +2368,45 @@ impl AppView {
                     }
                 }
                 Action::VideoExitFullscreen => self.leave_video_fullscreen(window, cx),
+                Action::VideoCaptions => {
+                    ensure!(self.page == "video", "请先进入视频学习");
+                    let enabled = !self.video_captions_enabled;
+                    self.lib.set_setting(
+                        "video_captions_enabled",
+                        if enabled { "true" } else { "false" },
+                    )?;
+                    self.video_captions_enabled = enabled;
+                    if enabled && self.video_caption_source == VideoCaptionSource::Hidden {
+                        self.video_caption_source = if self.video_cues.is_empty() {
+                            VideoCaptionSource::Track
+                        } else {
+                            VideoCaptionSource::Transcript
+                        };
+                        self.player.set("sid", "auto");
+                    }
+                    self.player.set_subtitles_visible(enabled);
+                    self.status = if enabled {
+                        "画面字幕已开启"
+                    } else {
+                        "画面字幕已关闭，字幕列表仍保留"
+                    }
+                    .into();
+                }
+                Action::VideoTranslate => {
+                    ensure!(self.page == "video", "请先进入视频学习");
+                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    let video = self.current_path.clone().context("请先打开视频")?;
+                    video_subtitles::english_source(&self.video_cues)?;
+                    let source = self.video_cues.clone();
+                    self.begin(
+                        "正在根据英文字幕分批生成中文…",
+                        move |lib, cancel, _| {
+                            let (path, cues) =
+                                video_subtitles::translate(&lib, &video, &source, &cancel)?;
+                            Ok(Outcome::VideoTranslated(video, path, source, cues))
+                        },
+                    );
+                }
                 Action::VideoSubtitleSize(size) => {
                     ensure!([14, 16, 20, 24, 28, 32].contains(&size), "无效字幕字号");
                     self.lib
@@ -3823,7 +3895,8 @@ impl AppView {
         from + (target - from) * eased
     }
     fn video_picture(&self, height: Option<Pixels>, cx: &Context<Self>) -> impl IntoElement {
-        let active_caption = if self.playback.subtitle_is_bitmap
+        let active_caption = if !self.video_captions_enabled
+            || self.playback.subtitle_is_bitmap
             || self.video_caption_source == VideoCaptionSource::Hidden
         {
             String::new()
@@ -4061,6 +4134,19 @@ impl AppView {
                                 cx,
                             ))
                             .child(self.player_volume(cx)),
+                    )
+                    .child(
+                        self.transport_button(
+                            "video-captions-toggle",
+                            if self.video_captions_enabled {
+                                "字幕：开"
+                            } else {
+                                "字幕：关"
+                            },
+                            Action::VideoCaptions,
+                            cx,
+                        )
+                        .selected(self.video_captions_enabled),
                     )
                     .child(self.player_menu("video-options", "设置 ▾".into(), options, cx))
                     .child(
@@ -5916,6 +6002,8 @@ impl AppView {
                         .w_full();
                         study = study.child(div().px_3().py_2().flex().items_center().gap_1().flex_wrap()
                             .child(self.button("video-follow", if self.video_follow { "跟随 ✓" } else { "跟随" }, Action::VideoFollow, cx).ghost())
+                            .child(self.button("video-import-english", "导入英文字幕", Action::Pick("video-subtitle".into()),cx).ghost().disabled(self.current_path.is_none()||self.busy.is_some()))
+                            .child(self.button("video-translate-zh", "英文生成中文", Action::VideoTranslate,cx).disabled(self.video_cues.is_empty()||self.busy.is_some()||self.current_path.is_none()))
                             .child(div().flex_1())
                             .child(self.button("video-copy-all", "复制全部", Action::VideoCopySubtitle(None), cx).ghost().disabled(self.video_cues.is_empty()))
                             .child(self.button("video-transcribe", if self.video_cues.is_empty() { "生成字幕" } else { "重新生成" }, Action::VideoTranscribe, cx)

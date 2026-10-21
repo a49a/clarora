@@ -172,6 +172,8 @@ pub struct Playback {
     pub path: String,
     pub subtitle: String,
     pub subtitle_is_bitmap: bool,
+    pub primary_subtitles_visible: bool,
+    pub secondary_subtitles_visible: bool,
     pub tracks: Vec<Value>,
     pub frame: Option<Arc<gpui::RenderImage>>,
     pub error: String,
@@ -179,6 +181,7 @@ pub struct Playback {
 enum Message {
     Command(Vec<String>),
     Set(String, String),
+    Subtitles(bool),
     Close,
 }
 pub struct Player {
@@ -221,6 +224,9 @@ impl Player {
     }
     pub fn set(&self, key: &str, value: impl ToString) {
         let _ = self.tx.send(Message::Set(key.into(), value.to_string()));
+    }
+    pub fn set_subtitles_visible(&self, visible: bool) {
+        let _ = self.tx.send(Message::Subtitles(visible));
     }
     pub fn open(&self, path: &Path) {
         self.open_range(path, 0., 0., false);
@@ -325,6 +331,7 @@ fn worker(
         let mut pixels = vec![0u64; 960 * 540 / 2];
         let mut tick = 0;
         let mut subtitle_is_bitmap = false;
+        let mut subtitles_visible = true;
         loop {
             match rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(Message::Close) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -349,6 +356,30 @@ fn worker(
                     if status < 0 {
                         shared.lock().unwrap().error = format!("播放器设置失败：{status}");
                     }
+                }
+                Ok(Message::Subtitles(visible)) => {
+                    subtitles_visible = visible;
+                    let main = if visible && subtitle_is_bitmap {
+                        c"yes"
+                    } else {
+                        c"no"
+                    };
+                    ensure!(
+                        (api.set)(handle, c"sub-visibility".as_ptr(), main.as_ptr()) >= 0,
+                        "无法切换主字幕显示"
+                    );
+                    ensure!(
+                        (api.set)(
+                            handle,
+                            c"secondary-sub-visibility".as_ptr(),
+                            if visible {
+                                c"yes".as_ptr()
+                            } else {
+                                c"no".as_ptr()
+                            }
+                        ) >= 0,
+                        "无法切换第二字幕显示"
+                    );
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -453,7 +484,7 @@ fn worker(
                     let status = (api.set)(
                         handle,
                         c"sub-visibility".as_ptr(),
-                        if bitmap {
+                        if bitmap && subtitles_visible {
                             c"yes".as_ptr()
                         } else {
                             c"no".as_ptr()
@@ -481,6 +512,22 @@ fn worker(
                 s.tracks = tracks;
                 s.subtitle = subtitle;
                 s.subtitle_is_bitmap = subtitle_is_bitmap;
+                let mut main_visible = 0;
+                let mut second_visible = 0;
+                (api.property)(
+                    handle,
+                    c"sub-visibility".as_ptr(),
+                    3,
+                    &mut main_visible as *mut _ as _,
+                );
+                (api.property)(
+                    handle,
+                    c"secondary-sub-visibility".as_ptr(),
+                    3,
+                    &mut second_visible as *mut _ as _,
+                );
+                s.primary_subtitles_visible = main_visible != 0;
+                s.secondary_subtitles_visible = second_visible != 0;
             }
         }
         Ok(())

@@ -97,3 +97,110 @@ pub fn generate(lib: &Library, video: &Path, cancel: &Cancel) -> Result<(String,
     let _ = fs::remove_file(audio);
     result
 }
+
+/// Extract original English lines, excluding any existing Chinese translation.
+pub fn english_source(cues: &[Cue]) -> Result<Vec<Cue>> {
+    ensure!(!cues.is_empty(), "请先导入或生成英文字幕");
+    cues.iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let text = c
+                .text
+                .lines()
+                .filter(|s| {
+                    s.chars().any(|ch| ch.is_ascii_alphabetic())
+                        && !s.chars().any(|ch| ('\u{3400}'..='\u{9fff}').contains(&ch))
+                })
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            ensure!(
+                !text.is_empty(),
+                "第 {} 段没有独立英文原文，请先导入英文字幕",
+                i + 1
+            );
+            ensure!(
+                text.chars().count() <= 8000,
+                "第 {} 段字幕过长，请先分段",
+                i + 1
+            );
+            Ok(Cue {
+                start: c.start,
+                end: c.end,
+                text,
+            })
+        })
+        .collect()
+}
+
+/// Translate completely before replacing the video-bound cache. A competing
+/// subtitle import invalidates this task's revision inside the SQLite transaction.
+pub fn translate(
+    lib: &Library,
+    video: &Path,
+    cues: &[Cue],
+    cancel: &Cancel,
+) -> Result<(String, Vec<Cue>)> {
+    use rusqlite::OptionalExtension;
+    ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+    let identity = key(video)?;
+    let revision = lib.setting(&identity)?;
+    let source = english_source(cues)?;
+    let mut translated = Vec::with_capacity(source.len());
+    let mut offset = 0;
+    while offset < source.len() {
+        ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+        ensure!(
+            key(video)? == identity && lib.setting(&identity)? == revision,
+            "视频或英文字幕已改变，请重新生成中文"
+        );
+        let mut end = offset;
+        let mut chars = 0;
+        while end < source.len() && end - offset < 32 {
+            let count = source[end].text.chars().count();
+            if end > offset && chars + count > 8000 {
+                break;
+            }
+            chars += count;
+            end += 1;
+        }
+        let batch = ai::translate(lib, &source[offset..end], cancel)?;
+        ensure!(
+            batch.iter().zip(&source[offset..end]).all(|(c, original)| {
+                c.text
+                    .strip_prefix(&format!("{}\n", original.text))
+                    .is_some_and(|translation| !translation.trim().is_empty())
+            }),
+            "模型未返回有效中文字幕，原字幕未覆盖"
+        );
+        translated.extend(batch);
+        offset = end;
+    }
+    ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+    ensure!(key(video)? == identity, "视频文件已改变，请重新生成中文");
+    let path = lib.root.join("media").join(format!("video-{}.srt", id()));
+    fs::write(&path, subtitles::srt(&translated))?;
+    let saved = (|| -> Result<()> {
+        let mut db = lib.db()?;
+        let tx = db.transaction()?;
+        let current = tx
+            .query_row(
+                "SELECT value FROM app_settings WHERE key=?",
+                [&identity],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .unwrap_or_default();
+        ensure!(current == revision, "英文字幕已替换，未覆盖较新的字幕");
+        ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+        tx.execute("INSERT INTO app_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",rusqlite::params![identity,path.to_string_lossy()])?;
+        tx.commit()?;
+        Ok(())
+    })();
+    if let Err(error) = saved {
+        let _ = fs::remove_file(&path);
+        return Err(error);
+    }
+    Ok((path.to_string_lossy().into_owned(), translated))
+}

@@ -9,6 +9,8 @@ mod model_progress;
 mod protocol;
 #[path = "support/video_qa.rs"]
 mod video_qa;
+#[path = "support/video_translation.rs"]
+mod video_translation;
 use anyhow::{Context, Result, ensure};
 use clarora_gpui::{
     ai, audio_tools, backup,
@@ -421,6 +423,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     bilibili_parts::run(&lib, results)?;
     model_progress::run(&lib, results)?;
     video_qa::run(&lib, results)?;
+    video_translation::run(&lib, &video, results)?;
     ensure!(
         process::normalize_bilibili(
             "【分享】 https://www.bilibili.com/video/BV1xx411c7mD?p=2&share_source=x"
