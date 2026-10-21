@@ -1,7 +1,9 @@
 //! Integration workflow written before the blind-listening implementation.
 use anyhow::{Result, ensure};
 use clarora_gpui::{
-    blind_listening::{State, chinese_hint, resolve, row_target, sentence_target, word_target},
+    blind_listening::{
+        State, chinese_hint, copy_text, resolve, row_target, sentence_target, word_target,
+    },
     data::Library,
     media::Player,
     subtitles::{self, Cue},
@@ -139,6 +141,53 @@ pub fn run(lib: &Library, media: &std::path::Path, results: &mut Vec<Value>) -> 
         chinese_state.reference_for(true).is_empty(),
         "收起后中文仍残留"
     );
+    let copy_cues = vec![
+        Cue {
+            start: 0.,
+            end: 1.,
+            text: "Copy sentence.\n复制这句。".into(),
+        },
+        Cue {
+            start: 1.,
+            end: 2.,
+            text: "Other sentence.".into(),
+        },
+    ];
+    let mut copy_state = State::default();
+    ensure!(
+        copy_text(&copy_cues, Some(&copy_cues[0]), &copy_state, false).as_deref()
+            == Some("Copy sentence.\n复制这句。"),
+        "逐句复制丢失译文"
+    );
+    ensure!(
+        copy_text(&copy_cues, None, &copy_state, false)
+            .unwrap()
+            .contains("Other sentence."),
+        "全文复制不完整"
+    );
+    copy_state.enabled = true;
+    ensure!(
+        copy_text(&copy_cues, None, &copy_state, false).is_none()
+            && copy_text(&copy_cues, Some(&copy_cues[0]), &copy_state, false).is_none(),
+        "盲听隐藏态可复制"
+    );
+    copy_state.revealed = resolve(&copy_cues, 0.5, 2.);
+    let copied_chinese = copy_text(&copy_cues, Some(&copy_cues[0]), &copy_state, true).unwrap();
+    ensure!(copied_chinese == "复制这句。", "仅中文复制泄漏英文");
+    ensure!(
+        copy_text(&copy_cues, Some(&copy_cues[1]), &copy_state, false).is_none(),
+        "盲听复制未揭晓句"
+    );
+    ensure!(
+        copy_text(&[], Some(&copy_cues[0]), &copy_state, false).is_none(),
+        "字幕失效后仍复制旧句"
+    );
+    fs::write(
+        lib.root.join("audio-copy-evidence.json"),
+        serde_json::to_vec_pretty(
+            &json!({"single":copy_cues[0].text,"chinese_only":copied_chinese,"hidden_copy_blocked":true,"stale_copy_blocked":true}),
+        )?,
+    )?;
     let player = Player::without_audio_device();
     player.open(media);
     let deadline = Instant::now() + Duration::from_secs(5);

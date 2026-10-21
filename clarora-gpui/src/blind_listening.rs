@@ -166,3 +166,38 @@ pub fn word_target(cues: &[Cue], clicked: &Cue, word_index: usize, duration: f64
         && word.end <= clicked.end)
         .then_some(word.start)
 }
+
+/// Clipboard text must obey the same reveal boundary as the visible transcript.
+pub fn copy_text(
+    cues: &[Cue],
+    selected: Option<&Cue>,
+    state: &State,
+    chinese_only: bool,
+) -> Option<String> {
+    let body = if let Some(selected) = selected {
+        let current = cues.iter().find(|c| {
+            c.start == selected.start && c.end == selected.end && c.text == selected.text
+        })?;
+        if state.enabled {
+            let revealed = state.revealed.as_ref()?;
+            if revealed.cue.start != current.start
+                || revealed.cue.end != current.end
+                || revealed.cue.text != current.text
+            {
+                return None;
+            }
+            state.reference_for(chinese_only)
+        } else {
+            current.text.clone()
+        }
+    } else {
+        if state.enabled {
+            return None;
+        }
+        cues.iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    (!body.trim().is_empty()).then_some(body)
+}

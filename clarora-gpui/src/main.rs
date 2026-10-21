@@ -110,6 +110,7 @@ enum Action {
     AudioFont(u8),
     AudioCurrent,
     AudioFollow,
+    AudioCopySubtitle(String, Option<Cue>),
     AudioRepeat(usize),
     CreatePractice,
     Delete(String, String),
@@ -2762,6 +2763,28 @@ impl AppView {
                         }
                     }
                 }
+                Action::AudioCopySubtitle(audio_id, cue) => {
+                    ensure!(
+                        self.page == "listening"
+                            && !audio_id.is_empty()
+                            && audio_id == self.current_audio,
+                        "音频已切换，请重新复制"
+                    );
+                    let body = blind_listening::copy_text(
+                        &self.cues,
+                        cue.as_ref(),
+                        &self.audio_blind,
+                        self.audio_blind_chinese,
+                    )
+                    .context("暂无可复制的字幕；盲听时请先翻开对应句子")?;
+                    cx.write_to_clipboard(ClipboardItem::new_string(body));
+                    self.status = if cue.is_some() {
+                        "已复制这句字幕"
+                    } else {
+                        "已复制全部字幕（不含时间戳）"
+                    }
+                    .into();
+                }
                 Action::VideoCopySubtitle(index) => {
                     let body = match index {
                         Some(index) => self
@@ -3462,6 +3485,7 @@ impl AppView {
                     action,
                     Action::VideoAsk(_)
                         | Action::VideoCopySubtitle(_)
+                        | Action::AudioCopySubtitle(..)
                         | Action::AudioBlindRevealCue(..)
                         | Action::AudioBlindHide
                 ) {
@@ -4513,6 +4537,18 @@ impl AppView {
                 )
                 .ghost(),
             )
+            .when(!self.audio_blind.enabled, |v| {
+                v.child(
+                    self.button(
+                        "audio-copy-all",
+                        "复制全部",
+                        Action::AudioCopySubtitle(self.current_audio.clone(), None),
+                        cx,
+                    )
+                    .ghost()
+                    .disabled(self.cues.is_empty()),
+                )
+            })
             .child(self.player_menu(
                 "audio-subtitle-options",
                 "字幕 ▾".into(),
@@ -4725,6 +4761,20 @@ impl AppView {
                             .ghost()
                             .disabled(this.busy.is_some() || this.audio_blind_pending.is_some()),
                         )
+                        .when(revealed.is_some(), |v| {
+                            v.child(
+                                this.button(
+                                    format!("blind-row-copy-{i}"),
+                                    "复制",
+                                    Action::AudioCopySubtitle(
+                                        this.current_audio.clone(),
+                                        Some(cue.clone()),
+                                    ),
+                                    cx,
+                                )
+                                .ghost(),
+                            )
+                        })
                         .into_any_element();
                 }
                 let (_, translation) = subtitles::languages(std::slice::from_ref(cue));
@@ -4822,6 +4872,18 @@ impl AppView {
                                         .child(translation),
                                 )
                             }),
+                    )
+                    .child(
+                        this.button(
+                            format!("audio-row-copy-{i}"),
+                            "复制",
+                            Action::AudioCopySubtitle(
+                                this.current_audio.clone(),
+                                Some(cue.clone()),
+                            ),
+                            cx,
+                        )
+                        .ghost(),
                     )
                     .into_any_element()
             }),
