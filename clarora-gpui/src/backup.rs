@@ -1,13 +1,37 @@
 use crate::data::{Library, Row, TABLES, id, insert, text};
+use crate::process::Cancel;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
+    future::Future,
     io::{Read, Write},
+    net::SocketAddr,
     path::{Path, PathBuf},
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
 };
+
+fn check_cancel(cancel: &Cancel) -> Result<()> {
+    ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+    Ok(())
+}
+async fn interrupted(cancel: &Cancel) {
+    while !cancel.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+async fn cancellable<T>(cancel: &Cancel, work: impl Future<Output = Result<T>>) -> Result<T> {
+    check_cancel(cancel)?;
+    tokio::select! {
+        biased;
+        // A completed PUT response wins over a concurrent late cancellation.
+        result = work => result,
+        _ = interrupted(cancel) => anyhow::bail!("已取消"),
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub version: u32,
@@ -173,8 +197,37 @@ pub fn import_local(lib: &Library, path: &Path) -> Result<usize> {
     result
 }
 pub fn merge(lib: &Library, data: &BTreeMap<String, Vec<Row>>) -> Result<usize> {
-    let mut db = lib.db()?;
-    let tx = db.transaction()?;
+    merge_cancellable(lib, data, &crate::process::cancel_token())
+}
+fn merge_cancellable(
+    lib: &Library,
+    data: &BTreeMap<String, Vec<Row>>,
+    cancel: &Cancel,
+) -> Result<usize> {
+    check_cancel(cancel)?;
+    let db = lib.db()?;
+    // Acquire the writer before reading: a deferred WAL transaction cannot safely
+    // retry an upgrade from a read snapshot when another writer owns the database.
+    db.busy_timeout(Duration::from_millis(50))?;
+    let waiting = Instant::now();
+    let tx = loop {
+        check_cancel(cancel)?;
+        // This is a fresh connection with no outer transaction; runtime checking
+        // allows the failed BEGIN attempts to share a borrow across this loop.
+        match rusqlite::Transaction::new_unchecked(&db, rusqlite::TransactionBehavior::Immediate) {
+            Ok(tx) => break tx,
+            Err(error) => {
+                check_cancel(cancel)?;
+                if error.sqlite_error_code() != Some(rusqlite::ErrorCode::DatabaseBusy)
+                    || waiting.elapsed() >= Duration::from_secs(10)
+                {
+                    return Err(error.into());
+                }
+            }
+        }
+    };
+    check_cancel(cancel)?;
+    tx.busy_timeout(Duration::from_secs(10))?;
     let mut mapping: HashMap<(String, String), String> = HashMap::new();
     let mut imported = 0;
     for (table, _) in TABLES {
@@ -192,6 +245,7 @@ pub fn merge(lib: &Library, data: &BTreeMap<String, Vec<Row>>) -> Result<usize> 
             _ => "record",
         };
         for original in data.get(*table).context("缺少资料表")? {
+            check_cancel(cancel)?;
             let mut row = original.clone();
             let old = text(&row, "id");
             let mut existing = None;
@@ -251,6 +305,7 @@ pub fn merge(lib: &Library, data: &BTreeMap<String, Vec<Row>>) -> Result<usize> 
         }
     }
     for row in data.get("review_schedule").context("缺少复习记录")? {
+        check_cancel(cancel)?;
         let mut row = row.clone();
         let kind = text(&row, "card_kind");
         let Some(key) = mapping.get(&(kind.clone(), text(&row, "card_id"))) else {
@@ -268,9 +323,11 @@ pub fn merge(lib: &Library, data: &BTreeMap<String, Vec<Row>>) -> Result<usize> 
         insert(&tx, "review_schedule", &row, false)?;
     }
     for row in data.get("study_stats").context("缺少统计记录")? {
+        check_cancel(cancel)?;
         tx.execute("INSERT INTO study_stats(day,listen_seconds,review_count,pomodoro_count) VALUES(?,?,?,?) ON CONFLICT(day) DO UPDATE SET listen_seconds=max(listen_seconds,excluded.listen_seconds),review_count=max(review_count,excluded.review_count),pomodoro_count=max(pomodoro_count,excluded.pomodoro_count)",rusqlite::params![text(row,"day"),row["listen_seconds"].as_f64().unwrap_or(0.),row["review_count"].as_f64().unwrap_or(0.),row["pomodoro_count"].as_f64().unwrap_or(0.)])?;
     }
     for row in data.get("discover_favorites").context("缺少收藏")? {
+        check_cancel(cancel)?;
         let mut row = row.clone();
         let key = text(&row, "key");
         let mut payload: Value = serde_json::from_str(&text(&row, "payload"))?;
@@ -284,6 +341,8 @@ pub fn merge(lib: &Library, data: &BTreeMap<String, Vec<Row>>) -> Result<usize> 
         }
         insert(&tx, "discover_favorites", &row, true)?;
     }
+    // Once commit starts, return its actual result; a late cancel cannot undo it.
+    check_cancel(cancel)?;
     tx.commit()?;
     Ok(imported)
 }
@@ -307,6 +366,7 @@ pub struct Storage {
     config: StorageConfig,
     secret: String,
     token: String,
+    fixture_endpoint: Option<SocketAddr>,
 }
 fn mac(key: &[u8], value: &str) -> Vec<u8> {
     use hmac::{Hmac, Mac};
@@ -343,6 +403,7 @@ impl Storage {
             config: c,
             secret,
             token,
+            fixture_endpoint: None,
         };
         s.validate()?;
         Ok(s)
@@ -352,6 +413,7 @@ impl Storage {
             config: c.clone(),
             secret: secret.into(),
             token: token.into(),
+            fixture_endpoint: None,
         };
         tmp.validate()?;
         c.credential_id = id();
@@ -364,6 +426,30 @@ impl Storage {
                 (format!("token-{}", c.credential_id), token.into()),
             ],
         )
+    }
+    /// Local protocol fixture only: numeric loopback address and fixed fake credentials.
+    /// Saved application configurations still require HTTPS and never use this transport.
+    #[doc(hidden)]
+    pub fn loopback_fixture(address: SocketAddr) -> Result<Self> {
+        ensure!(
+            address.ip().is_loopback() && address.port() != 0,
+            "夹具只允许本机回环地址"
+        );
+        Ok(Self {
+            config: StorageConfig {
+                provider: "s3".into(),
+                endpoint: "https://fixture.invalid".into(),
+                region: "us-east-1".into(),
+                bucket: "fixture-bucket".into(),
+                access_key_id: "fixture-access".into(),
+                prefix: "clarora".into(),
+                path_style: true,
+                ..Default::default()
+            },
+            secret: "fixture-secret".into(),
+            token: String::new(),
+            fixture_endpoint: Some(address),
+        })
     }
     fn validate(&self) -> Result<()> {
         let c = &self.config;
@@ -395,13 +481,16 @@ impl Storage {
         );
         Ok(())
     }
-    fn response(
+    async fn response(
         &self,
+        client: &reqwest::Client,
         method: &str,
         key: &str,
         query: &BTreeMap<String, String>,
         body: Option<Payload>,
-    ) -> Result<reqwest::blocking::Response> {
+        cancel: &Cancel,
+    ) -> Result<reqwest::Response> {
+        check_cancel(cancel)?;
         let c = &self.config;
         let oss = c.provider == "oss";
         let host = c
@@ -409,7 +498,9 @@ impl Storage {
             .trim_start_matches("https://")
             .trim_end_matches('/');
         let virtual_host = oss || !c.path_style;
-        let request_host = if virtual_host {
+        let request_host = if let Some(address) = self.fixture_endpoint {
+            address.to_string()
+        } else if virtual_host {
             format!("{}.{}", c.bucket, host)
         } else {
             host.into()
@@ -498,17 +589,18 @@ impl Storage {
             ),
         );
         let url = format!(
-            "https://{request_host}{path}{}",
+            "{}://{request_host}{path}{}",
+            if self.fixture_endpoint.is_some() {
+                "http"
+            } else {
+                "https"
+            },
             if query.is_empty() {
                 String::new()
             } else {
                 format!("?{query}")
             }
         );
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
         let mut request = client.request(method.parse()?, url);
         for (k, v) in headers {
             request = request.header(k, v);
@@ -517,14 +609,14 @@ impl Storage {
             request = match body {
                 Payload::Bytes(bytes) => request.body(bytes),
                 Payload::File(path) => {
-                    let file = fs::File::open(path)?;
+                    let file = tokio::fs::File::open(path).await?;
                     request
-                        .header("content-length", file.metadata()?.len())
-                        .body(reqwest::blocking::Body::new(file))
+                        .header("content-length", file.metadata().await?.len())
+                        .body(file)
                 }
             };
         }
-        let response = request.send()?;
+        let response = cancellable(cancel, async { Ok(request.send().await?) }).await?;
         ensure!(
             response.status().is_success(),
             "对象存储请求失败：HTTP {}",
@@ -532,75 +624,120 @@ impl Storage {
         );
         Ok(response)
     }
-    fn request(
+    async fn request(
         &self,
+        client: &reqwest::Client,
         method: &str,
         key: &str,
         query: &BTreeMap<String, String>,
         body: Option<Payload>,
+        cancel: &Cancel,
     ) -> Result<Vec<u8>> {
-        Ok(self.response(method, key, query, body)?.bytes()?.to_vec())
+        let mut response = self
+            .response(client, method, key, query, body, cancel)
+            .await?;
+        cancellable(cancel, async {
+            let mut bytes = vec![];
+            while let Some(chunk) = response.chunk().await? {
+                check_cancel(cancel)?;
+                ensure!(
+                    bytes.len() + chunk.len() <= 64 * 1024 * 1024,
+                    "备份清单或列表过大"
+                );
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(bytes)
+        })
+        .await
+    }
+    fn client(&self) -> Result<reqwest::Client> {
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(20))
+            .timeout(Duration::from_secs(120))
+            .redirect(reqwest::redirect::Policy::none());
+        if self.fixture_endpoint.is_some() {
+            builder = builder.no_proxy();
+        }
+        Ok(builder.build()?)
     }
     pub fn list(&self) -> Result<Vec<String>> {
-        let prefix = format!("{}/snapshots/", self.config.prefix);
-        let mut keys = vec![];
-        let mut token = String::new();
-        let mut seen = std::collections::HashSet::new();
-        loop {
-            let mut query = BTreeMap::from([
-                ("list-type".into(), "2".into()),
-                ("prefix".into(), prefix.clone()),
-            ]);
-            if !token.is_empty() {
-                query.insert("continuation-token".into(), token);
-            }
-            let xml = String::from_utf8(self.request("GET", "", &query, None)?)?;
-            ensure!(
-                !xml.contains("<!DOCTYPE") && !xml.contains("<!ENTITY"),
-                "不支持的 XML"
-            );
-            #[derive(Deserialize)]
-            #[serde(rename_all = "PascalCase")]
-            struct Listing {
-                #[serde(default)]
-                contents: Vec<Content>,
-                #[serde(default)]
-                is_truncated: bool,
-                next_continuation_token: Option<String>,
-            }
-            #[derive(Deserialize)]
-            #[serde(rename_all = "PascalCase")]
-            struct Content {
-                key: String,
-            }
-            let listing: Listing = quick_xml::de::from_str(&xml)?;
-            keys.extend(
-                listing
-                    .contents
-                    .into_iter()
-                    .map(|c| c.key)
-                    .filter(|k| k.starts_with(&prefix) && k.ends_with(".json")),
-            );
-            if !listing.is_truncated {
-                break;
-            }
-            token = listing
-                .next_continuation_token
-                .context("存储分页缺少令牌")?;
-            ensure!(
-                !token.is_empty() && seen.insert(token.clone()),
-                "存储分页循环"
-            );
-        }
-        keys.sort();
-        keys.reverse();
-        Ok(keys)
+        self.list_cancellable(&crate::process::cancel_token())
+    }
+    pub fn list_cancellable(&self, cancel: &Cancel) -> Result<Vec<String>> {
+        check_cancel(cancel)?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                let client = self.client()?;
+                let prefix = format!("{}/snapshots/", self.config.prefix);
+                let mut keys = vec![];
+                let mut token = String::new();
+                let mut seen = std::collections::HashSet::new();
+                loop {
+                    check_cancel(cancel)?;
+                    let mut query = BTreeMap::from([
+                        ("list-type".into(), "2".into()),
+                        ("prefix".into(), prefix.clone()),
+                    ]);
+                    if !token.is_empty() {
+                        query.insert("continuation-token".into(), token);
+                    }
+                    let xml = String::from_utf8(
+                        self.request(&client, "GET", "", &query, None, cancel)
+                            .await?,
+                    )?;
+                    ensure!(
+                        !xml.contains("<!DOCTYPE") && !xml.contains("<!ENTITY"),
+                        "不支持的 XML"
+                    );
+                    #[derive(Deserialize)]
+                    #[serde(rename_all = "PascalCase")]
+                    struct Listing {
+                        #[serde(default)]
+                        contents: Vec<Content>,
+                        #[serde(default)]
+                        is_truncated: bool,
+                        next_continuation_token: Option<String>,
+                    }
+                    #[derive(Deserialize)]
+                    #[serde(rename_all = "PascalCase")]
+                    struct Content {
+                        key: String,
+                    }
+                    let listing: Listing = quick_xml::de::from_str(&xml)?;
+                    keys.extend(
+                        listing
+                            .contents
+                            .into_iter()
+                            .map(|c| c.key)
+                            .filter(|k| k.starts_with(&prefix) && k.ends_with(".json")),
+                    );
+                    if !listing.is_truncated {
+                        break;
+                    }
+                    token = listing
+                        .next_continuation_token
+                        .context("存储分页缺少令牌")?;
+                    ensure!(
+                        !token.is_empty() && seen.insert(token.clone()),
+                        "存储分页循环"
+                    );
+                }
+                keys.sort();
+                keys.reverse();
+                Ok(keys)
+            })
     }
     pub fn upload(&self, lib: &Library, cancel: &crate::process::Cancel) -> Result<String> {
-        use std::sync::atomic::Ordering;
+        check_cancel(cancel)?;
         let (mut manifest, files) = collect(lib)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let client = self.client()?;
         for (reference, path) in files {
-            ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+            check_cancel(cancel)?;
             let key = format!(
                 "{}/media/{}/{}.{}",
                 self.config.prefix,
@@ -608,16 +745,30 @@ impl Storage {
                 reference.trim_start_matches("media:"),
                 path.extension().unwrap_or_default().to_string_lossy()
             );
-            self.response("PUT", &key, &BTreeMap::new(), Some(Payload::File(path)))?;
+            runtime.block_on(self.response(
+                &client,
+                "PUT",
+                &key,
+                &BTreeMap::new(),
+                Some(Payload::File(path)),
+                cancel,
+            ))?;
             manifest.files.insert(reference, key);
         }
         let key = format!("{}/snapshots/{}.json", self.config.prefix, manifest.id);
-        self.request(
-            "PUT",
-            &key,
-            &BTreeMap::new(),
-            Some(Payload::Bytes(serde_json::to_vec(&manifest)?)),
-        )?;
+        let bytes = serde_json::to_vec(&manifest)?;
+        check_cancel(cancel)?;
+        // Publishing the manifest is the remote commit. A lost response cannot prove rollback.
+        runtime
+            .block_on(self.response(
+                &client,
+                "PUT",
+                &key,
+                &BTreeMap::new(),
+                Some(Payload::Bytes(bytes)),
+                cancel,
+            ))
+            .context("备份清单发布结果未确认，请刷新云端列表核实；附件可能已上传")?;
         Ok(key)
     }
     pub fn restore(
@@ -626,13 +777,24 @@ impl Storage {
         key: &str,
         cancel: &crate::process::Cancel,
     ) -> Result<usize> {
-        use std::sync::atomic::Ordering;
+        check_cancel(cancel)?;
         ensure!(
             key.starts_with(&format!("{}/snapshots/", self.config.prefix)),
             "备份路径无效"
         );
-        let mut manifest: Manifest =
-            serde_json::from_slice(&self.request("GET", key, &BTreeMap::new(), None)?)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let client = self.client()?;
+        let mut manifest: Manifest = serde_json::from_slice(&runtime.block_on(self.request(
+            &client,
+            "GET",
+            key,
+            &BTreeMap::new(),
+            None,
+            cancel,
+        ))?)?;
+        check_cancel(cancel)?;
         validate(&mut manifest)?;
         ensure!(
             key == format!("{}/snapshots/{}.json", self.config.prefix, manifest.id),
@@ -643,7 +805,7 @@ impl Storage {
         let mut paths: HashMap<String, String> = HashMap::new();
         let result = (|| {
             map_media(&mut manifest.data, |reference| {
-                ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+                check_cancel(cancel)?;
                 if let Some(p) = paths.get(reference) {
                     return Ok(p.clone());
                 }
@@ -656,13 +818,30 @@ impl Storage {
                     "远端附件路径无效"
                 );
                 let path = root.join(&key[prefix.len()..]);
-                self.response("GET", key, &BTreeMap::new(), None)?
-                    .copy_to(&mut fs::File::create(&path)?)?;
+                runtime.block_on(async {
+                    let mut response = self
+                        .response(&client, "GET", key, &BTreeMap::new(), None, cancel)
+                        .await?;
+                    cancellable(cancel, async {
+                        let mut output = fs::File::create(&path)?;
+                        let mut length = 0_u64;
+                        while let Some(chunk) = response.chunk().await? {
+                            check_cancel(cancel)?;
+                            length += chunk.len() as u64;
+                            ensure!(length < 8 * 1024 * 1024 * 1024, "附件过大");
+                            output.write_all(&chunk)?;
+                        }
+                        check_cancel(cancel)?;
+                        output.sync_all()?;
+                        Ok(())
+                    })
+                    .await
+                })?;
                 let path = path.to_string_lossy().to_string();
                 paths.insert(reference.into(), path.clone());
                 Ok(path)
             })?;
-            merge(lib, &manifest.data)
+            merge_cancellable(lib, &manifest.data, cancel)
         })();
         if result.is_err() {
             let _ = fs::remove_dir_all(root);

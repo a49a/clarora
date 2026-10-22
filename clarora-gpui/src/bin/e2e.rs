@@ -5,6 +5,8 @@ mod ai_completion;
 mod asr_pauses;
 #[path = "support/audio_library.rs"]
 mod audio_library;
+#[path = "support/backup_cancel.rs"]
+mod backup_cancel;
 #[path = "support/bilibili_parts.rs"]
 mod bilibili_parts;
 #[path = "support/blind_listening.rs"]
@@ -169,6 +171,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     fs::create_dir_all(&root)?;
     let lib = Library::open(root.join("source"))?;
     ai_completion::run(&lib, results)?;
+    backup_cancel::run(&lib, results)?;
     lib.import_words("bright\t明亮的\ncalm - 平静的", "manual", false)?;
     ensure!(lib.list("words")?.len() == 2, "词条导入失败");
     let card = lib

@@ -3683,9 +3683,13 @@ impl AppView {
                         },
                     );
                 }
-                Action::CloudList => self.begin("正在读取备份版本…", move |lib, _, _| {
-                    Ok(Outcome::Backups(backup::Storage::load(&lib)?.list()?))
-                }),
+                Action::CloudList => {
+                    self.begin("正在读取备份版本…", move |lib, cancel, _| {
+                        Ok(Outcome::Backups(
+                            backup::Storage::load(&lib)?.list_cancellable(&cancel)?,
+                        ))
+                    })
+                }
                 Action::CloudBackup => {
                     self.begin("正在上传资料与附件…", move |lib, cancel, _| {
                         Ok(Outcome::Message(format!(
