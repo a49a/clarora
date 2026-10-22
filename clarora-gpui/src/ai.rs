@@ -8,11 +8,18 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     fs,
     path::Path,
     sync::{Mutex, OnceLock, atomic::Ordering},
     time::Duration,
 };
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialSource {
+    Chat,
+    Asr,
+}
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -24,6 +31,7 @@ pub struct Config {
     pub local_model: String,
     pub engine: String,
     pub credential_id: String,
+    pub shared_key_source: Option<CredentialSource>,
 }
 impl Config {
     /// Keep legacy fields in sync so existing transcription consumers keep working.
@@ -45,40 +53,92 @@ pub fn shared_settings(mut config: Config, chat_key: String, asr_key: String) ->
     }
 }
 pub fn save_shared(lib: &Library, config: Config, key: &str) -> Result<()> {
-    save(lib, config.shared_api(), key, key)
+    let mut config = config.shared_api();
+    config.shared_key_source = Some(CredentialSource::Chat);
+    save(lib, config, key, key)
 }
 fn config_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
+fn secret_cache() -> &'static Mutex<BTreeMap<String, String>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
 fn secret(name: &str) -> Result<String> {
-    match keyring::Entry::new("Clarora-GPUI", name)?.get_password() {
-        Ok(v) => Ok(v),
-        Err(keyring::Error::NoEntry) => Ok(String::new()),
-        Err(e) => Err(e.into()),
+    let mut cache = secret_cache().lock().unwrap();
+    if let Some(value) = cache.get(name) {
+        return Ok(value.clone());
     }
+    let value = match keyring::Entry::new("Clarora-GPUI", name)?.get_password() {
+        Ok(v) => v,
+        Err(keyring::Error::NoEntry) => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    cache.insert(name.to_owned(), value.clone());
+    Ok(value)
+}
+/// Non-secret settings can be read at startup and for local inference without OS authorization.
+pub fn load_config(lib: &Library) -> Result<Config> {
+    let raw = lib.setting("ai_config")?;
+    if raw.is_empty() {
+        return Ok(Config {
+            local_model: "base.en".into(),
+            engine: "local".into(),
+            ..Default::default()
+        });
+    }
+    Ok(serde_json::from_str(&raw)?)
+}
+fn credential(config: &Config, role: CredentialSource) -> Result<String> {
+    if config.credential_id.is_empty() {
+        return Ok(String::new());
+    }
+    let role = match config.shared_key_source.unwrap_or(role) {
+        CredentialSource::Chat => "chat",
+        CredentialSource::Asr => "asr",
+    };
+    secret(&format!("{role}-{}", config.credential_id))
 }
 pub fn load(lib: &Library) -> Result<(Config, String, String)> {
     let _guard = config_lock().lock().unwrap();
-    let raw = lib.setting("ai_config")?;
-    if raw.is_empty() {
-        return Ok((
-            Config {
-                local_model: "base.en".into(),
-                engine: "local".into(),
-                ..Default::default()
-            },
-            String::new(),
-            String::new(),
-        ));
-    }
-    let config: Config = serde_json::from_str(&raw)?;
-    if config.credential_id.is_empty() {
-        return Ok((config, String::new(), String::new()));
-    }
-    let chat = secret(&format!("chat-{}", config.credential_id))?;
-    let asr = secret(&format!("asr-{}", config.credential_id))?;
+    let config = load_config(lib)?;
+    let chat = credential(&config, CredentialSource::Chat)?;
+    let asr = credential(&config, CredentialSource::Asr)?;
     Ok((config, chat, asr))
+}
+pub fn load_chat(lib: &Library) -> Result<(Config, String)> {
+    let _guard = config_lock().lock().unwrap();
+    let config = load_config(lib)?;
+    let key = credential(&config, CredentialSource::Chat)?;
+    Ok((config, key))
+}
+/// An untouched password field retains the credential reference without reading its secret.
+pub fn save_preferences(lib: &Library, config: Config, key: &str) -> Result<()> {
+    if !key.is_empty() {
+        return save_shared(lib, config, key);
+    }
+    let _guard = config_lock().lock().unwrap();
+    let old = load_config(lib)?;
+    let source = old.shared_key_source.unwrap_or_else(|| {
+        if old.base_url.trim().is_empty()
+            && old.model.trim().is_empty()
+            && (!old.asr_base_url.trim().is_empty() || !old.asr_model.trim().is_empty())
+        {
+            CredentialSource::Asr
+        } else {
+            CredentialSource::Chat
+        }
+    });
+    let mut config = config.shared_api();
+    for endpoint in [&config.base_url, &config.asr_base_url] {
+        if !endpoint.is_empty() {
+            endpoint_url(endpoint)?;
+        }
+    }
+    config.credential_id = old.credential_id;
+    config.shared_key_source = Some(source);
+    lib.set_setting("ai_config", &serde_json::to_string(&config)?)
 }
 pub fn save(lib: &Library, mut config: Config, chat: &str, asr: &str) -> Result<()> {
     let _guard = config_lock().lock().unwrap();
@@ -99,6 +159,11 @@ pub fn save(lib: &Library, mut config: Config, chat: &str, asr: &str) -> Result<
     if result.is_err() {
         let _ = chat_entry.delete_credential();
         let _ = asr_entry.delete_credential();
+    }
+    if result.is_ok() {
+        let mut cache = secret_cache().lock().unwrap();
+        cache.insert(format!("chat-{}", config.credential_id), chat.to_owned());
+        cache.insert(format!("asr-{}", config.credential_id), asr.to_owned());
     }
     result
 }
@@ -137,7 +202,7 @@ pub fn chat(
 }
 pub fn ocr(lib: &Library, path: &Path, cancel: &Cancel) -> Result<String> {
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
-    let (c, key, _) = load(lib)?;
+    let (c, key) = load_chat(lib)?;
     let model = if c.vision_model.is_empty() {
         c.model
     } else {
@@ -185,8 +250,9 @@ pub fn ocr(lib: &Library, path: &Path, cancel: &Cancel) -> Result<String> {
 }
 pub fn transcribe(lib: &Library, path: &Path, cancel: &Cancel) -> Result<Vec<Cue>> {
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
-    let (c, _, key) = load(lib)?;
+    let c = load_config(lib)?;
     if c.engine == "compatible" {
+        let key = credential(&c, CredentialSource::Asr)?;
         let base = if c.asr_base_url.is_empty() {
             &c.base_url
         } else {

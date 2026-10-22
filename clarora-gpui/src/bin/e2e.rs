@@ -506,6 +506,44 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
             && legacy_key == "asr-only-key",
         "只有旧转写配置时未沿用完整一组"
     );
+    let preferences = Library::open(lib.root.join("ai-preferences-without-keychain"))?;
+    let mut metadata = config.clone();
+    metadata.credential_id = "e2e-unread-credential".into();
+    preferences.set_setting("ai_config", &serde_json::to_string(&metadata)?)?;
+    ensure!(
+        ai::load_config(&preferences)?.credential_id == metadata.credential_id,
+        "仅配置加载丢失凭证引用"
+    );
+    let mut draft = metadata.clone();
+    draft.local_model = "tiny.en".into();
+    ai::save_preferences(&preferences, draft, "")?;
+    let retained = ai::load_config(&preferences)?;
+    ensure!(
+        retained.credential_id == metadata.credential_id && retained.local_model == "tiny.en",
+        "空密钥保存丢失原凭证或本地模型"
+    );
+    let mut legacy_metadata = ai::Config {
+        asr_base_url: metadata.base_url.clone(),
+        asr_model: "asr-only".into(),
+        credential_id: metadata.credential_id.clone(),
+        ..Default::default()
+    };
+    preferences.set_setting("ai_config", &serde_json::to_string(&legacy_metadata)?)?;
+    legacy_metadata.base_url = legacy_metadata.asr_base_url.clone();
+    legacy_metadata.model = legacy_metadata.asr_model.clone();
+    ai::save_preferences(&preferences, legacy_metadata, "")?;
+    let retained_asr = ai::load_config(&preferences)?;
+    ensure!(
+        retained_asr.shared_key_source == Some(ai::CredentialSource::Asr)
+            && retained_asr.credential_id == metadata.credential_id,
+        "旧转写密钥引用未保留"
+    );
+    fs::write(
+        output.join("keychain-lazy-evidence.json"),
+        serde_json::to_vec_pretty(
+            &json!({"metadata_load":true,"blank_key_retains_reference":true,"local_preferences_without_secret_read":true,"legacy_asr_reference_retained":true,"uses_disposable_metadata_only":true}),
+        )?,
+    )?;
     let config = config.shared_api();
     ensure!(
         config.asr_base_url == config.base_url && config.asr_model == config.model,
@@ -651,7 +689,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
         fs::copy(model, lib.root.join("models/ggml-tiny.en.bin"))?;
         lib.set_setting(
             "ai_config",
-            &json!({"engine":"local","local_model":"tiny.en"}).to_string(),
+            &json!({"engine":"local","local_model":"tiny.en","credential_id":"e2e-unread-local-credential"}).to_string(),
         )?;
         let speech = PathBuf::from(speech);
         let spoken_video = root.join("spoken-video.mp4");

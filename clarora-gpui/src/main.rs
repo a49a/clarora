@@ -619,17 +619,16 @@ impl AppView {
             this.practice_id = this.lib.setting("library_group").unwrap_or_default();
         }
         this.refresh();
-        let ai_result = ai::load(&this.lib);
+        let ai_result = ai::load_config(&this.lib);
         match ai_result {
-            Ok((c, key, asr)) => {
-                let (c, key) = ai::shared_settings(c, key, asr);
+            Ok(c) => {
+                let (c, _) = ai::shared_settings(c, String::new(), String::new());
                 for (k, v) in [
                     ("base_url", c.base_url),
                     ("model", c.model),
                     ("vision_model", c.vision_model),
                     ("local_model", c.local_model),
                     ("engine", c.engine),
-                    ("chat_key", key),
                 ] {
                     this.set(k, v, window, cx);
                 }
@@ -3462,8 +3461,8 @@ impl AppView {
                     self.lib.set_setting("daily_limit", &limit)?;
                     self.lib
                         .set_setting("command", &self.value("command", cx))?;
-                    self.begin("正在保存到系统凭证库…", move |lib, _, _| {
-                        ai::save_shared(&lib, config, &key)?;
+                    self.begin("正在保存 AI 设置…", move |lib, _, _| {
+                        ai::save_preferences(&lib, config, &key)?;
                         Ok(Outcome::Message(
                             "AI 设置已保存，聊天与远端转写共用配置，密钥保存在系统凭证库".into(),
                         ))
@@ -7638,7 +7637,7 @@ impl AppView {
                             .child("聊天与远端转写共用下面一组设置，模型需支持这两种能力。保存后统一生效。"))
                         .child(self.field("base_url", "共用 API Base URL"))
                         .child(self.field("model", "聊天／远端转写共用模型 ID"))
-                        .child(self.field("chat_key", "共用 API Key · 系统凭证库"))
+                        .child(self.field("chat_key", "共用 API Key · 留空保留已保存密钥"))
                         .child(self.field("vision_model", "视觉模型（可选，留空使用共用模型）"))
                         .child(
                             self.field("engine", "转写引擎：local = 本机；compatible = 远端 API"),

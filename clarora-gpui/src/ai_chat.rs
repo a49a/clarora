@@ -98,7 +98,7 @@ pub fn chat_stream(
     mut progress: impl FnMut(ChatReply),
 ) -> Result<ChatReply> {
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
-    let (config, key, _) = ai::load(lib)?;
+    let (config, key) = ai::load_chat(lib)?;
     ensure!(!config.model.is_empty(), "请先设置聊天模型");
     let base = ai::endpoint_url(&config.base_url)?;
     let mut messages = vec![
