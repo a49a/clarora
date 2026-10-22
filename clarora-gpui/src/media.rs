@@ -4,7 +4,11 @@ use serde_json::{Value, json};
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     path::Path,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
     time::Duration,
 };
@@ -163,6 +167,22 @@ unsafe fn node_json(node: &Node) -> Value {
         }
     }
 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct SentenceRepeat {
+    pub request_id: u64,
+    pub path: String,
+    pub start: f64,
+    pub end: f64,
+    /// Includes the first play. None repeats until explicitly stopped.
+    pub total_plays: Option<u32>,
+    pub current_play: u32,
+    pub finished: bool,
+}
+struct RunningSentenceRepeat {
+    state: SentenceRepeat,
+    initial_seek_seen: bool,
+    armed: bool,
+}
 #[derive(Clone, Default)]
 pub struct Playback {
     pub position: f64,
@@ -176,16 +196,20 @@ pub struct Playback {
     pub secondary_subtitles_visible: bool,
     pub tracks: Vec<Value>,
     pub frame: Option<Arc<gpui::RenderImage>>,
+    pub sentence_repeat: Option<SentenceRepeat>,
     pub error: String,
 }
 enum Message {
     Command(Vec<String>),
     Set(String, String),
     Subtitles(bool),
+    RepeatSentence(SentenceRepeat),
+    ClearSentenceRepeat,
     Close,
 }
 pub struct Player {
     tx: mpsc::Sender<Message>,
+    next_sentence_repeat_id: AtomicU64,
     pub state: Arc<Mutex<Playback>>,
     worker: Option<thread::JoinHandle<()>>,
 }
@@ -213,6 +237,7 @@ impl Player {
         });
         Self {
             tx,
+            next_sentence_repeat_id: AtomicU64::new(1),
             state,
             worker: Some(worker),
         }
@@ -228,10 +253,43 @@ impl Player {
     pub fn set_subtitles_visible(&self, visible: bool) {
         let _ = self.tx.send(Message::Subtitles(visible));
     }
+    /// Repeats one fixed subtitle range without reloading the active media.
+    pub fn repeat_sentence(
+        &self,
+        path: &Path,
+        start: f64,
+        end: f64,
+        total_plays: Option<u32>,
+    ) -> Result<u64> {
+        ensure!(start.is_finite() && end.is_finite(), "字幕时间无效");
+        ensure!(start >= 0. && end > start, "字幕结束时间必须晚于开始时间");
+        ensure!(
+            total_plays.is_none_or(|count| count > 0 && count <= i32::MAX as u32),
+            "重复次数无效"
+        );
+        ensure!(!path.as_os_str().is_empty(), "请先打开视频");
+        let request_id = self.next_sentence_repeat_id.fetch_add(1, Ordering::Relaxed);
+        self.tx
+            .send(Message::RepeatSentence(SentenceRepeat {
+                request_id,
+                path: path.to_string_lossy().into_owned(),
+                start,
+                end,
+                total_plays,
+                current_play: 1,
+                finished: false,
+            }))
+            .context("播放器已关闭")?;
+        Ok(request_id)
+    }
+    pub fn clear_sentence_repeat(&self) {
+        let _ = self.tx.send(Message::ClearSentenceRepeat);
+    }
     pub fn open(&self, path: &Path) {
         self.open_range(path, 0., 0., false);
     }
     pub fn open_range(&self, path: &Path, start: f64, end: f64, paused: bool) {
+        self.clear_sentence_repeat();
         self.set("pause", "yes");
         self.set("ab-loop-a", "no");
         self.set("ab-loop-b", "no");
@@ -283,6 +341,108 @@ impl Drop for ContextOwner<'_> {
     }
 }
 unsafe extern "C" fn wake(_: *mut c_void) {}
+unsafe fn set_native(api: &Api, handle: Handle, key: &str, value: &str) -> Result<()> {
+    let status = unsafe {
+        (api.set)(
+            handle,
+            CString::new(key)?.as_ptr(),
+            CString::new(value)?.as_ptr(),
+        )
+    };
+    ensure!(status >= 0, "播放器设置失败：{key} ({status})");
+    Ok(())
+}
+unsafe fn clear_native_sentence_repeat(api: &Api, handle: Handle) -> Result<()> {
+    let mut first_error = None;
+    for (key, value) in [
+        ("ab-loop-a", "no"),
+        ("ab-loop-b", "no"),
+        ("ab-loop-count", "inf"),
+        ("end", "none"),
+    ] {
+        if let Err(error) = unsafe { set_native(api, handle, key, value) } {
+            first_error.get_or_insert(error);
+        }
+    }
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    Ok(())
+}
+unsafe fn native_path(api: &Api, handle: Handle) -> String {
+    let mut node: Node = unsafe { std::mem::zeroed() };
+    if unsafe { (api.property)(handle, c"path".as_ptr(), 6, &mut node as *mut _ as _) } < 0 {
+        return String::new();
+    }
+    let path = unsafe { node_json(&node) }
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    unsafe { (api.node_free)(&mut node) };
+    path
+}
+unsafe fn prepare_sentence_repeat(
+    api: &Api,
+    handle: Handle,
+    state: &mut SentenceRepeat,
+) -> Result<()> {
+    unsafe {
+        ensure!(
+            native_path(api, handle) == state.path,
+            "当前视频已切换，请重新选择字幕句"
+        );
+        let mut duration = 0.;
+        if (api.property)(
+            handle,
+            c"duration".as_ptr(),
+            5,
+            &mut duration as *mut _ as _,
+        ) >= 0
+            && duration > 0.
+        {
+            state.end = state.end.min(duration);
+            ensure!(state.start < state.end, "字幕时间超出视频范围");
+        }
+    }
+    Ok(())
+}
+unsafe fn start_sentence_repeat(
+    api: &Api,
+    handle: Handle,
+    state: SentenceRepeat,
+) -> Result<RunningSentenceRepeat> {
+    unsafe {
+        set_native(api, handle, "pause", "yes")?;
+        clear_native_sentence_repeat(api, handle)?;
+        // libmpv counts seek-backs, so three total plays require two loops.
+        // Its native end boundary pauses the last play precisely, even when a
+        // short sentence finishes between worker/UI snapshots.
+        if let Some(total) = state.total_plays {
+            set_native(api, handle, "end", &state.end.to_string())?;
+            set_native(api, handle, "ab-loop-count", &(total - 1).to_string())?;
+        }
+        set_native(api, handle, "loop-file", "no")?;
+        set_native(api, handle, "ab-loop-a", &state.start.to_string())?;
+        set_native(api, handle, "ab-loop-b", &state.end.to_string())?;
+        let position = CString::new(state.start.to_string())?;
+        let command = [
+            c"seek".as_ptr(),
+            position.as_ptr(),
+            c"absolute+exact".as_ptr(),
+            std::ptr::null(),
+        ];
+        ensure!(
+            (api.command)(handle, command.as_ptr()) >= 0,
+            "无法定位字幕句"
+        );
+        set_native(api, handle, "pause", "no")?;
+    }
+    Ok(RunningSentenceRepeat {
+        state,
+        initial_seek_seen: false,
+        armed: false,
+    })
+}
 fn worker(
     rx: mpsc::Receiver<Message>,
     shared: Arc<Mutex<Playback>>,
@@ -332,10 +492,23 @@ fn worker(
         let mut tick = 0;
         let mut subtitle_is_bitmap = false;
         let mut subtitles_visible = true;
+        let mut sentence_repeat: Option<RunningSentenceRepeat> = None;
         loop {
             match rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(Message::Close) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Ok(Message::Command(args)) => {
+                    let cancels_repeat = matches!(
+                        args.first().map(String::as_str),
+                        Some("loadfile" | "stop" | "seek")
+                    ) || sentence_repeat
+                        .as_ref()
+                        .is_some_and(|repeat| repeat.state.finished)
+                        && args.first().is_some_and(|arg| arg == "cycle")
+                        && args.get(1).is_some_and(|arg| arg == "pause");
+                    if cancels_repeat && sentence_repeat.take().is_some() {
+                        clear_native_sentence_repeat(&api, handle)?;
+                        shared.lock().unwrap().sentence_repeat = None;
+                    }
                     let strings = args
                         .iter()
                         .map(|s| CString::new(s.as_str()))
@@ -348,6 +521,15 @@ fn worker(
                     }
                 }
                 Ok(Message::Set(key, value)) => {
+                    if key == "pause"
+                        && value == "no"
+                        && sentence_repeat
+                            .as_ref()
+                            .is_some_and(|repeat| repeat.state.finished)
+                    {
+                        sentence_repeat = None;
+                        shared.lock().unwrap().sentence_repeat = None;
+                    }
                     let status = (api.set)(
                         handle,
                         CString::new(key)?.as_ptr(),
@@ -381,6 +563,35 @@ fn worker(
                         "无法切换第二字幕显示"
                     );
                 }
+                Ok(Message::RepeatSentence(mut state)) => {
+                    if let Err(error) = prepare_sentence_repeat(&api, handle, &mut state) {
+                        shared.lock().unwrap().error = error.to_string();
+                    } else {
+                        match start_sentence_repeat(&api, handle, state) {
+                            Ok(repeat) => {
+                                let mut shared = shared.lock().unwrap();
+                                shared.error.clear();
+                                shared.sentence_repeat = Some(repeat.state.clone());
+                                sentence_repeat = Some(repeat);
+                            }
+                            Err(error) => {
+                                // Installing native options can fail midway (for example on
+                                // an incompatible libmpv). Never leave a stale end boundary.
+                                let _ = clear_native_sentence_repeat(&api, handle);
+                                sentence_repeat = None;
+                                let mut shared = shared.lock().unwrap();
+                                shared.sentence_repeat = None;
+                                shared.error = error.to_string();
+                            }
+                        }
+                    }
+                }
+                Ok(Message::ClearSentenceRepeat) => {
+                    if sentence_repeat.take().is_some() {
+                        clear_native_sentence_repeat(&api, handle)?;
+                        shared.lock().unwrap().sentence_repeat = None;
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
             for _ in 0..32 {
@@ -393,13 +604,77 @@ fn worker(
                 } else if (*event).id == 7 && !(*event).data.is_null() {
                     let end = &*((*event).data as *const EndFile);
                     if end.reason == 4 {
+                        if sentence_repeat.take().is_some() {
+                            clear_native_sentence_repeat(&api, handle)?;
+                        }
                         let message =
                             CStr::from_ptr((api.error_string)(end.error)).to_string_lossy();
                         let mut state = shared.lock().unwrap();
                         state.error = format!("无法播放媒体：{message}");
                         state.frame = None;
                         state.paused = true;
+                        state.sentence_repeat = None;
                     }
+                }
+                if let Some(repeat) = sentence_repeat.as_mut().filter(|r| !r.state.finished) {
+                    if (*event).id == 20 {
+                        if repeat.initial_seek_seen {
+                            if repeat.state.total_plays.is_none() {
+                                repeat.state.current_play =
+                                    repeat.state.current_play.saturating_add(1);
+                            }
+                        } else {
+                            repeat.initial_seek_seen = true;
+                        }
+                    } else if (*event).id == 21 && repeat.initial_seek_seen {
+                        repeat.armed = true;
+                    }
+                }
+            }
+            if let Some(repeat) = sentence_repeat.as_mut().filter(|r| !r.state.finished) {
+                let mut remaining = -1i64;
+                let mut paused = 0;
+                let mut eof = 0;
+                (api.property)(
+                    handle,
+                    c"remaining-ab-loops".as_ptr(),
+                    4,
+                    &mut remaining as *mut _ as _,
+                );
+                (api.property)(handle, c"pause".as_ptr(), 3, &mut paused as *mut _ as _);
+                (api.property)(handle, c"eof-reached".as_ptr(), 3, &mut eof as *mut _ as _);
+                if let Some(total) = repeat.state.total_plays {
+                    if remaining >= 0 {
+                        repeat.state.current_play =
+                            total.saturating_sub(remaining as u32).max(1).min(total);
+                    }
+                    if repeat.armed && remaining == 0 && eof != 0 && paused != 0 {
+                        clear_native_sentence_repeat(&api, handle)?;
+                        repeat.state.finished = true;
+                        repeat.state.current_play = total;
+                    }
+                }
+            }
+            {
+                let mut state = shared.lock().unwrap();
+                state.sentence_repeat = sentence_repeat.as_ref().map(|repeat| repeat.state.clone());
+                if state
+                    .sentence_repeat
+                    .as_ref()
+                    .is_some_and(|repeat| repeat.finished)
+                {
+                    let mut position = 0.;
+                    if (api.property)(
+                        handle,
+                        c"time-pos".as_ptr(),
+                        5,
+                        &mut position as *mut _ as _,
+                    ) >= 0
+                    {
+                        state.position = position;
+                    }
+                    state.paused = true;
+                    state.eof = false;
                 }
             }
             if (api.update)(owned.render) & 1 != 0 {
@@ -498,6 +773,13 @@ fn worker(
                     media_path = node_json(&node).as_str().unwrap_or("").into();
                     (api.node_free)(&mut node);
                 }
+                if sentence_repeat
+                    .as_ref()
+                    .is_some_and(|repeat| repeat.state.path != media_path)
+                {
+                    clear_native_sentence_repeat(&api, handle)?;
+                    sentence_repeat = None;
+                }
                 let mut subtitle = String::new();
                 if (api.property)(handle, c"sub-text".as_ptr(), 6, &mut node as *mut _ as _) >= 0 {
                     subtitle = node_json(&node).as_str().unwrap_or("").into();
@@ -507,11 +789,15 @@ fn worker(
                 s.position = pos;
                 s.duration = duration;
                 s.paused = paused != 0;
-                s.eof = eof != 0;
+                s.eof = eof != 0
+                    && !sentence_repeat
+                        .as_ref()
+                        .is_some_and(|repeat| repeat.state.finished);
                 s.path = media_path;
                 s.tracks = tracks;
                 s.subtitle = subtitle;
                 s.subtitle_is_bitmap = subtitle_is_bitmap;
+                s.sentence_repeat = sentence_repeat.as_ref().map(|repeat| repeat.state.clone());
                 let mut main_visible = 0;
                 let mut second_visible = 0;
                 (api.property)(

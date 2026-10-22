@@ -46,6 +46,7 @@ python ./clarora-gpui/scripts/install-pdfium.py ./clarora-gpui/target/package
 - 可通过 `--data-dir /absolute/path` 指定测试资料目录。不会自动打开或修改原版数据库。
 - 设置页可只读导入原版 SQLite 快照、导入/导出 v2 ZIP 资料备份，或配置 S3/OSS。密钥默认保存于本机 SQLite，可选开启系统凭证库安全模式；应用导出的资料备份不包含密钥。
 - 视频页支持本地视频、bilibili BV/av/完整地址及 `?p=` 分 P、取消下载、字幕主副轨、外部字幕、A/B、倍速和片段卡。需本机媒体工具，网络和视频可用性由视频来源决定。
+- 视频控制栏“本句重复”可选择无限重复或重复三次；字幕行也提供两个直接入口，普通和全屏模式共用。三次表示从句首总共播放三遍，之后暂停在句尾并显示完成；可继续播放或重新选择重复。手动拖动进度、前后跳转、切句、换视频或离开视频模块会退出旧句重复。此功能需要带时间轴的字幕；句尾超出视频时按实际视频长度截断。
 - 视频字幕可直接提问：生成字幕或加载 UTF-8 SRT / VTT 后，点“问当前句”“问整段字幕”，或某条字幕的“问 AI”，在右侧输入问题并发送。引用包含时间戳；当前句和指定行会暂停播放，并固定本次引用。不同视频、分P、字幕内容和引用范围各自保留会话，回答可存为问答卡。整段字幕超过 10,000 句或 120,000 字符时提示改用单句，不静默截断。内嵌字幕未解析为完整时间轴时只支持播放器当前句。使用设置中的共用 API；本地 Whisper / SenseVoice 仅负责转写，不负责问答。
 - AI 设置提供一组共用 Base URL、模型 ID 和 API Key，供聊天与远端时间轴转写使用，保存后统一生效；模型需同时支持聊天与带时间轴转写接口。旧独立配置保存前保持原行为，旧版仅配置转写时表单沿用转写整组。视觉模型可单独选填，本地转写仍使用独立本地模型。独立侧栏按固定材料保留最多 12 个聊天会话和草稿，推理内容可展开。聊天流不受支持（HTTP 404/405）时回退一次非流式接口；断流、截断和模型错误不会保存为成功回答。
 - 设置页“密钥存储”的安全模式默认关闭：AI 与对象存储密钥保存于 SQLite 的本机专用表，普通读取不会访问钥匙串。开启后迁移现有本机密钥到系统凭证库，成功后移除 SQLite 中的密钥记录；失败保留原模式与数据。关闭安全模式不会自动读取钥匙串；旧密钥可以重新输入保存，或主动点击“导入旧钥匙串密钥”授权一次迁移。SQLite 中密钥未额外加密，直接复制整个数据库文件会包含这些本机密钥；应用导出的资料备份不包含密钥。
@@ -186,6 +187,8 @@ PDFIUM_LIB_PATH=/absolute/path/containing/pdfium cargo run --manifest-path claro
 ```
 
 写作保存、批改与备份场景由默认 E2E 收集，也可用 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence --writing-only` 定向复验，证据保留在独立写作资料目录。
+
+本句重复场景由默认 E2E 收集，也可用 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence --video-repeat-only` 定向复验。使用真实 FFmpeg/libmpv 检查无限循环、三次后暂停、短句、视频末句、重选、暂停继续、手动跳转和换片，保留逐步播放快照和解码帧。
 
 默认 E2E 同时收集复习类型与限额、AI 完成校验、云备份取消三组回归场景。只复验这三组可执行 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence --reliability-only`；同样生成 `e2e-report.json`，子目录保留队列、HTTP、取消耗时和 SQLite 前后状态证据。
 

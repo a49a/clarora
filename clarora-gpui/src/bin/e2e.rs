@@ -27,6 +27,8 @@ mod video_jobs;
 mod video_library;
 #[path = "support/video_qa.rs"]
 mod video_qa;
+#[path = "support/video_repeat.rs"]
+mod video_repeat;
 #[path = "support/video_translation.rs"]
 mod video_translation;
 #[path = "support/writing.rs"]
@@ -180,6 +182,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = output.join(format!("run-{}", data::id()));
     fs::create_dir_all(&root)?;
     let lib = Library::open(root.join("source"))?;
+    video_repeat::run(&lib, results)?;
     writing::run(&lib, results)?;
     reliability(&lib, results)?;
     lib.import_words("bright\t明亮的\ncalm - 平静的", "manual", false)?;
@@ -836,6 +839,7 @@ fn main() -> Result<()> {
         Some("--http-only") => "http-only",
         Some("--reliability-only") => "reliability-only",
         Some("--writing-only") => "writing-only",
+        Some("--video-repeat-only") => "video-repeat-only",
         _ => "full",
     };
     let result = if mode == "http-only" {
@@ -846,6 +850,9 @@ fn main() -> Result<()> {
             &PathBuf::from(args.get(4).context("缺少图片夹具")?),
             &mut results,
         )
+    } else if mode == "video-repeat-only" {
+        let lib = Library::open(output.join(format!("video-repeat-{}", data::id())))?;
+        video_repeat::run(&lib, &mut results)
     } else if mode == "writing-only" {
         let lib = Library::open(output.join(format!("writing-{}", data::id())))?;
         writing::run(&lib, &mut results)
