@@ -62,9 +62,9 @@ pub fn run(
                 requests.lock().unwrap().push(json!({"model":model,"stream":streaming,"history_clean":history_clean}));
                 let (status,kind,payload)=match model {
                     "fallback" if streaming => (405,"application/json","{}".to_string()),
-                    "fallback" => (200,"application/json",json!({"choices":[{"message":{"content":"plain fallback"}}]}).to_string()),
+                    "fallback" => (200,"application/json",json!({"choices":[{"message":{"content":"plain fallback"},"finish_reason":"stop"}]}).to_string()),
                     "denied" => (401,"application/json","{}".to_string()),
-                    "keypoints" => (200,"application/json",json!({"choices":[{"message":{"content":json!([{"text":"Hello","translation":"你好"},{"text":"absent fixture","translation":"应过滤"}]).to_string()}}]}).to_string()),
+                    "keypoints" => (200,"application/json",json!({"choices":[{"message":{"content":json!([{"text":"Hello","translation":"你好"},{"text":"absent fixture","translation":"应过滤"}]).to_string()},"finish_reason":"stop"}]}).to_string()),
                     "truncated" => (200,"text/event-stream","data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_string()),
                     "error" => (200,"text/event-stream","data: {\"error\":{\"message\":\"fixture\"}}\n\ndata: [DONE]\n\n".to_string()),
                     "length" => (200,"text/event-stream","data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n".to_string()),

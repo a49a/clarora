@@ -1,4 +1,6 @@
 //! End-to-end library workflows using real SQLite, ZIP, filesystem, processes and HTTP.
+#[path = "support/ai_completion.rs"]
+mod ai_completion;
 #[path = "support/asr_pauses.rs"]
 mod asr_pauses;
 #[path = "support/audio_library.rs"]
@@ -150,7 +152,7 @@ fn mock_ai() -> Result<(String, Arc<AtomicBool>, thread::JoinHandle<Vec<String>>
                     json!({"choices":[{"message":{"content":"Clarora OCR"}}]}).to_string(),
                 )
             } else {
-                ("text/event-stream","data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\ndata: [DONE]\n\n".to_string())
+                ("text/event-stream","data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" world\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string())
             };
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
@@ -166,6 +168,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = output.join(format!("run-{}", data::id()));
     fs::create_dir_all(&root)?;
     let lib = Library::open(root.join("source"))?;
+    ai_completion::run(&lib, results)?;
     lib.import_words("bright\t明亮的\ncalm - 平静的", "manual", false)?;
     ensure!(lib.list("words")?.len() == 2, "词条导入失败");
     let card = lib

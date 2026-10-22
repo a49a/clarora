@@ -10,6 +10,41 @@ pub struct ChatReply {
     pub reasoning: String,
 }
 
+const MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
+// Two bounded fields, including JSON's worst-case six-byte character escapes.
+const MAX_JSON_BYTES: usize = 12 * MAX_REPLY_BYTES + 64 * 1024;
+
+fn check_error(value: &Value) -> Result<()> {
+    ensure!(
+        value.get("error").is_none(),
+        "模型返回错误，请检查服务配置或稍后重试"
+    );
+    Ok(())
+}
+fn finished(choice: &Value) -> Result<bool> {
+    match choice.get("finish_reason") {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::String(reason)) => {
+            ensure!(
+                reason == "stop",
+                "回答未完整生成（{reason}），请重试或调整模型输出上限"
+            );
+            Ok(true)
+        }
+        _ => bail!("模型返回了无效的回答完成状态"),
+    }
+}
+fn complete(reply: &ChatReply, stopped: bool, cancel: &Cancel) -> Result<()> {
+    ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+    ensure!(stopped, "模型未确认回答完整生成，请重试");
+    ensure!(
+        reply.answer.len() <= MAX_REPLY_BYTES && reply.reasoning.len() <= MAX_REPLY_BYTES,
+        "模型回答过长"
+    );
+    ensure!(!reply.answer.trim().is_empty(), "模型未返回回答");
+    Ok(())
+}
+
 async fn cancelled(cancel: &Cancel) {
     while !cancel.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -19,7 +54,10 @@ async fn request<T>(cancel: &Cancel, work: impl Future<Output = reqwest::Result<
     tokio::select! {
         biased;
         _ = cancelled(cancel) => bail!("已取消"),
-        result = work => Ok(result?),
+        result = work => {
+            ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+            Ok(result?)
+        },
     }
 }
 pub(crate) fn remote_json<F, Fut>(cancel: &Cancel, create: F) -> Result<Value>
@@ -50,7 +88,7 @@ where
             request(cancel, response.json()).await
         })
 }
-fn frame(bytes: &[u8], reply: &mut ChatReply) -> Result<bool> {
+fn frame(bytes: &[u8], reply: &mut ChatReply, stopped: &mut bool) -> Result<bool> {
     let text = std::str::from_utf8(bytes).context("模型返回了无效 UTF-8 流数据")?;
     let payload = text
         .lines()
@@ -65,25 +103,20 @@ fn frame(bytes: &[u8], reply: &mut ChatReply) -> Result<bool> {
         return Ok(true);
     }
     let value: Value = serde_json::from_str(&payload).context("模型返回了无效的流式数据")?;
-    ensure!(
-        value.get("error").is_none(),
-        "模型返回错误，请检查服务配置或稍后重试"
-    );
+    check_error(&value)?;
     let choice = &value["choices"][0];
-    if let Some(reason) = choice["finish_reason"].as_str() {
-        ensure!(
-            reason == "stop",
-            "回答未完整生成（{reason}），请重试或调整模型输出上限"
-        );
-    }
+    *stopped |= finished(choice)?;
     for (field, output) in [
         ("content", &mut reply.answer),
         ("reasoning_content", &mut reply.reasoning),
     ] {
         if let Some(delta) = choice["delta"][field].as_str() {
+            ensure!(
+                output.len().saturating_add(delta.len()) <= MAX_REPLY_BYTES,
+                "模型回答过长"
+            );
             output.push_str(delta);
         }
-        ensure!(output.len() <= 4 * 1024 * 1024, "模型回答过长");
     }
     Ok(false)
 }
@@ -145,24 +178,38 @@ pub fn chat_stream(
                     .and_then(|s| s.to_str().ok())
                     .is_some_and(|s| s.contains("text/event-stream"));
                 if !sse {
-                    let value: Value = request(cancel, response.json()).await?;
+                    let mut bytes = vec![];
+                    while let Some(chunk) = request(cancel, response.chunk()).await? {
+                        ensure!(
+                            bytes.len().saturating_add(chunk.len()) <= MAX_JSON_BYTES,
+                            "模型回答过长"
+                        );
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    let value: Value =
+                        serde_json::from_slice(&bytes).context("模型返回了无效的 JSON 数据")?;
+                    check_error(&value)?;
+                    let choice = &value["choices"][0];
+                    let stopped = finished(choice)?;
                     let reply = ChatReply {
-                        answer: value["choices"][0]["message"]["content"]
+                        answer: choice["message"]["content"]
                             .as_str()
                             .context("AI 服务没有返回答案")?
                             .into(),
-                        reasoning: value["choices"][0]["message"]["reasoning_content"]
+                        reasoning: choice["message"]["reasoning_content"]
                             .as_str()
                             .unwrap_or("")
                             .into(),
                     };
-                    ensure!(!reply.answer.trim().is_empty(), "模型未返回回答");
+                    complete(&reply, stopped, cancel)?;
                     progress(reply.clone());
+                    ensure!(!cancel.load(Ordering::SeqCst), "已取消");
                     return Ok(reply);
                 }
                 let mut pending = vec![];
                 let mut reply = ChatReply::default();
                 let mut done = false;
+                let mut stopped = false;
                 while let Some(chunk) = request(cancel, response.chunk()).await? {
                     pending.extend_from_slice(&chunk);
                     ensure!(pending.len() <= 8 * 1024 * 1024, "模型流事件过长");
@@ -180,7 +227,8 @@ pub fn chat_stream(
                         else {
                             break;
                         };
-                        done = frame(&pending[..index], &mut reply)?;
+                        ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+                        done = frame(&pending[..index], &mut reply, &mut stopped)?;
                         pending.drain(..index + length);
                         progress(reply.clone());
                         if done {
@@ -192,12 +240,11 @@ pub fn chat_stream(
                     }
                 }
                 if !done && !pending.is_empty() {
-                    done = frame(&pending, &mut reply)?;
+                    done = frame(&pending, &mut reply, &mut stopped)?;
                     progress(reply.clone());
                 }
                 ensure!(done, "回答连接提前中断，请重试");
-                ensure!(!cancel.load(Ordering::SeqCst), "已取消");
-                ensure!(!reply.answer.trim().is_empty(), "模型未返回回答");
+                complete(&reply, stopped, cancel)?;
                 return Ok(reply);
             }
             bail!("AI 服务不支持聊天接口")
