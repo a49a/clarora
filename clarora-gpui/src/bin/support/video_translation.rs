@@ -109,7 +109,20 @@ pub fn run(lib: &Library, video: &std::path::Path, results: &mut Vec<Value>) -> 
             .collect::<Vec<_>>();
         let cancel = process::cancel_token();
         video_subtitles::save(lib, video, &source, &cancel)?;
-        let (path, translated) = video_subtitles::translate(lib, video, &source, &cancel)?;
+        let mut progress = vec![];
+        let (path, translated) =
+            video_subtitles::translate_with_progress(lib, video, &source, &cancel, |stage| {
+                progress.push(stage.to_owned())
+            })?;
+        ensure!(
+            progress.first().is_some_and(|s| s.contains("0/"))
+                && progress.last().is_some_and(|s| s.contains("保存")),
+            "翻译阶段进度未报告"
+        );
+        fs::write(
+            lib.root.join("subtitle-translation-stages.json"),
+            serde_json::to_vec_pretty(&progress)?,
+        )?;
         ensure!(translated.len() == source.len(), "翻译丢句");
         ensure!(
             translated

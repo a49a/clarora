@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod design;
 mod library_ui;
+mod task_ui;
 mod video_library_ui;
 use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::{
@@ -36,6 +37,7 @@ use std::{
     sync::{atomic::Ordering, mpsc},
     time::{Duration, Instant, SystemTime},
 };
+use task_ui::{TaskNotice, TaskState};
 actions!(
     clarora_gpui_actions,
     [
@@ -170,6 +172,7 @@ enum Action {
     SelectPart(usize),
     AutoNextPart,
     Cancel,
+    DismissTaskNotice,
     Clip,
     Chat,
     SaveAnswer,
@@ -234,6 +237,7 @@ enum Outcome {
     TtsReady(Row),
 }
 enum Event {
+    SubtitleProgress(String),
     Done(std::result::Result<Outcome, String>),
     Chunk(ai::ChatReply),
     ModelProgress(ModelProgress),
@@ -263,6 +267,7 @@ struct AppView {
     busy: Option<Cancel>,
     task_scope: TaskScope,
     model_progress: Option<ModelProgress>,
+    task_notice: Option<TaskNotice>,
     rx: Option<mpsc::Receiver<Event>>,
     video_titles_rx: Option<mpsc::Receiver<(String, String)>>,
     cards: Vec<Card>,
@@ -448,6 +453,7 @@ impl AppView {
             busy: None,
             task_scope: TaskScope::Material,
             model_progress: None,
+            task_notice: None,
             rx: None,
             video_titles_rx: None,
             cards: vec![],
@@ -961,6 +967,7 @@ impl AppView {
             self.status = "已有任务正在执行，请完成或取消后重试".into();
             return;
         }
+        self.task_notice = None;
         self.task_scope = scope;
         let cancel = process::cancel_token();
         let token = cancel.clone();
@@ -973,6 +980,19 @@ impl AppView {
             let result = task(lib, token, tx.clone()).map_err(|e| format!("{e:#}"));
             let _ = tx.send(Event::Done(result));
         });
+    }
+    fn begin_subtitle(
+        &mut self,
+        title: &str,
+        detail: &str,
+        task: impl FnOnce(Library, Cancel, mpsc::Sender<Event>) -> Result<Outcome> + Send + 'static,
+    ) {
+        if self.busy.is_some() {
+            self.status = "已有任务正在执行，请完成或取消后重试".into();
+            return;
+        }
+        self.begin(&format!("正在{title}…"), task);
+        self.task_notice = Some(TaskNotice::new(title, detail));
     }
     fn tick(&mut self, cx: &mut Context<Self>) {
         if !self.chat_context.is_empty() {
@@ -1084,6 +1104,19 @@ impl AppView {
                 self.stats_ticks = 0.;
             }
         }
+        if let Some(notice) = &mut self.task_notice {
+            if notice.state == TaskState::Running
+                && self.busy.as_ref().is_some_and(|t| t.load(Ordering::SeqCst))
+            {
+                notice.state = TaskState::Cancelling;
+                notice.detail = "正在停止当前处理，请稍候…".into();
+                changed = true;
+            }
+            if notice.active() && notice.elapsed != notice.started.elapsed().as_secs() {
+                notice.elapsed = notice.started.elapsed().as_secs();
+                changed = true;
+            }
+        }
         if let Some(rx) = &self.video_titles_rx {
             let titles = rx.try_iter().collect::<Vec<_>>();
             for (base, title) in titles {
@@ -1112,6 +1145,15 @@ impl AppView {
             for event in events {
                 changed = true;
                 match event {
+                    Event::SubtitleProgress(stage) => {
+                        if let Some(notice) = self
+                            .task_notice
+                            .as_mut()
+                            .filter(|n| n.state == TaskState::Running)
+                        {
+                            notice.detail = stage;
+                        }
+                    }
                     Event::ModelProgress(progress) => {
                         if self
                             .busy
@@ -1133,6 +1175,7 @@ impl AppView {
                         }
                     }
                     Event::Done(result) => {
+                        let failed = result.is_err();
                         let completed_chat = self.chat_running;
                         let cancelled =
                             self.busy.as_ref().is_some_and(|t| t.load(Ordering::SeqCst));
@@ -1289,6 +1332,17 @@ impl AppView {
                             Ok(Outcome::Message(s)) => self.status = s,
                             Err(e) => self.status = e,
                             _ => self.status = "已取消".into(),
+                        }
+                        if let Some(notice) = self.task_notice.as_mut().filter(|n| n.active()) {
+                            notice.state = if cancelled {
+                                TaskState::Cancelled
+                            } else if failed {
+                                TaskState::Failed
+                            } else {
+                                TaskState::Succeeded
+                            };
+                            notice.elapsed = notice.started.elapsed().as_secs();
+                            notice.detail = self.status.clone();
                         }
                         // Chat only updates its persisted conversation. Refreshing materials
                         // here would invalidate the revealed cue and switch its chat context.
@@ -2756,11 +2810,19 @@ impl AppView {
                     let video = self.current_path.clone().context("请先打开视频")?;
                     video_subtitles::english_source(&self.video_cues)?;
                     let source = self.video_cues.clone();
-                    self.begin(
-                        "正在根据英文字幕分批生成中文…",
-                        move |lib, cancel, _| {
-                            let (path, cues) =
-                                video_subtitles::translate(&lib, &video, &source, &cancel)?;
+                    self.begin_subtitle(
+                        "生成中文字幕",
+                        "正在准备英文字幕…",
+                        move |lib, cancel, tx| {
+                            let (path, cues) = video_subtitles::translate_with_progress(
+                                &lib,
+                                &video,
+                                &source,
+                                &cancel,
+                                |stage| {
+                                    let _ = tx.send(Event::SubtitleProgress(stage.into()));
+                                },
+                            )?;
                             Ok(Outcome::VideoTranslated(video, path, source, cues))
                         },
                     );
@@ -2969,10 +3031,19 @@ impl AppView {
                         },
                     );
                 }
+                Action::DismissTaskNotice => {
+                    if self.task_notice.as_ref().is_some_and(|n| !n.active()) {
+                        self.task_notice = None;
+                    }
+                }
                 Action::Cancel => {
                     if let Some(cancel) = &self.busy {
                         cancel.store(true, Ordering::SeqCst);
                         self.status = "正在取消…".into();
+                        if let Some(notice) = self.task_notice.as_mut().filter(|n| n.active()) {
+                            notice.state = TaskState::Cancelling;
+                            notice.detail = "正在停止当前处理，请稍候…".into();
+                        }
                     }
                 }
                 Action::Clip => {
@@ -3163,10 +3234,18 @@ impl AppView {
                 Action::VideoTranscribe => {
                     ensure!(self.page == "video", "请先进入视频学习");
                     let video = self.current_path.clone().context("请先打开或导入视频")?;
-                    self.begin(
-                        "正在提取音轨并转写字幕，长视频可能需要几分钟…",
-                        move |lib, cancel, _| {
-                            let (path, cues) = video_subtitles::generate(&lib, &video, &cancel)?;
+                    self.begin_subtitle(
+                        "生成视频字幕",
+                        "正在准备视频音轨…",
+                        move |lib, cancel, tx| {
+                            let (path, cues) = video_subtitles::generate_with_progress(
+                                &lib,
+                                &video,
+                                &cancel,
+                                |stage| {
+                                    let _ = tx.send(Event::SubtitleProgress(stage.into()));
+                                },
+                            )?;
                             Ok(Outcome::VideoSubtitles(video, path, cues))
                         },
                     );
@@ -3379,33 +3458,41 @@ impl AppView {
                 }
                 Action::Transcribe => {
                     let row = self.selected().context("请先选择音频")?;
-                    self.begin("正在生成字幕…", move |lib, cancel, _| {
-                        let path = ai::write_transcription(
-                            &lib,
-                            &PathBuf::from(text(&row, "audio_uri")),
-                            &cancel,
-                        )?;
-                        lib.db()?.execute(
-                            "UPDATE listening_audios SET subtitle_uri=? WHERE id=?",
-                            rusqlite::params![path, text(&row, "id")],
-                        )?;
-                        Ok(Outcome::Message("字幕已生成，点击刷新载入".into()))
-                    });
+                    self.begin_subtitle(
+                        "生成音频字幕",
+                        "正在识别音频并保存字幕，长音频可能需要几分钟",
+                        move |lib, cancel, _| {
+                            let path = ai::write_transcription(
+                                &lib,
+                                &PathBuf::from(text(&row, "audio_uri")),
+                                &cancel,
+                            )?;
+                            lib.db()?.execute(
+                                "UPDATE listening_audios SET subtitle_uri=? WHERE id=?",
+                                rusqlite::params![path, text(&row, "id")],
+                            )?;
+                            Ok(Outcome::Message("字幕已生成，点击刷新载入".into()))
+                        },
+                    );
                 }
                 Action::Translate => {
                     let row = self.selected().context("请先选择音频")?;
                     let cues = self.cues.clone();
                     ensure!(!cues.is_empty(), "请先导入或生成原文字幕");
-                    self.begin("正在翻译字幕…", move |lib, cancel, _| {
-                        let translated = ai::translate(&lib, &cues, &cancel)?;
-                        let path = lib.root.join("media").join(format!("{}.srt", id()));
-                        fs::write(&path, subtitles::srt(&translated))?;
-                        lib.db()?.execute(
-                            "UPDATE listening_audios SET subtitle_uri=? WHERE id=?",
-                            rusqlite::params![path.to_string_lossy(), text(&row, "id")],
-                        )?;
-                        Ok(Outcome::Message("双语字幕已生成，点击刷新载入".into()))
-                    });
+                    self.begin_subtitle(
+                        "翻译音频字幕",
+                        "正在生成双语字幕…",
+                        move |lib, cancel, _| {
+                            let translated = ai::translate(&lib, &cues, &cancel)?;
+                            let path = lib.root.join("media").join(format!("{}.srt", id()));
+                            fs::write(&path, subtitles::srt(&translated))?;
+                            lib.db()?.execute(
+                                "UPDATE listening_audios SET subtitle_uri=? WHERE id=?",
+                                rusqlite::params![path.to_string_lossy(), text(&row, "id")],
+                            )?;
+                            Ok(Outcome::Message("双语字幕已生成，点击刷新载入".into()))
+                        },
+                    );
                 }
                 Action::Record => {
                     ensure!(self.recording.is_none(), "正在录音");
@@ -4663,6 +4750,7 @@ impl AppView {
                         cx,
                     )),
             )
+            .children(self.subtitle_task_banner(cx))
             .child(self.video_picture(None, cx))
             .child(self.video_controls(cx))
             .into_any_element()
@@ -8327,6 +8415,7 @@ impl Render for AppView {
                                 .outline(),
                             ),
                     )
+                    .children(self.subtitle_task_banner(cx))
                     .child(
                         div()
                             .id("page-scroll")
@@ -8376,7 +8465,7 @@ impl Render for AppView {
                                     )
                                 },
                             )
-                            .when(self.busy.is_some(), |view| {
+                            .when(self.busy.is_some() && self.task_notice.is_none(), |view| {
                                 view.child(self.button(
                                     "cancel-task",
                                     "取消任务",

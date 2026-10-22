@@ -58,12 +58,22 @@ pub fn save(lib: &Library, video: &Path, cues: &[Cue], cancel: &Cancel) -> Resul
     Ok(target.to_string_lossy().into())
 }
 pub fn generate(lib: &Library, video: &Path, cancel: &Cancel) -> Result<(String, Vec<Cue>)> {
+    generate_with_progress(lib, video, cancel, |_| {})
+}
+pub fn generate_with_progress(
+    lib: &Library,
+    video: &Path,
+    cancel: &Cancel,
+    mut progress: impl FnMut(&str),
+) -> Result<(String, Vec<Cue>)> {
+    ensure!(!cancel.load(Ordering::SeqCst), "已取消");
     let identity = key(video)?;
     let audio = lib
         .root
         .join("media")
         .join(format!("video-asr-{}.mp3", id()));
     let result = (|| {
+        progress("1/3 · 正在提取视频音轨");
         process::run(
             &process::tool("ffmpeg")?,
             &[
@@ -85,12 +95,14 @@ pub fn generate(lib: &Library, video: &Path, cancel: &Cancel) -> Result<(String,
             Duration::from_secs(3600),
         )
         .context("视频音轨提取失败")?;
+        progress("2/3 · 正在识别语音，长视频可能需要几分钟");
         let mut cues = ai::transcribe(lib, &audio, cancel)?;
         cues.sort_by(|a, b| a.start.total_cmp(&b.start));
         ensure!(
             key(video)? == identity,
             "转写期间视频文件已改变，请重新生成"
         );
+        progress("3/3 · 正在保存字幕");
         let path = save(lib, video, &cues, cancel)?;
         Ok((path, cues))
     })();
@@ -142,6 +154,15 @@ pub fn translate(
     cues: &[Cue],
     cancel: &Cancel,
 ) -> Result<(String, Vec<Cue>)> {
+    translate_with_progress(lib, video, cues, cancel, |_| {})
+}
+pub fn translate_with_progress(
+    lib: &Library,
+    video: &Path,
+    cues: &[Cue],
+    cancel: &Cancel,
+    mut progress: impl FnMut(&str),
+) -> Result<(String, Vec<Cue>)> {
     use rusqlite::OptionalExtension;
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
     let identity = key(video)?;
@@ -149,6 +170,7 @@ pub fn translate(
     let source = english_source(cues)?;
     let mut translated = Vec::with_capacity(source.len());
     let mut offset = 0;
+    progress(&format!("正在翻译字幕 · 0/{} 段", source.len()));
     while offset < source.len() {
         ensure!(!cancel.load(Ordering::SeqCst), "已取消");
         ensure!(
@@ -176,9 +198,11 @@ pub fn translate(
         );
         translated.extend(batch);
         offset = end;
+        progress(&format!("正在翻译字幕 · {offset}/{} 段", source.len()));
     }
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
     ensure!(key(video)? == identity, "视频文件已改变，请重新生成中文");
+    progress("正在保存双语字幕");
     let path = lib.root.join("media").join(format!("video-{}.srt", id()));
     fs::write(&path, subtitles::srt(&translated))?;
     let saved = (|| -> Result<()> {

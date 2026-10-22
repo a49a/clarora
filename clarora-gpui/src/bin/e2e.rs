@@ -713,7 +713,56 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
             &cancel,
             Duration::from_secs(120),
         )?;
-        let (_, cues) = clarora_gpui::video_subtitles::generate(&lib, &spoken_video, &cancel)?;
+        let mut stages = vec![];
+        let (_, cues) = clarora_gpui::video_subtitles::generate_with_progress(
+            &lib,
+            &spoken_video,
+            &cancel,
+            |stage| stages.push(stage.to_owned()),
+        )?;
+        ensure!(
+            stages.len() == 3
+                && stages[0].contains("提取")
+                && stages[1].contains("识别")
+                && stages[2].contains("保存"),
+            "字幕处理阶段缺失或顺序错误"
+        );
+        fs::write(
+            output.join("subtitle-task-stages.json"),
+            serde_json::to_vec_pretty(&stages)?,
+        )?;
+        let stopped = process::cancel_token();
+        let stop_at_asr = stopped.clone();
+        let mut cancelled_stages = vec![];
+        let cancelled_run = clarora_gpui::video_subtitles::generate_with_progress(
+            &lib,
+            &spoken_video,
+            &stopped,
+            |stage| {
+                cancelled_stages.push(stage.to_owned());
+                if stage.starts_with("2/3") {
+                    stop_at_asr.store(true, Ordering::SeqCst);
+                }
+            },
+        );
+        ensure!(
+            cancelled_run.is_err() && cancelled_stages.len() == 2,
+            "取消后仍继续保存或未报告识别阶段"
+        );
+        ensure!(
+            clarora_gpui::video_subtitles::load(&lib, &spoken_video)?
+                .iter()
+                .zip(&cues)
+                .all(|(a, b)| a.text == b.text),
+            "取消覆盖已有字幕"
+        );
+        ensure!(!fs::read_dir(lib.root.join("media"))?.any(|p| p.is_ok_and(|p| p.file_name().to_string_lossy().starts_with("video-asr-"))), "取消后临时音轨未清理");
+        fs::write(
+            output.join("subtitle-task-cancel.json"),
+            serde_json::to_vec_pretty(
+                &json!({"stages":cancelled_stages,"cancelled_before_save":true,"original_subtitles_retained":true,"temporary_audio_cleaned":true}),
+            )?,
+        )?;
         fs::copy(&spoken_video, output.join("spoken-video.mp4"))?;
         let restored = clarora_gpui::video_subtitles::load(&lib, &spoken_video)?;
         ensure!(restored.len() == cues.len(), "真实视频转写未持久化");

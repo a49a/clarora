@@ -60,6 +60,7 @@ pub fn icon(name: &str, color: Hsla) -> Svg {
 }
 fn paths(name: &str) -> Option<&'static str> {
     Some(match name {
+        "task-spinner" => "<path d='M21 12a9 9 0 1 1-9-9'/>",
         "discover" => "<path d='m12 3 2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4Z'/>",
         "flashcard" => {
             "<rect x='6' y='6' width='15' height='15' rx='3'/><path d='M3 16V5a2 2 0 0 1 2-2h11M10 11h7m-7 5h4'/>"
