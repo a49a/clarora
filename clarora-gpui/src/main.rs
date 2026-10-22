@@ -327,6 +327,7 @@ struct AppView {
     video_fullscreen: bool,
     video_fullscreen_owned: bool,
     video_fullscreen_seen: bool,
+    video_picture_click: Option<PathBuf>,
     video_precision: bool,
     video_subtitle_size: u8,
     video_seek_dragging: bool,
@@ -518,6 +519,7 @@ impl AppView {
             video_fullscreen: false,
             video_fullscreen_owned: false,
             video_fullscreen_seen: false,
+            video_picture_click: None,
             video_precision: false,
             video_subtitle_size: 16,
             video_seek_dragging: false,
@@ -1518,6 +1520,7 @@ impl AppView {
         );
     }
     fn open(&mut self, path: PathBuf) -> bool {
+        self.video_picture_click = None;
         let result = (|| -> Result<_> {
             let mut videos = video_library::Collection::load(&self.lib)?;
             let ids = videos.add(&[path], self.video_series.as_ref())?;
@@ -1953,6 +1956,7 @@ impl AppView {
         }
     }
     fn handle(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        self.video_picture_click = None;
         // Modal confirmation owns interaction until it is confirmed or dismissed.
         if window.has_active_dialog(cx) && !matches!(action, Action::VideoConfirmRemove) {
             return;
@@ -4689,6 +4693,7 @@ impl AppView {
             )
     }
     fn leave_video_fullscreen(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
+        self.video_picture_click = None;
         if !self.video_fullscreen {
             return;
         }
@@ -4732,6 +4737,7 @@ impl AppView {
             .relative()
             .w_full()
             .id("video-picture")
+            .when(active, |view| view.cursor_pointer())
             .when_some(height, |view, height| view.h(height).flex_shrink_0())
             .when(height.is_none(), |view| view.flex_1().min_h_0())
             .overflow_hidden()
@@ -4781,9 +4787,34 @@ impl AppView {
                 )
             })
             .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                if event.click_count() == 2 {
-                    this.handle(Action::VideoFullscreen, window, cx);
+                if !event.standard_click() || this.page != "video" || window.has_active_dialog(cx) {
+                    this.video_picture_click = None;
+                    return;
                 }
+                let Some(path) = this.video_path.clone().filter(|path| {
+                    this.current_path.as_ref() == Some(path)
+                        && this.player.snapshot().path == path.to_string_lossy()
+                }) else {
+                    this.video_picture_click = None;
+                    return;
+                };
+                cx.stop_propagation();
+                window.focus(&this.focus);
+                match event.click_count() {
+                    1 => {
+                        this.video_picture_click = Some(path);
+                        this.player.command(["cycle", "pause"]);
+                    }
+                    2 => {
+                        if this.video_picture_click.take().as_ref() == Some(&path) {
+                            // Undo the first click without relying on the 50 ms UI snapshot.
+                            this.player.command(["cycle", "pause"]);
+                        }
+                        this.handle(Action::VideoFullscreen, window, cx);
+                    }
+                    _ => this.video_picture_click = None,
+                }
+                cx.notify();
             }))
     }
     fn fullscreen_video(&self, cx: &Context<Self>) -> AnyElement {
