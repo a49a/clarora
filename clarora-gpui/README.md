@@ -41,6 +41,7 @@ python ./clarora-gpui/scripts/install-pdfium.py ./clarora-gpui/target/package
 ## 数据和使用
 
 - 专注倒计时固定显示在每个模块的页面顶部，滚动内容、收起导航或切换学习模块后仍可见，视频全屏同样显示。可直接开始、暂停、继续、重置，或通过“专注时长”选择 5–60 分钟并开始新一轮；与冥想页共用同一个计时器，专注结束后自动切换休息。计时不因切页重新开始，退出应用后本轮计时不保留。
+- 计划复习先按所选卡片类型筛选，再使用当天剩余新卡额度；额度按实际首次评分跨类型共享，翻看、切换类型、暂停或恢复未学卡不会消耗额度。“全部类型”按单词、句子、AI、音频片段、视频片段轮流安排新卡，首次评分后记住下一类型，重启后延续；已到期旧卡优先，非计划复习仍可自主学习。
 - macOS 资料目录：`~/Library/Application Support/Clarora-GPUI/`；Windows：`%LOCALAPPDATA%\Clarora-GPUI\`。使用独立 SQLite 和附件目录，可与原版同时运行。
 - 可通过 `--data-dir /absolute/path` 指定测试资料目录。不会自动打开或修改原版数据库。
 - 设置页可只读导入原版 SQLite 快照、导入/导出 v2 ZIP 资料备份，或配置 S3/OSS。密钥默认保存于本机 SQLite，可选开启系统凭证库安全模式；应用导出的资料备份不包含密钥。
@@ -174,6 +175,8 @@ cargo fmt --manifest-path clarora-gpui/Cargo.toml --check
 cargo check --manifest-path clarora-gpui/Cargo.toml --locked --all-targets
 PDFIUM_LIB_PATH=/absolute/path/containing/pdfium cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence
 ```
+
+默认 E2E 同时收集复习类型与限额、AI 完成校验、云备份取消三组回归场景。只复验这三组可执行 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence --reliability-only`；同样生成 `e2e-report.json`，子目录保留队列、HTTP、取消耗时和 SQLite 前后状态证据。
 
 E2E 使用独立临时资料，经过真实 SQLite、文件、ZIP、FFmpeg、libmpv、PDFium 和本机 HTTP 服务，输出 `e2e-report.json`、播放帧与 PDF 图片。libmpv 使用 null 音频输出，供 CI 验证解码和时钟，不验证系统声卡。HTTP 用固定本机响应验证协议，不代表外部 AI 或云桶已通过。未设置 `PDFIUM_LIB_PATH` 时 PDF 检查会明确跳过。
 

@@ -19,6 +19,8 @@ mod kokoro;
 mod model_progress;
 #[path = "support/protocol.rs"]
 mod protocol;
+#[path = "support/review_queue.rs"]
+mod review_queue;
 #[path = "support/video_jobs.rs"]
 mod video_jobs;
 #[path = "support/video_library.rs"]
@@ -166,12 +168,17 @@ fn mock_ai() -> Result<(String, Arc<AtomicBool>, thread::JoinHandle<Vec<String>>
     });
     Ok((address, stop, handle))
 }
+fn reliability(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
+    review_queue::run(lib, results)?;
+    ai_completion::run(lib, results)?;
+    backup_cancel::run(lib, results)?;
+    Ok(())
+}
 fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = output.join(format!("run-{}", data::id()));
     fs::create_dir_all(&root)?;
     let lib = Library::open(root.join("source"))?;
-    ai_completion::run(&lib, results)?;
-    backup_cancel::run(&lib, results)?;
+    reliability(&lib, results)?;
     lib.import_words("bright\t明亮的\ncalm - 平静的", "manual", false)?;
     ensure!(lib.list("words")?.len() == 2, "词条导入失败");
     let card = lib
@@ -822,8 +829,12 @@ fn main() -> Result<()> {
     fs::create_dir_all(&output)?;
     let output = output.canonicalize()?;
     let mut results = vec![];
-    let focused = args.get(2).is_some_and(|a| a == "--http-only");
-    let result = if focused {
+    let mode = match args.get(2).and_then(|arg| arg.to_str()) {
+        Some("--http-only") => "http-only",
+        Some("--reliability-only") => "reliability-only",
+        _ => "full",
+    };
+    let result = if mode == "http-only" {
         let lib = Library::open(output.join(format!("http-{}", data::id())))?;
         protocol::run(
             &lib,
@@ -831,10 +842,13 @@ fn main() -> Result<()> {
             &PathBuf::from(args.get(4).context("缺少图片夹具")?),
             &mut results,
         )
+    } else if mode == "reliability-only" {
+        let lib = Library::open(output.join(format!("reliability-{}", data::id())))?;
+        reliability(&lib, &mut results)
     } else {
         run(&output, &mut results)
     };
-    let report = json!({"mode":if focused{"http-only"}else{"full"},"date":chrono::Local::now().to_rfc3339(),"passed":result.is_ok(),"workflows":results,"error":result.as_ref().err().map(|e|format!("{e:#}"))});
+    let report = json!({"mode":mode,"date":chrono::Local::now().to_rfc3339(),"passed":result.is_ok(),"workflows":results,"error":result.as_ref().err().map(|e|format!("{e:#}"))});
     fs::write(
         output.join("e2e-report.json"),
         serde_json::to_vec_pretty(&report)?,

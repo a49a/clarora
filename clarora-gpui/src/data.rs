@@ -1,16 +1,19 @@
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{Local, Utc};
-use rusqlite::{Connection, params, types::Value as SqlValue};
+use rusqlite::{
+    Connection, OptionalExtension, TransactionBehavior, params, types::Value as SqlValue,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fs,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
 
 pub type Row = Map<String, Value>;
+const CARD_KINDS: [&str; 5] = ["word", "sentence", "ai", "clip", "video"];
 pub const TABLES: &[(&str, &[&str])] = &[
     ("words", &["id", "word", "meaning", "source", "created_at"]),
     ("listening_practices", &["id", "name", "created_at"]),
@@ -302,17 +305,27 @@ impl Library {
         Ok(pairs.len())
     }
     pub fn cards(&self, due: bool) -> Result<Vec<Card>> {
+        self.cards_for_kind(due, "all")
+    }
+    pub fn cards_for_kind(&self, due: bool, kind: &str) -> Result<Vec<Card>> {
+        ensure!(kind == "all" || CARD_KINDS.contains(&kind), "未知卡片类型");
         let mut cards = vec![];
-        for (table, kind, front, back, media) in [
+        for (table, card_kind, front, back, media) in [
             ("words", "word", "word", "meaning", ""),
             ("sentence_cards", "sentence", "text", "translation", ""),
             ("ai_cards", "ai", "question", "answer", ""),
             ("clip_cards", "clip", "en_text", "zh_text", "audio_uri"),
             ("video_clips", "video", "en_text", "zh_text", "video_uri"),
         ] {
-            for r in self.list(table)? {
+            if kind != "all" && kind != card_kind {
+                continue;
+            }
+            for r in self.rows(
+                &format!("SELECT * FROM {table} ORDER BY created_at,id"),
+                &[],
+            )? {
                 cards.push(Card {
-                    kind: kind.into(),
+                    kind: card_kind.into(),
                     id: text(&r, "id"),
                     front: text(&r, front),
                     back: text(&r, back),
@@ -322,26 +335,79 @@ impl Library {
                 });
             }
         }
-        if due {
-            let schedules = self.list("review_schedule")?;
-            let now = now();
-            let mut new = 0;
-            let limit = self
-                .setting("new_cards_per_day")?
-                .parse::<usize>()
-                .unwrap_or(20);
-            let introduced=self.rows("SELECT COUNT(*) AS n FROM review_schedule WHERE date(created_at,'localtime')=date('now','localtime')",&[])?.first().and_then(|r|r["n"].as_u64()).unwrap_or(0) as usize;
-            cards.retain(|c| {
-                if let Some(s) = schedules
-                    .iter()
-                    .find(|s| text(s, "card_kind") == c.kind && text(s, "card_id") == c.id)
-                {
-                    s["suspended"].as_i64() == Some(0) && text(s, "due_at") <= now
-                } else {
-                    new += 1;
-                    introduced + new <= limit
+        if !due {
+            return Ok(cards);
+        }
+        let schedules = self
+            .list("review_schedule")?
+            .into_iter()
+            .map(|schedule| {
+                (
+                    (text(&schedule, "card_kind"), text(&schedule, "card_id")),
+                    schedule,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let now = now();
+        let limit = self
+            .setting("new_cards_per_day")?
+            .parse::<usize>()
+            .unwrap_or(20);
+        let introduced: usize = self.db()?.query_row(
+            "SELECT COUNT(*) FROM review_schedule WHERE reps>0 AND date(created_at,'localtime')=date('now','localtime')",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut remaining = limit.saturating_sub(introduced);
+        let mut scheduled = vec![];
+        let mut new_cards: [VecDeque<Card>; 5] = std::array::from_fn(|_| VecDeque::new());
+        for card in cards {
+            if let Some(schedule) = schedules.get(&(card.kind.clone(), card.id.clone())) {
+                if schedule["suspended"].as_i64() != Some(0) {
+                    continue;
                 }
-            });
+                if schedule["reps"].as_i64().unwrap_or(0) > 0 {
+                    let due_at = text(schedule, "due_at");
+                    if due_at <= now {
+                        scheduled.push((due_at, card));
+                    }
+                    continue;
+                }
+            }
+            // A schedule created only by suspend/resume is still an unintroduced card.
+            let index = CARD_KINDS
+                .iter()
+                .position(|kind| *kind == card.kind)
+                .unwrap();
+            new_cards[index].push_back(card);
+        }
+        scheduled.sort_by(|(a_due, a), (b_due, b)| {
+            (a_due, &a.kind, &a.id).cmp(&(b_due, &b.kind, &b.id))
+        });
+        let mut cards = scheduled
+            .into_iter()
+            .map(|(_, card)| card)
+            .collect::<Vec<_>>();
+        let next_kind = self.setting("review_new_card_next_kind")?;
+        let start = CARD_KINDS
+            .iter()
+            .position(|kind| *kind == next_kind)
+            .unwrap_or(0);
+        while remaining > 0 {
+            let mut added = false;
+            for offset in 0..CARD_KINDS.len() {
+                if remaining == 0 {
+                    break;
+                }
+                if let Some(card) = new_cards[(start + offset) % CARD_KINDS.len()].pop_front() {
+                    cards.push(card);
+                    remaining -= 1;
+                    added = true;
+                }
+            }
+            if !added {
+                break;
+            }
         }
         Ok(cards)
     }
@@ -364,21 +430,16 @@ impl Library {
     }
     pub fn grade(&self, card: &Card, grade: &str) -> Result<String> {
         ensure!(["again", "hard", "good"].contains(&grade), "评分无效");
-        let db = self.db()?;
-        let old = self.rows(
-            "SELECT * FROM review_schedule WHERE card_kind=? AND card_id=?",
-            &[card.kind.clone().into(), card.id.clone().into()],
-        )?;
-        let number = |name: &str, default: f64| {
-            old.first()
-                .and_then(|r| r.get(name))
-                .and_then(Value::as_f64)
-                .unwrap_or(default)
-        };
-        let reps = number("reps", 0.);
-        let ease = number("ease", 2.5);
-        let interval = number("interval_days", 0.);
-        let mut lapses = number("lapses", 0.);
+        let mut db = self.db()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (reps, ease, interval, mut lapses) = tx
+            .query_row(
+                "SELECT reps,ease,interval_days,lapses FROM review_schedule WHERE card_kind=? AND card_id=?",
+                params![card.kind, card.id],
+                |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?, row.get::<_, f64>(2)?, row.get::<_, f64>(3)?)),
+            )
+            .optional()?
+            .unwrap_or((0., 2.5, 0., 0.));
         let (next_ease, days) = if grade == "again" {
             if reps > 0. {
                 lapses += 1.;
@@ -398,11 +459,19 @@ impl Library {
         } else {
             ((ease + 0.1).min(3.2), (interval * ease).clamp(1., 730.))
         };
-        let due = (Utc::now() + chrono::Duration::seconds((days * 86400.) as i64))
+        let graded_at = Utc::now();
+        let due = (graded_at + chrono::Duration::seconds((days * 86400.) as i64))
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
-        db.execute("INSERT INTO review_schedule(card_kind,card_id,ease,interval_days,due_at,reps,lapses,last_graded_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(card_kind,card_id) DO UPDATE SET ease=excluded.ease,interval_days=excluded.interval_days,due_at=excluded.due_at,reps=excluded.reps,lapses=excluded.lapses,last_graded_at=excluded.last_graded_at",params![card.kind,card.id,next_ease,days,due,reps+1.,lapses,now()])?;
-        self.stat("review_count", 1.)?;
+        let timestamp = graded_at.format("%Y-%m-%d %H:%M:%S").to_string();
+        tx.execute("INSERT INTO review_schedule(card_kind,card_id,ease,interval_days,due_at,reps,lapses,last_graded_at,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(card_kind,card_id) DO UPDATE SET ease=excluded.ease,interval_days=excluded.interval_days,due_at=excluded.due_at,reps=excluded.reps,lapses=excluded.lapses,last_graded_at=excluded.last_graded_at,created_at=CASE WHEN review_schedule.reps=0 THEN excluded.created_at ELSE review_schedule.created_at END",params![card.kind,card.id,next_ease,days,due,reps+1.,lapses,timestamp,timestamp])?;
+        tx.execute("INSERT INTO study_stats(day,review_count) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET review_count=review_count+1",[graded_at.with_timezone(&Local).format("%Y-%m-%d").to_string()])?;
+        if reps == 0. {
+            if let Some(index) = CARD_KINDS.iter().position(|kind| *kind == card.kind) {
+                tx.execute("INSERT INTO app_settings(key,value) VALUES('review_new_card_next_kind',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[CARD_KINDS[(index + 1) % CARD_KINDS.len()]])?;
+            }
+        }
+        tx.commit()?;
         Ok(due)
     }
     pub fn stat(&self, field: &str, amount: f64) -> Result<()> {

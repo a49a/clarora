@@ -900,10 +900,12 @@ impl AppView {
                 .into_iter()
                 .collect();
         self.library.sync(&self.practice_id, &self.audios);
-        self.cards = self
-            .lib
-            .cards(self.due && self.page == "flashcard")
-            .unwrap_or_default();
+        self.cards = if self.page == "flashcard" {
+            self.lib.cards_for_kind(self.due, &self.card_filter)
+        } else {
+            self.lib.cards(false)
+        }
+        .unwrap_or_default();
         if self.page == "discover" {
             self.cards
                 .retain(|c| c.kind != "video" && c.kind != "sentence");
