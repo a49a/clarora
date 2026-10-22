@@ -14,6 +14,8 @@
 #include <whisper.h>
 #include <sherpa-onnx/c-api/c-api.h>
 
+#include <algorithm>
+#include <utility>
 #include <cctype>
 #include <map>
 #include <mutex>
@@ -156,8 +158,8 @@ std::map<std::string, const SherpaOnnxOfflineRecognizer *> &SenseVoiceRecognizer
 
 }  // namespace
 
-CLARORA_EXPORT const char *ClaroraWhisperTranscribe(
-    const char *audioPath, const char *modelPath, const char *language) {
+static const char *WhisperTranscribe(
+    const char *audioPath, const char *modelPath, const char *language, bool splitSilence) {
   static thread_local std::string response;
   std::vector<float> samples;
   std::string error;
@@ -192,21 +194,71 @@ CLARORA_EXPORT const char *ClaroraWhisperTranscribe(
   double duration = static_cast<double>(samples.size()) / 16000.0;
   std::vector<double> starts, ends;
   std::vector<std::string> texts;
-  if (whisper_full(context, params, samples.data(), static_cast<int>(samples.size())) != 0) {
-    response = "{\"error\":\"端侧转写失败，请重试或更换模型\"}";
-    return response.c_str();
+  // GPUI's repeat exercises contain long answer pauses. Decode each acoustic
+  // region independently so silence cannot inherit a previous sentence's prompt.
+  std::vector<std::pair<size_t, size_t>> regions;
+  if (splitSilence) {
+    const size_t frame = 320;  // 20 ms at 16 kHz
+    const size_t padding = 3200;
+    const size_t minimumSilence = 16000;
+    size_t first = samples.size(), last = 0;
+    for (size_t pos = 0; pos < samples.size(); pos += frame) {
+      const size_t end = std::min(pos + frame, samples.size());
+      double energy = 0;
+      for (size_t j = pos; j < end; ++j) energy += samples[j] * samples[j];
+      // Conservative -45 dB RMS gate; shorter word pauses remain in one region.
+      if (energy / (end - pos) > 0.0000316228) {
+        if (first == samples.size()) first = pos;
+        last = end;
+      } else if (first != samples.size() && end - last >= minimumSilence) {
+        regions.push_back({first > padding ? first - padding : 0,
+                           std::min(last + padding, samples.size())});
+        first = samples.size();
+      }
+    }
+    if (first != samples.size()) {
+      regions.push_back({first > padding ? first - padding : 0,
+                         std::min(last + padding, samples.size())});
+    }
+    params.no_context = true;
+  } else {
+    regions.push_back({0, samples.size()});
   }
-  int count = whisper_full_n_segments(context);
-  for (int i = 0; i < count; i++) {
-    double start = whisper_full_get_segment_t0(context, i) / 100.0;  // whisper 时刻单位 10ms
-    double end = whisper_full_get_segment_t1(context, i) / 100.0;
-    if (end < start) end = start;
-    starts.push_back(start);
-    ends.push_back(end);
-    texts.push_back(whisper_full_get_segment_text(context, i));
+  for (const auto &region : regions) {
+    if (whisper_full(context, params, samples.data() + region.first,
+                     static_cast<int>(region.second - region.first)) != 0) {
+      response = "{\"error\":\"端侧转写失败，请重试或更换模型\"}";
+      return response.c_str();
+    }
+    const double offset = static_cast<double>(region.first) / 16000.0;
+    const double limit = static_cast<double>(region.second) / 16000.0;
+    int count = whisper_full_n_segments(context);
+    for (int i = 0; i < count; i++) {
+      double start = offset + whisper_full_get_segment_t0(context, i) / 100.0;
+      double end = offset + whisper_full_get_segment_t1(context, i) / 100.0;
+      if (splitSilence) {
+        end = std::min(limit, end);
+        if (end <= start) continue;
+      } else if (end < start) {
+        end = start;
+      }
+      starts.push_back(start);
+      ends.push_back(end);
+      texts.push_back(whisper_full_get_segment_text(context, i));
+    }
   }
   response = SegmentsJson(duration, starts, ends, texts);
   return response.c_str();
+}
+
+// Preserve the existing React Native bridge behavior; GPUI opts in explicitly.
+CLARORA_EXPORT const char *ClaroraWhisperTranscribe(
+    const char *audioPath, const char *modelPath, const char *language) {
+  return WhisperTranscribe(audioPath, modelPath, language, false);
+}
+CLARORA_EXPORT const char *ClaroraWhisperTranscribeSegmented(
+    const char *audioPath, const char *modelPath, const char *language) {
+  return WhisperTranscribe(audioPath, modelPath, language, true);
 }
 
 CLARORA_EXPORT const char *ClaroraSenseVoiceTranscribe(

@@ -332,7 +332,7 @@ pub fn transcribe(lib: &Library, path: &Path, cancel: &Cancel) -> Result<Vec<Cue
                     if c.local_model == "sense-voice" {
                         "sense-voice".into()
                     } else {
-                        "whisper".into()
+                        "whisper-segmented".into()
                     },
                     wav.to_string_lossy().into_owned(),
                     model.to_string_lossy().into_owned(),

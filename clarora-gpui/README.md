@@ -177,3 +177,5 @@ E2E 使用独立临时资料，经过真实 SQLite、文件、ZIP、FFmpeg、lib
 可额外设置 `CLARORA_ASR_MODEL` 为已下载的 `ggml-tiny.en.bin`，`CLARORA_ASR_SPEECH` 为包含 “Hello … learning” 的英文语音文件，并将编译好的 `clarora-asr` 放入 PATH；E2E 会执行真实本地转写，输出 `offline-transcription.srt`。macOS 可用 `say -v Samantha -o speech.aiff 'Hello world. This is a simple English reading exercise. Keep learning every day.'` 生成相同语音夹具。
 
 依赖入口：[GPUI](https://crates.io/crates/gpui)、[gpui-component](https://github.com/longbridge/gpui-component)、[libmpv](https://mpv.io/manual/stable/)、[yt-dlp](https://github.com/yt-dlp/yt-dlp)、[PDFium binaries](https://github.com/bblanchon/pdfium-binaries)。分发第三方运行库时需附带对应许可证。
+
+本地 Whisper 通过 GPUI 原生辅助程序识别时，按超过一秒的低能量停顿分段，并将结果还原到原始时间轴，减少复述练习长停顿时的漏句和虚构内容；识别准确率仍取决于录音和模型。更新后已保存的字幕不会自动替换，可在对应 P 的字幕页点击“重新生成”，再生成中文翻译。

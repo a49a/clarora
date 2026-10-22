@@ -1,4 +1,6 @@
 //! End-to-end library workflows using real SQLite, ZIP, filesystem, processes and HTTP.
+#[path = "support/asr_pauses.rs"]
+mod asr_pauses;
 #[path = "support/audio_library.rs"]
 mod audio_library;
 #[path = "support/bilibili_parts.rs"]
@@ -706,6 +708,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
             &json!({"engine":"local","local_model":"tiny.en","credential_id":"e2e-unread-local-credential"}).to_string(),
         )?;
         let speech = PathBuf::from(speech);
+        asr_pauses::run(&lib, &speech, results)?;
         let spoken_video = root.join("spoken-video.mp4");
         process::run(
             &process::tool("ffmpeg")?,

@@ -10,8 +10,9 @@
 #endif
 extern "C" const char *ClaroraSenseVoiceTranscribe(const char *, const char *, const char *);
 extern "C" const char *ClaroraWhisperTranscribe(const char *, const char *, const char *);
+extern "C" const char *ClaroraWhisperTranscribeSegmented(const char *, const char *, const char *);
 int run(int argc, char **argv) {
-  if (argc != 5) { std::fprintf(stderr, "Usage: clarora-asr whisper|sense-voice audio model language|tokens\n"); return 2; }
+  if (argc != 5) { std::fprintf(stderr, "Usage: clarora-asr whisper|whisper-segmented|sense-voice audio model language|tokens\n"); return 2; }
   // Dynamic GGML installations (including Homebrew) require backend discovery.
   // A linked libwhisper alone can otherwise have no registered CPU device.
   if (std::strcmp(argv[1], "sense-voice") != 0 && !ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)) {
@@ -35,7 +36,9 @@ int run(int argc, char **argv) {
   }
   const char *result = std::strcmp(argv[1], "sense-voice") == 0
     ? ClaroraSenseVoiceTranscribe(argv[2], argv[3], argv[4])
-    : ClaroraWhisperTranscribe(argv[2], argv[3], argv[4]);
+    : std::strcmp(argv[1], "whisper-segmented") == 0
+      ? ClaroraWhisperTranscribeSegmented(argv[2], argv[3], argv[4])
+      : ClaroraWhisperTranscribe(argv[2], argv[3], argv[4]);
   if (!result) return 1;
   std::puts(result);
   return std::strstr(result, "\"error\"") ? 1 : 0;
