@@ -27,3 +27,5 @@ pub mod tts;
 pub mod audio_library;
 
 pub mod video_library;
+
+pub mod video_jobs;

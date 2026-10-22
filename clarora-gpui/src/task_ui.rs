@@ -32,7 +32,43 @@ impl TaskNotice {
 }
 impl AppView {
     pub(super) fn subtitle_task_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        let notice = self.task_notice.as_ref()?;
+        if self.task_notice.is_none() && self.video_job_notice.is_none() {
+            return None;
+        }
+        Some(
+            div()
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .children(self.video_job_notice.as_ref().map(|n| {
+                    self.task_notice_card(
+                        n,
+                        "background-video",
+                        Action::CancelVideoSubtitles,
+                        Action::DismissVideoSubtitles,
+                        cx,
+                    )
+                }))
+                .children(self.task_notice.as_ref().map(|n| {
+                    self.task_notice_card(
+                        n,
+                        "subtitle",
+                        Action::Cancel,
+                        Action::DismissTaskNotice,
+                        cx,
+                    )
+                }))
+                .into_any_element(),
+        )
+    }
+    fn task_notice_card(
+        &self,
+        notice: &TaskNotice,
+        key: &str,
+        cancel: Action,
+        dismiss: Action,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let color = if notice.state == TaskState::Failed {
             cx.theme().danger
         } else {
@@ -64,88 +100,83 @@ impl AppView {
         };
         let button = if notice.active() {
             self.button(
-                "subtitle-task-cancel",
+                format!("{key}-task-cancel"),
                 if notice.state == TaskState::Cancelling {
                     "正在取消…"
+                } else if key == "background-video" {
+                    "取消后台字幕"
                 } else {
                     "取消任务"
                 },
-                Action::Cancel,
+                cancel,
                 cx,
             )
             .outline()
             .disabled(notice.state == TaskState::Cancelling)
         } else {
-            self.button(
-                "subtitle-task-dismiss",
-                "关闭提示",
-                Action::DismissTaskNotice,
-                cx,
-            )
-            .ghost()
+            self.button(format!("{key}-task-dismiss"), "关闭提示", dismiss, cx)
+                .ghost()
         };
-        Some(
-            div()
-                .id("subtitle-task-notice")
-                .flex_shrink_0()
-                .mx_4()
-                .mb_3()
-                .p_4()
-                .rounded_lg()
-                .border_1()
-                .border_color(color.opacity(0.45))
-                .bg(cx.theme().accent)
-                .text_color(cx.theme().foreground)
-                .flex()
-                .items_center()
-                .flex_wrap()
-                .gap_3()
-                .child(indicator)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(180.))
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_base()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(heading),
-                        )
-                        .child(
-                            div()
-                                .id("subtitle-task-detail")
-                                .text_sm()
-                                .max_h(px(96.))
-                                .overflow_y_scroll()
-                                .child(notice.detail.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "{} {:02}:{:02}",
-                                    if notice.active() {
-                                        "已用时"
-                                    } else {
-                                        "耗时"
-                                    },
-                                    notice.elapsed / 60,
-                                    notice.elapsed % 60
-                                )),
-                        ),
-                )
-                .child(
-                    button
-                        .h(px(40.))
-                        .px_4()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD),
-                )
-                .into_any_element(),
-        )
+        div()
+            .id(SharedString::from(format!("{key}-task-notice")))
+            .flex_shrink_0()
+            .mx_4()
+            .mb_3()
+            .p_4()
+            .rounded_lg()
+            .border_1()
+            .border_color(color.opacity(0.45))
+            .bg(cx.theme().accent)
+            .text_color(cx.theme().foreground)
+            .flex()
+            .items_center()
+            .flex_wrap()
+            .gap_3()
+            .child(indicator)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(180.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(heading),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("{key}-task-detail")))
+                            .text_sm()
+                            .max_h(px(96.))
+                            .overflow_y_scroll()
+                            .child(notice.detail.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{} {:02}:{:02}",
+                                if notice.active() {
+                                    "已用时"
+                                } else {
+                                    "耗时"
+                                },
+                                notice.elapsed / 60,
+                                notice.elapsed % 60
+                            )),
+                    ),
+            )
+            .child(
+                button
+                    .h(px(40.))
+                    .px_4()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD),
+            )
+            .into_any_element()
     }
 }

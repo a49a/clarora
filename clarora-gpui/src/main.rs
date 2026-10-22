@@ -2,6 +2,7 @@
 mod design;
 mod library_ui;
 mod task_ui;
+mod video_job_ui;
 mod video_library_ui;
 use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::{
@@ -13,7 +14,7 @@ use clarora_gpui::{
     process::{self, Cancel},
     recording::Recorder,
     subtitles::{self, Cue},
-    tts, video_library, video_qa, video_subtitles,
+    tts, video_jobs, video_library, video_qa, video_subtitles,
     waveform::{self, Waveform},
 };
 use gpui::{prelude::*, *};
@@ -182,6 +183,9 @@ enum Action {
     Favorite,
     Transcribe,
     VideoTranscribe,
+    VideoTranscribeAll,
+    CancelVideoSubtitles,
+    DismissVideoSubtitles,
     VideoAsk(video_qa::Scope),
     VideoFollow,
     VideoPanel(usize),
@@ -227,7 +231,6 @@ enum Outcome {
     Parts(bilibili::Series),
     PartVideo(bilibili::Series, usize, PathBuf, bool, Option<PathBuf>),
     Output(String),
-    VideoSubtitles(PathBuf, String, Vec<Cue>),
     VideoTranslated(PathBuf, String, Vec<Cue>, Vec<Cue>),
     Pdf(documents::PdfPage),
     Ocr(String),
@@ -268,6 +271,10 @@ struct AppView {
     task_scope: TaskScope,
     model_progress: Option<ModelProgress>,
     task_notice: Option<TaskNotice>,
+    video_job_notice: Option<TaskNotice>,
+    background_video: Option<video_jobs::Job>,
+    background_error: String,
+    part_downloads: video_jobs::Downloads,
     rx: Option<mpsc::Receiver<Event>>,
     video_titles_rx: Option<mpsc::Receiver<(String, String)>>,
     cards: Vec<Card>,
@@ -454,6 +461,10 @@ impl AppView {
             task_scope: TaskScope::Material,
             model_progress: None,
             task_notice: None,
+            video_job_notice: None,
+            background_video: None,
+            background_error: String::new(),
+            part_downloads: Default::default(),
             rx: None,
             video_titles_rx: None,
             cards: vec![],
@@ -673,6 +684,23 @@ impl AppView {
                 this.set(k, value, window, cx);
             }
         }
+        cx.on_app_quit(|this, _| {
+            let done = this.background_video.as_ref().map(|j| {
+                j.cancel.store(true, Ordering::SeqCst);
+                j.done.clone()
+            });
+            async move {
+                if let Some(done) = done {
+                    for _ in 0..30 {
+                        if done.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        Timer::after(Duration::from_millis(50)).await;
+                    }
+                }
+            }
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             loop {
                 Timer::after(Duration::from_millis(50)).await;
@@ -1086,7 +1114,8 @@ impl AppView {
             (None, Some(_)) => true,
             _ => false,
         };
-        let mut changed = blind_changed
+        let mut changed = self.poll_background_subtitles()
+            || blind_changed
             || frame_changed
             || old_pause != self.playback.paused
             || (old_pos - self.playback.position).abs() > 0.01;
@@ -1248,23 +1277,6 @@ impl AppView {
                                         self.status = format!("分P已导入，但保存列表失败：{e}");
                                     }
                                 }
-                            }
-                            Ok(Outcome::VideoSubtitles(video, path, cues)) if !cancelled => {
-                                if self.page == "video"
-                                    && self.current_path.as_ref() == Some(&video)
-                                {
-                                    self.video_cues = cues;
-                                    self.video_scroll.reset(self.video_cues.len());
-                                    self.video_tab = 0;
-                                    self.video_caption_source = VideoCaptionSource::Transcript;
-                                    self.video_material = None;
-                                    self.video_material_error.clear();
-                                    self.video_active = None;
-                                    self.page_scroll.set_offset(point(px(0.), px(0.)));
-                                    self.player
-                                        .command(["sub-add".into(), path, "select".into()]);
-                                }
-                                self.status = "视频字幕已生成并保存，播放时自动高亮".into();
                             }
                             Ok(Outcome::VideoTranslated(video, path, source, cues))
                                 if !cancelled =>
@@ -1462,27 +1474,35 @@ impl AppView {
     }
     fn start_part(&mut self, index: usize) {
         if self.busy.is_some() {
-            self.status = "请先完成或取消当前任务".into();
+            self.status = "请先完成或取消当前前台任务".into();
             return;
         }
-        let Some(series) = self.video_series.clone() else {
+        let Some(mut series) = self.video_series.clone() else {
             return;
         };
         if index >= series.parts.len() {
             return;
         }
+        if let Some(path) = self.part_downloads.cached(&series, index) {
+            series.parts[index].path = Some(path.clone());
+            series.current = Some(index);
+            self.video_series = Some(series);
+            let panel = self.video_tab;
+            if self.open(path) {
+                self.video_tab = panel;
+                self.player.set("pause", "no");
+                self.status = format!("正在播放 P{}", index + 1);
+            }
+            return;
+        }
         let origin = self.current_path.clone();
+        let downloads = self.part_downloads.clone();
         self.begin(
             &format!("正在准备 P{}…", index + 1),
             move |lib, cancel, _| {
-                let cached = series.cached(index);
-                let new_file = cached.is_none();
-                let path = if let Some(path) = cached {
-                    path
-                } else {
-                    process::download(&lib.root, &series.url(index)?, &cancel)?
-                };
-                Ok(Outcome::PartVideo(series, index, path, new_file, origin))
+                let path = downloads.obtain(&lib, &series, index, &cancel)?;
+                // Completed files belong to the shared cache, even if this foreground request is cancelled.
+                Ok(Outcome::PartVideo(series, index, path, false, origin))
             },
         );
     }
@@ -1777,6 +1797,10 @@ impl AppView {
             }
             "video-subtitle" => {
                 let result = (|| -> Result<()> {
+                    ensure!(
+                        self.background_video.is_none(),
+                        "请先完成或取消后台字幕任务后再导入字幕"
+                    );
                     let video = self.current_path.as_ref().context("请先打开视频")?;
                     let mut cues = subtitles::parse(&fs::read_to_string(&path)?);
                     ensure!(!cues.is_empty(), "请选择带时间轴的 UTF-8 SRT / VTT 字幕");
@@ -2805,6 +2829,10 @@ impl AppView {
                     .into();
                 }
                 Action::VideoTranslate => {
+                    ensure!(
+                        self.background_video.is_none(),
+                        "请先完成后台字幕生成再翻译"
+                    );
                     ensure!(self.page == "video", "请先进入视频学习");
                     ensure!(self.busy.is_none(), "请等待当前任务完成");
                     let video = self.current_path.clone().context("请先打开视频")?;
@@ -3003,6 +3031,7 @@ impl AppView {
                     self.end_handled = false;
                 }
                 Action::Download => {
+                    let downloads = self.part_downloads.clone();
                     let link = self.value("bilibili", cx);
                     let previous = self.video_series.clone();
                     let origin = self.current_path.clone();
@@ -3020,13 +3049,8 @@ impl AppView {
                                 }
                             }
                             let index = series.requested;
-                            let cached = series.cached(index);
-                            let new_file = cached.is_none();
-                            let path = if let Some(path) = cached {
-                                path
-                            } else {
-                                process::download(&lib.root, &series.url(index)?, &cancel)?
-                            };
+                            let path = downloads.obtain(&lib, &series, index, &cancel)?;
+                            let new_file = false;
                             Ok(Outcome::PartVideo(series, index, path, new_file, origin))
                         },
                     );
@@ -3231,24 +3255,21 @@ impl AppView {
                     self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
                     self.status = "已引用字幕；输入问题后发送给设置中的聊天模型".into();
                 }
-                Action::VideoTranscribe => {
-                    ensure!(self.page == "video", "请先进入视频学习");
-                    let video = self.current_path.clone().context("请先打开或导入视频")?;
-                    self.begin_subtitle(
-                        "生成视频字幕",
-                        "正在准备视频音轨…",
-                        move |lib, cancel, tx| {
-                            let (path, cues) = video_subtitles::generate_with_progress(
-                                &lib,
-                                &video,
-                                &cancel,
-                                |stage| {
-                                    let _ = tx.send(Event::SubtitleProgress(stage.into()));
-                                },
-                            )?;
-                            Ok(Outcome::VideoSubtitles(video, path, cues))
-                        },
-                    );
+                Action::VideoTranscribe => self.begin_background_subtitles(false)?,
+                Action::VideoTranscribeAll => self.begin_background_subtitles(true)?,
+                Action::CancelVideoSubtitles => {
+                    if let Some(job) = &self.background_video {
+                        job.cancel.store(true, Ordering::SeqCst);
+                    }
+                    if let Some(n) = self.video_job_notice.as_mut().filter(|n| n.active()) {
+                        n.state = TaskState::Cancelling;
+                        n.detail = "正在停止后台字幕队列，已完成的字幕会保留".into();
+                    }
+                }
+                Action::DismissVideoSubtitles => {
+                    if self.background_video.is_none() {
+                        self.video_job_notice = None;
+                    }
                 }
                 Action::VideoTools => self.video_tools_open = !self.video_tools_open,
                 Action::VideoSelect(key) => {
@@ -3339,6 +3360,13 @@ impl AppView {
                         .clone()
                         .context("请重新选择要移除的视频")?;
                     let mut videos = video_library::Collection::load(&self.lib)?;
+                    if let Some(job) = self
+                        .background_video
+                        .as_ref()
+                        .filter(|j| j.source_id == key)
+                    {
+                        job.cancel.store(true, Ordering::SeqCst);
+                    }
                     let video = videos.remove(&key)?;
                     videos.save(&self.lib)?;
                     self.videos = videos;
@@ -6782,12 +6810,14 @@ impl AppView {
                         .w_full();
                         study = study.child(div().px_3().py_2().flex().items_center().gap_1().flex_wrap()
                             .child(self.button("video-follow", if self.video_follow { "跟随 ✓" } else { "跟随" }, Action::VideoFollow, cx).ghost())
-                            .child(self.button("video-import-english", "导入英文字幕", Action::Pick("video-subtitle".into()),cx).ghost().disabled(self.current_path.is_none()||self.busy.is_some()))
-                            .child(self.button("video-translate-zh", "英文生成中文", Action::VideoTranslate,cx).disabled(self.video_cues.is_empty()||self.busy.is_some()||self.current_path.is_none()))
+                            .child(self.button("video-import-english", "导入英文字幕", Action::Pick("video-subtitle".into()),cx).ghost().disabled(self.current_path.is_none()||self.busy.is_some()||self.background_video.is_some()))
+                            .child(self.button("video-translate-zh", "英文生成中文", Action::VideoTranslate,cx).disabled(self.video_cues.is_empty()||self.busy.is_some()||self.background_video.is_some()||self.current_path.is_none()))
                             .child(div().flex_1())
                             .child(self.button("video-copy-all", "复制全部", Action::VideoCopySubtitle(None), cx).ghost().disabled(self.video_cues.is_empty()))
+                            .child(self.button("video-transcribe-all", "全部P生成字幕", Action::VideoTranscribeAll,cx)
+                                .disabled(self.busy.is_some()||self.background_video.is_some()||self.video_series.is_none()||self.current_path.is_none()))
                             .child(self.button("video-transcribe", if self.video_cues.is_empty() { "生成字幕" } else { "重新生成" }, Action::VideoTranscribe, cx)
-                                .disabled(self.busy.is_some() || self.current_path.is_none())))
+                                .disabled(self.busy.is_some() || self.background_video.is_some() || self.current_path.is_none())))
                             .when(self.video_cues.is_empty(), |v| v.child(div().p_5().text_sm().text_color(cx.theme().muted_foreground)
                                 .child("生成或导入字幕后，点击句子即可播放。复制与 AI 提问位于每句下方。")))
                             .when(!self.video_cues.is_empty(), |v| v.child(transcript));
@@ -6884,6 +6914,9 @@ impl AppView {
                             .size_full()
                             .pr_3();
                             study = study
+                                .child(div().px_3().py_2().flex().flex_col().gap_1()
+                                    .child(self.button("parts-transcribe-all", "全部P生成字幕",Action::VideoTranscribeAll,cx).primary().disabled(self.busy.is_some()||self.background_video.is_some()||self.current_path.is_none()))
+                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("已有字幕跳过 · 未下载的P先下载 · 可切换播放，退出应用会停止任务")))
                                 .child(
                                     div()
                                         .px_3()
@@ -8430,52 +8463,62 @@ impl Render for AppView {
                             })
                             .child(content),
                     )
-                    .child(
-                        div()
-                            .px_6()
-                            .py_3()
-                            .bg(cx.theme().background)
-                            .border_t_1()
-                            .border_color(cx.theme().border)
-                            .flex()
-                            .gap_3()
-                            .items_center()
-                            .child(
+                    .when(
+                        (self.task_notice.is_none() && self.video_job_notice.is_none())
+                            || (self.busy.is_some() && self.task_notice.is_none())
+                            || !self.playback.error.is_empty(),
+                        |view| {
+                            view.child(
                                 div()
-                                    .size(px(6.))
-                                    .rounded_full()
-                                    .bg(if self.busy.is_some() {
-                                        cx.theme().primary
-                                    } else {
-                                        cx.theme().muted_foreground
+                                    .px_6()
+                                    .py_3()
+                                    .bg(cx.theme().background)
+                                    .border_t_1()
+                                    .border_color(cx.theme().border)
+                                    .flex()
+                                    .gap_3()
+                                    .items_center()
+                                    .child(div().size(px(6.)).rounded_full().bg(
+                                        if self.busy.is_some() {
+                                            cx.theme().primary
+                                        } else {
+                                            cx.theme().muted_foreground
+                                        },
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(self.status.clone()),
+                                    )
+                                    .when_some(
+                                        self.model_progress.as_ref().and_then(|p| p.percent()),
+                                        |view, p| {
+                                            view.child(
+                                                Progress::new()
+                                                    .value(p)
+                                                    .bg(cx.theme().primary)
+                                                    .w(px(120.)),
+                                            )
+                                        },
+                                    )
+                                    .when(
+                                        self.busy.is_some() && self.task_notice.is_none(),
+                                        |view| {
+                                            view.child(self.button(
+                                                "cancel-task",
+                                                "取消任务",
+                                                Action::Cancel,
+                                                cx,
+                                            ))
+                                        },
+                                    )
+                                    .when(!self.playback.error.is_empty(), |view| {
+                                        view.child(self.playback.error.clone())
                                     }),
                             )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(self.status.clone()),
-                            )
-                            .when_some(
-                                self.model_progress.as_ref().and_then(|p| p.percent()),
-                                |view, p| {
-                                    view.child(
-                                        Progress::new().value(p).bg(cx.theme().primary).w(px(120.)),
-                                    )
-                                },
-                            )
-                            .when(self.busy.is_some() && self.task_notice.is_none(), |view| {
-                                view.child(self.button(
-                                    "cancel-task",
-                                    "取消任务",
-                                    Action::Cancel,
-                                    cx,
-                                ))
-                            })
-                            .when(!self.playback.error.is_empty(), |view| {
-                                view.child(self.playback.error.clone())
-                            }),
+                        },
                     ),
             )
             .when_some(assistant, |view, assistant| view.child(assistant))

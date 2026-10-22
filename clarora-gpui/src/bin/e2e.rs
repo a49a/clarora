@@ -11,6 +11,8 @@ mod kokoro;
 mod model_progress;
 #[path = "support/protocol.rs"]
 mod protocol;
+#[path = "support/video_jobs.rs"]
+mod video_jobs;
 #[path = "support/video_library.rs"]
 mod video_library;
 #[path = "support/video_qa.rs"]
@@ -782,6 +784,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
             subtitles::srt(&cues),
         )?;
         results.push(json!({"workflow":"合成英文语音 → FFmpeg 转换 → 原生 Whisper tiny.en 推理 → 字幕","passed":true,"transcript":transcript,"evidence":"offline-transcription.srt"}));
+        video_jobs::run(&lib, &spoken_video, results)?;
     }
     fs::write(
         output.join("data-location.txt"),

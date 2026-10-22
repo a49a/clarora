@@ -146,6 +146,19 @@ impl Collection {
         }
         Ok(updated)
     }
+    /// Merge a completed background download without selecting a source or changing its current P.
+    pub fn cache_part(&mut self, key: &str, index: usize, path: &Path) -> Result<Option<String>> {
+        let Some(video) = self.items.iter_mut().find(|v| v.id == key) else {
+            return Ok(None);
+        };
+        ensure!(
+            path.is_absolute() && path.is_file() && std::fs::metadata(path)?.len() > 0,
+            "后台下载文件不存在或为空"
+        );
+        let series = video.series.as_mut().context("后台选集信息已改变")?;
+        series.parts.get_mut(index).context("后台分P已不存在")?.path = Some(path.to_path_buf());
+        Ok(Some(series.base.clone()))
+    }
     fn validate(&self) -> Result<()> {
         ensure!(
             self.version == 1 && self.items.len() <= 10000,
