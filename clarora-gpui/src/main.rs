@@ -6,7 +6,7 @@ mod video_job_ui;
 mod video_library_ui;
 use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::{
-    ai, audio_library, backup, bilibili, blind_listening,
+    ai, audio_library, backup, bilibili, blind_listening, credentials,
     data::{Card, Library, Row, id, now, text},
     documents,
     media::{Playback, Player},
@@ -27,6 +27,7 @@ use gpui_component::{
     menu::{DropdownMenu, PopupMenuItem},
     progress::Progress,
     scroll::{Scrollbar, ScrollbarShow},
+    switch::Switch,
     text::TextView,
     tooltip::Tooltip,
 };
@@ -202,6 +203,8 @@ enum Action {
     TimerPause,
     TimerReset,
     SaveAi,
+    CredentialMode(bool),
+    ImportLegacyCredentials,
     SaveStorage,
     Models(String),
     SelectModel(String),
@@ -227,6 +230,7 @@ enum Action {
     GraphList(i64),
 }
 enum Outcome {
+    CredentialMode(bool),
     Message(String),
     Parts(bilibili::Series),
     PartVideo(bilibili::Series, usize, PathBuf, bool, Option<PathBuf>),
@@ -268,6 +272,7 @@ struct AppView {
     inputs: BTreeMap<String, Entity<InputState>>,
     status: String,
     busy: Option<Cancel>,
+    secure_credentials: bool,
     task_scope: TaskScope,
     model_progress: Option<ModelProgress>,
     task_notice: Option<TaskNotice>,
@@ -451,6 +456,7 @@ impl AppView {
                 .unwrap_or(1.),
             tts_last: None,
             library: Default::default(),
+            secure_credentials: credentials::secure_mode(&lib).unwrap_or(false),
             lib,
             page: "flashcard".into(),
             navigation_open: true,
@@ -1340,6 +1346,10 @@ impl AppView {
                             Ok(Outcome::Recording(path)) => {
                                 self.recorded = Some(path);
                                 self.status = "录音已保存，可转写评分".into();
+                            }
+                            Ok(Outcome::CredentialMode(enabled)) => {
+                                self.secure_credentials = enabled;
+                                self.status=if enabled {"密钥安全模式已开启，现有本机密钥已迁入系统凭证库"} else {"密钥安全模式已关闭。已有钥匙串密钥可重新输入保存，或主动导入一次"}.into();
                             }
                             Ok(Outcome::Message(s)) => self.status = s,
                             Err(e) => self.status = e,
@@ -3560,6 +3570,36 @@ impl AppView {
                     self.timer_remaining = 1500;
                     self.timer_paused = false;
                 }
+                Action::CredentialMode(enabled) => {
+                    ensure!(
+                        self.busy.is_none() && self.background_video.is_none(),
+                        "请先完成或取消当前任务再切换密钥存储模式"
+                    );
+                    self.begin_scoped(
+                        TaskScope::Application,
+                        "正在切换密钥存储模式…",
+                        move |lib, _, _| {
+                            credentials::set_secure_mode(&lib, enabled)?;
+                            Ok(Outcome::CredentialMode(enabled))
+                        },
+                    );
+                }
+                Action::ImportLegacyCredentials => {
+                    ensure!(
+                        self.busy.is_none() && self.background_video.is_none(),
+                        "请先完成或取消当前任务"
+                    );
+                    self.begin_scoped(
+                        TaskScope::Application,
+                        "正在导入旧钥匙串密钥，系统可能要求一次授权…",
+                        move |lib, _, _| {
+                            let count = credentials::import_legacy(&lib)?;
+                            Ok(Outcome::Message(format!(
+                                "已导入 {count} 项密钥，以后从本机 SQLite 读取"
+                            )))
+                        },
+                    );
+                }
                 Action::SaveAi => {
                     let config = ai::Config {
                         base_url: self.value("base_url", cx),
@@ -3578,9 +3618,14 @@ impl AppView {
                         .set_setting("command", &self.value("command", cx))?;
                     self.begin("正在保存 AI 设置…", move |lib, _, _| {
                         ai::save_preferences(&lib, config, &key)?;
-                        Ok(Outcome::Message(
-                            "AI 设置已保存，聊天与远端转写共用配置，密钥保存在系统凭证库".into(),
-                        ))
+                        let location = if credentials::secure_mode(&lib)? {
+                            "系统凭证库"
+                        } else {
+                            "本机 SQLite"
+                        };
+                        Ok(Outcome::Message(format!(
+                            "AI 设置已保存，聊天与远端转写共用配置，密钥保存在{location}"
+                        )))
                     });
                 }
                 Action::SaveStorage => {
@@ -3598,7 +3643,14 @@ impl AppView {
                     let token = self.value("session_token", cx);
                     self.begin("正在保存存储凭证…", move |lib, _, _| {
                         backup::Storage::save(&lib, config, &key, &token)?;
-                        Ok(Outcome::Message("对象存储设置已保存".into()))
+                        Ok(Outcome::Message(format!(
+                            "对象存储设置已保存，密钥保存在{}",
+                            if credentials::secure_mode(&lib)? {
+                                "系统凭证库"
+                            } else {
+                                "本机 SQLite"
+                            }
+                        )))
                     });
                 }
                 Action::SelectModel(model) => {
@@ -7561,6 +7613,19 @@ impl AppView {
                         .child(self.button("theme", "切换深浅主题", Action::Theme, cx))
                         .child(self.field("daily_limit", "每日新卡上限")),
                 );
+                content=content.child(panel(cx)
+                    .child(div().text_lg().child("密钥存储"))
+                    .child(Switch::new("credential-security-mode")
+                        .label("使用系统凭证库保护密钥")
+                        .checked(self.secure_credentials)
+                        .disabled(self.busy.is_some()||self.background_video.is_some())
+                        .on_click(cx.listener(|this,checked:&bool,window,cx|this.handle(Action::CredentialMode(*checked),window,cx))))
+                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("默认关闭：密钥保存到本机 SQLite，不访问钥匙串。开启后使用系统凭证库，系统可能要求授权。"))
+                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("SQLite 中的密钥未额外加密。应用导出的资料备份不包含密钥。"))
+                    .when(!self.secure_credentials && credentials::needs_legacy_import(&self.lib).unwrap_or(false),|v|v
+                        .child(div().text_sm().child("旧密钥还在钥匙串中。可重新输入后保存，或主动导入一次。"))
+                        .child(self.button("import-legacy-credentials","导入旧钥匙串密钥（可能需一次授权）",Action::ImportLegacyCredentials,cx)
+                            .disabled(self.busy.is_some()||self.background_video.is_some()))));
                 // Read only the saved configuration, without accessing the credential store
                 // during rendering. Keep draft selection distinct from the active engine.
                 let saved_ai = self.lib.setting("ai_config").ok().and_then(|raw| {

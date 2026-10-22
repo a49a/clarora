@@ -5,6 +5,8 @@ mod audio_library;
 mod bilibili_parts;
 #[path = "support/blind_listening.rs"]
 mod blind_listening;
+#[path = "support/credential_mode.rs"]
+mod credential_mode;
 #[path = "support/kokoro.rs"]
 mod kokoro;
 #[path = "support/model_progress.rs"]
@@ -68,6 +70,14 @@ fn report_pdf(path: &Path) -> Result<()> {
     fs::write(path, pdf)?;
     Ok(())
 }
+fn ensure_fixture_authorization(header: &str) {
+    assert!(
+        header
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("authorization: Bearer sqlite-http-fixture")),
+        "SQLite fixture credential was not used for the remote request"
+    );
+}
 fn mock_ai() -> Result<(String, Arc<AtomicBool>, thread::JoinHandle<Vec<String>>)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let address = format!("http://{}", listener.local_addr()?);
@@ -104,6 +114,7 @@ fn mock_ai() -> Result<(String, Arc<AtomicBool>, thread::JoinHandle<Vec<String>>
             let Some(split) = split else { continue };
             let header = String::from_utf8_lossy(&bytes[..split]);
             let first = header.lines().next().unwrap_or("").to_string();
+            ensure_fixture_authorization(&header);
             let len = header
                 .lines()
                 .find_map(|line| {
@@ -428,6 +439,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     );
     results.push(json!({"workflow":"只读 RN 快照导入与跨表恢复失败事务回滚","passed":true}));
     video_library::run(&lib, &video, results)?;
+    credential_mode::run(&lib, results)?;
     audio_library::run(&lib, &video, results)?;
     blind_listening::run(&lib, &video, results)?;
     bilibili_parts::run(&lib, results)?;
@@ -551,7 +563,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
         config.asr_base_url == config.base_url && config.asr_model == config.model,
         "URL或模型未共用"
     );
-    lib.set_setting("ai_config", &serde_json::to_string(&config)?)?;
+    ai::save_shared(&lib, config.clone(), "sqlite-http-fixture")?;
     let reopened = Library::open(lib.root.clone())?;
     let loaded = ai::load(&reopened)?.0;
     ensure!(

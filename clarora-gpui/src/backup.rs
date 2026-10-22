@@ -337,16 +337,8 @@ impl Storage {
     pub fn load(lib: &Library) -> Result<Self> {
         let c: StorageConfig =
             serde_json::from_str(&lib.setting("storage_config")?).context("请先配置对象存储")?;
-        let secret = keyring::Entry::new("Clarora-GPUI", &format!("storage-{}", c.credential_id))?
-            .get_password()?;
-        let token =
-            match keyring::Entry::new("Clarora-GPUI", &format!("token-{}", c.credential_id))?
-                .get_password()
-            {
-                Ok(token) => token,
-                Err(keyring::Error::NoEntry) => String::new(),
-                Err(error) => return Err(error.into()),
-            };
+        let secret = crate::credentials::get(lib, &format!("storage-{}", c.credential_id))?;
+        let token = crate::credentials::get_optional(lib, &format!("token-{}", c.credential_id))?;
         let s = Self {
             config: c,
             secret,
@@ -363,18 +355,15 @@ impl Storage {
         };
         tmp.validate()?;
         c.credential_id = id();
-        let a = keyring::Entry::new("Clarora-GPUI", &format!("storage-{}", c.credential_id))?;
-        let b = keyring::Entry::new("Clarora-GPUI", &format!("token-{}", c.credential_id))?;
-        let result = (|| {
-            a.set_password(secret)?;
-            b.set_password(token)?;
-            lib.set_setting("storage_config", &serde_json::to_string(&c)?)
-        })();
-        if result.is_err() {
-            let _ = a.delete_credential();
-            let _ = b.delete_credential();
-        }
-        result
+        crate::credentials::store_config(
+            lib,
+            "storage_config",
+            &serde_json::to_string(&c)?,
+            &[
+                (format!("storage-{}", c.credential_id), secret.into()),
+                (format!("token-{}", c.credential_id), token.into()),
+            ],
+        )
     }
     fn validate(&self) -> Result<()> {
         let c = &self.config;

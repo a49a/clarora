@@ -8,7 +8,6 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
     fs,
     path::Path,
     sync::{Mutex, OnceLock, atomic::Ordering},
@@ -61,23 +60,6 @@ fn config_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
-fn secret_cache() -> &'static Mutex<BTreeMap<String, String>> {
-    static CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-fn secret(name: &str) -> Result<String> {
-    let mut cache = secret_cache().lock().unwrap();
-    if let Some(value) = cache.get(name) {
-        return Ok(value.clone());
-    }
-    let value = match keyring::Entry::new("Clarora-GPUI", name)?.get_password() {
-        Ok(v) => v,
-        Err(keyring::Error::NoEntry) => String::new(),
-        Err(e) => return Err(e.into()),
-    };
-    cache.insert(name.to_owned(), value.clone());
-    Ok(value)
-}
 /// Non-secret settings can be read at startup and for local inference without OS authorization.
 pub fn load_config(lib: &Library) -> Result<Config> {
     let raw = lib.setting("ai_config")?;
@@ -90,7 +72,7 @@ pub fn load_config(lib: &Library) -> Result<Config> {
     }
     Ok(serde_json::from_str(&raw)?)
 }
-fn credential(config: &Config, role: CredentialSource) -> Result<String> {
+fn credential(lib: &Library, config: &Config, role: CredentialSource) -> Result<String> {
     if config.credential_id.is_empty() {
         return Ok(String::new());
     }
@@ -98,19 +80,19 @@ fn credential(config: &Config, role: CredentialSource) -> Result<String> {
         CredentialSource::Chat => "chat",
         CredentialSource::Asr => "asr",
     };
-    secret(&format!("{role}-{}", config.credential_id))
+    crate::credentials::get(lib, &format!("{role}-{}", config.credential_id))
 }
 pub fn load(lib: &Library) -> Result<(Config, String, String)> {
     let _guard = config_lock().lock().unwrap();
     let config = load_config(lib)?;
-    let chat = credential(&config, CredentialSource::Chat)?;
-    let asr = credential(&config, CredentialSource::Asr)?;
+    let chat = credential(lib, &config, CredentialSource::Chat)?;
+    let asr = credential(lib, &config, CredentialSource::Asr)?;
     Ok((config, chat, asr))
 }
 pub fn load_chat(lib: &Library) -> Result<(Config, String)> {
     let _guard = config_lock().lock().unwrap();
     let config = load_config(lib)?;
-    let key = credential(&config, CredentialSource::Chat)?;
+    let key = credential(lib, &config, CredentialSource::Chat)?;
     Ok((config, key))
 }
 /// An untouched password field retains the credential reference without reading its secret.
@@ -148,25 +130,17 @@ pub fn save(lib: &Library, mut config: Config, chat: &str, asr: &str) -> Result<
         }
     }
     config.credential_id = id();
-    let chat_entry =
-        keyring::Entry::new("Clarora-GPUI", &format!("chat-{}", config.credential_id))?;
-    let asr_entry = keyring::Entry::new("Clarora-GPUI", &format!("asr-{}", config.credential_id))?;
-    let result = (|| {
-        chat_entry.set_password(chat)?;
-        asr_entry.set_password(asr)?;
-        lib.set_setting("ai_config", &serde_json::to_string(&config)?)
-    })();
-    if result.is_err() {
-        let _ = chat_entry.delete_credential();
-        let _ = asr_entry.delete_credential();
-    }
-    if result.is_ok() {
-        let mut cache = secret_cache().lock().unwrap();
-        cache.insert(format!("chat-{}", config.credential_id), chat.to_owned());
-        cache.insert(format!("asr-{}", config.credential_id), asr.to_owned());
-    }
-    result
+    crate::credentials::store_config(
+        lib,
+        "ai_config",
+        &serde_json::to_string(&config)?,
+        &[
+            (format!("chat-{}", config.credential_id), chat.into()),
+            (format!("asr-{}", config.credential_id), asr.into()),
+        ],
+    )
 }
+
 pub(crate) fn endpoint_url(base: &str) -> Result<String> {
     let url = url::Url::parse(base).context("请先设置 AI API 地址")?;
     ensure!(
@@ -252,7 +226,7 @@ pub fn transcribe(lib: &Library, path: &Path, cancel: &Cancel) -> Result<Vec<Cue
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
     let c = load_config(lib)?;
     if c.engine == "compatible" {
-        let key = credential(&c, CredentialSource::Asr)?;
+        let key = credential(lib, &c, CredentialSource::Asr)?;
         let base = if c.asr_base_url.is_empty() {
             &c.base_url
         } else {
