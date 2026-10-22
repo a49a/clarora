@@ -21,6 +21,8 @@ pub struct Part {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Series {
+    #[serde(default)]
+    pub title: String,
     pub base: String,
     pub parts: Vec<Part>,
     pub requested: usize,
@@ -74,7 +76,11 @@ impl Series {
     }
 }
 pub fn fetch(input: &str, cancel: &Cancel) -> Result<Series> {
-    fetch_from(input, "https://api.bilibili.com/x/player/pagelist", cancel)
+    fetch_from(
+        input,
+        "https://api.bilibili.com/x/web-interface/view",
+        cancel,
+    )
 }
 /// Endpoint injection is used by the native HTTP workflow E2E, never by app settings.
 pub fn fetch_from(input: &str, endpoint: &str, cancel: &Cancel) -> Result<Series> {
@@ -140,7 +146,15 @@ pub fn fetch_from(input: &str, endpoint: &str, cancel: &Cancel) -> Result<Series
         "读取分P失败：{}",
         value["message"].as_str().unwrap_or("来源不可用")
     );
-    let pages = value["data"].as_array().context("分P返回格式无效")?;
+    let title = value["data"]["title"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .context("视频缺少标题")?
+        .to_owned();
+    let pages = value["data"]["pages"]
+        .as_array()
+        .context("分P返回格式无效")?;
     ensure!(
         !pages.is_empty() && pages.len() <= 10000,
         "分P列表为空或过大"
@@ -165,6 +179,7 @@ pub fn fetch_from(input: &str, endpoint: &str, cancel: &Cancel) -> Result<Series
     }
     ensure!(requested > 0 && requested <= parts.len(), "指定的分P不存在");
     Ok(Series {
+        title,
         base,
         parts,
         requested: requested - 1,

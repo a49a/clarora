@@ -25,3 +25,5 @@ pub mod blind_listening;
 pub mod tts;
 
 pub mod audio_library;
+
+pub mod video_library;

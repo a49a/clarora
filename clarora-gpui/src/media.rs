@@ -528,6 +528,15 @@ fn worker(
                 );
                 s.primary_subtitles_visible = main_visible != 0;
                 s.secondary_subtitles_visible = second_visible != 0;
+                if s.path.is_empty() {
+                    s.frame = None;
+                    s.subtitle.clear();
+                    s.tracks.clear();
+                    s.position = 0.;
+                    s.duration = 0.;
+                    s.paused = true;
+                    s.eof = false;
+                }
             }
         }
         Ok(())

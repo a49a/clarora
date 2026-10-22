@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod design;
 mod library_ui;
+mod video_library_ui;
 use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::{
     ai, audio_library, backup, bilibili, blind_listening,
@@ -11,13 +12,15 @@ use clarora_gpui::{
     process::{self, Cancel},
     recording::Recorder,
     subtitles::{self, Cue},
-    tts, video_qa, video_subtitles,
+    tts, video_library, video_qa, video_subtitles,
     waveform::{self, Waveform},
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Root, Selectable, Sizable, Theme, ThemeMode,
+    WindowExt,
     button::*,
+    dialog::DialogButtonProps,
     input::{Input, InputState},
     menu::{DropdownMenu, PopupMenuItem},
     progress::Progress,
@@ -94,7 +97,6 @@ const PAGES: &[(&str, &str, &str)] = &[
 enum Action {
     Page(String),
     Pick(String),
-    Open(PathBuf),
     Audio(String),
     Practice(String),
     AudioPractice(String),
@@ -181,6 +183,10 @@ enum Action {
     VideoFollow,
     VideoPanel(usize),
     VideoTools,
+    VideoSelect(String),
+    VideoEpisodes(String),
+    VideoRemove(String),
+    VideoConfirmRemove,
     VideoSubtitleExport,
     Translate,
     Record,
@@ -258,6 +264,7 @@ struct AppView {
     task_scope: TaskScope,
     model_progress: Option<ModelProgress>,
     rx: Option<mpsc::Receiver<Event>>,
+    video_titles_rx: Option<mpsc::Receiver<(String, String)>>,
     cards: Vec<Card>,
     index: usize,
     revealed: bool,
@@ -320,7 +327,8 @@ struct AppView {
     audio_show_current: bool,
     audio_font_size: u8,
     key_points: Vec<ai::KeyPoint>,
-    recents: Vec<String>,
+    videos: video_library::Collection,
+    video_remove: Option<String>,
     loop_a: Option<f64>,
     loop_b: Option<f64>,
     repeat: usize,
@@ -441,6 +449,7 @@ impl AppView {
             task_scope: TaskScope::Material,
             model_progress: None,
             rx: None,
+            video_titles_rx: None,
             cards: vec![],
             index: 0,
             revealed: false,
@@ -475,7 +484,7 @@ impl AppView {
             video_material: None,
             video_material_error: String::new(),
             video_scroll: ListState::new(0, ListAlignment::Top, px(200.)),
-            video_tab: 0,
+            video_tab: 3,
             video_tools_open: false,
             video_panel_width: 360.,
             video_resize: None,
@@ -503,7 +512,8 @@ impl AppView {
             audio_show_current: true,
             audio_font_size: 18,
             key_points: vec![],
-            recents: vec![],
+            videos: Default::default(),
+            video_remove: None,
             loop_a: None,
             loop_b: None,
             repeat: 0,
@@ -573,8 +583,31 @@ impl AppView {
             let base = series.base.clone();
             this.set("bilibili", base, window, cx);
         }
-        this.recents = serde_json::from_str(&this.lib.setting("recent_videos").unwrap_or_default())
-            .unwrap_or_default();
+        match video_library::Collection::load(&this.lib) {
+            Ok(videos) => this.videos = videos,
+            Err(e) => this.status = format!("{e:#}"),
+        }
+        let sources: Vec<_> = this
+            .videos
+            .items
+            .iter()
+            .filter_map(|v| v.series.as_ref())
+            .filter(|s| s.title.trim().is_empty())
+            .map(|s| s.base.clone())
+            .collect();
+        if !sources.is_empty() {
+            let (tx, rx) = mpsc::channel();
+            this.video_titles_rx = Some(rx);
+            std::thread::spawn(move || {
+                for base in sources {
+                    if let Ok(series) = bilibili::fetch(&base, &process::cancel_token()) {
+                        if tx.send((base, series.title)).is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
         this.page = this
             .lib
             .setting("last_page")
@@ -644,16 +677,30 @@ impl AppView {
             }
         })
         .detach();
-        if let Some(path) = this
-            .recents
-            .first()
-            .map(PathBuf::from)
-            .filter(|p| p.is_file())
-        {
-            this.player.open_range(&path, 0., 0., true);
-            this.current_path = Some(path.clone());
-            this.video_path = Some(path.clone());
-            this.load_video_subtitles(&path);
+        if let Some(video) = this.videos.active().cloned().filter(|v| v.path.is_file()) {
+            this.video_series = video.series;
+            if let Some(series) = &mut this.video_series {
+                series.current = series
+                    .parts
+                    .iter()
+                    .position(|p| p.path.as_ref() == Some(&video.path));
+            }
+            let position = this
+                .lib
+                .setting("last_video_position")
+                .ok()
+                .and_then(|v| serde_json::from_str::<Value>(&v).ok())
+                .filter(|v| v["path"].as_str() == video.path.to_str())
+                .and_then(|v| v["position"].as_f64())
+                .filter(|v| v.is_finite() && *v >= 0.)
+                .unwrap_or(0.);
+            this.player.open_range(&video.path, position, 0., true);
+            this.current_path = Some(video.path.clone());
+            this.video_path = Some(video.path.clone());
+            this.load_video_subtitles(&video.path);
+            this.video_tab = 3;
+        } else {
+            this.video_series = None;
         }
         if this.page == "listening" {
             this.restore_listening();
@@ -1038,6 +1085,29 @@ impl AppView {
                 self.stats_ticks = 0.;
             }
         }
+        if let Some(rx) = &self.video_titles_rx {
+            let titles = rx.try_iter().collect::<Vec<_>>();
+            for (base, title) in titles {
+                let result = (|| -> Result<()> {
+                    let mut videos = video_library::Collection::load(&self.lib)?;
+                    if videos.update_title(&base, &title)? {
+                        videos.save(&self.lib)?;
+                        self.videos = videos;
+                        if let Some(series) = self.video_series.as_mut().filter(|s| s.base == base)
+                        {
+                            series.title = title;
+                            // Only persist when the active queue belongs to this source.
+                            series.save(&self.lib)?;
+                        }
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    self.status = format!("更新视频标题失败：{error:#}");
+                }
+                changed = true;
+            }
+        }
         if let Some(rx) = &self.rx {
             let events = rx.try_iter().collect::<Vec<_>>();
             for event in events {
@@ -1112,12 +1182,23 @@ impl AppView {
                                     if activate {
                                         series.current = Some(index);
                                     }
-                                    let saved = series.save(&self.lib);
-                                    self.video_series = Some(series);
-                                    if activate {
-                                        self.open(path);
-                                        self.player.set("pause", "no");
-                                        self.status = format!("正在播放 P{}", index + 1);
+                                    let saved = (|| -> Result<()> {
+                                        let mut videos =
+                                            video_library::Collection::load(&self.lib)?;
+                                        videos.add(&[path.clone()], Some(&series))?;
+                                        videos.save(&self.lib)?;
+                                        self.videos = videos;
+                                        Ok(())
+                                    })();
+                                    if activate && saved.is_ok() {
+                                        self.video_series = Some(series);
+                                        // Opening media reloads subtitles; keep the panel the user is viewing.
+                                        let panel = self.video_tab;
+                                        if self.open(path) {
+                                            self.video_tab = panel;
+                                            self.player.set("pause", "no");
+                                            self.status = format!("正在播放 P{}", index + 1);
+                                        }
                                     } else {
                                         self.status = "分P已下载，返回视频页选集播放".into();
                                     }
@@ -1352,7 +1433,25 @@ impl AppView {
             },
         );
     }
-    fn open(&mut self, path: PathBuf) {
+    fn open(&mut self, path: PathBuf) -> bool {
+        let result = (|| -> Result<_> {
+            let mut videos = video_library::Collection::load(&self.lib)?;
+            let ids = videos.add(&[path], self.video_series.as_ref())?;
+            let video = videos.select(&ids[0])?;
+            videos.save(&self.lib)?;
+            self.videos = videos;
+            Ok(video)
+        })();
+        let video = match result {
+            Ok(video) => video,
+            Err(e) => {
+                self.status = format!("无法选择视频：{e:#}");
+                return false;
+            }
+        };
+        let path = video.path;
+        self.video_series = video.series;
+        self.video_remove = None;
         if let Some(cancel) = self.waveform_cancel.take() {
             cancel.store(true, Ordering::SeqCst);
         }
@@ -1381,14 +1480,10 @@ impl AppView {
         self.cues.clear();
         self.current_audio.clear();
         self.load_video_subtitles(&path);
-        let path = path.to_string_lossy().to_string();
-        self.recents.retain(|p| p != &path);
-        self.recents.insert(0, path);
-        self.recents.truncate(12);
-        let _ = self.lib.set_setting(
-            "recent_videos",
-            &serde_json::to_string(&self.recents).unwrap_or_default(),
-        );
+        if self.video_series.is_none() {
+            let _ = self.lib.set_setting("bilibili_series", "");
+        }
+        true
     }
     fn prepare_video_material(&mut self, scope: video_qa::Scope) -> Result<()> {
         let path = self.current_path.as_ref().context("请先打开视频")?;
@@ -1586,7 +1681,7 @@ impl AppView {
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: !directory,
             directories: directory,
-            multiple: kind == "audio" || kind == "merge",
+            multiple: kind == "audio" || kind == "merge" || kind == "video",
             prompt: None,
         });
         cx.spawn(async move |this, cx| {
@@ -1608,7 +1703,25 @@ impl AppView {
             return;
         };
         match kind {
-            "video" => self.open(path),
+            "video" => {
+                let result = (|| -> Result<()> {
+                    ensure!(self.busy.is_none(), "请完成或取消当前任务后再导入视频");
+                    let mut videos = video_library::Collection::load(&self.lib)?;
+                    let ids = videos.add(&paths, None)?;
+                    videos.save(&self.lib)?;
+                    let first = videos.select(&ids[0])?;
+                    self.videos = videos;
+                    self.save_media_position();
+                    ensure!(self.open(first.path), "{}", self.status);
+                    self.video_tab = 3;
+                    self.video_tools_open = false;
+                    self.status = format!("已收藏 {} 个视频，可在“我的视频”切换或移除", ids.len());
+                    Ok(())
+                })();
+                if let Err(e) = result {
+                    self.status = format!("视频导入失败：{e:#}");
+                }
+            }
             "video-subtitle" => {
                 let result = (|| -> Result<()> {
                     let video = self.current_path.as_ref().context("请先打开视频")?;
@@ -1752,6 +1865,10 @@ impl AppView {
         }
     }
     fn handle(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        // Modal confirmation owns interaction until it is confirmed or dismissed.
+        if window.has_active_dialog(cx) && !matches!(action, Action::VideoConfirmRemove) {
+            return;
+        }
         let result = (|| -> Result<()> {
             match action {
                 Action::Composer => {
@@ -1766,6 +1883,7 @@ impl AppView {
                     self.audio_blind.enabled = false;
                     self.invalidate_blind();
                     let previous = self.page.clone();
+                    self.video_remove = None;
                     self.library.pending_delete.clear();
                     if self.library.tool == "delete" {
                         self.library.tool.clear();
@@ -1805,6 +1923,7 @@ impl AppView {
                         } else if self.page == "video" {
                             if let Some(path) = self.video_path.clone() {
                                 self.open(path.clone());
+                                self.video_tab = 3;
                                 self.player.set("pause", "yes");
                                 if let Ok(value) = serde_json::from_str::<Value>(
                                     &self.lib.setting("last_video_position").unwrap_or_default(),
@@ -1862,7 +1981,6 @@ impl AppView {
                         self.pick(&kind, cx);
                     }
                 }
-                Action::Open(path) => self.open(path),
                 Action::Audio(key) => {
                     let row = self
                         .audios
@@ -3055,8 +3173,129 @@ impl AppView {
                     );
                 }
                 Action::VideoTools => self.video_tools_open = !self.video_tools_open,
+                Action::VideoSelect(key) => {
+                    ensure!(self.busy.is_none(), "请完成或取消当前任务后再切换视频");
+                    let mut videos = video_library::Collection::load(&self.lib)?;
+                    let video = videos.select(&key)?;
+                    videos.save(&self.lib)?;
+                    self.videos = videos;
+                    self.save_media_position();
+                    if !self.open(video.path) {
+                        return Ok(());
+                    }
+                    self.video_tab = 3;
+                    self.video_tools_open = false;
+                    self.status = format!("已选择：{}", video.title);
+                }
+                Action::VideoEpisodes(key) => {
+                    ensure!(self.busy.is_none(), "请完成或取消当前任务后再切换视频");
+                    if self.videos.selected.as_ref() != Some(&key) || self.video_path.is_none() {
+                        let mut videos = video_library::Collection::load(&self.lib)?;
+                        let video = videos.select(&key)?;
+                        videos.save(&self.lib)?;
+                        self.save_media_position();
+                        self.videos = videos;
+                        if !self.open(video.path) {
+                            return Ok(());
+                        }
+                        self.player.command(["set", "pause", "yes"]);
+                    }
+                    self.video_tab = 1;
+                    self.video_tools_open = false;
+                }
+                Action::VideoRemove(key) => {
+                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    let title = self
+                        .videos
+                        .items
+                        .iter()
+                        .find(|v| v.id == key)
+                        .context("该视频已移出收藏")?
+                        .title
+                        .clone();
+                    self.video_remove = Some(key);
+                    let view = cx.entity().downgrade();
+                    window.open_dialog(cx, move |dialog, window, cx| {
+                        let confirm_view = view.clone();
+                        let close_view = view.clone();
+                        dialog
+                            .title("移除视频收藏？")
+                            .confirm()
+                            .w((window.viewport_size().width - px(32.)).min(px(480.)))
+                            .margin_top(
+                                ((window.viewport_size().height - px(280.)) / 2.).max(px(16.)),
+                            )
+                            .button_props(
+                                DialogButtonProps::default()
+                                    .cancel_text("取消")
+                                    .ok_text("确认移除")
+                                    .ok_variant(ButtonVariant::Danger),
+                            )
+                            .child(div().text_sm().child(title.clone()))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("视频文件和字幕缓存会保留。移除当前视频会停止播放。"),
+                            )
+                            .on_ok(move |_, window, cx| {
+                                confirm_view
+                                    .update(cx, |this, cx| {
+                                        this.handle(Action::VideoConfirmRemove, window, cx);
+                                        this.video_remove.is_none()
+                                    })
+                                    .unwrap_or(true)
+                            })
+                            .on_close(move |_, _, cx| {
+                                let _ = close_view.update(cx, |this, cx| {
+                                    this.video_remove = None;
+                                    cx.notify();
+                                });
+                            })
+                    });
+                }
+                Action::VideoConfirmRemove => {
+                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    let key = self
+                        .video_remove
+                        .clone()
+                        .context("请重新选择要移除的视频")?;
+                    let mut videos = video_library::Collection::load(&self.lib)?;
+                    let video = videos.remove(&key)?;
+                    videos.save(&self.lib)?;
+                    self.videos = videos;
+                    self.video_remove = None;
+                    if self
+                        .video_path
+                        .as_ref()
+                        .is_some_and(|path| video.contains(path))
+                    {
+                        self.leave_video_fullscreen(window, cx);
+                        self.player.command(["stop"]);
+                        self.playback = Playback::default();
+                        self.current_path = None;
+                        self.video_path = None;
+                        self.video_series = None;
+                        self.video_cues.clear();
+                        self.video_scroll.reset(0);
+                        self.video_active = None;
+                        self.video_material = None;
+                        self.video_material_error.clear();
+                        self.loop_a = None;
+                        self.loop_b = None;
+                        self.repeat = 0;
+                        self.end_handled = true;
+                        self.output.clear();
+                        self.reasoning.clear();
+                        self.lib.set_setting("bilibili_series", "")?;
+                        self.lib.set_setting("last_video_position", "")?;
+                    }
+                    self.video_tab = 3;
+                    self.status = format!("已移除「{}」收藏，视频和字幕文件保留", video.title);
+                }
                 Action::VideoPanel(tab) => {
-                    ensure!(tab < 3, "无效学习面板");
+                    self.video_remove = None;
+                    ensure!(tab < 4, "无效学习面板");
                     self.video_tab = tab;
                     if tab == 2 {
                         if self.video_material.is_none() {
@@ -3866,7 +4105,10 @@ impl AppView {
             .on_click(cx.listener(move |this, _, window, cx| {
                 if matches!(
                     action,
-                    Action::CheckAudio(_)
+                    Action::VideoRemove(_)
+                        | Action::VideoSelect(_)
+                        | Action::VideoEpisodes(_)
+                        | Action::CheckAudio(_)
                         | Action::VideoAsk(_)
                         | Action::VideoCopySubtitle(_)
                         | Action::AudioCopySubtitle(..)
@@ -4297,7 +4539,12 @@ impl AppView {
         from + (target - from) * eased
     }
     fn video_picture(&self, height: Option<Pixels>, cx: &Context<Self>) -> impl IntoElement {
-        let active_caption = if !self.video_captions_enabled
+        let active = self.video_path.as_ref().is_some_and(|p| {
+            self.current_path.as_ref() == Some(p) && self.playback.path == p.to_string_lossy()
+        });
+        let frame = self.playback.frame.clone().filter(|_| active);
+        let active_caption = if !active
+            || !self.video_captions_enabled
             || self.playback.subtitle_is_bitmap
             || self.video_caption_source == VideoCaptionSource::Hidden
         {
@@ -4318,7 +4565,7 @@ impl AppView {
             .when(height.is_none(), |view| view.flex_1().min_h_0())
             .overflow_hidden()
             .bg(rgb(0x090e0c))
-            .when_some(self.playback.frame.clone(), |v, image| {
+            .when_some(frame.clone(), |v, image| {
                 // Keep the intrinsic image ratio out of the flex flow. The
                 // decoder frame must fit entirely inside the available viewport.
                 v.child(
@@ -4332,7 +4579,7 @@ impl AppView {
                         .object_fit(ObjectFit::Contain),
                 )
             })
-            .when(self.playback.frame.is_none(), |v| {
+            .when(frame.is_none(), |v| {
                 v.child(
                     div()
                         .size_full()
@@ -6209,6 +6456,7 @@ impl AppView {
                             .bg(cx.theme().muted)
                             .flex()
                             .items_center()
+                            .flex_wrap()
                             .gap_2()
                             .child(
                                 div().flex_1().min_w_0().text_sm().truncate().child(
@@ -6252,6 +6500,44 @@ impl AppView {
                                     )
                                 },
                             )
+                            .child(
+                                self.player_menu(
+                                    "video-collection-picker",
+                                    format!("切换收藏 · {}", self.videos.items.len()),
+                                    self.videos
+                                        .items
+                                        .iter()
+                                        .map(|v| {
+                                            (
+                                                if self
+                                                    .videos
+                                                    .items
+                                                    .iter()
+                                                    .filter(|other| other.title == v.title)
+                                                    .count()
+                                                    > 1
+                                                {
+                                                    format!(
+                                                        "{} · {}",
+                                                        v.title,
+                                                        v.path
+                                                            .parent()
+                                                            .and_then(|p| p.file_name())
+                                                            .unwrap_or_default()
+                                                            .to_string_lossy()
+                                                    )
+                                                } else {
+                                                    v.title.clone()
+                                                },
+                                                Action::VideoSelect(v.id.clone()),
+                                                self.videos.selected.as_ref() == Some(&v.id),
+                                                self.busy.is_some() || v.playable_path().is_none(),
+                                            )
+                                        })
+                                        .collect(),
+                                    cx,
+                                ),
+                            )
                             .child(self.button(
                                 "video-more",
                                 if self.video_tools_open {
@@ -6269,12 +6555,14 @@ impl AppView {
                 let tabs = div()
                     .flex()
                     .items_center()
+                    .flex_wrap()
                     .gap_1()
                     .p_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .children(
                         [
+                            (3, format!("我的视频 · {}", self.videos.items.len())),
                             (0, format!("字幕 · {}", self.video_cues.len())),
                             (1, format!("选集 · {count}")),
                             (2, "AI 提问".into()),
@@ -6288,7 +6576,7 @@ impl AppView {
                                 cx,
                             )
                             .selected(self.video_tab == tab)
-                            .flex_1()
+                            .flex_none()
                         }),
                     );
                 let mut study = div()
@@ -6305,6 +6593,9 @@ impl AppView {
                     })
                     .child(tabs);
                 match self.video_tab {
+                    3 => {
+                        study = study.child(self.video_collection_panel(cx));
+                    }
                     0 => {
                         let transcript = list(
                             self.video_scroll.clone(),
@@ -6707,22 +6998,6 @@ impl AppView {
                         .child(tracks)
                         .child(self.field("front", "片段原文"))
                         .child(self.field("back", "片段翻译"));
-                    let mut recent = panel(cx).child("最近打开");
-                    for (i, path) in self.recents.iter().enumerate() {
-                        recent = recent.child(
-                            self.button(
-                                format!("recent-{i}"),
-                                PathBuf::from(path)
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .to_string(),
-                                Action::Open(path.into()),
-                                cx,
-                            ),
-                        );
-                    }
-                    content = content.child(recent);
                 }
             }
             "library" => {
@@ -8116,6 +8391,7 @@ impl Render for AppView {
                     ),
             )
             .when_some(assistant, |view, assistant| view.child(assistant))
+            .children(Root::render_dialog_layer(window, cx))
             .into_any_element()
     }
 }

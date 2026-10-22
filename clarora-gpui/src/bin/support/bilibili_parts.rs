@@ -13,11 +13,12 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     let worker = thread::spawn(move || {
         let mut requests = vec![];
         for body in [
-            json!({"code":0,"data":[{"page":1,"part":"第一课","duration":2},{"page":2,"part":"第二课","duration":3}]}),
-            json!({"code":0,"data":[{"page":1,"part":"单集","duration":2}]}),
+            json!({"code":0,"data":{"title":"整条课程标题","pages":[{"page":1,"part":"第一课","duration":2},{"page":2,"part":"第二课","duration":3}]}}),
+            json!({"code":0,"data":{"title":"单集视频标题","pages":[{"page":1,"part":"单集","duration":2}]}}),
             json!({"code":-404,"message":"视频不存在"}),
-            json!({"code":0,"data":[]}),
-            json!({"code":0,"data":[{"page":1,"part":"重复"},{"page":1,"part":"重复"}]}),
+            json!({"code":0,"data":{"title":"无分P","pages":[]}}),
+            json!({"code":0,"data":{"title":"重复分P","pages":[{"page":1,"part":"重复"},{"page":1,"part":"重复"}]}}),
+            json!({"code":0,"data":{"title":" ","pages":[{"page":1,"part":"单集"}]}}),
         ] {
             let (mut stream, _) = listener.accept().unwrap();
             let mut bytes = [0; 4096];
@@ -39,14 +40,17 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     );
     let mut series = series?;
     ensure!(
-        series.parts.len() == 2 && series.parts[1].title == "第二课" && series.requested == 1,
+        series.title == "整条课程标题"
+            && series.parts.len() == 2
+            && series.parts[1].title == "第二课"
+            && series.requested == 1,
         "分P列表/选中索引错误"
     );
     ensure!(
         series.url(1)? == "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
         "下一P地址错误"
     );
-    let path = lib.root.join("downloads/parts-e2e.mp4");
+    let path = lib.root.join("downloads/课程名称 [BV1xx411c7mD_p1].mp4");
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(&path, b"fixture")?;
     series.parts[0].path = Some(path.clone());
@@ -59,8 +63,48 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     series.save(lib)?;
     let restored = bilibili::Series::load(lib)?.unwrap();
     ensure!(
-        restored.cached(0) == Some(path.clone()) && restored.current == Some(0),
+        restored.title == "整条课程标题"
+            && restored.cached(0) == Some(path.clone())
+            && restored.current == Some(0),
         "队列重启/缓存恢复失败"
+    );
+    let mut legacy = serde_json::to_value(&series)?;
+    legacy.as_object_mut().unwrap().remove("title");
+    lib.set_setting("bilibili_series", &legacy.to_string())?;
+    ensure!(
+        bilibili::Series::load(lib)?.unwrap().title.is_empty(),
+        "旧分P数据无法读取"
+    );
+    series.save(lib)?;
+    let title_lib = Library::open(lib.root.join("title-backfill"))?;
+    let mut favorites = clarora_gpui::video_library::Collection::load(&title_lib)?;
+    let mut old_series = series.clone();
+    old_series.title.clear();
+    let ids = favorites.add(&[path.clone()], Some(&old_series))?;
+    favorites.select(&ids[0])?;
+    ensure!(
+        favorites.active().unwrap().title == "课程名称",
+        "离线旧收藏仍显示视频编号"
+    );
+    ensure!(
+        favorites.update_title(&series.base, &series.title)?,
+        "旧收藏标题未更新"
+    );
+    favorites.save(&title_lib)?;
+    favorites = clarora_gpui::video_library::Collection::load(&title_lib)?;
+    ensure!(
+        favorites.active().unwrap().title == "整条课程标题",
+        "标题重启丢失"
+    );
+    favorites.add(&[path.clone()], Some(&old_series))?;
+    ensure!(
+        favorites.active().unwrap().title == "整条课程标题",
+        "旧分P快照覆盖整条标题"
+    );
+    favorites.remove(&ids[0])?;
+    ensure!(
+        !favorites.update_title(&series.base, "迟到标题")? && favorites.items.is_empty(),
+        "后台标题更新复活已移除收藏"
     );
     series.current = Some(1);
     series.parts[1].path = Some(path.clone());
@@ -74,7 +118,7 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
             == 1,
         "单P失败"
     );
-    for _ in 0..3 {
+    for _ in 0..4 {
         ensure!(
             bilibili::fetch_from("av123", &endpoint, &cancel).is_err(),
             "异常API未拒绝"
@@ -92,7 +136,9 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     );
     std::fs::write(
         lib.root.join("bilibili-parts-evidence.json"),
-        serde_json::to_vec_pretty(&json!({"series":series,"requests":requests}))?,
+        serde_json::to_vec_pretty(
+            &json!({"series":series,"requests":requests,"source_title_persisted":true,"legacy_title_backfill":true,"stale_series_preserves_title":true,"removed_not_resurrected":true,"offline_filename_fallback":true}),
+        )?,
     )?;
     let delayed = TcpListener::bind("127.0.0.1:0")?;
     let slow_url = format!("http://{}/slow", delayed.local_addr()?);

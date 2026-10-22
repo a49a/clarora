@@ -11,6 +11,8 @@ mod kokoro;
 mod model_progress;
 #[path = "support/protocol.rs"]
 mod protocol;
+#[path = "support/video_library.rs"]
+mod video_library;
 #[path = "support/video_qa.rs"]
 mod video_qa;
 #[path = "support/video_translation.rs"]
@@ -423,6 +425,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
         "恢复失败留下了部分数据库写入"
     );
     results.push(json!({"workflow":"只读 RN 快照导入与跨表恢复失败事务回滚","passed":true}));
+    video_library::run(&lib, &video, results)?;
     audio_library::run(&lib, &video, results)?;
     blind_listening::run(&lib, &video, results)?;
     bilibili_parts::run(&lib, results)?;
