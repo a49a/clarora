@@ -72,6 +72,7 @@ fn paths(name: &str) -> Option<&'static str> {
         "speaking" => {
             "<rect x='9' y='3' width='6' height='12' rx='3'/><path d='M5 11v1a7 7 0 0 0 14 0v-1M12 19v3m-4 0h8'/>"
         }
+        "writing" => "<path d='m15 5 4 4M4 20l4-1L21 6a2.8 2.8 0 0 0-4-4L4 15l-1 6ZM12 21h9'/>",
         "library" => {
             "<path d='M3 8V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Zm0 0h18'/>"
         }

@@ -56,6 +56,14 @@ python ./clarora-gpui/scripts/install-pdfium.py ./clarora-gpui/target/package
 - 本地转写支持 Whisper 模型和 SenseVoice。模型由设置页下载。点击“选用”后，模型行高亮并显示“已选择 · 待保存”；点击“保存 AI 与学习设置”成功后显示“已选用”和“当前生效”，重启后保留。Whisper 可使用 PATH 中的 `whisper-cli`；SenseVoice 需要下述原生辅助程序。
 - `Cmd/Ctrl+1…9` 切换前九个页面；`Cmd/Ctrl+O` 按当前页面打开/导入文件，`Cmd/Ctrl+J` 切换 AI 侧栏，`Cmd/Ctrl+Enter` 发送问题，`Cmd/Ctrl+N` 新会话，`Cmd/Ctrl+←/→` 上一项/下一项（PDF 为翻页）。页面获得焦点后空格翻面/播放，方向键切卡/快进，`1/2/3` 评分。输入框编辑时不拦截无修饰键的输入。
 
+## 写作练习
+
+侧栏“写作练习”可新建多篇写作，分别保存可选标题、题目与作答。题目和作答使用独立多行编辑器，题目区高 220px、作答区高 440px，支持回车换段、自动折行与内部滚动。输入后自动保存，也可手动保存；切换篇目或模块前保存当前草稿，重启后继续编辑。空白新稿不占用列表，保存失败保留编辑内容并显示错误。题目最多 30,000 字符、作答最多 60,000 字符，超出时不会截断正文。
+
+点击“AI 批改”会先保存草稿，再将该次题目与作答一起发送给设置中的聊天模型，使用共用 API 地址、模型和密钥。反馈涵盖切题、结构、语法用词、具体修改建议与参考润色稿；题目没有评分标准时不要求模型编造考试分数。批改可取消，切换模块后仍可继续；失败、截断或取消不会新增成功批改。
+
+每次成功批改独立保留，并保存当次题目和作答快照。之后修改草稿不会改变旧记录；批改期间继续编辑也不会被返回结果覆盖。历史意见以 Markdown 显示，可对照对应原文。删除写作需再次确认，并一并删除其批改历史。写作与历史均保存在本机 SQLite 的资料记录中，纳入现有 ZIP 与云备份，不包含 AI 密钥。
+
 ## 音频管理工作台
 
 “音频管理”采用练习组、紧凑音频列表和所选详情的布局；大窗口显示练习组侧栏，普通窗口用可搜索的组菜单，窄窗口堆叠内容。练习组显示音频数量并记住所选组。选择列表行只查看详情，点击“开始学习”才播放；“查看 / 管理字幕”打开学习页并暂停，可在“字幕”菜单生成、导入和翻译。详情预览前五句字幕，并显示音频文件位置与缺失提示。
@@ -158,6 +166,7 @@ cmake --build clarora-gpui/target/native --config Release
 | 闪卡 | 五类卡、SM-2、每日新卡限额、暂停恢复、编辑保留进度、文本/目录/Anki 导入 | 各导入来源的大资料集、编辑管理交互验收 |
 | 听力/音频管理 | 练习组、批量导入删除、重命名、合并及字幕时间轴、真实波形和 A/B 拖动、逐词/Shift 选区、重点释义、循环、转写翻译、片段卡、上次音频/位置恢复 | 原版鼠标拖选、右键菜单等细节与真实界面回归 |
 | 视频/bilibili | 下载导入取消、本地播放、主副字幕、外部字幕、倍速、循环、最近文件、片段导出 | Windows 真实下载播放；GPU 视频渲染路径 |
+| 写作 | 多篇题目／作答、草稿保存、AI 批改、原文快照与历史、备份恢复 | 实际中文输入／界面操作、外部模型批改质量与 Windows |
 | 跟读/OCR/AI | 录音/选录音、转写对齐明细、AI 点评、图片识字、记录、材料会话/草稿、推理显示、流式错误与回退、聊天/OCR/远端转写请求取消；macOS Whisper tiny.en 已真实推理验证 | 真实麦克风权限、其余模型/服务、不同提供商的长对话验收 |
 | PDF | PDFium、书库、直接图像绘制、实际缩放/水平滚动、目录、重启位置恢复、当前页文字作为 AI 材料 | 原版连续滚动布局、大文档与密码文档 |
 | 词汇关系 | 同一公开词表、搜索、List 筛选、词义/词源等详情、关联词导航 | 布局与键盘/辅助功能体验 |
@@ -175,6 +184,8 @@ cargo fmt --manifest-path clarora-gpui/Cargo.toml --check
 cargo check --manifest-path clarora-gpui/Cargo.toml --locked --all-targets
 PDFIUM_LIB_PATH=/absolute/path/containing/pdfium cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence
 ```
+
+写作保存、批改与备份场景由默认 E2E 收集，也可用 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence --writing-only` 定向复验，证据保留在独立写作资料目录。
 
 默认 E2E 同时收集复习类型与限额、AI 完成校验、云备份取消三组回归场景。只复验这三组可执行 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence --reliability-only`；同样生成 `e2e-report.json`，子目录保留队列、HTTP、取消耗时和 SQLite 前后状态证据。
 

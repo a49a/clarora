@@ -29,6 +29,8 @@ mod video_library;
 mod video_qa;
 #[path = "support/video_translation.rs"]
 mod video_translation;
+#[path = "support/writing.rs"]
+mod writing;
 use anyhow::{Context, Result, ensure};
 use clarora_gpui::{
     ai, audio_tools, backup,
@@ -178,6 +180,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = output.join(format!("run-{}", data::id()));
     fs::create_dir_all(&root)?;
     let lib = Library::open(root.join("source"))?;
+    writing::run(&lib, results)?;
     reliability(&lib, results)?;
     lib.import_words("bright\t明亮的\ncalm - 平静的", "manual", false)?;
     ensure!(lib.list("words")?.len() == 2, "词条导入失败");
@@ -832,6 +835,7 @@ fn main() -> Result<()> {
     let mode = match args.get(2).and_then(|arg| arg.to_str()) {
         Some("--http-only") => "http-only",
         Some("--reliability-only") => "reliability-only",
+        Some("--writing-only") => "writing-only",
         _ => "full",
     };
     let result = if mode == "http-only" {
@@ -842,6 +846,9 @@ fn main() -> Result<()> {
             &PathBuf::from(args.get(4).context("缺少图片夹具")?),
             &mut results,
         )
+    } else if mode == "writing-only" {
+        let lib = Library::open(output.join(format!("writing-{}", data::id())))?;
+        writing::run(&lib, &mut results)
     } else if mode == "reliability-only" {
         let lib = Library::open(output.join(format!("reliability-{}", data::id())))?;
         reliability(&lib, &mut results)

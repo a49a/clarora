@@ -31,3 +31,5 @@ pub mod video_library;
 pub mod video_jobs;
 
 pub mod credentials;
+
+pub mod writing;

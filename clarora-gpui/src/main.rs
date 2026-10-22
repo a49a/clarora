@@ -5,6 +5,7 @@ mod library_ui;
 mod task_ui;
 mod video_job_ui;
 mod video_library_ui;
+mod writing_ui;
 use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::{
     ai, audio_library, backup, bilibili, blind_listening, credentials,
@@ -90,6 +91,7 @@ const PAGES: &[(&str, &str, &str)] = &[
     ("listening", "音频学习", "逐句听懂"),
     ("video", "视频学习", "精听与片段"),
     ("speaking", "口语跟读", "录音与对齐"),
+    ("writing", "写作练习", "保存草稿与 AI 批改"),
     ("library", "音频管理", "整理练习组"),
     ("pdf", "文档阅读", "本机 PDF"),
     ("ocr", "拍照识字", "从图片提取"),
@@ -263,6 +265,7 @@ enum VideoCaptionSource {
 }
 struct AppView {
     lib: Library,
+    writing: Option<Entity<writing_ui::WritingView>>,
     library: audio_library::State,
     tts_voice: i32,
     tts_speed: f32,
@@ -460,6 +463,7 @@ impl AppView {
             library: Default::default(),
             secure_credentials: credentials::secure_mode(&lib).unwrap_or(false),
             lib,
+            writing: None,
             page: "flashcard".into(),
             navigation_open: true,
             navigation_motion: None,
@@ -641,6 +645,8 @@ impl AppView {
             .filter(|p| PAGES.iter().any(|(k, _, _)| k == p))
             .unwrap_or("flashcard".into());
         this.navigation_open = this.lib.setting("navigation_open").ok().as_deref() != Some("false");
+        this.writing =
+            Some(cx.new(|cx| writing_ui::WritingView::new(this.lib.clone(), window, cx)));
         if this.page == "library" {
             this.practice_id = this.lib.setting("library_group").unwrap_or_default();
         }
@@ -693,7 +699,22 @@ impl AppView {
                 this.set(k, value, window, cx);
             }
         }
-        cx.on_app_quit(|this, _| {
+        let view = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |_, cx| {
+            view.update(cx, |this, cx| match this.flush_writing(cx) {
+                Ok(()) => true,
+                Err(error) => {
+                    this.status = format!("写作草稿尚未保存，窗口保持打开：{error:#}");
+                    cx.notify();
+                    false
+                }
+            })
+            .unwrap_or(true)
+        });
+        cx.on_app_quit(|this, cx| {
+            if let Err(error) = this.flush_writing(cx) {
+                eprintln!("退出前写作草稿保存失败：{error:#}");
+            }
             let done = this.background_video.as_ref().map(|j| {
                 j.cancel.store(true, Ordering::SeqCst);
                 j.done.clone()
@@ -762,7 +783,13 @@ impl AppView {
         }
         this
     }
-    fn chat_context_key(&self) -> String {
+    fn flush_writing(&mut self, cx: &mut Context<Self>) -> Result<()> {
+        if let Some(view) = &self.writing {
+            view.update(cx, |view, cx| view.flush(cx))?;
+        }
+        Ok(())
+    }
+    fn chat_context_key(&self, cx: &App) -> String {
         use sha2::{Digest, Sha256};
         let material = match self.page.as_str() {
             "flashcard" | "discover" => self
@@ -803,6 +830,11 @@ impl AppView {
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
+            "writing" => self
+                .writing
+                .as_ref()
+                .map(|view| view.read(cx).context_key())
+                .unwrap_or_default(),
             _ => self.page.clone(),
         };
         hex::encode(Sha256::digest(
@@ -810,7 +842,7 @@ impl AppView {
         ))
     }
     fn sync_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let context = self.chat_context_key();
+        let context = self.chat_context_key(cx);
         if context != self.chat_context {
             if self.chat_running {
                 if let Some(cancel) = &self.busy {
@@ -1974,6 +2006,9 @@ impl AppView {
                 Action::GraphSelect(node) => self.graph_node = node,
                 Action::GraphList(list) => self.graph_list = list,
                 Action::Page(page) => {
+                    if self.page == "writing" {
+                        self.flush_writing(cx)?;
+                    }
                     self.audio_blind.enabled = false;
                     self.invalidate_blind();
                     let previous = self.page.clone();
@@ -1992,6 +2027,11 @@ impl AppView {
                     self.preloader.set("pause", "yes");
                     self.preloaded_index = None;
                     self.page = page;
+                    if self.page == "writing" {
+                        if let Some(view) = &self.writing {
+                            view.update(cx, |view, cx| view.reload(cx))?;
+                        }
+                    }
                     if self.page == "library" {
                         let group = self.lib.setting("library_group")?;
                         if self.practices.iter().any(|r| text(r, "id") == group) {
@@ -4258,6 +4298,11 @@ impl AppView {
             "pdf" => self.document_text.clone(),
             "ocr" => self.ocr_text.clone(),
             "speaking" => self.value("reference", cx),
+            "writing" => self
+                .writing
+                .as_ref()
+                .map(|view| view.read(cx).reference(cx))
+                .unwrap_or_default(),
             "video" => self
                 .video_material
                 .as_ref()
@@ -7284,6 +7329,11 @@ impl AppView {
                     );
                 }
             }
+            "writing" => {
+                if let Some(view) = &self.writing {
+                    content = content.child(view.clone());
+                }
+            }
             "pdf" => {
                 let mut library = div().flex().gap_2().flex_wrap();
                 if let Ok(files) = fs::read_dir(self.lib.root.join("pdf")) {
@@ -8013,8 +8063,8 @@ impl Render for AppView {
         for (i, (key, label, _)) in PAGES.iter().enumerate() {
             if let Some(section) = match i {
                 0 => Some("学习空间"),
-                5 => Some("资料库"),
-                9 => Some("我的"),
+                6 => Some("资料库"),
+                10 => Some("我的"),
                 _ => None,
             } {
                 links = links.child(
@@ -8189,6 +8239,9 @@ impl Render for AppView {
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenFile, _, cx| {
+                if this.page == "writing" {
+                    return;
+                }
                 let kind = match this.page.as_str() {
                     "pdf" => "pdf",
                     "video" => "video",
@@ -8198,6 +8251,16 @@ impl Render for AppView {
                     _ => "words",
                 };
                 this.pick(kind, cx);
+            }))
+            .on_action(cx.listener(|this, _: &Quit, _, cx| {
+                cx.stop_propagation();
+                match this.flush_writing(cx) {
+                    Ok(()) => cx.defer(|cx| cx.quit()),
+                    Err(error) => {
+                        this.status = format!("写作草稿尚未保存，请先处理保存错误：{error:#}");
+                        cx.notify();
+                    }
+                }
             }))
             .on_action(cx.listener(|this, _: &NextVideoPart, window, cx| {
                 if this.page == "video" {
@@ -8341,6 +8404,9 @@ impl Render for AppView {
                 this.handle(Action::ChatSession(String::new()), window, cx);
             }))
             .on_action(cx.listener(|this, _: &Forward, window, cx| {
+                if this.page == "writing" {
+                    return;
+                }
                 this.handle(
                     if this.page == "pdf" {
                         Action::PdfPage(1)
@@ -8352,6 +8418,9 @@ impl Render for AppView {
                 )
             }))
             .on_action(cx.listener(|this, _: &Backward, window, cx| {
+                if this.page == "writing" {
+                    return;
+                }
                 this.handle(
                     if this.page == "pdf" {
                         Action::PdfPage(-1)
@@ -8377,6 +8446,9 @@ impl Render for AppView {
                             return;
                         }
                     }
+                    return;
+                }
+                if this.page == "writing" {
                     return;
                 }
                 if window.focused(cx) == Some(this.focus.clone()) {
