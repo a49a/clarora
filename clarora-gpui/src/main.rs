@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod design;
+mod focus_ui;
 mod library_ui;
 mod task_ui;
 mod video_job_ui;
@@ -3556,12 +3557,16 @@ impl AppView {
                     self.timer_focus = true;
                 }
                 Action::TimerPause => {
-                    self.timer_paused = !self.timer_paused;
-                    if self.timer_paused {
-                        self.timer_end = None;
+                    if let Some(end) = self.timer_end.take() {
+                        self.timer_remaining = end
+                            .duration_since(SystemTime::now())
+                            .unwrap_or_default()
+                            .as_secs();
+                        self.timer_paused = true;
                     } else {
                         self.timer_end =
                             Some(SystemTime::now() + Duration::from_secs(self.timer_remaining));
+                        self.timer_paused = false;
                     }
                 }
                 Action::TimerReset => {
@@ -4830,6 +4835,7 @@ impl AppView {
                         cx,
                     )),
             )
+            .child(self.focus_timer_bar(cx))
             .children(self.subtitle_task_banner(cx))
             .child(self.video_picture(None, cx))
             .child(self.video_controls(cx))
@@ -7577,11 +7583,7 @@ impl AppView {
                                 .gap_3()
                                 .child(self.button(
                                     "timer-pause",
-                                    if self.timer_paused {
-                                        "继续"
-                                    } else {
-                                        "暂停"
-                                    },
+                                    self.focus_timer_toggle_label(),
                                     Action::TimerPause,
                                     cx,
                                 ))
@@ -8513,6 +8515,7 @@ impl Render for AppView {
                                 .outline(),
                             ),
                     )
+                    .child(self.focus_timer_bar(cx))
                     .children(self.subtitle_task_banner(cx))
                     .child(
                         div()

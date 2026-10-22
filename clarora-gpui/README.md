@@ -40,6 +40,7 @@ python ./clarora-gpui/scripts/install-pdfium.py ./clarora-gpui/target/package
 
 ## 数据和使用
 
+- 专注倒计时固定显示在每个模块的页面顶部，滚动内容、收起导航或切换学习模块后仍可见，视频全屏同样显示。可直接开始、暂停、继续、重置，或通过“专注时长”选择 5–60 分钟并开始新一轮；与冥想页共用同一个计时器，专注结束后自动切换休息。计时不因切页重新开始，退出应用后本轮计时不保留。
 - macOS 资料目录：`~/Library/Application Support/Clarora-GPUI/`；Windows：`%LOCALAPPDATA%\Clarora-GPUI\`。使用独立 SQLite 和附件目录，可与原版同时运行。
 - 可通过 `--data-dir /absolute/path` 指定测试资料目录。不会自动打开或修改原版数据库。
 - 设置页可只读导入原版 SQLite 快照、导入/导出 v2 ZIP 资料备份，或配置 S3/OSS。密钥默认保存于本机 SQLite，可选开启系统凭证库安全模式；应用导出的资料备份不包含密钥。
