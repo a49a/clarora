@@ -12,28 +12,32 @@ impl AppView {
         let split = width >= 720. && tall;
         let height = (f32::from(window.viewport_size().height) - 330.).max(320.);
         let group_name = self
+            .audio
             .practices
             .iter()
-            .find(|r| text(r, "id") == self.practice_id)
+            .find(|r| text(r, "id") == self.audio.practice_id)
             .map(|r| text(r, "name"))
             .unwrap_or_else(|| "还没有练习组".into());
-        let busy = self.busy.is_some();
+        let busy = self.tasks.cancel.is_some();
         let group_total = self
+            .audio
             .audios
             .iter()
-            .filter(|r| text(r, "practice_id") == self.practice_id)
+            .filter(|r| text(r, "practice_id") == self.audio.practice_id)
             .count();
         let attached = self
+            .audio
             .audios
             .iter()
             .filter(|r| {
-                text(r, "practice_id") == self.practice_id
-                    && self.library.subtitle_ids.contains(&text(r, "id"))
+                text(r, "practice_id") == self.audio.practice_id
+                    && self.audio.library.subtitle_ids.contains(&text(r, "id"))
             })
             .count();
         let mut root = div().flex().flex_col().gap_4().w_full().min_w_0();
         let group_query = self.value("library_groups", cx).trim().to_lowercase();
         let group_options = self
+            .audio
             .practices
             .iter()
             .filter(|r| text(r, "name").to_lowercase().contains(&group_query))
@@ -42,13 +46,14 @@ impl AppView {
                     format!(
                         "{} · {} 条",
                         text(r, "name"),
-                        self.audios
+                        self.audio
+                            .audios
                             .iter()
                             .filter(|a| text(a, "practice_id") == text(r, "id"))
                             .count()
                     ),
                     Action::Practice(text(r, "id")),
-                    text(r, "id") == self.practice_id,
+                    text(r, "id") == self.audio.practice_id,
                     false,
                 )
             })
@@ -88,7 +93,7 @@ impl AppView {
                     Action::LibraryTool("group-rename".into()),
                     cx,
                 )
-                .disabled(busy || self.practice_id.is_empty()),
+                .disabled(busy || self.audio.practice_id.is_empty()),
             )
             .child(
                 self.button(
@@ -98,7 +103,7 @@ impl AppView {
                     cx,
                 )
                 .primary()
-                .disabled(busy || self.practice_id.is_empty()),
+                .disabled(busy || self.audio.practice_id.is_empty()),
             )
             .child(
                 self.button(
@@ -107,8 +112,8 @@ impl AppView {
                     Action::LibraryTool("tts".into()),
                     cx,
                 )
-                .selected(self.library.tool == "tts")
-                .disabled(self.practice_id.is_empty()),
+                .selected(self.audio.library.tool == "tts")
+                .disabled(self.audio.practice_id.is_empty()),
             )
             .child(self.button(
                 "library-advanced",
@@ -133,12 +138,14 @@ impl AppView {
                 .flex_col()
                 .gap_1();
             for row in self
+                .audio
                 .practices
                 .iter()
                 .filter(|r| text(r, "name").to_lowercase().contains(&group_query))
             {
                 let key = text(row, "id");
                 let count = self
+                    .audio
                     .audios
                     .iter()
                     .filter(|a| text(a, "practice_id") == key)
@@ -149,7 +156,7 @@ impl AppView {
                         .px_3()
                         .py_3()
                         .rounded_lg()
-                        .bg(if key == self.practice_id {
+                        .bg(if key == self.audio.practice_id {
                             cx.theme().accent
                         } else {
                             cx.theme().background
@@ -169,6 +176,7 @@ impl AppView {
                 );
             }
             if !self
+                .audio
                 .practices
                 .iter()
                 .any(|r| text(r, "name").to_lowercase().contains(&group_query))
@@ -185,16 +193,17 @@ impl AppView {
                         div()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("练习组 · {}", self.practices.len())),
+                            .child(format!("练习组 · {}", self.audio.practices.len())),
                     )
                     .child(Input::new(&self.inputs["library_groups"]))
                     .child(groups),
             );
         }
         let query = self.value("library_search", cx);
-        let visible = self
-            .library
-            .visible(&self.audios, &self.practice_id, &query);
+        let visible =
+            self.audio
+                .library
+                .visible(&self.audio.audios, &self.audio.practice_id, &query);
         let mut list = panel(cx)
             .flex_1()
             .min_w_0()
@@ -233,21 +242,22 @@ impl AppView {
                     Action::LibraryFilter(i),
                     cx,
                 )
-                .selected(self.library.filter == i),
+                .selected(self.audio.library.filter == i),
             );
         }
         filters = filters
             .child(
                 self.player_menu(
                     "library-sort",
-                    ["最近添加", "名称 A–Z", "最早添加"][self.library.sort.min(2) as usize].into(),
+                    ["最近添加", "名称 A–Z", "最早添加"][self.audio.library.sort.min(2) as usize]
+                        .into(),
                     [(0, "最近添加"), (1, "名称 A–Z"), (2, "最早添加")]
                         .into_iter()
                         .map(|(i, s)| {
                             (
                                 s.into(),
                                 Action::LibrarySort(i),
-                                self.library.sort == i,
+                                self.audio.library.sort == i,
                                 false,
                             )
                         })
@@ -258,7 +268,7 @@ impl AppView {
             .child(
                 self.button(
                     "library-batch",
-                    if self.library.batch {
+                    if self.audio.library.batch {
                         "退出多选"
                     } else {
                         "多选"
@@ -266,17 +276,20 @@ impl AppView {
                     Action::LibraryBatch,
                     cx,
                 )
-                .selected(self.library.batch)
+                .selected(self.audio.library.batch)
                 .disabled(busy || group_total == 0),
             );
-        if !query.trim().is_empty() || self.library.filter != 0 {
+        if !query.trim().is_empty() || self.audio.library.filter != 0 {
             filters =
                 filters.child(self.button("library-reset", "重置筛选", Action::LibraryReset, cx));
         }
         list_head = list_head.child(filters);
-        if self.library.batch {
-            let ids =
-                audio_library::scoped_ids(&self.audios, &self.practice_id, &self.checked_audio);
+        if self.audio.library.batch {
+            let ids = audio_library::scoped_ids(
+                &self.audio.audios,
+                &self.audio.practice_id,
+                &self.audio.checked,
+            );
             list_head = list_head.child(
                 div()
                     .flex()
@@ -326,9 +339,9 @@ impl AppView {
             .when(split, |v| v.flex_1().overflow_y_scroll());
         for (index, row) in visible.iter().enumerate() {
             let key = text(row, "id");
-            let selected = key == self.library.selected;
-            let subtitle = self.library.subtitle_ids.contains(&key);
-            let missing = !PathBuf::from(text(row, "audio_uri")).is_file();
+            let selected = key == self.audio.library.selected;
+            let subtitle = self.audio.library.subtitle_ids.contains(&key);
+            let missing = !self.data.available_audio.contains(&text(row, "audio_uri"));
             let click_key = key.clone();
             let mut item = div()
                 .id(SharedString::from(format!("library-row-{key}")))
@@ -350,11 +363,11 @@ impl AppView {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.handle(Action::LibrarySelect(click_key.clone()), window, cx)
                 }));
-            if self.library.batch {
+            if self.audio.library.batch {
                 item = item.child(
                     self.button(
                         SharedString::from(format!("library-check-{key}")),
-                        if self.checked_audio.contains(&key) {
+                        if self.audio.checked.contains(&key) {
                             "☑"
                         } else {
                             "□"
@@ -419,7 +432,7 @@ impl AppView {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(div().text_lg().child(if self.practice_id.is_empty() {
+                    .child(div().text_lg().child(if self.audio.practice_id.is_empty() {
                         "先创建一个练习组"
                     } else if group_total == 0 {
                         "把想学的内容放进来"
@@ -446,7 +459,7 @@ impl AppView {
                 .overflow_y_scroll()
         });
         // Explicit editors stay visible above the list in a small window.
-        if !split && !self.library.tool.is_empty() {
+        if !split && !self.audio.library.tool.is_empty() {
             board = board.child(detail).child(list);
         } else {
             board = board.child(list).child(detail);
@@ -454,7 +467,7 @@ impl AppView {
         root.child(board).into_any_element()
     }
     fn library_detail(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let busy = self.busy.is_some();
+        let busy = self.tasks.cancel.is_some();
         let mut detail = div()
             .id("library-detail")
             .flex()
@@ -467,10 +480,10 @@ impl AppView {
             Action::LibraryTool(String::new()),
             cx,
         );
-        match self.library.tool.as_str() {
+        match self.audio.library.tool.as_str() {
             "tts" => return detail.child(close).child(self.tts_panel(cx)),
             "group-new" | "group-rename" | "audio-rename" => {
-                let title = match self.library.tool.as_str() {
+                let title = match self.audio.library.tool.as_str() {
                     "group-new" => "新建练习组",
                     "group-rename" => "重命名练习组",
                     _ => "重命名音频",
@@ -499,16 +512,20 @@ impl AppView {
                 );
             }
             "move" => {
-                let count =
-                    audio_library::scoped_ids(&self.audios, &self.practice_id, &self.checked_audio)
-                        .len();
+                let count = audio_library::scoped_ids(
+                    &self.audio.audios,
+                    &self.audio.practice_id,
+                    &self.audio.checked,
+                )
+                .len();
                 let mut targets = panel(cx)
                     .child(div().text_lg().child(format!("将 {count} 条音频移动到")))
                     .child(close);
                 for row in self
+                    .audio
                     .practices
                     .iter()
-                    .filter(|r| text(r, "id") != self.practice_id)
+                    .filter(|r| text(r, "id") != self.audio.practice_id)
                 {
                     targets = targets.child(
                         self.button(
@@ -520,7 +537,7 @@ impl AppView {
                         .disabled(busy || count == 0),
                     );
                 }
-                if self.practices.len() < 2 {
+                if self.audio.practices.len() < 2 {
                     targets = targets.child("先新建另一个练习组，再移动音频。");
                 }
                 return detail.child(targets);
@@ -529,15 +546,15 @@ impl AppView {
                 let mut confirm = panel(cx)
                     .child(div().text_lg().child(format!(
                         "移除 {} 条音频记录？",
-                        self.library.pending_delete.len()
+                        self.audio.library.pending_delete.len()
                     )))
                     .child(
                         div()
                             .text_sm()
                             .child("记录会从音频库移除，本机媒体和字幕附件保留。"),
                     );
-                for key in &self.library.pending_delete {
-                    if let Some(row) = self.audios.iter().find(|r| text(r, "id") == *key) {
+                for key in &self.audio.library.pending_delete {
+                    if let Some(row) = self.audio.audios.iter().find(|r| text(r, "id") == *key) {
                         confirm = confirm.child(div().text_sm().child(text(row, "name")));
                     }
                 }
@@ -550,7 +567,7 @@ impl AppView {
                                 Action::LibraryConfirmDelete,
                                 cx,
                             )
-                            .disabled(busy || self.library.pending_delete.is_empty()),
+                            .disabled(busy || self.audio.library.pending_delete.is_empty()),
                         )
                         .child(close),
                 );
@@ -571,7 +588,7 @@ impl AppView {
                                 Action::CommandImport,
                                 cx,
                             )
-                            .disabled(busy || self.practice_id.is_empty()),
+                            .disabled(busy || self.audio.practice_id.is_empty()),
                         )
                         .child(self.button(
                             "library-settings",
@@ -584,11 +601,12 @@ impl AppView {
             }
             _ => {}
         }
-        if self.library.tool == "detail" {
+        if self.audio.library.tool == "detail" {
             detail = detail.child(close);
         }
-        let Some(row) = self.audios.iter().find(|r| {
-            text(r, "id") == self.library.selected && text(r, "practice_id") == self.practice_id
+        let Some(row) = self.audio.audios.iter().find(|r| {
+            text(r, "id") == self.audio.library.selected
+                && text(r, "practice_id") == self.audio.practice_id
         }) else {
             return detail.child(
                 panel(cx)
@@ -602,7 +620,7 @@ impl AppView {
             );
         };
         let key = text(row, "id");
-        let missing = !PathBuf::from(text(row, "audio_uri")).is_file();
+        let missing = !self.data.available_audio.contains(&text(row, "audio_uri"));
         let mut card = panel(cx)
             .child(
                 div()
@@ -627,8 +645,8 @@ impl AppView {
                 .disabled(busy || missing),
             )
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
-                if self.library.subtitle_count > 0 {
-                    format!("字幕 · {} 句", self.library.subtitle_count)
+                if self.audio.library.subtitle_count > 0 {
+                    format!("字幕 · {} 句", self.audio.library.subtitle_count)
                 } else {
                     "字幕尚未就绪".into()
                 },
@@ -636,7 +654,7 @@ impl AppView {
             .child(
                 self.button(
                     "library-captions",
-                    if self.library.subtitle_count > 0 {
+                    if self.audio.library.subtitle_count > 0 {
                         "查看 / 管理字幕"
                     } else {
                         "生成 / 导入字幕"
@@ -646,7 +664,7 @@ impl AppView {
                 )
                 .disabled(busy || missing),
             );
-        if self.library.subtitle_count == 0 {
+        if self.audio.library.subtitle_count == 0 {
             card = card.child(
                 div()
                     .text_xs()
@@ -654,7 +672,7 @@ impl AppView {
                     .child("进入学习页的“字幕”菜单，可生成原文、导入字幕或添加中文翻译。"),
             );
         } else {
-            for cue in &self.library.preview {
+            for cue in &self.audio.library.preview {
                 card = card.child(
                     div()
                         .text_sm()
@@ -664,7 +682,7 @@ impl AppView {
                         .child(cue.text.clone()),
                 );
             }
-            if self.library.subtitle_count > 5 {
+            if self.audio.library.subtitle_count > 5 {
                 card = card.child(
                     div()
                         .text_xs()

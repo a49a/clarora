@@ -1,7 +1,10 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+mod app_state;
+mod assistant_ui;
 mod design;
 mod focus_ui;
 mod library_ui;
+mod settings_ui;
 mod task_ui;
 mod video_job_ui;
 mod video_library_ui;
@@ -250,8 +253,11 @@ enum Outcome {
 }
 enum Event {
     SubtitleProgress(String),
-    Done(std::result::Result<Outcome, String>),
-    Chunk(ai::ChatReply),
+    Done(
+        Option<clarora_gpui::chat_store::Request>,
+        std::result::Result<Outcome, String>,
+    ),
+    Chunk(clarora_gpui::chat_store::Request, ai::ChatReply),
     ModelProgress(ModelProgress),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -267,8 +273,15 @@ enum VideoCaptionSource {
 }
 struct AppView {
     lib: Library,
+    data: clarora_gpui::view_data::State,
+    settings: app_state::SettingsState,
+    chat: clarora_gpui::chat_store::State,
+    chat_requested_context: String,
+    tasks: app_state::TasksState,
+    media: app_state::PlaybackState,
+    video: app_state::VideoState,
+    audio: app_state::AudioState,
     writing: Option<Entity<writing_ui::WritingView>>,
-    library: audio_library::State,
     tts_voice: i32,
     tts_speed: f32,
     tts_last: Option<Row>,
@@ -277,17 +290,6 @@ struct AppView {
     navigation_motion: Option<(Instant, f32)>,
     inputs: BTreeMap<String, Entity<InputState>>,
     status: String,
-    busy: Option<Cancel>,
-    secure_credentials: bool,
-    task_scope: TaskScope,
-    model_progress: Option<ModelProgress>,
-    task_notice: Option<TaskNotice>,
-    video_job_notice: Option<TaskNotice>,
-    background_video: Option<video_jobs::Job>,
-    background_error: String,
-    part_downloads: video_jobs::Downloads,
-    rx: Option<mpsc::Receiver<Event>>,
-    video_titles_rx: Option<mpsc::Receiver<(String, String)>>,
     cards: Vec<Card>,
     index: usize,
     revealed: bool,
@@ -298,78 +300,7 @@ struct AppView {
     card_filter: String,
     saved_only: bool,
     history: Vec<usize>,
-    practices: Vec<Row>,
-    audios: Vec<Row>,
-    practice_id: String,
-    checked_audio: std::collections::BTreeSet<String>,
-    current_audio: String,
-    waveform: Option<Waveform>,
-    waveform_rx: Option<mpsc::Receiver<std::result::Result<Waveform, String>>>,
-    waveform_cancel: Option<Cancel>,
-    waveform_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
-    waveform_drag: Option<bool>,
-    player: Player,
-    preloader: Player,
-    preloaded_index: Option<usize>,
-    playback: Playback,
-    current_path: Option<PathBuf>,
-    video_path: Option<PathBuf>,
-    video_series: Option<bilibili::Series>,
-    auto_next_part: bool,
-    video_cues: Vec<Cue>,
-    video_caption_source: VideoCaptionSource,
-    video_captions_enabled: bool,
-    video_material: Option<video_qa::Material>,
-    video_material_error: String,
-    video_scroll: ListState,
-    video_tab: usize,
-    video_tools_open: bool,
-    video_panel_width: f32,
-    video_resize: Option<(Pixels, f32)>,
-    parts_scroll: UniformListScrollHandle,
-    video_active: Option<usize>,
-    video_sentence_repeat: Option<(usize, bool)>,
-    video_sentence_range: Option<(f64, f64)>,
-    video_sentence_request: Option<u64>,
-    video_follow: bool,
-    video_fullscreen: bool,
-    video_fullscreen_owned: bool,
-    video_fullscreen_seen: bool,
-    video_picture_click: Option<PathBuf>,
-    video_precision: bool,
-    video_subtitle_size: u8,
-    video_seek_dragging: bool,
-    video_volume_dragging: bool,
-    volume_before_mute: f64,
-    cues: Vec<Cue>,
-    audio_scroll: ListState,
-    audio_active: Option<usize>,
-    audio_follow: bool,
-    audio_blind: blind_listening::State,
-    audio_blind_chinese: bool,
-    audio_blind_pending: Option<(Instant, String, blind_listening::Revealed)>,
-    audio_blind_settle_until: Option<Instant>,
-    audio_clip_mode: bool,
-    audio_tools_open: bool,
-    audio_show_current: bool,
-    audio_font_size: u8,
-    key_points: Vec<ai::KeyPoint>,
-    videos: video_library::Collection,
-    video_remove: Option<String>,
-    loop_a: Option<f64>,
-    loop_b: Option<f64>,
-    repeat: usize,
-    rate: f64,
-    volume: f64,
-    end_handled: bool,
     output: String,
-    chat_history: Vec<Value>,
-    chat_id: String,
-    chat_context: String,
-    reasoning: String,
-    reasoning_open: bool,
-    chat_draft: String,
-    chat_running: bool,
     backups: Vec<String>,
     recording: Option<Recorder>,
     recorded: Option<PathBuf>,
@@ -388,7 +319,6 @@ struct AppView {
     ocr_path: Option<PathBuf>,
     dark: bool,
     focus: FocusHandle,
-    stats_ticks: f64,
     assistant_open: bool,
     graph_node: String,
     graph_list: i64,
@@ -452,6 +382,14 @@ impl AppView {
             );
         }
         let mut this = Self {
+            data: Default::default(),
+            settings: app_state::SettingsState::new(&lib),
+            chat: Default::default(),
+            chat_requested_context: String::new(),
+            tasks: app_state::TasksState::new(),
+            media: app_state::PlaybackState::new(),
+            video: app_state::VideoState::new(),
+            audio: app_state::AudioState::new(),
             tts_voice: lib
                 .setting("tts_voice")
                 .ok()
@@ -465,8 +403,6 @@ impl AppView {
                 .filter(|v| v.is_finite() && (0.5..=2.).contains(v))
                 .unwrap_or(1.),
             tts_last: None,
-            library: Default::default(),
-            secure_credentials: credentials::secure_mode(&lib).unwrap_or(false),
             lib,
             writing: None,
             page: "flashcard".into(),
@@ -474,16 +410,6 @@ impl AppView {
             navigation_motion: None,
             inputs,
             status: "准备好了，开始今天的学习。".into(),
-            busy: None,
-            task_scope: TaskScope::Material,
-            model_progress: None,
-            task_notice: None,
-            video_job_notice: None,
-            background_video: None,
-            background_error: String::new(),
-            part_downloads: Default::default(),
-            rx: None,
-            video_titles_rx: None,
             cards: vec![],
             index: 0,
             revealed: false,
@@ -494,78 +420,7 @@ impl AppView {
             card_filter: "all".into(),
             saved_only: false,
             history: vec![],
-            practices: vec![],
-            audios: vec![],
-            practice_id: String::new(),
-            checked_audio: Default::default(),
-            current_audio: String::new(),
-            waveform: None,
-            waveform_rx: None,
-            waveform_cancel: None,
-            waveform_bounds: Default::default(),
-            waveform_drag: None,
-            player: Player::new(),
-            preloader: Player::new(),
-            preloaded_index: None,
-            playback: Playback::default(),
-            current_path: None,
-            video_path: None,
-            video_series: None,
-            auto_next_part: true,
-            video_cues: vec![],
-            video_caption_source: VideoCaptionSource::Transcript,
-            video_captions_enabled: true,
-            video_material: None,
-            video_material_error: String::new(),
-            video_scroll: ListState::new(0, ListAlignment::Top, px(200.)),
-            video_tab: 3,
-            video_tools_open: false,
-            video_panel_width: 360.,
-            video_resize: None,
-            parts_scroll: UniformListScrollHandle::new(),
-            video_active: None,
-            video_sentence_repeat: None,
-            video_sentence_range: None,
-            video_sentence_request: None,
-            video_follow: true,
-            video_fullscreen: false,
-            video_fullscreen_owned: false,
-            video_fullscreen_seen: false,
-            video_picture_click: None,
-            video_precision: false,
-            video_subtitle_size: 16,
-            video_seek_dragging: false,
-            video_volume_dragging: false,
-            volume_before_mute: 100.,
-            cues: vec![],
-            audio_scroll: ListState::new(0, ListAlignment::Top, px(120.)),
-            audio_active: None,
-            audio_follow: true,
-            audio_blind: blind_listening::State::default(),
-            audio_blind_chinese: false,
-            audio_blind_pending: None,
-            audio_blind_settle_until: None,
-            audio_clip_mode: false,
-            audio_tools_open: false,
-            audio_show_current: true,
-            audio_font_size: 18,
-            key_points: vec![],
-            videos: Default::default(),
-            video_remove: None,
-            loop_a: None,
-            loop_b: None,
-            repeat: 0,
-            rate: 1.,
-            volume: 100.,
-            end_handled: false,
             output: String::new(),
-            chat_history: vec![],
-            chat_id: String::new(),
-            chat_context: String::new(),
-            reasoning: String::new(),
-            reasoning_open: false,
-            chat_draft: String::new(),
-            chat_running: false,
             backups: vec![],
             recording: None,
             recorded: None,
@@ -584,49 +439,51 @@ impl AppView {
             ocr_path: None,
             dark: cx.theme().is_dark(),
             focus: cx.focus_handle(),
-            stats_ticks: 0.,
             assistant_open: false,
             graph_node: "demo-1".into(),
             graph_list: 0,
         };
-        this.video_series = bilibili::Series::load(&this.lib).unwrap_or(None);
-        if let Some(series) = &this.video_series {
-            this.parts_scroll.scroll_to_item(
+        this.video.series = bilibili::Series::load(&this.lib).unwrap_or(None);
+        if let Some(series) = &this.video.series {
+            this.video.parts_scroll.scroll_to_item(
                 series.current.unwrap_or(series.requested),
                 ScrollStrategy::Center,
             );
         }
-        this.video_captions_enabled =
+        this.video.captions_enabled =
             this.lib.setting("video_captions_enabled").ok().as_deref() != Some("false");
-        this.player
-            .set_subtitles_visible(this.video_captions_enabled);
-        this.video_subtitle_size = this
+        this.media
+            .player
+            .set_subtitles_visible(this.video.captions_enabled);
+        this.video.subtitle_size = this
             .lib
             .setting("video_subtitle_size")
             .ok()
             .and_then(|value| value.parse::<u8>().ok())
             .filter(|size| [14, 16, 20, 24, 28, 32].contains(size))
             .unwrap_or(16);
-        this.audio_font_size = this
+        this.audio.font_size = this
             .lib
             .setting("subtitle_font_size")
             .ok()
             .and_then(|v| v.parse::<u8>().ok())
             .filter(|n| [14, 16, 18, 20, 24, 28, 32].contains(n))
             .unwrap_or(18);
-        this.audio_blind_chinese =
+        this.audio.blind_chinese =
             this.lib.setting("blind_chinese_hint").ok().as_deref() == Some("true");
-        this.auto_next_part = this.lib.setting("video_auto_next").ok().as_deref() != Some("false");
-        if let Some(series) = &this.video_series {
+        this.video.auto_next_part =
+            this.lib.setting("video_auto_next").ok().as_deref() != Some("false");
+        if let Some(series) = &this.video.series {
             let base = series.base.clone();
             this.set("bilibili", base, window, cx);
         }
         match video_library::Collection::load(&this.lib) {
-            Ok(videos) => this.videos = videos,
+            Ok(videos) => this.video.collection = videos,
             Err(e) => this.status = format!("{e:#}"),
         }
         let sources: Vec<_> = this
-            .videos
+            .video
+            .collection
             .items
             .iter()
             .filter_map(|v| v.series.as_ref())
@@ -635,7 +492,7 @@ impl AppView {
             .collect();
         if !sources.is_empty() {
             let (tx, rx) = mpsc::channel();
-            this.video_titles_rx = Some(rx);
+            this.tasks.title_events = Some(rx);
             std::thread::spawn(move || {
                 for base in sources {
                     if let Ok(series) = bilibili::fetch(&base, &process::cancel_token()) {
@@ -656,7 +513,7 @@ impl AppView {
         this.writing =
             Some(cx.new(|cx| writing_ui::WritingView::new(this.lib.clone(), window, cx)));
         if this.page == "library" {
-            this.practice_id = this.lib.setting("library_group").unwrap_or_default();
+            this.audio.practice_id = this.lib.setting("library_group").unwrap_or_default();
         }
         this.refresh();
         let ai_result = ai::load_config(&this.lib);
@@ -723,7 +580,7 @@ impl AppView {
             if let Err(error) = this.flush_writing(cx) {
                 eprintln!("退出前写作草稿保存失败：{error:#}");
             }
-            let done = this.background_video.as_ref().map(|j| {
+            let done = this.tasks.video_job.as_ref().map(|j| {
                 j.cancel.store(true, Ordering::SeqCst);
                 j.done.clone()
             });
@@ -739,18 +596,27 @@ impl AppView {
             }
         })
         .detach();
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             loop {
                 Timer::after(Duration::from_millis(50)).await;
-                if this.update(cx, |this, cx| this.tick(cx)).is_err() {
+                if this
+                    .update_in(cx, |this, window, cx| this.tick(window, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
         })
         .detach();
-        if let Some(video) = this.videos.active().cloned().filter(|v| v.path.is_file()) {
-            this.video_series = video.series;
-            if let Some(series) = &mut this.video_series {
+        if let Some(video) = this
+            .video
+            .collection
+            .active()
+            .cloned()
+            .filter(|v| v.path.is_file())
+        {
+            this.video.series = video.series;
+            if let Some(series) = &mut this.video.series {
                 series.current = series
                     .parts
                     .iter()
@@ -765,13 +631,15 @@ impl AppView {
                 .and_then(|v| v["position"].as_f64())
                 .filter(|v| v.is_finite() && *v >= 0.)
                 .unwrap_or(0.);
-            this.player.open_range(&video.path, position, 0., true);
-            this.current_path = Some(video.path.clone());
-            this.video_path = Some(video.path.clone());
+            this.media
+                .player
+                .open_range(&video.path, position, 0., true);
+            this.media.path = Some(video.path.clone());
+            this.video.path = Some(video.path.clone());
             this.load_video_subtitles(&video.path);
-            this.video_tab = 3;
+            this.video.tab = 3;
         } else {
-            this.video_series = None;
+            this.video.series = None;
         }
         if this.page == "listening" {
             this.restore_listening();
@@ -804,22 +672,24 @@ impl AppView {
                 .current_card()
                 .map(|c| format!("{}:{}", c.kind, c.id))
                 .unwrap_or_default(),
-            "listening" if self.audio_blind.enabled => format!(
+            "listening" if self.audio.blind.enabled => format!(
                 "blind:{}:{}:{}",
-                self.current_audio,
-                self.audio_blind_chinese,
-                self.audio_blind
+                self.audio.current_id,
+                self.audio.blind_chinese,
+                self.audio
+                    .blind
                     .revealed
                     .as_ref()
                     .map(|r| format!("{}:{}:{}", r.cue.start, r.cue.end, r.cue.text))
                     .unwrap_or_else(|| "hidden".into())
             ),
-            "listening" => self.current_audio.clone(),
-            "video" if self.video_material.is_some() => {
-                self.video_material.as_ref().unwrap().key.clone()
+            "listening" => self.audio.current_id.clone(),
+            "video" if self.video.material.is_some() => {
+                self.video.material.as_ref().unwrap().key.clone()
             }
             "video" => self
-                .current_path
+                .media
+                .path
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
@@ -851,50 +721,38 @@ impl AppView {
     }
     fn sync_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let context = self.chat_context_key(cx);
-        if context != self.chat_context {
-            if self.chat_running {
-                if let Some(cancel) = &self.busy {
-                    cancel.store(true, Ordering::SeqCst);
-                }
-            }
-            if !self.chat_context.is_empty() {
-                let _ = self.lib.set_setting(
-                    &format!("chat_draft_{}", self.chat_context),
-                    &self.value("question", cx),
-                );
-            }
-            self.chat_context = context;
-            self.chat_draft = self
-                .lib
-                .setting(&format!("chat_draft_{}", self.chat_context))
-                .unwrap_or_default();
-            self.set("question", self.chat_draft.clone(), window, cx);
-            self.reasoning.clear();
-            self.chat_id.clear();
-            self.chat_history.clear();
-            self.output.clear();
-            if let Some(record) = documents::records(&self.lib, "chat")
-                .unwrap_or_default()
-                .into_iter()
-                .rev()
-                .find(|r| r["context"] == self.chat_context)
-            {
-                self.chat_id = record["id"].as_str().unwrap_or("").into();
-                self.chat_history = record["messages"].as_array().cloned().unwrap_or_default();
-                self.reasoning = self
-                    .chat_history
-                    .last()
-                    .and_then(|m| m["reasoning_content"].as_str())
-                    .unwrap_or("")
-                    .into();
-                self.output = self
-                    .chat_history
-                    .last()
-                    .and_then(|m| m["content"].as_str())
-                    .unwrap_or("")
-                    .into();
+        if context == self.chat.context || context == self.chat_requested_context {
+            return;
+        }
+        self.chat_requested_context = context.clone();
+        if self.chat.running {
+            if let Some(cancel) = &self.tasks.cancel {
+                cancel.store(true, Ordering::SeqCst);
             }
         }
+        self.chat.invalidate_request();
+        if !self.chat.context.is_empty() {
+            let draft = self.value("question", cx);
+            if let Err(error) = self.chat.save_draft(&self.lib, &draft) {
+                self.status = format!("问题草稿尚未保存，已保留当前会话：{error:#}");
+                return;
+            }
+        }
+        match self.chat.switch_context(&self.lib, &context) {
+            Ok(true) => self.set("question", self.chat.draft.clone(), window, cx),
+            Ok(false) => {}
+            Err(error) => self.status = format!("读取材料会话失败：{error:#}"),
+        }
+    }
+    fn sync_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page == "video"
+            && (self.assistant_open || self.video.tab == 2)
+            && self.video.material.is_none()
+            && self.video.material_error.is_empty()
+        {
+            let _ = self.prepare_video_material(video_qa::Scope::All);
+        }
+        self.sync_chat(window, cx);
     }
     fn value(&self, key: &str, cx: &App) -> String {
         self.inputs
@@ -914,32 +772,40 @@ impl AppView {
         }
     }
     fn refresh(&mut self) {
-        self.preloaded_index = None;
-        self.practices = self.lib.list("listening_practices").unwrap_or_default();
-        if self.practice_id.is_empty() {
-            self.practice_id = self
+        self.media.preloaded_index = None;
+        self.audio.practices = self.lib.list("listening_practices").unwrap_or_default();
+        if self.audio.practice_id.is_empty() {
+            self.audio.practice_id = self
+                .audio
                 .practices
                 .first()
                 .map(|r| text(r, "id"))
                 .unwrap_or_default();
         }
-        self.audios = self.lib.list("listening_audios").unwrap_or_default();
+        self.audio.audios = self.lib.list("listening_audios").unwrap_or_default();
         if !self
+            .audio
             .practices
             .iter()
-            .any(|r| text(r, "id") == self.practice_id)
+            .any(|r| text(r, "id") == self.audio.practice_id)
         {
-            self.practice_id = self
+            self.audio.practice_id = self
+                .audio
                 .practices
                 .first()
                 .map(|r| text(r, "id"))
                 .unwrap_or_default();
         }
-        self.checked_audio =
-            audio_library::scoped_ids(&self.audios, &self.practice_id, &self.checked_audio)
-                .into_iter()
-                .collect();
-        self.library.sync(&self.practice_id, &self.audios);
+        self.audio.checked = audio_library::scoped_ids(
+            &self.audio.audios,
+            &self.audio.practice_id,
+            &self.audio.checked,
+        )
+        .into_iter()
+        .collect();
+        self.audio
+            .library
+            .sync(&self.audio.practice_id, &self.audio.audios);
         self.cards = if self.page == "flashcard" {
             self.lib.cards_for_kind(self.due, &self.card_filter)
         } else {
@@ -949,7 +815,7 @@ impl AppView {
         if self.page == "discover" {
             self.cards
                 .retain(|c| c.kind != "video" && c.kind != "sentence");
-            for row in self.audios.clone() {
+            for row in self.audio.audios.clone() {
                 if let Ok(body) = fs::read_to_string(text(&row, "subtitle_uri")) {
                     let cues = subtitles::parse(&body);
                     let mut group: Vec<Cue> = vec![];
@@ -1000,13 +866,22 @@ impl AppView {
             self.index = 0;
         }
         if let Some(row) = self.selected() {
-            self.cues = fs::read_to_string(text(&row, "subtitle_uri"))
+            self.audio.cues = fs::read_to_string(text(&row, "subtitle_uri"))
                 .ok()
                 .map(|body| subtitles::parse(&body))
                 .unwrap_or_default();
             self.invalidate_blind();
-            self.audio_scroll.reset(self.cues.len());
-            self.audio_active = None;
+            self.audio.scroll.reset(self.audio.cues.len());
+            self.audio.active = None;
+        }
+        self.refresh_view_data();
+    }
+    fn refresh_view_data(&mut self) {
+        if let Err(error) = self.data.reload(&self.lib, &self.audio.audios) {
+            self.status = format!("页面资料读取失败，保留上次内容：{error:#}");
+        }
+        if self.page == "settings" || self.settings.runtime.components.is_empty() {
+            self.settings.runtime = clarora_gpui::runtime::inspect();
         }
     }
     fn segment(&mut self, row: &Row, cues: &[Cue]) {
@@ -1042,22 +917,23 @@ impl AppView {
         label: &str,
         task: impl FnOnce(Library, Cancel, mpsc::Sender<Event>) -> Result<Outcome> + Send + 'static,
     ) {
-        if self.busy.is_some() {
+        if self.tasks.cancel.is_some() {
             self.status = "已有任务正在执行，请完成或取消后重试".into();
             return;
         }
-        self.task_notice = None;
-        self.task_scope = scope;
+        self.tasks.notice = None;
+        self.tasks.scope = scope;
         let cancel = process::cancel_token();
         let token = cancel.clone();
         let lib = self.lib.clone();
         let (tx, rx) = mpsc::channel();
-        self.rx = Some(rx);
-        self.busy = Some(cancel);
+        self.tasks.events = Some(rx);
+        self.tasks.cancel = Some(cancel);
         self.status = label.into();
+        let chat_request = self.chat.current_request();
         std::thread::spawn(move || {
             let result = task(lib, token, tx.clone()).map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Event::Done(result));
+            let _ = tx.send(Event::Done(chat_request, result));
         });
     }
     fn begin_subtitle(
@@ -1066,129 +942,126 @@ impl AppView {
         detail: &str,
         task: impl FnOnce(Library, Cancel, mpsc::Sender<Event>) -> Result<Outcome> + Send + 'static,
     ) {
-        if self.busy.is_some() {
+        if self.tasks.cancel.is_some() {
             self.status = "已有任务正在执行，请完成或取消后重试".into();
             return;
         }
         self.begin(&format!("正在{title}…"), task);
-        self.task_notice = Some(TaskNotice::new(title, detail));
+        self.tasks.notice = Some(TaskNotice::new(title, detail));
     }
-    fn tick(&mut self, cx: &mut Context<Self>) {
-        if !self.chat_context.is_empty() {
+    fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.chat.context.is_empty() {
             let draft = self.value("question", cx);
-            if draft != self.chat_draft {
-                self.chat_draft = draft;
-                let _ = self.lib.set_setting(
-                    &format!("chat_draft_{}", self.chat_context),
-                    &self.chat_draft,
-                );
+            if draft != self.chat.draft {
+                if let Err(error) = self.chat.save_draft(&self.lib, &draft) {
+                    self.status = format!("保存问题草稿失败：{error:#}");
+                }
             }
         }
-        if let Some(rx) = &self.waveform_rx {
+        if let Some(rx) = &self.audio.waveform_rx {
             if let Ok(result) = rx.try_recv() {
                 match result {
-                    Ok(waveform) => self.waveform = Some(waveform),
+                    Ok(waveform) => self.audio.waveform = Some(waveform),
                     Err(error) => self.status = format!("波形读取失败：{error}"),
                 }
-                self.waveform_rx = None;
+                self.audio.waveform_rx = None;
                 cx.notify();
             }
         }
-        let old_pos = self.playback.position;
-        let old_pause = self.playback.paused;
-        let old_frame = self.playback.frame.clone();
-        let old_sentence_repeat = self.playback.sentence_repeat.clone();
-        self.playback = self.player.snapshot();
+        let playback_changed = self.media.poll();
         if self.page == "listening" {
-            let active = video_subtitles::active(&self.cues, self.playback.position);
-            if active != self.audio_active {
-                self.audio_active = active;
-                if self.audio_follow {
+            let active = video_subtitles::active(&self.audio.cues, self.media.snapshot.position);
+            if active != self.audio.active {
+                self.audio.active = active;
+                if self.audio.follow {
                     if let Some(i) = active {
-                        self.audio_scroll.scroll_to_reveal_item(i);
+                        self.audio.scroll.scroll_to_reveal_item(i);
                     }
                 }
             }
         }
         if self.page == "video" {
-            let active = video_subtitles::active(&self.video_cues, self.playback.position);
-            if active != self.video_active {
-                self.video_active = active;
-                if self.video_follow {
+            let active = video_subtitles::active(&self.video.cues, self.media.snapshot.position);
+            if active != self.video.active {
+                self.video.active = active;
+                if self.video.follow {
                     if let Some(i) = active {
-                        self.video_scroll.scroll_to_reveal_item(i);
+                        self.video.scroll.scroll_to_reveal_item(i);
                     }
                 }
             }
         }
         let mut blind_changed = false;
-        if self.audio_blind.enabled {
-            if let Some((started, audio, target)) = self.audio_blind_pending.clone() {
+        if self.audio.blind.enabled {
+            if let Some((started, audio, target)) = self.audio.blind_pending.clone() {
                 let valid = self.page == "listening"
-                    && audio == self.current_audio
-                    && self.busy.is_none()
+                    && audio == self.audio.current_id
+                    && self.tasks.cancel.is_none()
                     && self
-                        .current_path
+                        .media
+                        .path
                         .as_ref()
-                        .is_some_and(|p| p.to_string_lossy() == self.playback.path)
-                    && self.cues.iter().any(|c| {
+                        .is_some_and(|p| p.to_string_lossy() == self.media.snapshot.path)
+                    && self.audio.cues.iter().any(|c| {
                         c.start == target.cue.start
                             && c.end == target.cue.end
                             && c.text == target.cue.text
                     });
                 if !valid
                     || started.elapsed() > Duration::from_secs(2)
-                    || !self.playback.error.is_empty()
+                    || !self.media.snapshot.error.is_empty()
                 {
                     self.invalidate_blind();
                     self.status = "未能确认暂停，请重试查看原文".into();
                     blind_changed = true;
-                } else if self.playback.paused && started.elapsed() >= Duration::from_millis(80) {
-                    if let Some(i) = self.cues.iter().position(|c| {
+                } else if self.media.snapshot.paused
+                    && started.elapsed() >= Duration::from_millis(80)
+                {
+                    if let Some(i) = self.audio.cues.iter().position(|c| {
                         c.start == target.cue.start
                             && c.end == target.cue.end
                             && c.text == target.cue.text
                     }) {
-                        self.audio_scroll.scroll_to_reveal_item(i);
+                        self.audio.scroll.scroll_to_reveal_item(i);
                     }
-                    self.audio_blind.revealed = Some(target);
-                    self.audio_blind_pending = None;
+                    self.audio.blind.revealed = Some(target);
+                    self.audio.blind_pending = None;
                     self.status = "已暂停并显示所选字幕".into();
                     blind_changed = true;
                 }
-            } else if !self.playback.paused && self.audio_blind.revealed.is_some() {
+            } else if !self.media.snapshot.paused && self.audio.blind.revealed.is_some() {
                 self.invalidate_blind();
                 blind_changed = true;
             }
         }
-        let frame_changed = match (&old_frame, &self.playback.frame) {
-            (Some(a), Some(b)) => !std::sync::Arc::ptr_eq(a, b),
-            (None, Some(_)) => true,
-            _ => false,
-        };
-        let mut changed = self.poll_background_subtitles()
-            || blind_changed
-            || frame_changed
-            || old_pause != self.playback.paused
-            || old_sentence_repeat != self.playback.sentence_repeat
-            || (old_pos - self.playback.position).abs() > 0.01;
-        if !self.playback.paused && self.playback.duration > 0. && self.page != "meditation" {
-            self.stats_ticks += 0.05;
-            if self.stats_ticks >= 30. {
-                if !self.current_audio.is_empty() {
+        let mut changed = self.poll_background_subtitles() || blind_changed || playback_changed;
+        if !self.media.snapshot.paused
+            && self.media.snapshot.duration > 0.
+            && self.page != "meditation"
+        {
+            self.media.stats_ticks += 0.05;
+            if self.media.stats_ticks >= 30. {
+                if !self.audio.current_id.is_empty() {
                     let _ = self.lib.set_setting(
                         "last_listening_position",
-                        &json!({"id":self.current_audio,"position":self.playback.position})
+                        &json!({"id":self.audio.current_id,"position":self.media.snapshot.position})
                             .to_string(),
                     );
                 }
-                let _ = self.lib.stat("listen_seconds", self.stats_ticks);
-                self.stats_ticks = 0.;
+                let _ = self.lib.stat("listen_seconds", self.media.stats_ticks);
+                self.media.stats_ticks = 0.;
+                if self.page == "stats" {
+                    self.refresh_view_data();
+                }
             }
         }
-        if let Some(notice) = &mut self.task_notice {
+        if let Some(notice) = &mut self.tasks.notice {
             if notice.state == TaskState::Running
-                && self.busy.as_ref().is_some_and(|t| t.load(Ordering::SeqCst))
+                && self
+                    .tasks
+                    .cancel
+                    .as_ref()
+                    .is_some_and(|t| t.load(Ordering::SeqCst))
             {
                 notice.state = TaskState::Cancelling;
                 notice.detail = "正在停止当前处理，请稍候…".into();
@@ -1199,15 +1072,15 @@ impl AppView {
                 changed = true;
             }
         }
-        if let Some(rx) = &self.video_titles_rx {
+        if let Some(rx) = &self.tasks.title_events {
             let titles = rx.try_iter().collect::<Vec<_>>();
             for (base, title) in titles {
                 let result = (|| -> Result<()> {
                     let mut videos = video_library::Collection::load(&self.lib)?;
                     if videos.update_title(&base, &title)? {
                         videos.save(&self.lib)?;
-                        self.videos = videos;
-                        if let Some(series) = self.video_series.as_mut().filter(|s| s.base == base)
+                        self.video.collection = videos;
+                        if let Some(series) = self.video.series.as_mut().filter(|s| s.base == base)
                         {
                             series.title = title;
                             // Only persist when the active queue belongs to this source.
@@ -1222,14 +1095,15 @@ impl AppView {
                 changed = true;
             }
         }
-        if let Some(rx) = &self.rx {
+        if let Some(rx) = &self.tasks.events {
             let events = rx.try_iter().collect::<Vec<_>>();
             for event in events {
                 changed = true;
                 match event {
                     Event::SubtitleProgress(stage) => {
                         if let Some(notice) = self
-                            .task_notice
+                            .tasks
+                            .notice
                             .as_mut()
                             .filter(|n| n.state == TaskState::Running)
                         {
@@ -1238,39 +1112,57 @@ impl AppView {
                     }
                     Event::ModelProgress(progress) => {
                         if self
-                            .busy
+                            .tasks
+                            .cancel
                             .as_ref()
                             .is_some_and(|t| !t.load(Ordering::SeqCst))
                         {
                             self.status = progress.label();
-                            self.model_progress = Some(progress);
+                            self.tasks.model_progress = Some(progress);
                         }
                     }
-                    Event::Chunk(chunk) => {
+                    Event::Chunk(request, chunk) => {
+                        if !self.chat.accepts(&request) {
+                            continue;
+                        }
                         if self
-                            .busy
+                            .tasks
+                            .cancel
                             .as_ref()
                             .is_some_and(|cancel| !cancel.load(Ordering::SeqCst))
                         {
-                            self.output = chunk.answer;
-                            self.reasoning = chunk.reasoning;
+                            self.chat.output = chunk.answer;
+                            self.chat.reasoning = chunk.reasoning;
                         }
                     }
-                    Event::Done(result) => {
+                    Event::Done(request, result) => {
                         let failed = result.is_err();
-                        let completed_chat = self.chat_running;
-                        let cancelled =
-                            self.busy.as_ref().is_some_and(|t| t.load(Ordering::SeqCst));
-                        self.busy = None;
-                        self.task_scope = TaskScope::Material;
-                        self.model_progress = None;
-                        self.chat_running = false;
+                        let completed_chat = request.is_some();
+                        let accepted = request.as_ref().is_none_or(|r| self.chat.finish_request(r));
+                        let cancelled = self
+                            .tasks
+                            .cancel
+                            .as_ref()
+                            .is_some_and(|t| t.load(Ordering::SeqCst));
+                        self.tasks.cancel = None;
+                        self.tasks.scope = TaskScope::Material;
+                        self.tasks.model_progress = None;
+                        if !accepted {
+                            // The old request may have committed before its UI callback
+                            // was invalidated. Refresh the current index without painting
+                            // the old request's output or selecting its conversation.
+                            if let Err(error) = self.chat.refresh(&self.lib) {
+                                self.status = format!("刷新会话失败：{error:#}");
+                            }
+                            changed = true;
+                            continue;
+                        }
                         match result {
                             Ok(Outcome::TtsReady(row)) => {
                                 self.status =
                                     "音频及逐句字幕已保存到生成时选择的练习组，点击试听查看".into();
-                                if text(&row, "practice_id") == self.practice_id {
-                                    self.library.selected = text(&row, "id");
+                                if text(&row, "practice_id") == self.audio.practice_id {
+                                    self.audio.library.selected = text(&row, "id");
                                 }
                                 self.tts_last = Some(row);
                             }
@@ -1280,13 +1172,13 @@ impl AppView {
                                 if let Err(e) = series.save(&self.lib) {
                                     self.status = format!("保存分P列表失败：{e}");
                                 }
-                                self.parts_scroll.scroll_to_item(
+                                self.video.parts_scroll.scroll_to_item(
                                     series.current.unwrap_or(series.requested),
                                     ScrollStrategy::Center,
                                 );
-                                self.video_series = Some(series);
+                                self.video.series = Some(series);
                                 if self.page == "video" {
-                                    self.video_tab = 1;
+                                    self.video.tab = 1;
                                 }
                             }
                             Ok(Outcome::PartVideo(mut series, index, path, new_file, origin)) => {
@@ -1302,7 +1194,7 @@ impl AppView {
                                 } else {
                                     series.parts[index].path = Some(path.clone());
                                     let activate =
-                                        self.page == "video" && self.current_path == origin;
+                                        self.page == "video" && self.media.path == origin;
                                     if activate {
                                         series.current = Some(index);
                                     }
@@ -1311,16 +1203,16 @@ impl AppView {
                                             video_library::Collection::load(&self.lib)?;
                                         videos.add(&[path.clone()], Some(&series))?;
                                         videos.save(&self.lib)?;
-                                        self.videos = videos;
+                                        self.video.collection = videos;
                                         Ok(())
                                     })();
                                     if activate && saved.is_ok() {
-                                        self.video_series = Some(series);
+                                        self.video.series = Some(series);
                                         // Opening media reloads subtitles; keep the panel the user is viewing.
-                                        let panel = self.video_tab;
+                                        let panel = self.video.tab;
                                         if self.open(path) {
-                                            self.video_tab = panel;
-                                            self.player.set("pause", "no");
+                                            self.video.tab = panel;
+                                            self.media.player.set("pause", "no");
                                             self.status = format!("正在播放 P{}", index + 1);
                                         }
                                     } else {
@@ -1334,29 +1226,36 @@ impl AppView {
                             Ok(Outcome::VideoTranslated(video, path, source, cues))
                                 if !cancelled =>
                             {
-                                let same_source = self.video_cues.len() == source.len()
-                                    && self.video_cues.iter().zip(&source).all(|(a, b)| {
+                                let same_source = self.video.cues.len() == source.len()
+                                    && self.video.cues.iter().zip(&source).all(|(a, b)| {
                                         a.start == b.start && a.end == b.end && a.text == b.text
                                     });
                                 if self.page == "video"
-                                    && self.current_path.as_ref() == Some(&video)
+                                    && self.media.path.as_ref() == Some(&video)
                                     && same_source
                                 {
-                                    self.video_cues = cues;
-                                    self.video_scroll.reset(self.video_cues.len());
-                                    self.video_active = None;
-                                    self.video_caption_source = VideoCaptionSource::Transcript;
-                                    self.video_material = None;
-                                    self.video_material_error.clear();
-                                    self.player
-                                        .command(["sub-add".into(), path, "select".into()]);
+                                    self.video.cues = cues;
+                                    self.video.scroll.reset(self.video.cues.len());
+                                    self.video.active = None;
+                                    self.video.caption_source = VideoCaptionSource::Transcript;
+                                    self.video.material = None;
+                                    self.video.material_error.clear();
+                                    self.media.player.command([
+                                        "sub-add".into(),
+                                        path,
+                                        "select".into(),
+                                    ]);
                                     self.status = "中文字幕已生成并保存，英文和时间轴已保留".into();
                                 } else {
                                     self.status = "翻译已完成，当前材料已改变，未切换显示".into();
                                 }
                             }
                             Ok(Outcome::Output(s)) if !cancelled => {
-                                self.output = s;
+                                if completed_chat {
+                                    self.chat.output = s;
+                                } else {
+                                    self.output = s;
+                                }
                                 self.status = "已完成".into();
                             }
                             Ok(Outcome::KeyPoints(audio, points)) if !cancelled => {
@@ -1364,8 +1263,8 @@ impl AppView {
                                     &format!("key_points_{audio}"),
                                     &serde_json::to_string(&points).unwrap_or_default(),
                                 );
-                                if self.current_audio == audio {
-                                    self.key_points = points;
+                                if self.audio.current_id == audio {
+                                    self.audio.key_points = points;
                                 }
                                 self.status = "学习重点已标注，可悬停查看释义".into();
                             }
@@ -1395,14 +1294,14 @@ impl AppView {
                                 self.status = "录音已保存，可转写评分".into();
                             }
                             Ok(Outcome::CredentialMode(enabled)) => {
-                                self.secure_credentials = enabled;
+                                self.settings.secure_credentials = enabled;
                                 self.status=if enabled {"密钥安全模式已开启，现有本机密钥已迁入系统凭证库"} else {"密钥安全模式已关闭。已有钥匙串密钥可重新输入保存，或主动导入一次"}.into();
                             }
                             Ok(Outcome::Message(s)) => self.status = s,
                             Err(e) => self.status = e,
                             _ => self.status = "已取消".into(),
                         }
-                        if let Some(notice) = self.task_notice.as_mut().filter(|n| n.active()) {
+                        if let Some(notice) = self.tasks.notice.as_mut().filter(|n| n.active()) {
                             notice.state = if cancelled {
                                 TaskState::Cancelled
                             } else if failed {
@@ -1418,25 +1317,18 @@ impl AppView {
                         if !completed_chat {
                             self.refresh();
                         }
-                        if !self.chat_id.is_empty() {
-                            if let Some(record) = documents::records(&self.lib, "chat")
-                                .unwrap_or_default()
-                                .into_iter()
-                                .find(|r| r["id"] == self.chat_id)
-                            {
-                                self.chat_history =
-                                    record["messages"].as_array().cloned().unwrap_or_default();
-                            }
+                        if let Err(error) = self.chat.refresh(&self.lib) {
+                            self.status = format!("刷新会话失败：{error:#}");
                         }
                     }
                 }
             }
         }
-        if let Some((index, _)) = self.video_sentence_repeat {
-            if self.video_sentence_range.is_some_and(|(start, end)| {
-                self.video_cues.get(index).is_none_or(|cue| {
+        if let Some((index, _)) = self.video.sentence_repeat {
+            if self.video.sentence_range.is_some_and(|(start, end)| {
+                self.video.cues.get(index).is_none_or(|cue| {
                     (cue.start - start).abs() > 0.001
-                        || (cue.end.min(self.playback.duration) - end).abs() > 0.001
+                        || (cue.end.min(self.media.snapshot.duration) - end).abs() > 0.001
                 })
             }) {
                 self.clear_video_sentence_repeat();
@@ -1444,37 +1336,41 @@ impl AppView {
                 changed = true;
             }
         }
-        if let (Some(a), Some(b)) = (self.loop_a, self.loop_b) {
-            if self.video_sentence_repeat.is_none()
-                && self.repeat == 2
-                && !self.playback.paused
-                && self.playback.position >= b
+        if let (Some(a), Some(b)) = (self.media.loop_a, self.media.loop_b) {
+            if self.video.sentence_repeat.is_none()
+                && self.media.repeat == 2
+                && !self.media.snapshot.paused
+                && self.media.snapshot.position >= b
             {
-                self.player
+                self.media
+                    .player
                     .command(["seek".into(), a.to_string(), "absolute+exact".into()]);
             }
         }
-        if self.video_sentence_repeat.is_none() && (self.page != "video" || self.repeat != 0) {
-            if self.playback.duration > 0. && self.playback.position >= self.playback.duration - 0.1
+        if self.video.sentence_repeat.is_none() && (self.page != "video" || self.media.repeat != 0)
+        {
+            if self.media.snapshot.duration > 0.
+                && self.media.snapshot.position >= self.media.snapshot.duration - 0.1
             {
-                if !self.end_handled {
-                    self.end_handled = true;
-                    if self.repeat == 1 {
-                        self.player.command(["seek", "0", "absolute"]);
-                        self.player.set("pause", "no");
-                    } else if self.repeat >= 3 {
+                if !self.media.end_handled {
+                    self.media.end_handled = true;
+                    if self.media.repeat == 1 {
+                        self.media.player.command(["seek", "0", "absolute"]);
+                        self.media.player.set("pause", "no");
+                    } else if self.media.repeat >= 3 {
                         let group = self
+                            .audio
                             .audios
                             .iter()
-                            .filter(|r| text(r, "practice_id") == self.practice_id)
+                            .filter(|r| text(r, "practice_id") == self.audio.practice_id)
                             .collect::<Vec<_>>();
                         if let Some(index) = group
                             .iter()
-                            .position(|r| text(r, "id") == self.current_audio)
+                            .position(|r| text(r, "id") == self.audio.current_id)
                         {
                             let next = if index + 1 < group.len() {
                                 Some(group[index + 1].clone())
-                            } else if self.repeat == 3 {
+                            } else if self.media.repeat == 3 {
                                 group.first().map(|r| (*r).clone())
                             } else {
                                 None
@@ -1486,28 +1382,30 @@ impl AppView {
                     }
                 }
             } else {
-                self.end_handled = false;
+                self.media.end_handled = false;
             }
         }
-        if self.page == "video" && self.repeat == 0 && self.video_sentence_repeat.is_none() {
-            if !self.playback.eof {
-                self.end_handled = false;
+        if self.page == "video" && self.media.repeat == 0 && self.video.sentence_repeat.is_none() {
+            if !self.media.snapshot.eof {
+                self.media.end_handled = false;
             }
-            if self.auto_next_part
-                && self.playback.error.is_empty()
-                && self.playback.eof
-                && !self.end_handled
-                && self.busy.is_none()
+            if self.video.auto_next_part
+                && self.media.snapshot.error.is_empty()
+                && self.media.snapshot.eof
+                && !self.media.end_handled
+                && self.tasks.cancel.is_none()
                 && self
-                    .current_path
+                    .media
+                    .path
                     .as_ref()
-                    .is_some_and(|p| p.to_string_lossy() == self.playback.path)
+                    .is_some_and(|p| p.to_string_lossy() == self.media.snapshot.path)
             {
-                self.end_handled = true;
+                self.media.end_handled = true;
                 if let Some(next) = self
-                    .video_series
+                    .video
+                    .series
                     .as_ref()
-                    .and_then(|s| self.current_path.as_ref().and_then(|p| s.next_for(p)))
+                    .and_then(|s| self.media.path.as_ref().and_then(|p| s.next_for(p)))
                 {
                     self.start_part(next);
                 }
@@ -1518,6 +1416,9 @@ impl AppView {
                 self.timer_end = None;
                 if self.timer_focus {
                     let _ = self.lib.stat("pomodoro_count", 1.);
+                    if self.page == "stats" {
+                        self.refresh_view_data();
+                    }
                 }
                 self.timer_focus = !self.timer_focus;
                 self.timer_remaining = if self.timer_focus { 1500 } else { 300 };
@@ -1541,35 +1442,39 @@ impl AppView {
                 }
             }
         }
+        let previous_context = self.chat.context.clone();
+        let previous_error = self.chat.error.clone();
+        self.sync_assistant(window, cx);
+        changed |= previous_context != self.chat.context || previous_error != self.chat.error;
         if changed {
             cx.notify();
         }
     }
     fn start_part(&mut self, index: usize) {
-        if self.busy.is_some() {
+        if self.tasks.cancel.is_some() {
             self.status = "请先完成或取消当前前台任务".into();
             return;
         }
-        let Some(mut series) = self.video_series.clone() else {
+        let Some(mut series) = self.video.series.clone() else {
             return;
         };
         if index >= series.parts.len() {
             return;
         }
-        if let Some(path) = self.part_downloads.cached(&series, index) {
+        if let Some(path) = self.tasks.downloads.cached(&series, index) {
             series.parts[index].path = Some(path.clone());
             series.current = Some(index);
-            self.video_series = Some(series);
-            let panel = self.video_tab;
+            self.video.series = Some(series);
+            let panel = self.video.tab;
             if self.open(path) {
-                self.video_tab = panel;
-                self.player.set("pause", "no");
+                self.video.tab = panel;
+                self.media.player.set("pause", "no");
                 self.status = format!("正在播放 P{}", index + 1);
             }
             return;
         }
-        let origin = self.current_path.clone();
-        let downloads = self.part_downloads.clone();
+        let origin = self.media.path.clone();
+        let downloads = self.tasks.downloads.clone();
         self.begin(
             &format!("正在准备 P{}…", index + 1),
             move |lib, cancel, _| {
@@ -1581,13 +1486,13 @@ impl AppView {
     }
     fn open(&mut self, path: PathBuf) -> bool {
         self.clear_video_sentence_repeat();
-        self.video_picture_click = None;
+        self.video.picture_click = None;
         let result = (|| -> Result<_> {
             let mut videos = video_library::Collection::load(&self.lib)?;
-            let ids = videos.add(&[path], self.video_series.as_ref())?;
+            let ids = videos.add(&[path], self.video.series.as_ref())?;
             let video = videos.select(&ids[0])?;
             videos.save(&self.lib)?;
-            self.videos = videos;
+            self.video.collection = videos;
             Ok(video)
         })();
         let video = match result {
@@ -1598,118 +1503,125 @@ impl AppView {
             }
         };
         let path = video.path;
-        self.video_series = video.series;
-        self.video_remove = None;
-        if let Some(cancel) = self.waveform_cancel.take() {
+        self.video.series = video.series;
+        self.video.remove = None;
+        if let Some(cancel) = self.audio.waveform_cancel.take() {
             cancel.store(true, Ordering::SeqCst);
         }
-        self.waveform = None;
-        self.waveform_rx = None;
-        self.key_points.clear();
-        if let Some(series) = &mut self.video_series {
+        self.audio.waveform = None;
+        self.audio.waveform_rx = None;
+        self.audio.key_points.clear();
+        if let Some(series) = &mut self.video.series {
             series.current = series
                 .parts
                 .iter()
                 .position(|p| p.path.as_ref() == Some(&path));
             let _ = series.save(&self.lib);
             if let Some(index) = series.current {
-                self.parts_scroll
+                self.video
+                    .parts_scroll
                     .scroll_to_item(index, ScrollStrategy::Center);
             }
         }
-        if self.repeat >= 2 {
-            self.repeat = 0;
+        if self.media.repeat >= 2 {
+            self.media.repeat = 0;
         }
-        self.video_path = Some(path.clone());
-        self.player.open(&path);
-        self.current_path = Some(path.clone());
-        self.loop_a = None;
-        self.loop_b = None;
-        self.cues.clear();
-        self.current_audio.clear();
+        self.video.path = Some(path.clone());
+        self.media.player.open(&path);
+        self.media.path = Some(path.clone());
+        self.media.loop_a = None;
+        self.media.loop_b = None;
+        self.audio.cues.clear();
+        self.audio.current_id.clear();
         self.load_video_subtitles(&path);
-        if self.video_series.is_none() {
+        if self.video.series.is_none() {
             let _ = self.lib.set_setting("bilibili_series", "");
         }
         true
     }
     fn prepare_video_material(&mut self, scope: video_qa::Scope) -> Result<()> {
-        let path = self.current_path.as_ref().context("请先打开视频")?;
+        let path = self.media.path.as_ref().context("请先打开视频")?;
         match video_qa::build(
             path,
-            &self.video_cues,
+            &self.video.cues,
             scope,
-            self.playback.position,
-            &self.playback.subtitle,
+            self.media.snapshot.position,
+            &self.media.snapshot.subtitle,
         ) {
             Ok(material) => {
-                self.video_material = Some(material);
-                self.video_material_error.clear();
+                self.video.material = Some(material);
+                self.video.material_error.clear();
                 Ok(())
             }
             Err(error) => {
-                self.video_material = None;
-                self.video_material_error = error.to_string();
+                self.video.material = None;
+                self.video.material_error = error.to_string();
                 Err(error)
             }
         }
     }
     fn load_video_subtitles(&mut self, path: &std::path::Path) {
         self.clear_video_sentence_repeat();
-        self.video_caption_source = VideoCaptionSource::Transcript;
-        self.video_material = None;
-        self.video_material_error.clear();
-        self.video_cues = match video_subtitles::load(&self.lib, path) {
+        self.video.caption_source = VideoCaptionSource::Transcript;
+        self.video.material = None;
+        self.video.material_error.clear();
+        self.video.cues = match video_subtitles::load(&self.lib, path) {
             Ok(cues) => cues,
             Err(e) => {
                 self.status = format!("字幕载入失败：{e}");
                 vec![]
             }
         };
-        self.video_active = None;
-        self.video_scroll.reset(self.video_cues.len());
-        self.video_tab = 0;
+        self.video.active = None;
+        self.video.scroll.reset(self.video.cues.len());
+        self.video.tab = 0;
     }
 
     fn open_audio(&mut self, row: &Row) {
         self.invalidate_blind();
-        self.audio_blind_settle_until = Some(Instant::now() + Duration::from_millis(250));
+        self.audio.blind_settle_until = Some(Instant::now() + Duration::from_millis(250));
         let path = PathBuf::from(text(row, "audio_uri"));
-        self.player.open(&path);
-        self.current_path = Some(path);
-        self.current_audio = text(row, "id");
+        self.media.player.open(&path);
+        self.media.path = Some(path);
+        self.audio.current_id = text(row, "id");
         let _ = self
             .lib
-            .set_setting("last_listening_audio", &self.current_audio);
+            .set_setting("last_listening_audio", &self.audio.current_id);
         self.load_waveform();
-        self.key_points = serde_json::from_str(
+        self.audio.key_points = serde_json::from_str(
             &self
                 .lib
-                .setting(&format!("key_points_{}", self.current_audio))
+                .setting(&format!("key_points_{}", self.audio.current_id))
                 .unwrap_or_default(),
         )
         .unwrap_or_default();
-        self.practice_id = text(row, "practice_id");
-        self.cues = fs::read_to_string(text(&row, "subtitle_uri"))
+        self.audio.practice_id = text(row, "practice_id");
+        self.audio.cues = fs::read_to_string(text(&row, "subtitle_uri"))
             .ok()
             .map(|s| subtitles::parse(&s))
             .unwrap_or_default();
         self.invalidate_blind();
-        self.audio_scroll.reset(self.cues.len());
-        self.audio_active = None;
-        self.audio_clip_mode = false;
-        self.audio_tools_open = false;
-        if self.repeat == 2 {
-            self.repeat = 0;
+        self.audio.scroll.reset(self.audio.cues.len());
+        self.audio.active = None;
+        self.audio.clip_mode = false;
+        self.audio.tools_open = false;
+        if self.media.repeat == 2 {
+            self.media.repeat = 0;
         }
-        self.loop_a = None;
-        self.loop_b = None;
+        self.media.loop_a = None;
+        self.media.loop_b = None;
     }
     fn restore_listening(&mut self) {
         let last = self.lib.setting("last_listening_audio").unwrap_or_default();
-        if let Some(row) = self.audios.iter().find(|r| text(r, "id") == last).cloned() {
+        if let Some(row) = self
+            .audio
+            .audios
+            .iter()
+            .find(|r| text(r, "id") == last)
+            .cloned()
+        {
             self.open_audio(&row);
-            self.player.set("pause", "yes");
+            self.media.player.set("pause", "yes");
             if let Ok(value) = serde_json::from_str::<Value>(
                 &self
                     .lib
@@ -1718,7 +1630,7 @@ impl AppView {
             ) {
                 if value["id"] == last {
                     if let Some(time) = value["position"].as_f64() {
-                        self.player.command([
+                        self.media.player.command([
                             "seek".into(),
                             time.to_string(),
                             "absolute+exact".into(),
@@ -1729,32 +1641,33 @@ impl AppView {
         }
     }
     fn save_media_position(&self) {
-        if self.page == "listening" && !self.current_audio.is_empty() {
+        if self.page == "listening" && !self.audio.current_id.is_empty() {
             let _ = self.lib.set_setting(
                 "last_listening_position",
-                &json!({"id":self.current_audio,"position":self.playback.position}).to_string(),
+                &json!({"id":self.audio.current_id,"position":self.media.snapshot.position})
+                    .to_string(),
             );
         } else if self.page == "video" {
-            if let Some(path) = &self.video_path {
+            if let Some(path) = &self.video.path {
                 let _ = self.lib.set_setting(
                     "last_video_position",
-                    &json!({"path":path,"position":self.playback.position}).to_string(),
+                    &json!({"path":path,"position":self.media.snapshot.position}).to_string(),
                 );
             }
         }
     }
     fn load_waveform(&mut self) {
-        if let Some(cancel) = self.waveform_cancel.take() {
+        if let Some(cancel) = self.audio.waveform_cancel.take() {
             cancel.store(true, Ordering::SeqCst);
         }
-        self.waveform = None;
-        self.waveform_rx = None;
-        if let Some(path) = self.current_path.clone() {
+        self.audio.waveform = None;
+        self.audio.waveform_rx = None;
+        if let Some(path) = self.media.path.clone() {
             let lib = self.lib.clone();
             let cancel = process::cancel_token();
-            self.waveform_cancel = Some(cancel.clone());
+            self.audio.waveform_cancel = Some(cancel.clone());
             let (tx, rx) = mpsc::channel();
-            self.waveform_rx = Some(rx);
+            self.audio.waveform_rx = Some(rx);
             std::thread::spawn(move || {
                 let _ =
                     tx.send(waveform::extract(&lib, &path, &cancel).map_err(|e| format!("{e:#}")));
@@ -1762,30 +1675,35 @@ impl AppView {
         }
     }
     fn selected(&self) -> Option<Row> {
-        self.audios
+        self.audio
+            .audios
             .iter()
-            .find(|r| text(r, "id") == self.current_audio)
+            .find(|r| text(r, "id") == self.audio.current_id)
             .cloned()
     }
     fn current_card(&self) -> Option<Card> {
         self.cards.get(self.index).cloned()
     }
     fn play_card(&mut self) {
-        self.player.set("volume", self.volume);
-        self.player.set("speed", self.rate);
-        self.player.set("pause", "yes");
+        self.media.player.set("volume", self.media.volume);
+        self.media.player.set("speed", self.media.rate);
+        self.media.player.set("pause", "yes");
         if let Some(card) = self.current_card() {
             if !card.media.is_empty() {
-                if self.preloaded_index == Some(self.index) {
-                    std::mem::swap(&mut self.player, &mut self.preloader);
-                    self.player.set("pause", "no");
+                if self.media.preloaded_index == Some(self.index) {
+                    std::mem::swap(&mut self.media.player, &mut self.media.preloader);
+                    self.media.player.set("pause", "no");
                 } else {
-                    self.player
-                        .open_range(&PathBuf::from(card.media), card.start, card.end, false);
+                    self.media.player.open_range(
+                        &PathBuf::from(card.media),
+                        card.start,
+                        card.end,
+                        false,
+                    );
                 }
             }
         }
-        self.preloaded_index = None;
+        self.media.preloaded_index = None;
         if self.page == "discover" && !self.cards.is_empty() {
             let due = self
                 .lib
@@ -1808,17 +1726,17 @@ impl AppView {
                 &due,
                 &favorites,
             ) {
-                self.preloaded_index = Some(index);
+                self.media.preloaded_index = Some(index);
                 let next = &self.cards[index];
                 if !next.media.is_empty() {
-                    self.preloader.open_range(
+                    self.media.preloader.open_range(
                         &PathBuf::from(&next.media),
                         next.start,
                         next.end,
                         true,
                     );
                 } else {
-                    self.preloader.set("pause", "yes");
+                    self.media.preloader.set("pause", "yes");
                 }
             }
         }
@@ -1826,7 +1744,7 @@ impl AppView {
     fn pick(&self, kind: &str, cx: &mut Context<Self>) {
         let kind = kind.to_string();
         let directory = kind == "directory";
-        let audio_group = self.practice_id.clone();
+        let audio_group = self.audio.practice_id.clone();
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: !directory,
             directories: directory,
@@ -1836,7 +1754,7 @@ impl AppView {
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picker.await {
                 let _ = this.update(cx, |this, cx| {
-                    if kind == "audio" && this.practice_id != audio_group {
+                    if kind == "audio" && this.audio.practice_id != audio_group {
                         this.status = "选择文件期间练习组已切换，请在目标组重新导入".into();
                     } else {
                         this.picked(&kind, paths);
@@ -1854,16 +1772,19 @@ impl AppView {
         match kind {
             "video" => {
                 let result = (|| -> Result<()> {
-                    ensure!(self.busy.is_none(), "请完成或取消当前任务后再导入视频");
+                    ensure!(
+                        self.tasks.cancel.is_none(),
+                        "请完成或取消当前任务后再导入视频"
+                    );
                     let mut videos = video_library::Collection::load(&self.lib)?;
                     let ids = videos.add(&paths, None)?;
                     videos.save(&self.lib)?;
                     let first = videos.select(&ids[0])?;
-                    self.videos = videos;
+                    self.video.collection = videos;
                     self.save_media_position();
                     ensure!(self.open(first.path), "{}", self.status);
-                    self.video_tab = 3;
-                    self.video_tools_open = false;
+                    self.video.tab = 3;
+                    self.video.tools_open = false;
                     self.status = format!("已收藏 {} 个视频，可在“我的视频”切换或移除", ids.len());
                     Ok(())
                 })();
@@ -1874,15 +1795,15 @@ impl AppView {
             "video-subtitle" => {
                 let result = (|| -> Result<()> {
                     ensure!(
-                        self.background_video.is_none(),
+                        self.tasks.video_job.is_none(),
                         "请先完成或取消后台字幕任务后再导入字幕"
                     );
-                    let video = self.current_path.as_ref().context("请先打开视频")?;
+                    let video = self.media.path.as_ref().context("请先打开视频")?;
                     let mut cues = subtitles::parse(&fs::read_to_string(&path)?);
                     ensure!(!cues.is_empty(), "请选择带时间轴的 UTF-8 SRT / VTT 字幕");
                     cues.sort_by(|a, b| a.start.total_cmp(&b.start));
                     video_subtitles::save(&self.lib, video, &cues, &process::cancel_token())?;
-                    self.player.command([
+                    self.media.player.command([
                         "sub-add".into(),
                         path.to_string_lossy().into_owned(),
                         "select".into(),
@@ -1914,7 +1835,7 @@ impl AppView {
                 )))
             }),
             "audio" => {
-                let group = self.practice_id.clone();
+                let group = self.audio.practice_id.clone();
                 self.begin("正在导入音频…", move |lib, _, _| {
                     ensure!(!group.is_empty(), "请先创建练习组");
                     let mut errors = vec![];
@@ -1958,7 +1879,7 @@ impl AppView {
                 });
             }
             "pdf" => {
-                if self.busy.is_some() {
+                if self.tasks.cancel.is_some() {
                     self.status = "已有任务正在执行，请完成或取消后重试".into();
                     return;
                 }
@@ -1989,14 +1910,14 @@ impl AppView {
                 self.status = "已选择录音".into();
             }
             "background" => {
-                self.player.open(&path);
-                self.player.set("loop-file", "inf");
+                self.media.player.open(&path);
+                self.media.player.set("loop-file", "inf");
             }
             _ => {}
         }
     }
     fn render_pdf(&mut self) {
-        if self.busy.is_some() {
+        if self.tasks.cancel.is_some() {
             self.status = "已有任务正在执行，请完成或取消后重试".into();
             return;
         }
@@ -2018,10 +1939,18 @@ impl AppView {
         }
     }
     fn handle(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
-        self.video_picture_click = None;
+        self.video.picture_click = None;
         // Modal confirmation owns interaction until it is confirmed or dismissed.
         if window.has_active_dialog(cx) && !matches!(action, Action::VideoConfirmRemove) {
             return;
+        }
+        let refresh_chat = matches!(&action, Action::Refresh);
+        let updates_settings = matches!(
+            &action,
+            Action::SaveAi | Action::SaveStorage | Action::Refresh
+        );
+        if matches!(&action, Action::Refresh) {
+            self.chat_requested_context.clear();
         }
         let leaves_sentence = match &action {
             Action::Page(page) => page != "video",
@@ -2044,7 +1973,7 @@ impl AppView {
             | Action::VideoTranscribe => true,
             _ => false,
         };
-        if leaves_sentence && self.video_sentence_repeat.is_some() {
+        if leaves_sentence && self.video.sentence_repeat.is_some() {
             self.clear_video_sentence_repeat();
         }
         let result = (|| -> Result<()> {
@@ -2061,23 +1990,23 @@ impl AppView {
                     if self.page == "writing" {
                         self.flush_writing(cx)?;
                     }
-                    self.audio_blind.enabled = false;
+                    self.audio.blind.enabled = false;
                     self.invalidate_blind();
                     let previous = self.page.clone();
-                    self.video_remove = None;
-                    self.library.pending_delete.clear();
-                    if self.library.tool == "delete" {
-                        self.library.tool.clear();
+                    self.video.remove = None;
+                    self.audio.library.pending_delete.clear();
+                    if self.audio.library.tool == "delete" {
+                        self.audio.library.tool.clear();
                     }
                     self.save_media_position();
-                    if self.task_scope == TaskScope::Material {
-                        if let Some(cancel) = &self.busy {
+                    if self.tasks.scope == TaskScope::Material {
+                        if let Some(cancel) = &self.tasks.cancel {
                             cancel.store(true, Ordering::SeqCst);
                         }
                     }
-                    self.player.set("pause", "yes");
-                    self.preloader.set("pause", "yes");
-                    self.preloaded_index = None;
+                    self.media.player.set("pause", "yes");
+                    self.media.preloader.set("pause", "yes");
+                    self.media.preloaded_index = None;
                     self.page = page;
                     if self.page == "writing" {
                         if let Some(view) = &self.writing {
@@ -2086,8 +2015,8 @@ impl AppView {
                     }
                     if self.page == "library" {
                         let group = self.lib.setting("library_group")?;
-                        if self.practices.iter().any(|r| text(r, "id") == group) {
-                            self.practice_id = group;
+                        if self.audio.practices.iter().any(|r| text(r, "id") == group) {
+                            self.audio.practice_id = group;
                         }
                     }
                     self.page_scroll.set_offset(point(px(0.), px(0.)));
@@ -2107,16 +2036,16 @@ impl AppView {
                         if self.page == "listening" {
                             self.restore_listening();
                         } else if self.page == "video" {
-                            if let Some(path) = self.video_path.clone() {
+                            if let Some(path) = self.video.path.clone() {
                                 self.open(path.clone());
-                                self.video_tab = 3;
-                                self.player.set("pause", "yes");
+                                self.video.tab = 3;
+                                self.media.player.set("pause", "yes");
                                 if let Ok(value) = serde_json::from_str::<Value>(
                                     &self.lib.setting("last_video_position").unwrap_or_default(),
                                 ) {
                                     if value["path"].as_str() == path.to_str() {
                                         if let Some(time) = value["position"].as_f64() {
-                                            self.player.command([
+                                            self.media.player.command([
                                                 "seek".into(),
                                                 time.to_string(),
                                                 "absolute+exact".into(),
@@ -2130,7 +2059,7 @@ impl AppView {
                     if self.page == "pdf"
                         && self.pdf_image.is_none()
                         && self.pdf_path.is_some()
-                        && self.busy.is_none()
+                        && self.tasks.cancel.is_none()
                     {
                         self.render_pdf();
                     }
@@ -2138,13 +2067,13 @@ impl AppView {
                 Action::Refresh => {
                     self.refresh();
                     if let Some(row) = self.selected() {
-                        self.cues = fs::read_to_string(text(&row, "subtitle_uri"))
+                        self.audio.cues = fs::read_to_string(text(&row, "subtitle_uri"))
                             .ok()
                             .map(|s| subtitles::parse(&s))
                             .unwrap_or_default();
                         self.invalidate_blind();
-                        self.audio_scroll.reset(self.cues.len());
-                        self.audio_active = None;
+                        self.audio.scroll.reset(self.audio.cues.len());
+                        self.audio.active = None;
                     }
                 }
                 Action::Pick(kind) => {
@@ -2169,6 +2098,7 @@ impl AppView {
                 }
                 Action::Audio(key) => {
                     let row = self
+                        .audio
                         .audios
                         .iter()
                         .find(|r| text(r, "id") == key)
@@ -2180,71 +2110,74 @@ impl AppView {
                 }
                 Action::Practice(key) => {
                     ensure!(
-                        self.practices.iter().any(|r| text(r, "id") == key),
+                        self.audio.practices.iter().any(|r| text(r, "id") == key),
                         "练习组不存在"
                     );
                     self.lib.set_setting("library_group", &key)?;
-                    self.practice_id = key;
-                    self.checked_audio.clear();
-                    self.library.selected.clear();
-                    self.library.filter = 0;
-                    self.library.tool.clear();
-                    self.library.pending_delete.clear();
+                    self.audio.practice_id = key;
+                    self.audio.checked.clear();
+                    self.audio.library.selected.clear();
+                    self.audio.library.filter = 0;
+                    self.audio.library.tool.clear();
+                    self.audio.library.pending_delete.clear();
                     self.set("library_search", "", window, cx);
-                    self.library.sync(&self.practice_id, &self.audios);
+                    self.audio
+                        .library
+                        .sync(&self.audio.practice_id, &self.audio.audios);
                 }
                 Action::AudioPractice(key) => {
                     self.invalidate_blind();
-                    ensure!(self.busy.is_none(), "请等待当前任务完成");
-                    self.practice_id = key;
+                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
+                    self.audio.practice_id = key;
                     if let Some(row) = self
+                        .audio
                         .audios
                         .iter()
-                        .find(|r| text(r, "practice_id") == self.practice_id)
+                        .find(|r| text(r, "practice_id") == self.audio.practice_id)
                         .cloned()
                     {
                         self.open_audio(&row);
                     } else {
-                        self.player.set("pause", "yes");
-                        self.current_audio.clear();
-                        self.current_path = None;
-                        self.cues.clear();
-                        self.audio_scroll.reset(0);
-                        self.audio_active = None;
-                        self.waveform = None;
-                        self.key_points.clear();
-                        if let Some(cancel) = self.waveform_cancel.take() {
+                        self.media.player.set("pause", "yes");
+                        self.audio.current_id.clear();
+                        self.media.path = None;
+                        self.audio.cues.clear();
+                        self.audio.scroll.reset(0);
+                        self.audio.active = None;
+                        self.audio.waveform = None;
+                        self.audio.key_points.clear();
+                        if let Some(cancel) = self.audio.waveform_cancel.take() {
                             cancel.store(true, Ordering::SeqCst);
                         }
-                        self.waveform_rx = None;
+                        self.audio.waveform_rx = None;
                         self.lib.set_setting("last_listening_audio", "")?;
-                        if self.repeat == 2 {
-                            self.repeat = 0;
+                        if self.media.repeat == 2 {
+                            self.media.repeat = 0;
                         }
-                        self.loop_a = None;
-                        self.loop_b = None;
+                        self.media.loop_a = None;
+                        self.media.loop_b = None;
                     }
                 }
                 Action::AudioBlind(enabled) => {
                     ensure!(self.page == "listening", "请先进入音频学习");
-                    ensure!(self.busy.is_none(), "请等待当前任务完成");
-                    self.audio_blind.enabled = enabled;
+                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
+                    self.audio.blind.enabled = enabled;
                     self.invalidate_blind();
                     self.assistant_open = false;
                     self.output.clear();
-                    self.reasoning.clear();
+                    self.chat.reasoning.clear();
                     if enabled {
-                        if self.loop_a.is_none() || self.loop_b.is_none() {
-                            self.loop_a = None;
-                            self.loop_b = None;
-                            if self.repeat == 2 {
-                                self.repeat = 0;
+                        if self.media.loop_a.is_none() || self.media.loop_b.is_none() {
+                            self.media.loop_a = None;
+                            self.media.loop_b = None;
+                            if self.media.repeat == 2 {
+                                self.media.repeat = 0;
                             }
                         }
-                        self.audio_tools_open = false;
+                        self.audio.tools_open = false;
                         self.status = "盲听已开启，字幕已隐藏".into();
                     } else {
-                        self.player.set("pause", "yes");
+                        self.media.player.set("pause", "yes");
                         self.status = "已切回字幕模式，保持暂停".into();
                     }
                     self.sync_chat(window, cx);
@@ -2252,14 +2185,14 @@ impl AppView {
                 }
                 Action::AudioBlindChinese(enabled) => {
                     ensure!(
-                        self.page == "listening" && self.audio_blind.enabled,
+                        self.page == "listening" && self.audio.blind.enabled,
                         "请先开启盲听"
                     );
                     self.lib.set_setting(
                         "blind_chinese_hint",
                         if enabled { "true" } else { "false" },
                     )?;
-                    self.audio_blind_chinese = enabled;
+                    self.audio.blind_chinese = enabled;
                     self.invalidate_blind();
                     self.assistant_open = false;
                     self.sync_chat(window, cx);
@@ -2273,42 +2206,48 @@ impl AppView {
                 }
                 action @ (Action::AudioBlindReveal | Action::AudioBlindRevealCue(..)) => {
                     ensure!(
-                        self.page == "listening" && self.audio_blind.enabled,
+                        self.page == "listening" && self.audio.blind.enabled,
                         "请先开启盲听"
                     );
                     ensure!(
-                        self.busy.is_none() && self.audio_blind_pending.is_none(),
+                        self.tasks.cancel.is_none() && self.audio.blind_pending.is_none(),
                         "请等待当前操作完成"
                     );
                     ensure!(
-                        self.audio_blind_settle_until
+                        self.audio
+                            .blind_settle_until
                             .is_none_or(|t| Instant::now() >= t),
                         "正在定位，请稍候重试"
                     );
-                    let playback = self.player.snapshot();
+                    let playback = self.media.player.snapshot();
                     ensure!(
-                        !self.current_audio.is_empty()
+                        !self.audio.current_id.is_empty()
                             && self
-                                .current_path
+                                .media
+                                .path
                                 .as_ref()
                                 .is_some_and(|p| p.to_string_lossy() == playback.path),
                         "音频正在切换，请稍候"
                     );
                     let target = if let Action::AudioBlindRevealCue(audio_id, cue) = action {
-                        ensure!(audio_id == self.current_audio, "音频已切换，请重新选择");
-                        blind_listening::row_target(&self.cues, &cue, playback.duration)
+                        ensure!(audio_id == self.audio.current_id, "音频已切换，请重新选择");
+                        blind_listening::row_target(&self.audio.cues, &cue, playback.duration)
                             .context("字幕已变化或时间无效，请重新选择")?;
                         blind_listening::Revealed { cue, sparse: false }
                     } else {
-                        blind_listening::resolve(&self.cues, playback.position, playback.duration)
-                            .context("播放到有字幕的部分后再查看")?
+                        blind_listening::resolve(
+                            &self.audio.cues,
+                            playback.position,
+                            playback.duration,
+                        )
+                        .context("播放到有字幕的部分后再查看")?
                     };
                     self.invalidate_blind();
                     self.assistant_open = false;
                     self.sync_chat(window, cx);
-                    self.audio_blind_pending =
-                        Some((Instant::now(), self.current_audio.clone(), target));
-                    self.player.set("pause", "yes");
+                    self.audio.blind_pending =
+                        Some((Instant::now(), self.audio.current_id.clone(), target));
+                    self.media.player.set("pause", "yes");
                     self.status = "正在暂停，确认后显示所选字幕…".into();
                 }
                 Action::AudioBlindHide => {
@@ -2319,64 +2258,71 @@ impl AppView {
                 Action::AudioBlindResume(restart) => {
                     ensure!(
                         self.page == "listening"
-                            && self.audio_blind.enabled
-                            && !self.current_audio.is_empty(),
+                            && self.audio.blind.enabled
+                            && !self.audio.current_id.is_empty(),
                         "请先选择音频并开启盲听"
                     );
                     self.invalidate_blind();
                     self.assistant_open = false;
                     if restart {
-                        self.player.command(["seek", "0", "absolute+exact"]);
+                        self.media.player.command(["seek", "0", "absolute+exact"]);
                     }
-                    self.player.set("pause", "no");
+                    self.media.player.set("pause", "no");
                     self.status = "正在盲听，字幕已隐藏".into();
-                    self.audio_blind_settle_until =
+                    self.audio.blind_settle_until =
                         Some(Instant::now() + Duration::from_millis(200));
                     self.sync_chat(window, cx);
                     window.focus(&self.focus);
                 }
                 Action::AudioBlindRow(audio_id, cue, word_index) => {
                     ensure!(
-                        self.page == "listening" && self.audio_blind.enabled,
+                        self.page == "listening" && self.audio.blind.enabled,
                         "请先开启盲听"
                     );
-                    ensure!(self.busy.is_none(), "请等待当前任务完成");
-                    let playback = self.player.snapshot();
+                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
+                    let playback = self.media.player.snapshot();
                     ensure!(
-                        audio_id == self.current_audio
+                        audio_id == self.audio.current_id
                             && !audio_id.is_empty()
                             && self
-                                .current_path
+                                .media
+                                .path
                                 .as_ref()
                                 .is_some_and(|p| p.to_string_lossy() == playback.path),
                         "音频正在切换，请重试"
                     );
                     let start = match word_index {
-                        Some(index) => {
-                            blind_listening::word_target(&self.cues, &cue, index, playback.duration)
+                        Some(index) => blind_listening::word_target(
+                            &self.audio.cues,
+                            &cue,
+                            index,
+                            playback.duration,
+                        ),
+                        None => {
+                            blind_listening::row_target(&self.audio.cues, &cue, playback.duration)
                         }
-                        None => blind_listening::row_target(&self.cues, &cue, playback.duration),
                     }
                     .context("字幕已变化或时间无效，请重新选择")?;
                     self.invalidate_blind();
                     self.assistant_open = false;
-                    let outside_loop = self.repeat == 2
+                    let outside_loop = self.media.repeat == 2
                         && self
+                            .media
                             .loop_a
-                            .zip(self.loop_b)
+                            .zip(self.media.loop_b)
                             .is_some_and(|(a, b)| start < a || start >= b);
                     if outside_loop {
-                        self.repeat = 0;
-                        self.loop_a = None;
-                        self.loop_b = None;
+                        self.media.repeat = 0;
+                        self.media.loop_a = None;
+                        self.media.loop_b = None;
                     }
-                    self.player.command([
+                    self.media.player.command([
                         "seek".into(),
                         start.to_string(),
                         "absolute+exact".into(),
                     ]);
-                    self.player.set("pause", "no");
-                    self.audio_blind_settle_until =
+                    self.media.player.set("pause", "no");
+                    self.audio.blind_settle_until =
                         Some(Instant::now() + Duration::from_millis(250));
                     self.status = if outside_loop {
                         "已退出 A–B 循环，从所选句开始盲听"
@@ -2389,47 +2335,50 @@ impl AppView {
                 }
                 Action::AudioBlindSentence(direction) => {
                     ensure!(
-                        self.page == "listening" && self.audio_blind.enabled,
+                        self.page == "listening" && self.audio.blind.enabled,
                         "请先开启盲听"
                     );
                     ensure!(
-                        self.busy.is_none() && self.audio_blind_pending.is_none(),
+                        self.tasks.cancel.is_none() && self.audio.blind_pending.is_none(),
                         "请等待当前操作完成"
                     );
                     ensure!(
-                        self.audio_blind_settle_until
+                        self.audio
+                            .blind_settle_until
                             .is_none_or(|t| Instant::now() >= t),
                         "正在定位，请稍候重试"
                     );
-                    let playback = self.player.snapshot();
+                    let playback = self.media.player.snapshot();
                     ensure!(
-                        !self.current_audio.is_empty()
+                        !self.audio.current_id.is_empty()
                             && self
-                                .current_path
+                                .media
+                                .path
                                 .as_ref()
                                 .is_some_and(|p| p.to_string_lossy() == playback.path),
                         "音频正在切换，请稍候"
                     );
                     let target = blind_listening::sentence_target(
-                        &self.cues,
+                        &self.audio.cues,
                         playback.position,
                         playback.duration,
-                        self.audio_blind.revealed.as_ref(),
+                        self.audio.blind.revealed.as_ref(),
                         direction,
-                        self.loop_a
-                            .zip(self.loop_b)
-                            .filter(|(a, b)| self.repeat == 2 && b > a),
+                        self.media
+                            .loop_a
+                            .zip(self.media.loop_b)
+                            .filter(|(a, b)| self.media.repeat == 2 && b > a),
                     )
                     .context("当前范围内没有可播放的字幕句")?;
                     self.invalidate_blind();
                     self.assistant_open = false;
-                    self.player.command([
+                    self.media.player.command([
                         "seek".into(),
                         target.cue.start.to_string(),
                         "absolute+exact".into(),
                     ]);
-                    self.player.set("pause", "no");
-                    self.audio_blind_settle_until =
+                    self.media.player.set("pause", "no");
+                    self.audio.blind_settle_until =
                         Some(Instant::now() + Duration::from_millis(250));
                     self.status = match direction {
                         -1 => "已从上一句开始盲听",
@@ -2441,85 +2390,90 @@ impl AppView {
                     window.focus(&self.focus);
                 }
                 Action::AudioClipMode => {
-                    ensure!(!self.audio_blind.enabled, "请先切回字幕模式");
-                    self.audio_clip_mode = !self.audio_clip_mode;
-                    if !self.audio_clip_mode {
-                        self.loop_a = None;
-                        self.loop_b = None;
-                        if self.repeat == 2 {
-                            self.repeat = 0;
+                    ensure!(!self.audio.blind.enabled, "请先切回字幕模式");
+                    self.audio.clip_mode = !self.audio.clip_mode;
+                    if !self.audio.clip_mode {
+                        self.media.loop_a = None;
+                        self.media.loop_b = None;
+                        if self.media.repeat == 2 {
+                            self.media.repeat = 0;
                         }
                     }
                 }
                 Action::AudioTools => {
-                    ensure!(!self.audio_blind.enabled, "请先切回字幕模式");
-                    self.audio_tools_open = !self.audio_tools_open;
+                    ensure!(!self.audio.blind.enabled, "请先切回字幕模式");
+                    self.audio.tools_open = !self.audio.tools_open;
                 }
-                Action::AudioCurrent => self.audio_show_current = !self.audio_show_current,
+                Action::AudioCurrent => self.audio.show_current = !self.audio.show_current,
                 Action::AudioFollow => {
-                    self.audio_follow = !self.audio_follow;
-                    if self.audio_follow {
-                        if let Some(i) = self.audio_active {
-                            self.audio_scroll.scroll_to_reveal_item(i);
+                    self.audio.follow = !self.audio.follow;
+                    if self.audio.follow {
+                        if let Some(i) = self.audio.active {
+                            self.audio.scroll.scroll_to_reveal_item(i);
                         }
                     }
                 }
                 Action::AudioFont(size) => {
                     ensure!([14, 16, 18, 20, 24, 28, 32].contains(&size), "无效字幕字号");
-                    self.audio_font_size = size;
+                    self.audio.font_size = size;
                     self.lib
                         .set_setting("subtitle_font_size", &size.to_string())?;
                     self.invalidate_blind();
-                    self.audio_scroll.reset(self.cues.len());
+                    self.audio.scroll.reset(self.audio.cues.len());
                 }
                 Action::AudioRepeat(mode) => {
                     ensure!(mode <= 4, "无效循环方式");
                     if mode == 2 {
                         ensure!(
-                            self.loop_a.zip(self.loop_b).is_some_and(|(a, b)| b > a),
+                            self.media
+                                .loop_a
+                                .zip(self.media.loop_b)
+                                .is_some_and(|(a, b)| b > a),
                             "先截取有效片段"
                         );
                     }
-                    self.repeat = mode;
+                    self.media.repeat = mode;
                 }
                 Action::LibrarySelect(key) => {
                     ensure!(
-                        self.audios
-                            .iter()
-                            .any(|r| text(r, "id") == key
-                                && text(r, "practice_id") == self.practice_id),
+                        self.audio.audios.iter().any(|r| text(r, "id") == key
+                            && text(r, "practice_id") == self.audio.practice_id),
                         "音频已不存在"
                     );
-                    self.library.selected = key;
-                    self.library.tool = "detail".into();
+                    self.audio.library.selected = key;
+                    self.audio.library.tool = "detail".into();
                     self.page_scroll.set_offset(point(px(0.), px(0.)));
-                    self.library.pending_delete.clear();
-                    self.library.sync(&self.practice_id, &self.audios);
+                    self.audio.library.pending_delete.clear();
+                    self.audio
+                        .library
+                        .sync(&self.audio.practice_id, &self.audio.audios);
                 }
                 Action::LibraryTool(tool) => {
-                    self.library.pending_delete.clear();
+                    self.audio.library.pending_delete.clear();
                     let name = match tool.as_str() {
                         "group-rename" => self
+                            .audio
                             .practices
                             .iter()
-                            .find(|r| text(r, "id") == self.practice_id)
+                            .find(|r| text(r, "id") == self.audio.practice_id)
                             .map(|r| text(r, "name"))
                             .unwrap_or_default(),
                         "audio-rename" => self
+                            .audio
                             .audios
                             .iter()
-                            .find(|r| text(r, "id") == self.library.selected)
+                            .find(|r| text(r, "id") == self.audio.library.selected)
                             .map(|r| text(r, "name"))
                             .unwrap_or_default(),
                         _ => String::new(),
                     };
                     self.set("library_name", name, window, cx);
-                    self.library.tool = tool;
+                    self.audio.library.tool = tool;
                     self.page_scroll.set_offset(point(px(0.), px(0.)));
-                    let field = if self.library.tool == "tts" {
+                    let field = if self.audio.library.tool == "tts" {
                         Some("tts_text")
                     } else if ["group-new", "group-rename", "audio-rename"]
-                        .contains(&self.library.tool.as_str())
+                        .contains(&self.audio.library.tool.as_str())
                     {
                         Some("library_name")
                     } else {
@@ -2530,121 +2484,126 @@ impl AppView {
                     }
                 }
                 Action::LibrarySaveName => {
-                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
                     let name = self.value("library_name", cx);
-                    match self.library.tool.as_str() {
+                    match self.audio.library.tool.as_str() {
                         "group-new" => {
                             ensure!(
                                 !name.trim().is_empty() && name.chars().count() <= 120,
                                 "名称需为 1–120 字"
                             );
                             ensure!(
-                                !self.practices.iter().any(|r| text(r, "name")
+                                !self.audio.practices.iter().any(|r| text(r, "name")
                                     .trim()
                                     .eq_ignore_ascii_case(name.trim())),
                                 "已有同名练习组，请直接选择或换一个名称"
                             );
-                            self.practice_id = self.lib.practice(name.trim())?;
-                            self.checked_audio.clear();
-                            self.library.selected.clear();
-                            self.library.filter = 0;
+                            self.audio.practice_id = self.lib.practice(name.trim())?;
+                            self.audio.checked.clear();
+                            self.audio.library.selected.clear();
+                            self.audio.library.filter = 0;
                             self.set("library_search", "", window, cx);
                         }
                         "group-rename" => audio_library::rename(
                             &self.lib,
                             "listening_practices",
-                            &self.practice_id,
+                            &self.audio.practice_id,
                             &name,
                         )?,
                         "audio-rename" => audio_library::rename(
                             &self.lib,
                             "listening_audios",
-                            &self.library.selected,
+                            &self.audio.library.selected,
                             &name,
                         )?,
                         _ => anyhow::bail!("请重新打开名称编辑"),
                     }
-                    self.lib.set_setting("library_group", &self.practice_id)?;
-                    self.library.tool.clear();
+                    self.lib
+                        .set_setting("library_group", &self.audio.practice_id)?;
+                    self.audio.library.tool.clear();
                     self.refresh();
                     self.status = "名称已保存".into();
                 }
                 Action::LibraryFilter(filter) => {
-                    self.library.filter = filter;
+                    self.audio.library.filter = filter;
                 }
                 Action::LibrarySort(sort) => {
-                    self.library.sort = sort;
+                    self.audio.library.sort = sort;
                 }
                 Action::LibraryBatch => {
-                    self.library.batch = !self.library.batch;
-                    self.checked_audio.clear();
-                    self.library.pending_delete.clear();
+                    self.audio.library.batch = !self.audio.library.batch;
+                    self.audio.checked.clear();
+                    self.audio.library.pending_delete.clear();
                 }
                 Action::LibraryReset => {
-                    self.library.filter = 0;
+                    self.audio.library.filter = 0;
                     self.set("library_search", "", window, cx);
                 }
                 Action::LibrarySelectAll => {
                     let ids = self
+                        .audio
                         .library
                         .visible(
-                            &self.audios,
-                            &self.practice_id,
+                            &self.audio.audios,
+                            &self.audio.practice_id,
                             &self.value("library_search", cx),
                         )
                         .into_iter()
                         .map(|r| text(r, "id"))
                         .collect::<Vec<_>>();
-                    if !ids.is_empty() && ids.iter().all(|id| self.checked_audio.contains(id)) {
+                    if !ids.is_empty() && ids.iter().all(|id| self.audio.checked.contains(id)) {
                         for id in ids {
-                            self.checked_audio.remove(&id);
+                            self.audio.checked.remove(&id);
                         }
                     } else {
-                        self.checked_audio.extend(ids);
+                        self.audio.checked.extend(ids);
                     }
-                    self.library.pending_delete.clear();
+                    self.audio.library.pending_delete.clear();
                 }
                 Action::LibraryMove(destination) => {
-                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
                     let ids = audio_library::scoped_ids(
-                        &self.audios,
-                        &self.practice_id,
-                        &self.checked_audio,
+                        &self.audio.audios,
+                        &self.audio.practice_id,
+                        &self.audio.checked,
                     );
-                    audio_library::move_records(&self.lib, &self.practice_id, &destination, &ids)?;
-                    self.checked_audio.clear();
-                    self.library.tool.clear();
+                    audio_library::move_records(
+                        &self.lib,
+                        &self.audio.practice_id,
+                        &destination,
+                        &ids,
+                    )?;
+                    self.audio.checked.clear();
+                    self.audio.library.tool.clear();
                     self.refresh();
                     self.status = format!("已移动 {} 条音频", ids.len());
                 }
                 Action::LibraryDelete(ids) => {
-                    ensure!(self.busy.is_none(), "请等待当前任务完成");
-                    self.library.pending_delete = ids;
-                    self.library.tool = "delete".into();
+                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
+                    self.audio.library.pending_delete = ids;
+                    self.audio.library.tool = "delete".into();
                 }
                 Action::LibraryConfirmDelete => {
-                    ensure!(self.busy.is_none(), "请等待当前任务完成");
-                    let ids = self.library.pending_delete.clone();
-                    audio_library::delete_records(&self.lib, &self.practice_id, &ids)?;
-                    self.checked_audio.clear();
-                    self.library.pending_delete.clear();
-                    self.library.tool.clear();
+                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
+                    let ids = self.audio.library.pending_delete.clone();
+                    audio_library::delete_records(&self.lib, &self.audio.practice_id, &ids)?;
+                    self.audio.checked.clear();
+                    self.audio.library.pending_delete.clear();
+                    self.audio.library.tool.clear();
                     self.refresh();
                     self.status = format!("已移除 {} 条记录，附件文件保留", ids.len());
                 }
                 Action::LibraryStudy(paused) => {
-                    let key = self.library.selected.clone();
+                    let key = self.audio.library.selected.clone();
                     ensure!(
-                        self.audios
-                            .iter()
-                            .any(|r| text(r, "id") == key
-                                && text(r, "practice_id") == self.practice_id),
+                        self.audio.audios.iter().any(|r| text(r, "id") == key
+                            && text(r, "practice_id") == self.audio.practice_id),
                         "请先选择音频"
                     );
-                    self.audio_blind.enabled = false;
+                    self.audio.blind.enabled = false;
                     self.handle(Action::Audio(key), window, cx);
                     if paused {
-                        self.player.set("pause", "yes");
+                        self.media.player.set("pause", "yes");
                     }
                 }
                 Action::Saved(saved) => {
@@ -2665,7 +2624,7 @@ impl AppView {
                     if !self.cards.is_empty() {
                         self.history.push(self.index);
                         if self.page == "discover" {
-                            self.index = if let Some(index) = self.preloaded_index {
+                            self.index = if let Some(index) = self.media.preloaded_index {
                                 index
                             } else {
                                 let due = self
@@ -2749,45 +2708,54 @@ impl AppView {
                     if self.page == "listening" {
                         self.invalidate_blind();
                     }
-                    self.player
-                        .set("pause", if self.playback.paused { "no" } else { "yes" });
+                    self.media.player.set(
+                        "pause",
+                        if self.media.snapshot.paused {
+                            "no"
+                        } else {
+                            "yes"
+                        },
+                    );
                 }
                 Action::Seek(delta) => {
                     if self.page == "listening" {
                         self.invalidate_blind();
-                        self.audio_blind_settle_until =
+                        self.audio.blind_settle_until =
                             Some(Instant::now() + Duration::from_millis(200));
                     }
-                    self.player
-                        .command(["seek".into(), delta.to_string(), "relative+exact".into()])
+                    self.media.player.command([
+                        "seek".into(),
+                        delta.to_string(),
+                        "relative+exact".into(),
+                    ])
                 }
                 Action::Word(start, end, word, extend) => {
                     ensure!(
-                        !(self.page == "listening" && self.audio_blind.enabled),
+                        !(self.page == "listening" && self.audio.blind.enabled),
                         "请先切回字幕模式"
                     );
-                    if !self.audio_clip_mode {
-                        self.player.command([
+                    if !self.audio.clip_mode {
+                        self.media.player.command([
                             "seek".into(),
                             start.to_string(),
                             "absolute+exact".into(),
                         ]);
-                        self.player.set("pause", "no");
+                        self.media.player.set("pause", "no");
                     } else {
                         let start = if extend {
-                            self.loop_a.unwrap_or(start).min(start)
+                            self.media.loop_a.unwrap_or(start).min(start)
                         } else {
                             start
                         };
                         let end = if extend {
-                            self.loop_b.unwrap_or(end).max(end)
+                            self.media.loop_b.unwrap_or(end).max(end)
                         } else {
                             end
                         };
-                        self.loop_a = Some(start);
-                        self.loop_b = Some(end);
-                        self.repeat = 2;
-                        let (front, back) = subtitles::excerpt(&self.cues, start, end);
+                        self.media.loop_a = Some(start);
+                        self.media.loop_b = Some(end);
+                        self.media.repeat = 2;
+                        let (front, back) = subtitles::excerpt(&self.audio.cues, start, end);
                         self.set(
                             "front",
                             if front.is_empty() { word } else { front },
@@ -2795,29 +2763,31 @@ impl AppView {
                             cx,
                         );
                         self.set("back", back, window, cx);
-                        self.player.command([
+                        self.media.player.command([
                             "seek".into(),
                             start.to_string(),
                             "absolute+exact".into(),
                         ]);
-                        self.player.set("pause", "no");
+                        self.media.player.set("pause", "no");
                         self.status =
                             "已选中词语，可调整 A/B 边界、保存片段或询问 AI；时间按字幕长度估算"
                                 .into();
                     }
                 }
                 Action::Boundary(time, start) => {
-                    let time = time.clamp(0., self.playback.duration.max(time));
+                    let time = time.clamp(0., self.media.snapshot.duration.max(time));
                     if start {
-                        self.loop_a =
-                            Some(time.min(self.loop_b.unwrap_or(f64::MAX) - 0.02).max(0.));
+                        self.media.loop_a = Some(
+                            time.min(self.media.loop_b.unwrap_or(f64::MAX) - 0.02)
+                                .max(0.),
+                        );
                     } else {
-                        self.loop_b = Some(time.max(self.loop_a.unwrap_or(0.) + 0.02));
+                        self.media.loop_b = Some(time.max(self.media.loop_a.unwrap_or(0.) + 0.02));
                     }
-                    if let (Some(a), Some(b)) = (self.loop_a, self.loop_b) {
-                        self.repeat = 2;
+                    if let (Some(a), Some(b)) = (self.media.loop_a, self.media.loop_b) {
+                        self.media.repeat = 2;
                         if self.page == "listening" {
-                            let (front, back) = subtitles::excerpt(&self.cues, a, b);
+                            let (front, back) = subtitles::excerpt(&self.audio.cues, a, b);
                             self.set("front", front, window, cx);
                             self.set("back", back, window, cx);
                         }
@@ -2826,11 +2796,14 @@ impl AppView {
                 Action::SeekTo(time) => {
                     if self.page == "listening" {
                         self.invalidate_blind();
-                        self.audio_blind_settle_until =
+                        self.audio.blind_settle_until =
                             Some(Instant::now() + Duration::from_millis(200));
                     }
-                    self.player
-                        .command(["seek".into(), time.to_string(), "absolute+exact".into()])
+                    self.media.player.command([
+                        "seek".into(),
+                        time.to_string(),
+                        "absolute+exact".into(),
+                    ])
                 }
                 Action::Navigation => {
                     let open = !self.navigation_open;
@@ -2842,7 +2815,7 @@ impl AppView {
                 }
                 Action::Assistant if self.page == "video" => {
                     self.handle(
-                        Action::VideoPanel(if self.video_tab == 2 { 0 } else { 2 }),
+                        Action::VideoPanel(if self.video.tab == 2 { 0 } else { 2 }),
                         window,
                         cx,
                     );
@@ -2850,7 +2823,7 @@ impl AppView {
                 Action::Assistant => {
                     self.assistant_open = !self.assistant_open;
                     if self.assistant_open {
-                        if self.page == "video" && self.video_material.is_none() {
+                        if self.page == "video" && self.video.material.is_none() {
                             let _ = self.prepare_video_material(video_qa::Scope::All);
                         }
                         self.sync_chat(window, cx);
@@ -2889,26 +2862,26 @@ impl AppView {
                     });
                 }
                 Action::Rate(rate) => {
-                    self.rate = rate;
-                    self.player.set("speed", rate);
+                    self.media.rate = rate;
+                    self.media.player.set("speed", rate);
                 }
                 Action::Volume(volume) => {
-                    self.volume = volume.clamp(0., 100.);
-                    self.player.set("volume", self.volume);
+                    self.media.volume = volume.clamp(0., 100.);
+                    self.media.player.set("volume", self.media.volume);
                 }
                 Action::VideoFullscreen => {
                     ensure!(
-                        self.page == "video" && self.current_path.is_some(),
+                        self.page == "video" && self.media.path.is_some(),
                         "请先打开视频"
                     );
-                    if self.video_fullscreen {
+                    if self.video.fullscreen {
                         self.leave_video_fullscreen(window, cx);
                     } else {
-                        self.video_fullscreen_owned = !window.is_fullscreen();
-                        self.video_fullscreen_seen = window.is_fullscreen();
-                        self.video_fullscreen = true;
+                        self.video.fullscreen_owned = !window.is_fullscreen();
+                        self.video.fullscreen_seen = window.is_fullscreen();
+                        self.video.fullscreen = true;
                         window.focus(&self.focus);
-                        if self.video_fullscreen_owned {
+                        if self.video.fullscreen_owned {
                             window.toggle_fullscreen();
                         }
                     }
@@ -2916,21 +2889,21 @@ impl AppView {
                 Action::VideoExitFullscreen => self.leave_video_fullscreen(window, cx),
                 Action::VideoCaptions => {
                     ensure!(self.page == "video", "请先进入视频学习");
-                    let enabled = !self.video_captions_enabled;
+                    let enabled = !self.video.captions_enabled;
                     self.lib.set_setting(
                         "video_captions_enabled",
                         if enabled { "true" } else { "false" },
                     )?;
-                    self.video_captions_enabled = enabled;
-                    if enabled && self.video_caption_source == VideoCaptionSource::Hidden {
-                        self.video_caption_source = if self.video_cues.is_empty() {
+                    self.video.captions_enabled = enabled;
+                    if enabled && self.video.caption_source == VideoCaptionSource::Hidden {
+                        self.video.caption_source = if self.video.cues.is_empty() {
                             VideoCaptionSource::Track
                         } else {
                             VideoCaptionSource::Transcript
                         };
-                        self.player.set("sid", "auto");
+                        self.media.player.set("sid", "auto");
                     }
-                    self.player.set_subtitles_visible(enabled);
+                    self.media.player.set_subtitles_visible(enabled);
                     self.status = if enabled {
                         "画面字幕已开启"
                     } else {
@@ -2939,15 +2912,12 @@ impl AppView {
                     .into();
                 }
                 Action::VideoTranslate => {
-                    ensure!(
-                        self.background_video.is_none(),
-                        "请先完成后台字幕生成再翻译"
-                    );
+                    ensure!(self.tasks.video_job.is_none(), "请先完成后台字幕生成再翻译");
                     ensure!(self.page == "video", "请先进入视频学习");
-                    ensure!(self.busy.is_none(), "请等待当前任务完成");
-                    let video = self.current_path.clone().context("请先打开视频")?;
-                    video_subtitles::english_source(&self.video_cues)?;
-                    let source = self.video_cues.clone();
+                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
+                    let video = self.media.path.clone().context("请先打开视频")?;
+                    video_subtitles::english_source(&self.video.cues)?;
+                    let source = self.video.cues.clone();
                     self.begin_subtitle(
                         "生成中文字幕",
                         "正在准备英文字幕…",
@@ -2969,25 +2939,28 @@ impl AppView {
                     ensure!([14, 16, 20, 24, 28, 32].contains(&size), "无效字幕字号");
                     self.lib
                         .set_setting("video_subtitle_size", &size.to_string())?;
-                    self.video_subtitle_size = size;
+                    self.video.subtitle_size = size;
                 }
-                Action::VideoPrecision => self.video_precision = !self.video_precision,
+                Action::VideoPrecision => self.video.precision = !self.video.precision,
                 Action::VideoClearLoop => {
-                    self.loop_a = None;
-                    self.loop_b = None;
-                    if self.repeat == 2 {
-                        self.repeat = 0;
+                    self.media.loop_a = None;
+                    self.media.loop_b = None;
+                    if self.media.repeat == 2 {
+                        self.media.repeat = 0;
                     }
                 }
                 Action::LoopMode(mode) => {
                     ensure!(mode <= 2, "循环模式无效");
                     if mode == 2 {
                         ensure!(
-                            self.loop_a.zip(self.loop_b).is_some_and(|(a, b)| b > a),
+                            self.media
+                                .loop_a
+                                .zip(self.media.loop_b)
+                                .is_some_and(|(a, b)| b > a),
                             "请先设置有效的 A/B 范围"
                         );
                     }
-                    self.repeat = mode;
+                    self.media.repeat = mode;
                 }
                 Action::VideoRepeatCue => {
                     self.start_video_sentence_repeat(None, false)?;
@@ -2998,93 +2971,103 @@ impl AppView {
                 Action::VideoStopSentenceRepeat => self.clear_video_sentence_repeat(),
                 Action::VideoPlayCue(index) => {
                     ensure!(
-                        self.page == "video" && self.current_path.is_some(),
+                        self.page == "video" && self.media.path.is_some(),
                         "请先打开视频"
                     );
-                    let cue = self.video_cues.get(index).context("字幕行不存在")?;
+                    let cue = self.video.cues.get(index).context("字幕行不存在")?;
                     let start = cue.start;
                     ensure!(start.is_finite() && start >= 0., "字幕时间无效");
                     // A previous sentence loop must not pull playback back to its B point.
-                    if self.repeat == 2 {
-                        self.repeat = 0;
+                    if self.media.repeat == 2 {
+                        self.media.repeat = 0;
                     }
-                    self.player.command([
+                    self.media.player.command([
                         "seek".into(),
                         start.to_string(),
                         "absolute+exact".into(),
                     ]);
-                    self.player.set("pause", "no");
+                    self.media.player.set("pause", "no");
                 }
                 Action::VideoSentence(next) => {
-                    let pos = self.playback.position;
+                    let pos = self.media.snapshot.position;
                     let target = if next {
-                        self.video_cues.iter().find(|c| c.start > pos + 0.1)
+                        self.video.cues.iter().find(|c| c.start > pos + 0.1)
                     } else {
-                        self.video_cues.iter().rev().find(|c| c.start < pos - 0.5)
+                        self.video.cues.iter().rev().find(|c| c.start < pos - 0.5)
                     }
                     .context("没有更多字幕")?
                     .start;
                     // Moving to another sentence exits the previous A/B loop.
-                    if self.repeat == 2 {
-                        self.repeat = 0;
+                    if self.media.repeat == 2 {
+                        self.media.repeat = 0;
                     }
-                    self.player.command([
+                    self.media.player.command([
                         "seek".into(),
                         target.to_string(),
                         "absolute+exact".into(),
                     ]);
                 }
                 Action::Mute => {
-                    if self.volume > 0. {
-                        self.volume_before_mute = self.volume;
-                        self.volume = 0.;
+                    if self.media.volume > 0. {
+                        self.media.volume_before_mute = self.media.volume;
+                        self.media.volume = 0.;
                     } else {
-                        self.volume = self.volume_before_mute.max(1.);
+                        self.media.volume = self.media.volume_before_mute.max(1.);
                     }
-                    self.player.set("volume", self.volume);
+                    self.media.player.set("volume", self.media.volume);
                 }
                 Action::Mark(start) => {
                     if self.page == "video" || self.page == "listening" {
                         ensure!(
-                            self.current_path.is_some() && self.playback.duration > 0.,
+                            self.media.path.is_some() && self.media.snapshot.duration > 0.,
                             "请先打开可播放的媒体"
                         );
                         if start {
-                            self.loop_a = Some(self.playback.position);
-                            if self.loop_b.is_some_and(|b| b <= self.playback.position) {
-                                self.loop_b = None;
-                                if self.repeat == 2 {
-                                    self.repeat = 0;
+                            self.media.loop_a = Some(self.media.snapshot.position);
+                            if self
+                                .media
+                                .loop_b
+                                .is_some_and(|b| b <= self.media.snapshot.position)
+                            {
+                                self.media.loop_b = None;
+                                if self.media.repeat == 2 {
+                                    self.media.repeat = 0;
                                 }
                             }
                         } else {
-                            let a = self.loop_a.context("请先设置 A 点")?;
-                            ensure!(self.playback.position > a, "B 点必须晚于 A 点");
-                            self.loop_b = Some(self.playback.position);
+                            let a = self.media.loop_a.context("请先设置 A 点")?;
+                            ensure!(self.media.snapshot.position > a, "B 点必须晚于 A 点");
+                            self.media.loop_b = Some(self.media.snapshot.position);
                         }
-                        if self.loop_a.zip(self.loop_b).is_some_and(|(a, b)| b > a) {
-                            self.repeat = 2;
+                        if self
+                            .media
+                            .loop_a
+                            .zip(self.media.loop_b)
+                            .is_some_and(|(a, b)| b > a)
+                        {
+                            self.media.repeat = 2;
                         }
                     } else if start {
-                        self.loop_a = Some(self.playback.position);
+                        self.media.loop_a = Some(self.media.snapshot.position);
                     } else {
-                        self.loop_b = Some(self.playback.position);
+                        self.media.loop_b = Some(self.media.snapshot.position);
                     }
-                    if let (Some(a), Some(b)) = (self.loop_a, self.loop_b) {
+                    if let (Some(a), Some(b)) = (self.media.loop_a, self.media.loop_b) {
                         ensure!(b > a, "B 点必须晚于 A 点");
-                        self.repeat = 2;
+                        self.media.repeat = 2;
                         if self.page == "listening" {
-                            let (front, back) = subtitles::excerpt(&self.cues, a, b);
+                            let (front, back) = subtitles::excerpt(&self.audio.cues, a, b);
                             self.set("front", front, window, cx);
                             self.set("back", back, window, cx);
                         }
                     }
                 }
                 Action::Repeat => {
-                    self.repeat = (self.repeat + 1) % if self.page == "video" { 3 } else { 5 };
+                    self.media.repeat =
+                        (self.media.repeat + 1) % if self.page == "video" { 3 } else { 5 };
                 }
                 Action::Subtitle(key, secondary) => {
-                    self.player.set(
+                    self.media.player.set(
                         if secondary { "secondary-sid" } else { "sid" },
                         if key == 0 {
                             "no".into()
@@ -3093,7 +3076,7 @@ impl AppView {
                         },
                     );
                     if !secondary {
-                        self.video_caption_source = if key == 0 {
+                        self.video.caption_source = if key == 0 {
                             VideoCaptionSource::Hidden
                         } else {
                             VideoCaptionSource::Track
@@ -3105,7 +3088,7 @@ impl AppView {
                 }
                 Action::ReadParts => {
                     let link = self.value("bilibili", cx);
-                    let previous = self.video_series.clone();
+                    let previous = self.video.series.clone();
                     self.begin(
                         "正在读取 bilibili 分P列表…",
                         move |_, cancel, _| {
@@ -3127,17 +3110,17 @@ impl AppView {
                 }
                 Action::SelectPart(index) => self.start_part(index),
                 Action::AutoNextPart => {
-                    let enabled = !self.auto_next_part;
+                    let enabled = !self.video.auto_next_part;
                     self.lib
                         .set_setting("video_auto_next", if enabled { "true" } else { "false" })?;
-                    self.auto_next_part = enabled;
-                    self.end_handled = false;
+                    self.video.auto_next_part = enabled;
+                    self.media.end_handled = false;
                 }
                 Action::Download => {
-                    let downloads = self.part_downloads.clone();
+                    let downloads = self.tasks.downloads.clone();
                     let link = self.value("bilibili", cx);
-                    let previous = self.video_series.clone();
-                    let origin = self.current_path.clone();
+                    let previous = self.video.series.clone();
+                    let origin = self.media.path.clone();
                     self.begin(
                         "正在识别分P并导入所选集…",
                         move |lib, cancel, _| {
@@ -3159,15 +3142,15 @@ impl AppView {
                     );
                 }
                 Action::DismissTaskNotice => {
-                    if self.task_notice.as_ref().is_some_and(|n| !n.active()) {
-                        self.task_notice = None;
+                    if self.tasks.notice.as_ref().is_some_and(|n| !n.active()) {
+                        self.tasks.notice = None;
                     }
                 }
                 Action::Cancel => {
-                    if let Some(cancel) = &self.busy {
+                    if let Some(cancel) = &self.tasks.cancel {
                         cancel.store(true, Ordering::SeqCst);
                         self.status = "正在取消…".into();
-                        if let Some(notice) = self.task_notice.as_mut().filter(|n| n.active()) {
+                        if let Some(notice) = self.tasks.notice.as_mut().filter(|n| n.active()) {
                             notice.state = TaskState::Cancelling;
                             notice.detail = "正在停止当前处理，请稍候…".into();
                         }
@@ -3175,73 +3158,57 @@ impl AppView {
                 }
                 Action::Clip => {
                     ensure!(
-                        !(self.page == "listening" && self.audio_blind.enabled),
+                        !(self.page == "listening" && self.audio.blind.enabled),
                         "请先切回字幕模式再保存片段"
                     );
-                    let path = self.current_path.clone().context("请先打开媒体")?;
-                    let a = self.loop_a.context("请先设置 A 点")?;
-                    let b = self.loop_b.context("请先设置 B 点")?;
+                    let path = self.media.path.clone().context("请先打开媒体")?;
+                    let a = self.media.loop_a.context("请先设置 A 点")?;
+                    let b = self.media.loop_b.context("请先设置 B 点")?;
                     let front = self.value("front", cx);
                     let back = self.value("back", cx);
                     let is_audio = self.page == "listening";
                     self.begin("正在导出片段…",move|lib,cancel,_|{let output=lib.root.join("media").join(format!("{}.mp4",id()));process::clip(&path,&output,a,b,&cancel)?;let result=if is_audio{lib.put("clip_cards",json!({"id":id(),"en_text":front,"zh_text":back,"audio_uri":output.to_string_lossy(),"start_ms":0,"end_ms":((b-a)*1000.) as u64,"created_at":now()}))}else{lib.put("video_clips",json!({"id":id(),"en_text":front,"zh_text":back,"video_uri":output.to_string_lossy(),"created_at":now()}))};if let Err(e)=result{let _=fs::remove_file(output);return Err(e)}Ok(Outcome::Message("片段已存为闪卡".into()))});
                 }
-                Action::ToggleReasoning => self.reasoning_open = !self.reasoning_open,
+                Action::ToggleReasoning => self.chat.reasoning_open = !self.chat.reasoning_open,
                 Action::ChatSession(session) => {
-                    if self.chat_running {
-                        if let Some(cancel) = &self.busy {
-                            cancel.store(true, Ordering::SeqCst);
-                        }
+                    if let Some(cancel) = self.tasks.cancel.as_ref().filter(|_| self.chat.running) {
+                        cancel.store(true, Ordering::SeqCst);
                     }
+                    self.chat_requested_context.clear();
                     self.sync_chat(window, cx);
-                    self.chat_id = session.clone();
-                    if session.is_empty() {
-                        self.set("question", String::new(), window, cx);
-                    }
-                    self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
-                    self.chat_history.clear();
-                    self.output.clear();
-                    self.reasoning.clear();
+                    ensure!(
+                        self.chat.context == self.chat_context_key(cx),
+                        "请先恢复材料会话读取"
+                    );
                     if !session.is_empty() {
-                        if let Some(record) = documents::records(&self.lib, "chat")?
-                            .into_iter()
-                            .find(|r| r["id"] == session && r["context"] == self.chat_context)
-                        {
-                            self.chat_history =
-                                record["messages"].as_array().cloned().unwrap_or_default();
-                            self.reasoning = self
-                                .chat_history
-                                .last()
-                                .and_then(|m| m["reasoning_content"].as_str())
-                                .unwrap_or("")
-                                .into();
-                            self.output = self
-                                .chat_history
-                                .last()
-                                .and_then(|m| m["content"].as_str())
-                                .unwrap_or("")
-                                .into();
-                        }
+                        let draft = self.value("question", cx);
+                        self.chat.save_draft(&self.lib, &draft)?;
                     }
+                    self.chat.select(&self.lib, &session)?;
+                    self.set("question", self.chat.draft.clone(), window, cx);
+                    self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
                 }
                 Action::PdfOpen(path) => {
-                    ensure!(self.busy.is_none(), "已有任务正在执行，请完成或取消后重试");
+                    ensure!(
+                        self.tasks.cancel.is_none(),
+                        "已有任务正在执行，请完成或取消后重试"
+                    );
                     self.pdf_path = Some(path);
                     self.pdf_page = 0;
                     self.render_pdf();
                 }
                 Action::ClearHighlights => {
-                    self.key_points.clear();
+                    self.audio.key_points.clear();
                     self.lib
-                        .set_setting(&format!("key_points_{}", self.current_audio), "[]")?;
+                        .set_setting(&format!("key_points_{}", self.audio.current_id), "[]")?;
                 }
                 Action::Highlight => {
                     ensure!(
-                        !(self.page == "listening" && self.audio_blind.enabled),
+                        !(self.page == "listening" && self.audio.blind.enabled),
                         "请先切回字幕模式"
                     );
-                    let audio = self.current_audio.clone();
-                    let cues = self.cues.clone();
+                    let audio = self.audio.current_id.clone();
+                    let cues = self.audio.cues.clone();
                     ensure!(
                         !audio.is_empty() && !cues.is_empty(),
                         "请先选择音频并加载字幕"
@@ -3254,33 +3221,41 @@ impl AppView {
                     });
                 }
                 Action::Chat => {
-                    ensure!(self.busy.is_none(), "已有任务正在执行，请完成或取消后重试");
+                    ensure!(
+                        self.tasks.cancel.is_none(),
+                        "已有任务正在执行，请完成或取消后重试"
+                    );
+                    self.chat_requested_context.clear();
                     self.sync_chat(window, cx);
-                    if self.chat_id.is_empty() {
-                        self.chat_id = id();
+                    ensure!(
+                        self.chat.context == self.chat_context_key(cx),
+                        "请先恢复材料会话读取"
+                    );
+                    if self.chat.id.is_empty() {
+                        self.chat.id = id();
                     }
-                    let session_id = self.chat_id.clone();
-                    let context = self.chat_context.clone();
+                    let session_id = self.chat.id.clone();
+                    let context = self.chat.context.clone();
                     let question = self.value("question", cx);
                     let passage = self.reference(cx);
                     let video_material = if self.page == "video" {
-                        Some(self.video_material.clone().context(
-                            if self.video_material_error.is_empty() {
+                        Some(self.video.material.clone().context(
+                            if self.video.material_error.is_empty() {
                                 "请先生成字幕并选择提问范围".to_string()
                             } else {
-                                self.video_material_error.clone()
+                                self.video.material_error.clone()
                             },
                         )?)
                     } else {
                         None
                     };
-                    let history = self.chat_history.clone();
+                    let history = self.chat.history.clone();
                     ensure!(!question.trim().is_empty(), "请输入问题");
-                    self.output.clear();
-                    self.reasoning.clear();
-                    self.chat_running = true;
+                    self.chat.output.clear();
+                    self.chat.reasoning.clear();
+                    let request = self.chat.begin_request();
                     self.begin("AI 正在回答…", move |lib, cancel, tx| {
-                        let mut notify=|chunk|{let _=tx.send(Event::Chunk(chunk));};
+                        let mut notify=|chunk|{let _=tx.send(Event::Chunk(request.clone(), chunk));};
                         let reply=if let Some(material)=video_material {
                             video_qa::ask(&lib,&question,&material,&history,&cancel,&mut notify)?
                         }else{ai::chat_stream(&lib,&question,&passage,&history,&cancel,&mut notify)?};
@@ -3296,26 +3271,29 @@ impl AppView {
                     });
                 }
                 Action::SaveAnswer => {
-                    ensure!(self.busy.is_none(), "请等待 AI 回答完成");
+                    ensure!(self.tasks.cancel.is_none(), "请等待 AI 回答完成");
                     let answer = self
-                        .chat_history
+                        .chat
+                        .history
                         .last()
                         .filter(|m| m["role"] == "assistant")
                         .and_then(|m| m["content"].as_str())
                         .context("请先完成一次 AI 回答")?;
                     ensure!(
-                        !answer.trim().is_empty() && answer == self.output,
+                        !answer.trim().is_empty() && answer == self.chat.output,
                         "当前回答未完整保存，请完成回答后再存卡"
                     );
                     let question = self
-                        .chat_history
+                        .chat
+                        .history
                         .iter()
                         .rev()
                         .find(|m| m["role"] == "user")
                         .and_then(|m| m["content"].as_str())
                         .context("会话缺少问题")?;
                     let reference = self
-                        .chat_history
+                        .chat
+                        .history
                         .iter()
                         .rev()
                         .find(|m| m["role"] == "user")
@@ -3348,12 +3326,12 @@ impl AppView {
                 }
                 Action::VideoAsk(scope) => {
                     ensure!(self.page == "video", "请先进入视频学习");
-                    ensure!(!self.chat_running, "请等待当前回答完成或取消后切换引用");
+                    ensure!(!self.chat.running, "请等待当前回答完成或取消后切换引用");
                     self.prepare_video_material(scope)?;
                     if scope != video_qa::Scope::All {
-                        self.player.set("pause", "yes");
+                        self.media.player.set("pause", "yes");
                     }
-                    self.video_tab = 2;
+                    self.video.tab = 2;
                     self.sync_chat(window, cx);
                     self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
                     self.status = "已引用字幕；输入问题后发送给设置中的聊天模型".into();
@@ -3361,61 +3339,70 @@ impl AppView {
                 Action::VideoTranscribe => self.begin_background_subtitles(false)?,
                 Action::VideoTranscribeAll => self.begin_background_subtitles(true)?,
                 Action::CancelVideoSubtitles => {
-                    if let Some(job) = &self.background_video {
+                    if let Some(job) = &self.tasks.video_job {
                         job.cancel.store(true, Ordering::SeqCst);
                     }
-                    if let Some(n) = self.video_job_notice.as_mut().filter(|n| n.active()) {
+                    if let Some(n) = self.tasks.video_notice.as_mut().filter(|n| n.active()) {
                         n.state = TaskState::Cancelling;
                         n.detail = "正在停止后台字幕队列，已完成的字幕会保留".into();
                     }
                 }
                 Action::DismissVideoSubtitles => {
-                    if self.background_video.is_none() {
-                        self.video_job_notice = None;
+                    if self.tasks.video_job.is_none() {
+                        self.tasks.video_notice = None;
                     }
                 }
-                Action::VideoTools => self.video_tools_open = !self.video_tools_open,
+                Action::VideoTools => self.video.tools_open = !self.video.tools_open,
                 Action::VideoSelect(key) => {
-                    ensure!(self.busy.is_none(), "请完成或取消当前任务后再切换视频");
+                    ensure!(
+                        self.tasks.cancel.is_none(),
+                        "请完成或取消当前任务后再切换视频"
+                    );
                     let mut videos = video_library::Collection::load(&self.lib)?;
                     let video = videos.select(&key)?;
                     videos.save(&self.lib)?;
-                    self.videos = videos;
+                    self.video.collection = videos;
                     self.save_media_position();
                     if !self.open(video.path) {
                         return Ok(());
                     }
-                    self.video_tab = 3;
-                    self.video_tools_open = false;
+                    self.video.tab = 3;
+                    self.video.tools_open = false;
                     self.status = format!("已选择：{}", video.title);
                 }
                 Action::VideoEpisodes(key) => {
-                    ensure!(self.busy.is_none(), "请完成或取消当前任务后再切换视频");
-                    if self.videos.selected.as_ref() != Some(&key) || self.video_path.is_none() {
+                    ensure!(
+                        self.tasks.cancel.is_none(),
+                        "请完成或取消当前任务后再切换视频"
+                    );
+                    if self.video.collection.selected.as_ref() != Some(&key)
+                        || self.video.path.is_none()
+                    {
                         let mut videos = video_library::Collection::load(&self.lib)?;
                         let video = videos.select(&key)?;
                         videos.save(&self.lib)?;
                         self.save_media_position();
-                        self.videos = videos;
+                        self.video.collection = videos;
                         if !self.open(video.path) {
                             return Ok(());
                         }
-                        self.player.command(["set", "pause", "yes"]);
+                        self.media.player.command(["set", "pause", "yes"]);
                     }
-                    self.video_tab = 1;
-                    self.video_tools_open = false;
+                    self.video.tab = 1;
+                    self.video.tools_open = false;
                 }
                 Action::VideoRemove(key) => {
-                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
                     let title = self
-                        .videos
+                        .video
+                        .collection
                         .items
                         .iter()
                         .find(|v| v.id == key)
                         .context("该视频已移出收藏")?
                         .title
                         .clone();
-                    self.video_remove = Some(key);
+                    self.video.remove = Some(key);
                     let view = cx.entity().downgrade();
                     window.open_dialog(cx, move |dialog, window, cx| {
                         let confirm_view = view.clone();
@@ -3444,70 +3431,69 @@ impl AppView {
                                 confirm_view
                                     .update(cx, |this, cx| {
                                         this.handle(Action::VideoConfirmRemove, window, cx);
-                                        this.video_remove.is_none()
+                                        this.video.remove.is_none()
                                     })
                                     .unwrap_or(true)
                             })
                             .on_close(move |_, _, cx| {
                                 let _ = close_view.update(cx, |this, cx| {
-                                    this.video_remove = None;
+                                    this.video.remove = None;
                                     cx.notify();
                                 });
                             })
                     });
                 }
                 Action::VideoConfirmRemove => {
-                    ensure!(self.busy.is_none(), "请等待当前任务完成");
+                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
                     let key = self
-                        .video_remove
+                        .video
+                        .remove
                         .clone()
                         .context("请重新选择要移除的视频")?;
                     let mut videos = video_library::Collection::load(&self.lib)?;
-                    if let Some(job) = self
-                        .background_video
-                        .as_ref()
-                        .filter(|j| j.source_id == key)
+                    if let Some(job) = self.tasks.video_job.as_ref().filter(|j| j.source_id == key)
                     {
                         job.cancel.store(true, Ordering::SeqCst);
                     }
                     let video = videos.remove(&key)?;
                     videos.save(&self.lib)?;
-                    self.videos = videos;
-                    self.video_remove = None;
+                    self.video.collection = videos;
+                    self.video.remove = None;
                     if self
-                        .video_path
+                        .video
+                        .path
                         .as_ref()
                         .is_some_and(|path| video.contains(path))
                     {
                         self.leave_video_fullscreen(window, cx);
-                        self.player.command(["stop"]);
-                        self.playback = Playback::default();
-                        self.current_path = None;
-                        self.video_path = None;
-                        self.video_series = None;
-                        self.video_cues.clear();
-                        self.video_scroll.reset(0);
-                        self.video_active = None;
-                        self.video_material = None;
-                        self.video_material_error.clear();
-                        self.loop_a = None;
-                        self.loop_b = None;
-                        self.repeat = 0;
-                        self.end_handled = true;
+                        self.media.player.command(["stop"]);
+                        self.media.snapshot = Playback::default();
+                        self.media.path = None;
+                        self.video.path = None;
+                        self.video.series = None;
+                        self.video.cues.clear();
+                        self.video.scroll.reset(0);
+                        self.video.active = None;
+                        self.video.material = None;
+                        self.video.material_error.clear();
+                        self.media.loop_a = None;
+                        self.media.loop_b = None;
+                        self.media.repeat = 0;
+                        self.media.end_handled = true;
                         self.output.clear();
-                        self.reasoning.clear();
+                        self.chat.reasoning.clear();
                         self.lib.set_setting("bilibili_series", "")?;
                         self.lib.set_setting("last_video_position", "")?;
                     }
-                    self.video_tab = 3;
+                    self.video.tab = 3;
                     self.status = format!("已移除「{}」收藏，视频和字幕文件保留", video.title);
                 }
                 Action::VideoPanel(tab) => {
-                    self.video_remove = None;
+                    self.video.remove = None;
                     ensure!(tab < 4, "无效学习面板");
-                    self.video_tab = tab;
+                    self.video.tab = tab;
                     if tab == 2 {
-                        if self.video_material.is_none() {
+                        if self.video.material.is_none() {
                             let _ = self.prepare_video_material(video_qa::Scope::All);
                         }
                         self.sync_chat(window, cx);
@@ -3517,10 +3503,10 @@ impl AppView {
                     }
                 }
                 Action::VideoFollow => {
-                    self.video_follow = !self.video_follow;
-                    if self.video_follow {
-                        if let Some(i) = self.video_active {
-                            self.video_scroll.scroll_to_reveal_item(i);
+                    self.video.follow = !self.video.follow;
+                    if self.video.follow {
+                        if let Some(i) = self.video.active {
+                            self.video.scroll.scroll_to_reveal_item(i);
                         }
                     }
                 }
@@ -3528,14 +3514,14 @@ impl AppView {
                     ensure!(
                         self.page == "listening"
                             && !audio_id.is_empty()
-                            && audio_id == self.current_audio,
+                            && audio_id == self.audio.current_id,
                         "音频已切换，请重新复制"
                     );
                     let body = blind_listening::copy_text(
-                        &self.cues,
+                        &self.audio.cues,
                         cue.as_ref(),
-                        &self.audio_blind,
-                        self.audio_blind_chinese,
+                        &self.audio.blind,
+                        self.audio.blind_chinese,
                     )
                     .context("暂无可复制的字幕；盲听时请先翻开对应句子")?;
                     cx.write_to_clipboard(ClipboardItem::new_string(body));
@@ -3549,13 +3535,15 @@ impl AppView {
                 Action::VideoCopySubtitle(index) => {
                     let body = match index {
                         Some(index) => self
-                            .video_cues
+                            .video
+                            .cues
                             .get(index)
                             .context("字幕已改变，请重试")?
                             .text
                             .clone(),
                         None => self
-                            .video_cues
+                            .video
+                            .cues
                             .iter()
                             .map(|cue| cue.text.as_str())
                             .collect::<Vec<_>>()
@@ -3565,12 +3553,12 @@ impl AppView {
                     cx.write_to_clipboard(ClipboardItem::new_string(body));
                     self.status = match index {
                         Some(index) => format!("已复制第 {} 句字幕", index + 1),
-                        None => format!("已复制全部 {} 句字幕", self.video_cues.len()),
+                        None => format!("已复制全部 {} 句字幕", self.video.cues.len()),
                     };
                 }
                 Action::VideoSubtitleExport => {
-                    ensure!(!self.video_cues.is_empty(), "请先生成字幕");
-                    let body = subtitles::srt(&self.video_cues);
+                    ensure!(!self.video.cues.is_empty(), "请先生成字幕");
+                    let body = subtitles::srt(&self.video.cues);
                     let picker =
                         cx.prompt_for_new_path(&self.lib.root, Some("video-subtitles.srt"));
                     cx.spawn(async move |this, cx| {
@@ -3608,7 +3596,7 @@ impl AppView {
                 }
                 Action::Translate => {
                     let row = self.selected().context("请先选择音频")?;
-                    let cues = self.cues.clone();
+                    let cues = self.audio.cues.clone();
                     ensure!(!cues.is_empty(), "请先导入或生成原文字幕");
                     self.begin_subtitle(
                         "翻译音频字幕",
@@ -3627,7 +3615,7 @@ impl AppView {
                 }
                 Action::Record => {
                     ensure!(self.recording.is_none(), "正在录音");
-                    self.player.set("pause", "yes");
+                    self.media.player.set("pause", "yes");
                     let path = self
                         .lib
                         .root
@@ -3669,7 +3657,7 @@ impl AppView {
                 }
                 Action::CredentialMode(enabled) => {
                     ensure!(
-                        self.busy.is_none() && self.background_video.is_none(),
+                        self.tasks.cancel.is_none() && self.tasks.video_job.is_none(),
                         "请先完成或取消当前任务再切换密钥存储模式"
                     );
                     self.begin_scoped(
@@ -3683,7 +3671,7 @@ impl AppView {
                 }
                 Action::ImportLegacyCredentials => {
                     ensure!(
-                        self.busy.is_none() && self.background_video.is_none(),
+                        self.tasks.cancel.is_none() && self.tasks.video_job.is_none(),
                         "请先完成或取消当前任务"
                     );
                     self.begin_scoped(
@@ -3795,14 +3783,14 @@ impl AppView {
                     })
                 }
                 Action::PdfPage(delta) => {
-                    ensure!(self.busy.is_none(), "PDF 仍在载入，请稍后翻页");
+                    ensure!(self.tasks.cancel.is_none(), "PDF 仍在载入，请稍后翻页");
                     self.pdf_page = (self.pdf_page as i32 + delta)
                         .clamp(0, self.pdf_pages.saturating_sub(1) as i32)
                         as u16;
                     self.render_pdf();
                 }
                 Action::PdfZoom(delta) => {
-                    ensure!(self.busy.is_none(), "PDF 仍在载入，请稍后缩放");
+                    ensure!(self.tasks.cancel.is_none(), "PDF 仍在载入，请稍后缩放");
                     self.pdf_width = (self.pdf_width + delta).clamp(300, 2400);
                     self.render_pdf();
                 }
@@ -3821,15 +3809,13 @@ impl AppView {
                 }
                 Action::CheckAudio(key) => {
                     ensure!(
-                        self.audios
-                            .iter()
-                            .any(|r| text(r, "id") == key
-                                && text(r, "practice_id") == self.practice_id),
+                        self.audio.audios.iter().any(|r| text(r, "id") == key
+                            && text(r, "practice_id") == self.audio.practice_id),
                         "音频不属于当前组"
                     );
-                    self.library.pending_delete.clear();
-                    if !self.checked_audio.insert(key.clone()) {
-                        self.checked_audio.remove(&key);
+                    self.audio.library.pending_delete.clear();
+                    if !self.audio.checked.insert(key.clone()) {
+                        self.audio.checked.remove(&key);
                     }
                 }
                 Action::Suspend(suspend) => {
@@ -3869,17 +3855,17 @@ impl AppView {
                 }
                 Action::TtsGenerate => {
                     let body = self.value("tts_text", cx);
-                    self.library.filter = 0;
-                    self.library.sort = 0;
+                    self.audio.library.filter = 0;
+                    self.audio.library.sort = 0;
                     self.set("library_search", "", window, cx);
                     ensure!(!body.trim().is_empty(), "请先输入要合成的文字");
-                    ensure!(!self.practice_id.is_empty(), "请先新建或选择练习组");
+                    ensure!(!self.audio.practice_id.is_empty(), "请先新建或选择练习组");
                     let mut name = self.value("tts_name", cx);
                     if name.trim().is_empty() {
                         name =
                             format!("Kokoro · {}", chrono::Local::now().format("%m-%d %H:%M:%S"));
                     }
-                    let group = self.practice_id.clone();
+                    let group = self.audio.practice_id.clone();
                     let voice = self.tts_voice;
                     let speed = self.tts_speed;
                     self.begin_scoped(
@@ -3906,22 +3892,23 @@ impl AppView {
                         PathBuf::from(text(&row, "audio_uri")).is_file(),
                         "生成的音频已被移除"
                     );
-                    self.audio_blind.enabled = false;
+                    self.audio.blind.enabled = false;
                     self.page_scroll.set_offset(point(px(0.), px(0.)));
                     self.handle(Action::Audio(text(&row, "id")), window, cx);
                 }
                 Action::MergeAudios => {
                     let rows = self
+                        .audio
                         .audios
                         .iter()
                         .filter(|r| {
-                            text(r, "practice_id") == self.practice_id
-                                && self.checked_audio.contains(&text(r, "id"))
+                            text(r, "practice_id") == self.audio.practice_id
+                                && self.audio.checked.contains(&text(r, "id"))
                         })
                         .cloned()
                         .collect::<Vec<_>>();
                     ensure!(rows.len() >= 2, "请至少勾选两条音频");
-                    let group = self.practice_id.clone();
+                    let group = self.audio.practice_id.clone();
                     self.begin("正在合并音频与字幕…", move |lib, cancel, _| {
                         clarora_gpui::audio_tools::merge(&lib, &rows, &group, &cancel)?;
                         Ok(Outcome::Message("已合并音频与字幕，原文件保留".into()))
@@ -3929,7 +3916,7 @@ impl AppView {
                 }
                 Action::CommandImport => {
                     let command = self.value("command", cx);
-                    let practice = self.practice_id.clone();
+                    let practice = self.audio.practice_id.clone();
                     ensure!(!command.is_empty(), "请先在设置中填写本机命令");
                     self.begin("正在运行本机导入命令…",move|lib,cancel,_|{let(exe,args)=if cfg!(windows){(PathBuf::from("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),vec!["-NoProfile".into(),"-Command".into(),command])}else{(PathBuf::from("/bin/zsh"),vec!["-c".into(),command])};let output=process::run(&exe,&args,&cancel,Duration::from_secs(60))?;let mut count=0;for line in output.lines(){let p=PathBuf::from(line.trim());if p.is_file()&&lib.import_audio(&practice,&p).is_ok(){count+=1;}}Ok(Outcome::Message(format!("已导入 {count} 条")))});
                 }
@@ -3939,238 +3926,22 @@ impl AppView {
         if let Err(e) = result {
             self.status = format!("{e:#}");
         }
-        cx.notify();
-    }
-    fn assistant_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if self.page == "video"
-            && self.video_material.is_none()
-            && self.video_material_error.is_empty()
-        {
-            let _ = self.prepare_video_material(video_qa::Scope::All);
+        if updates_settings {
+            self.refresh_view_data();
         }
-        self.sync_chat(window, cx);
-        let mut history = div()
-            .id("assistant-history")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap_3();
-        let mut sessions = div().flex().gap_2().flex_wrap().child(self.button(
-            "chat-new",
-            "新会话",
-            Action::ChatSession(String::new()),
-            cx,
-        ));
-        for (i, record) in documents::records(&self.lib, "chat")
-            .unwrap_or_default()
-            .into_iter()
-            .rev()
-            .filter(|r| r["context"] == self.chat_context)
-            .take(12)
-            .enumerate()
-        {
-            sessions = sessions.child(
-                self.button(
-                    format!("chat-session-{i}"),
-                    record["title"]
-                        .as_str()
-                        .unwrap_or("会话")
-                        .chars()
-                        .take(18)
-                        .collect::<String>(),
-                    Action::ChatSession(record["id"].as_str().unwrap_or("").into()),
-                    cx,
-                ),
-            );
-        }
-        history = history.child(sessions);
-        for (i, message) in self.chat_history.iter().enumerate() {
-            history = history.child(
-                panel(cx)
-                    .bg(if message["role"] == "user" {
-                        cx.theme().muted
-                    } else {
-                        cx.theme().background
-                    })
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().primary)
-                            .child(if message["role"] == "user" {
-                                "你"
-                            } else {
-                                "✦ Clarora"
-                            }),
-                    )
-                    .child(TextView::markdown(
-                        ("chat-message", i),
-                        message["content"].as_str().unwrap_or("").to_string(),
-                        window,
-                        cx,
-                    )),
-            );
-        }
-        if !self.reasoning.is_empty() {
-            history = history.child(self.button(
-                "toggle-reasoning",
-                if self.reasoning_open {
-                    "收起推理内容"
-                } else {
-                    "查看推理内容"
-                },
-                Action::ToggleReasoning,
-                cx,
-            ));
-            if self.reasoning_open {
-                history = history.child(TextView::markdown(
-                    "ai-reasoning",
-                    self.reasoning.clone(),
-                    window,
-                    cx,
-                ));
+        if refresh_chat {
+            if let Err(error) = self.chat.refresh(&self.lib) {
+                self.status = format!("刷新会话失败：{error:#}");
             }
         }
-        if self.busy.is_some() || self.chat_history.is_empty() {
-            history = history.child(TextView::markdown(
-                "ai-output",
-                self.output.clone(),
-                window,
-                cx,
-            ));
-        }
-        div()
-            .w(px(400.))
-            .max_w(relative(0.45))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .p_5()
-            .bg(cx.theme().background)
-            .border_l_1()
-            .border_color(cx.theme().border)
-            .when(self.page == "video", |v| {
-                v.w_full().max_w(relative(1.)).border_l_0().p_3().gap_2()
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .items_center()
-                            .child(design::icon("discover", cx.theme().primary))
-                            .child(
-                                div()
-                                    .text_lg()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("学习助手"),
-                            ),
-                    )
-                    .child(
-                        self.button("close-assistant", "收起", Action::Assistant, cx)
-                            .ghost(),
-                    ),
-            )
-            .child(
-                div()
-                    .p_3()
-                    .rounded_lg()
-                    .bg(cx.theme().muted)
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(if self.reference(cx).is_empty() {
-                        "围绕当前学习材料，随时提问。".to_string()
-                    } else {
-                        self.reference(cx).chars().take(140).collect::<String>()
-                    }),
-            )
-            .when(self.page == "video", |v| {
-                v.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .flex_wrap()
-                        .child(
-                            self.button(
-                                "ai-video-current",
-                                "引用当前句",
-                                Action::VideoAsk(video_qa::Scope::Current),
-                                cx,
-                            )
-                            .disabled(self.chat_running),
-                        )
-                        .child(
-                            self.button(
-                                "ai-video-all",
-                                "引用整段字幕",
-                                Action::VideoAsk(video_qa::Scope::All),
-                                cx,
-                            )
-                            .disabled(self.chat_running || self.video_cues.is_empty()),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(
-                        self.video_material
-                            .as_ref()
-                            .map(|m| {
-                                format!(
-                                    "{} · 引用已固定，播放不会改变本次材料。使用设置中的聊天 API。",
-                                    m.label
-                                )
-                            })
-                            .unwrap_or_else(|| {
-                                if self.video_material_error.is_empty() {
-                                    "请先生成或加载字幕，再选择引用范围。".into()
-                                } else {
-                                    self.video_material_error.clone()
-                                }
-                            }),
-                    ),
-                )
-            })
-            .child(self.field("question", "向当前材料提问"))
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .flex_wrap()
-                    .child(
-                        self.button("ask", "发送", Action::Chat, cx)
-                            .primary()
-                            .disabled(
-                                self.busy.is_some()
-                                    || (self.page == "video" && self.video_material.is_none()),
-                            ),
-                    )
-                    .child(
-                        self.button("cancel-ai", "取消", Action::Cancel, cx)
-                            .disabled(self.busy.is_none()),
-                    )
-                    .child(
-                        self.button("save-answer", "存为问答卡", Action::SaveAnswer, cx)
-                            .disabled(self.busy.is_some() || self.chat_history.is_empty()),
-                    ),
-            )
-            .child(history)
-            .into_any_element()
+        self.sync_assistant(window, cx);
+        cx.notify();
     }
     fn waveform_view(&self, cx: &Context<Self>) -> AnyElement {
-        let Some(waveform) = &self.waveform else {
+        let Some(waveform) = &self.audio.waveform else {
             return div()
                 .text_sm()
-                .child(if self.waveform_rx.is_some() {
+                .child(if self.audio.waveform_rx.is_some() {
                     "正在读取真实音频波形…"
                 } else {
                     "选择音频后显示波形"
@@ -4179,10 +3950,10 @@ impl AppView {
         };
         let peaks = waveform.peaks.clone();
         let duration = waveform.duration;
-        let position = self.playback.position;
-        let a = self.loop_a;
-        let b = self.loop_b;
-        let bounds_cell = self.waveform_bounds.clone();
+        let position = self.media.snapshot.position;
+        let a = self.media.loop_a;
+        let b = self.media.loop_b;
+        let bounds_cell = self.audio.waveform_bounds.clone();
         let color = cx.theme().primary;
         div()
             .w_full()
@@ -4255,30 +4026,43 @@ impl AppView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                            let bounds = this.waveform_bounds.get();
+                            let bounds = this.audio.waveform_bounds.get();
                             if bounds.size.width <= px(0.) {
                                 return;
                             }
-                            let duration = this.waveform.as_ref().map(|w| w.duration).unwrap_or(0.);
+                            let duration = this
+                                .audio
+                                .waveform
+                                .as_ref()
+                                .map(|w| w.duration)
+                                .unwrap_or(0.);
                             let time = ((event.position.x - bounds.left()) / bounds.size.width)
                                 .clamp(0., 1.) as f64
                                 * duration;
                             let threshold = duration * 8. / f64::from(f32::from(bounds.size.width));
-                            this.waveform_drag = if !this.audio_clip_mode {
+                            this.audio.waveform_drag = if !this.audio.clip_mode {
                                 None
                             } else if event.modifiers.shift {
                                 Some(true)
                             } else if event.modifiers.alt {
                                 Some(false)
-                            } else if this.loop_a.is_some_and(|a| (a - time).abs() < threshold) {
+                            } else if this
+                                .media
+                                .loop_a
+                                .is_some_and(|a| (a - time).abs() < threshold)
+                            {
                                 Some(true)
-                            } else if this.loop_b.is_some_and(|b| (b - time).abs() < threshold) {
+                            } else if this
+                                .media
+                                .loop_b
+                                .is_some_and(|b| (b - time).abs() < threshold)
+                            {
                                 Some(false)
                             } else {
                                 None
                             };
                             this.handle(
-                                if let Some(start) = this.waveform_drag {
+                                if let Some(start) = this.audio.waveform_drag {
                                     Action::Boundary(time, start)
                                 } else {
                                     Action::SeekTo(time)
@@ -4292,16 +4076,21 @@ impl AppView {
                         if !event.dragging() {
                             return;
                         }
-                        let bounds = this.waveform_bounds.get();
+                        let bounds = this.audio.waveform_bounds.get();
                         if bounds.size.width <= px(0.) {
                             return;
                         }
-                        let duration = this.waveform.as_ref().map(|w| w.duration).unwrap_or(0.);
+                        let duration = this
+                            .audio
+                            .waveform
+                            .as_ref()
+                            .map(|w| w.duration)
+                            .unwrap_or(0.);
                         let time = ((event.position.x - bounds.left()) / bounds.size.width)
                             .clamp(0., 1.) as f64
                             * duration;
                         this.handle(
-                            if let Some(start) = this.waveform_drag {
+                            if let Some(start) = this.audio.waveform_drag {
                                 Action::Boundary(time, start)
                             } else {
                                 Action::SeekTo(time)
@@ -4312,11 +4101,11 @@ impl AppView {
                     }))
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(|this, _, _, _| this.waveform_drag = None),
+                        cx.listener(|this, _, _, _| this.audio.waveform_drag = None),
                     )
                     .on_mouse_up_out(
                         MouseButton::Left,
-                        cx.listener(|this, _, _, _| this.waveform_drag = None),
+                        cx.listener(|this, _, _, _| this.audio.waveform_drag = None),
                     ),
             )
             .into_any_element()
@@ -4327,15 +4116,19 @@ impl AppView {
                 .current_card()
                 .map(|c| format!("{}\n{}", c.front, c.back))
                 .unwrap_or_default(),
-            "listening" if self.audio_blind.enabled => {
-                self.audio_blind.reference_for(self.audio_blind_chinese)
+            "listening" if self.audio.blind.enabled => {
+                self.audio.blind.reference_for(self.audio.blind_chinese)
             }
-            "listening" if self.loop_a.is_some() && self.loop_b.is_some() => {
-                let (front, back) =
-                    subtitles::excerpt(&self.cues, self.loop_a.unwrap(), self.loop_b.unwrap());
+            "listening" if self.media.loop_a.is_some() && self.media.loop_b.is_some() => {
+                let (front, back) = subtitles::excerpt(
+                    &self.audio.cues,
+                    self.media.loop_a.unwrap(),
+                    self.media.loop_b.unwrap(),
+                );
                 format!("选中内容：{front}\n翻译：{back}")
             }
             "listening" => self
+                .audio
                 .cues
                 .iter()
                 .map(|c| c.text.clone())
@@ -4350,7 +4143,8 @@ impl AppView {
                 .map(|view| view.read(cx).reference(cx))
                 .unwrap_or_default(),
             "video" => self
-                .video_material
+                .video
+                .material
                 .as_ref()
                 .map(|m| m.text.clone())
                 .unwrap_or_default(),
@@ -4394,7 +4188,7 @@ impl AppView {
             }))
     }
     fn tts_panel(&self, cx: &Context<Self>) -> AnyElement {
-        let ready = tts::validate_model(&tts::model_dir(&self.lib)).is_ok();
+        let ready = self.data.tts_ready;
         let voice = tts::VOICES
             .iter()
             .find(|(sid, _)| *sid == self.tts_voice)
@@ -4461,12 +4255,16 @@ impl AppView {
                             Action::TtsDownload,
                             cx,
                         )
-                        .disabled(ready || self.busy.is_some()),
+                        .disabled(ready || self.tasks.cancel.is_some()),
                     )
                     .child(
                         self.button("tts-generate", "生成并保存音频", Action::TtsGenerate, cx)
                             .primary()
-                            .disabled(!ready || self.practice_id.is_empty() || self.busy.is_some()),
+                            .disabled(
+                                !ready
+                                    || self.audio.practice_id.is_empty()
+                                    || self.tasks.cancel.is_some(),
+                            ),
                     ),
             );
         if let Some(row) = &self.tts_last {
@@ -4478,7 +4276,7 @@ impl AppView {
                 )
                 .child(
                     self.button("tts-play", "试听 / 开始学习", Action::TtsPlay, cx)
-                        .disabled(self.busy.is_some()),
+                        .disabled(self.tasks.cancel.is_some()),
                 );
         }
         content.into_any_element()
@@ -4495,20 +4293,25 @@ impl AppView {
         let bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::<Pixels>::default()));
         let paint_bounds = bounds.clone();
         let drag_bounds = bounds.clone();
-        let duration = self.playback.duration;
+        let duration = self.media.snapshot.duration;
         let ratio = if duration.is_finite() && duration > 0. {
-            (self.playback.position / duration).clamp(0., 1.) as f32
+            (self.media.snapshot.position / duration).clamp(0., 1.) as f32
         } else {
             0.
         };
         let sentence_range = self
-            .video_sentence_repeat
-            .and_then(|(index, _)| self.video_cues.get(index).map(|cue| (cue.start, cue.end)));
-        let loop_range =
-            sentence_range.or_else(|| self.loop_a.zip(self.loop_b).filter(|(a, b)| b > a));
+            .video
+            .sentence_repeat
+            .and_then(|(index, _)| self.video.cues.get(index).map(|cue| (cue.start, cue.end)));
+        let loop_range = sentence_range.or_else(|| {
+            self.media
+                .loop_a
+                .zip(self.media.loop_b)
+                .filter(|(a, b)| b > a)
+        });
         let markers = loop_range
             .map(|(a, b)| [Some(a), Some(b)])
-            .unwrap_or([self.loop_a, self.loop_b]);
+            .unwrap_or([self.media.loop_a, self.media.loop_b]);
         let color: Hsla = if self.page == "listening" {
             cx.theme().primary
         } else {
@@ -4578,7 +4381,7 @@ impl AppView {
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     let area = bounds.get();
                     if area.size.width > px(0.) && duration.is_finite() && duration > 0. {
-                        this.video_seek_dragging = true;
+                        this.video.seek_dragging = true;
                         let time = ((event.position.x - area.left()) / area.size.width)
                             .clamp(0., 1.) as f64
                             * duration;
@@ -4589,7 +4392,7 @@ impl AppView {
             .on_mouse_move(
                 cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
                     let area = drag_bounds.get();
-                    if this.video_seek_dragging
+                    if this.video.seek_dragging
                         && event.dragging()
                         && area.size.width > px(0.)
                         && duration.is_finite()
@@ -4604,11 +4407,11 @@ impl AppView {
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.video_seek_dragging = false),
+                cx.listener(|this, _, _, _| this.video.seek_dragging = false),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.video_seek_dragging = false),
+                cx.listener(|this, _, _, _| this.video.seek_dragging = false),
             )
     }
     fn transport_button(
@@ -4716,7 +4519,7 @@ impl AppView {
         let bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::<Pixels>::default()));
         let paint_bounds = bounds.clone();
         let drag_bounds = bounds.clone();
-        let volume = self.volume as f32 / 100.;
+        let volume = self.media.volume as f32 / 100.;
         div()
             .id("player-volume-slider")
             .w(px(64.))
@@ -4757,7 +4560,7 @@ impl AppView {
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     let area = bounds.get();
                     if area.size.width > px(0.) {
-                        this.video_volume_dragging = true;
+                        this.video.volume_dragging = true;
                         this.handle(
                             Action::Volume(
                                 ((event.position.x - area.left()) / area.size.width).clamp(0., 1.)
@@ -4774,7 +4577,7 @@ impl AppView {
             .on_mouse_move(
                 cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
                     let area = drag_bounds.get();
-                    if this.video_volume_dragging && event.dragging() && area.size.width > px(0.) {
+                    if this.video.volume_dragging && event.dragging() && area.size.width > px(0.) {
                         this.handle(
                             Action::Volume(
                                 ((event.position.x - area.left()) / area.size.width).clamp(0., 1.)
@@ -4789,59 +4592,61 @@ impl AppView {
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.video_volume_dragging = false),
+                cx.listener(|this, _, _, _| this.video.volume_dragging = false),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.video_volume_dragging = false),
+                cx.listener(|this, _, _, _| this.video.volume_dragging = false),
             )
     }
     fn leave_video_fullscreen(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
-        self.video_picture_click = None;
-        if !self.video_fullscreen {
+        self.video.picture_click = None;
+        if !self.video.fullscreen {
             return;
         }
-        if self.video_fullscreen_owned && window.is_fullscreen() {
+        if self.video.fullscreen_owned && window.is_fullscreen() {
             window.toggle_fullscreen();
         }
-        self.video_fullscreen = false;
-        self.video_fullscreen_owned = false;
-        self.video_fullscreen_seen = false;
+        self.video.fullscreen = false;
+        self.video.fullscreen_owned = false;
+        self.video.fullscreen_seen = false;
         window.focus(&self.focus);
     }
     fn clear_video_sentence_repeat(&mut self) {
-        self.video_sentence_range = None;
-        self.video_sentence_request = None;
-        if self.video_sentence_repeat.take().is_some() {
-            self.player.clear_sentence_repeat();
+        self.video.sentence_range = None;
+        self.video.sentence_request = None;
+        if self.video.sentence_repeat.take().is_some() {
+            self.media.player.clear_sentence_repeat();
         }
     }
     fn clear_finished_video_sentence_repeat(&mut self) {
-        if self.video_sentence_repeat.is_some()
+        if self.video.sentence_repeat.is_some()
             && self
+                .media
                 .player
                 .snapshot()
                 .sentence_repeat
                 .as_ref()
                 .is_some_and(|state| {
-                    Some(state.request_id) == self.video_sentence_request && state.finished
+                    Some(state.request_id) == self.video.sentence_request && state.finished
                 })
         {
             self.clear_video_sentence_repeat();
         }
     }
     fn video_repeat_cue(&self) -> Option<usize> {
-        self.video_sentence_repeat
+        self.video
+            .sentence_repeat
             .map(|(index, _)| index)
-            .or_else(|| video_subtitles::active(&self.video_cues, self.playback.position))
-            .filter(|index| self.video_cues.get(*index).is_some())
+            .or_else(|| video_subtitles::active(&self.video.cues, self.media.snapshot.position))
+            .filter(|index| self.video.cues.get(*index).is_some())
     }
     fn start_video_sentence_repeat(&mut self, index: Option<usize>, three: bool) -> Result<()> {
         ensure!(self.page == "video", "请先进入视频学习");
-        let path = self.video_path.as_ref().context("请先打开视频")?;
-        let playback = self.player.snapshot();
+        let path = self.video.path.as_ref().context("请先打开视频")?;
+        let playback = self.media.player.snapshot();
         ensure!(
-            self.current_path.as_ref() == Some(path)
+            self.media.path.as_ref() == Some(path)
                 && playback.path == path.to_string_lossy()
                 && playback.duration > 0.,
             "视频正在切换，请稍候再重复本句"
@@ -4849,25 +4654,25 @@ impl AppView {
         let index = index
             .or_else(|| self.video_repeat_cue())
             .context("当前没有带时间轴的字幕，请先选择一句字幕")?;
-        let cue = self.video_cues.get(index).context("字幕行不存在")?;
+        let cue = self.video.cues.get(index).context("字幕行不存在")?;
         let end = cue.end.min(playback.duration);
         ensure!(
             cue.start.is_finite() && cue.end.is_finite() && cue.start >= 0. && end > cue.start,
             "本句字幕时间无效"
         );
-        let request_id = self.player.repeat_sentence(
+        let request_id = self.media.player.repeat_sentence(
             path,
             cue.start,
             end,
             if three { Some(3) } else { None },
         )?;
-        self.video_sentence_repeat = Some((index, three));
-        self.video_sentence_range = Some((cue.start, end));
-        self.video_sentence_request = Some(request_id);
-        self.repeat = 0;
-        self.loop_a = None;
-        self.loop_b = None;
-        self.end_handled = true;
+        self.video.sentence_repeat = Some((index, three));
+        self.video.sentence_range = Some((cue.start, end));
+        self.video.sentence_request = Some(request_id);
+        self.media.repeat = 0;
+        self.media.loop_a = None;
+        self.media.loop_b = None;
+        self.media.end_handled = true;
         self.status = if three {
             "本句从句首播放三遍，完成后暂停在句尾"
         } else {
@@ -4886,23 +4691,23 @@ impl AppView {
         from + (target - from) * eased
     }
     fn video_picture(&self, height: Option<Pixels>, cx: &Context<Self>) -> impl IntoElement {
-        let active = self.video_path.as_ref().is_some_and(|p| {
-            self.current_path.as_ref() == Some(p) && self.playback.path == p.to_string_lossy()
+        let active = self.video.path.as_ref().is_some_and(|p| {
+            self.media.path.as_ref() == Some(p) && self.media.snapshot.path == p.to_string_lossy()
         });
-        let frame = self.playback.frame.clone().filter(|_| active);
+        let frame = self.media.snapshot.frame.clone().filter(|_| active);
         let active_caption = if !active
-            || !self.video_captions_enabled
-            || self.playback.subtitle_is_bitmap
-            || self.video_caption_source == VideoCaptionSource::Hidden
+            || !self.video.captions_enabled
+            || self.media.snapshot.subtitle_is_bitmap
+            || self.video.caption_source == VideoCaptionSource::Hidden
         {
             String::new()
-        } else if self.video_caption_source == VideoCaptionSource::Track {
-            self.playback.subtitle.clone()
+        } else if self.video.caption_source == VideoCaptionSource::Track {
+            self.media.snapshot.subtitle.clone()
         } else {
-            video_subtitles::active(&self.video_cues, self.playback.position)
-                .map(|i| self.video_cues[i].text.clone())
+            video_subtitles::active(&self.video.cues, self.media.snapshot.position)
+                .map(|i| self.video.cues[i].text.clone())
                 .filter(|text| !text.is_empty())
-                .unwrap_or_else(|| self.playback.subtitle.clone())
+                .unwrap_or_else(|| self.media.snapshot.subtitle.clone())
         };
         div()
             .relative()
@@ -4948,25 +4753,25 @@ impl AppView {
                         .px_5()
                         .py_3()
                         .id("video-current-caption")
-                        .max_h(px(f32::from(self.video_subtitle_size) * 3.8 + 24.))
+                        .max_h(px(f32::from(self.video.subtitle_size) * 3.8 + 24.))
                         .overflow_y_scroll()
                         .bg(rgba(0x050a08c9))
                         .text_color(rgb(0xffffff))
-                        .text_size(px(f32::from(self.video_subtitle_size)))
+                        .text_size(px(f32::from(self.video.subtitle_size)))
                         .text_center()
                         .child(active_caption),
                 )
             })
             .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                 if !event.standard_click() || this.page != "video" || window.has_active_dialog(cx) {
-                    this.video_picture_click = None;
+                    this.video.picture_click = None;
                     return;
                 }
-                let Some(path) = this.video_path.clone().filter(|path| {
-                    this.current_path.as_ref() == Some(path)
-                        && this.player.snapshot().path == path.to_string_lossy()
+                let Some(path) = this.video.path.clone().filter(|path| {
+                    this.media.path.as_ref() == Some(path)
+                        && this.media.player.snapshot().path == path.to_string_lossy()
                 }) else {
-                    this.video_picture_click = None;
+                    this.video.picture_click = None;
                     return;
                 };
                 cx.stop_propagation();
@@ -4974,17 +4779,17 @@ impl AppView {
                 match event.click_count() {
                     1 => {
                         this.clear_finished_video_sentence_repeat();
-                        this.video_picture_click = Some(path);
-                        this.player.command(["cycle", "pause"]);
+                        this.video.picture_click = Some(path);
+                        this.media.player.command(["cycle", "pause"]);
                     }
                     2 => {
-                        if this.video_picture_click.take().as_ref() == Some(&path) {
+                        if this.video.picture_click.take().as_ref() == Some(&path) {
                             // Undo the first click without relying on the 50 ms UI snapshot.
-                            this.player.command(["cycle", "pause"]);
+                            this.media.player.command(["cycle", "pause"]);
                         }
                         this.handle(Action::VideoFullscreen, window, cx);
                     }
-                    _ => this.video_picture_click = None,
+                    _ => this.video.picture_click = None,
                 }
                 cx.notify();
             }))
@@ -5024,7 +4829,8 @@ impl AppView {
                     .text_color(rgb(0xb9c9c1))
                     .child(
                         div().flex_1().min_w_0().text_xs().truncate().child(
-                            self.current_path
+                            self.media
+                                .path
                                 .as_ref()
                                 .and_then(|p| p.file_name())
                                 .map(|n| n.to_string_lossy().to_string())
@@ -5045,15 +4851,20 @@ impl AppView {
             .into_any_element()
     }
     fn video_controls(&self, cx: &Context<Self>) -> AnyElement {
-        let valid_loop = self.loop_a.zip(self.loop_b).is_some_and(|(a, b)| b > a);
+        let valid_loop = self
+            .media
+            .loop_a
+            .zip(self.media.loop_b)
+            .is_some_and(|(a, b)| b > a);
         let current_cue = self.video_repeat_cue();
-        let repeat_label = if let Some((_, three)) = self.video_sentence_repeat {
+        let repeat_label = if let Some((_, three)) = self.video.sentence_repeat {
             if three {
                 match self
-                    .playback
+                    .media
+                    .snapshot
                     .sentence_repeat
                     .as_ref()
-                    .filter(|state| Some(state.request_id) == self.video_sentence_request)
+                    .filter(|state| Some(state.request_id) == self.video.sentence_request)
                 {
                     Some(state) if state.finished => "本句三次：已完成 ▾".into(),
                     Some(state) => format!("本句三次：{}/3 ▾", state.current_play),
@@ -5069,20 +4880,20 @@ impl AppView {
             (
                 "本句无限重复".into(),
                 Action::VideoSentenceRepeat(None, false),
-                self.video_sentence_repeat.is_some_and(|(_, three)| !three),
+                self.video.sentence_repeat.is_some_and(|(_, three)| !three),
                 current_cue.is_none(),
             ),
             (
                 "本句重复三次 · 完成后暂停".into(),
                 Action::VideoSentenceRepeat(None, true),
-                self.video_sentence_repeat.is_some_and(|(_, three)| three),
+                self.video.sentence_repeat.is_some_and(|(_, three)| three),
                 current_cue.is_none(),
             ),
             (
                 "停止本句重复".into(),
                 Action::VideoStopSentenceRepeat,
                 false,
-                self.video_sentence_repeat.is_none(),
+                self.video.sentence_repeat.is_none(),
             ),
         ];
         let rates = [0.6, 0.8, 1., 1.25, 1.5, 2.]
@@ -5091,7 +4902,7 @@ impl AppView {
                 (
                     format!("{r}×"),
                     Action::Rate(r),
-                    (self.rate - r).abs() < 0.001,
+                    (self.media.rate - r).abs() < 0.001,
                     false,
                 )
             })
@@ -5102,7 +4913,7 @@ impl AppView {
                 (
                     format!("字幕 {size}px"),
                     Action::VideoSubtitleSize(size),
-                    self.video_subtitle_size == size,
+                    self.video.subtitle_size == size,
                     false,
                 )
             })
@@ -5114,7 +4925,7 @@ impl AppView {
                     (
                         label.into(),
                         Action::LoopMode(mode),
-                        self.repeat == mode,
+                        self.media.repeat == mode,
                         mode == 2 && !valid_loop,
                     )
                 }),
@@ -5122,7 +4933,7 @@ impl AppView {
         options.push((
             "A–B 精听工具".into(),
             Action::VideoPrecision,
-            self.video_precision,
+            self.video.precision,
             false,
         ));
         div()
@@ -5152,12 +4963,12 @@ impl AppView {
                     .child(
                         self.player_icon(
                             "video-play",
-                            if self.playback.paused {
+                            if self.media.snapshot.paused {
                                 "play"
                             } else {
                                 "pause"
                             },
-                            if self.playback.paused {
+                            if self.media.snapshot.paused {
                                 "播放 · 空格"
                             } else {
                                 "暂停 · 空格"
@@ -5178,8 +4989,8 @@ impl AppView {
                     ))
                     .child(div().text_xs().text_color(rgb(0xb9c9c1)).child(format!(
                         "{} / {}",
-                        clock(self.playback.position),
-                        clock(self.playback.duration)
+                        clock(self.media.snapshot.position),
+                        clock(self.media.snapshot.duration)
                     )))
                     .child(div().flex_1())
                     .child(self.player_menu(
@@ -5188,7 +4999,12 @@ impl AppView {
                         sentence_options,
                         cx,
                     ))
-                    .child(self.player_menu("video-speed", format!("{}× ▾", self.rate), rates, cx))
+                    .child(self.player_menu(
+                        "video-speed",
+                        format!("{}× ▾", self.media.rate),
+                        rates,
+                        cx,
+                    ))
                     .child(
                         div()
                             .flex()
@@ -5196,8 +5012,12 @@ impl AppView {
                             .gap_1()
                             .child(self.player_icon(
                                 "video-mute",
-                                if self.volume == 0. { "muted" } else { "volume" },
-                                &format!("音量 {:.0}% · 点击静音 / 恢复", self.volume),
+                                if self.media.volume == 0. {
+                                    "muted"
+                                } else {
+                                    "volume"
+                                },
+                                &format!("音量 {:.0}% · 点击静音 / 恢复", self.media.volume),
                                 Action::Mute,
                                 cx,
                             ))
@@ -5206,7 +5026,7 @@ impl AppView {
                     .child(
                         self.transport_button(
                             "video-captions-toggle",
-                            if self.video_captions_enabled {
+                            if self.video.captions_enabled {
                                 "字幕：开"
                             } else {
                                 "字幕：关"
@@ -5214,13 +5034,13 @@ impl AppView {
                             Action::VideoCaptions,
                             cx,
                         )
-                        .selected(self.video_captions_enabled),
+                        .selected(self.video.captions_enabled),
                     )
                     .child(self.player_menu("video-options", "设置 ▾".into(), options, cx))
                     .child(
                         self.player_icon(
                             "video-fullscreen-toggle",
-                            if self.video_fullscreen {
+                            if self.video.fullscreen {
                                 "fullscreen-exit"
                             } else {
                                 "fullscreen"
@@ -5229,10 +5049,10 @@ impl AppView {
                             Action::VideoFullscreen,
                             cx,
                         )
-                        .disabled(self.current_path.is_none()),
+                        .disabled(self.media.path.is_none()),
                     ),
             )
-            .when(self.video_precision, |v| {
+            .when(self.video.precision, |v| {
                 v.child(
                     div()
                         .mt_2()
@@ -5253,7 +5073,10 @@ impl AppView {
                                         "video-set-a",
                                         format!(
                                             "A  {}",
-                                            self.loop_a.map(clip_clock).unwrap_or("设起点".into())
+                                            self.media
+                                                .loop_a
+                                                .map(clip_clock)
+                                                .unwrap_or("设起点".into())
                                         ),
                                         Action::Mark(true),
                                         cx,
@@ -5265,12 +5088,15 @@ impl AppView {
                                         "video-set-b",
                                         format!(
                                             "B  {}",
-                                            self.loop_b.map(clip_clock).unwrap_or("设终点".into())
+                                            self.media
+                                                .loop_b
+                                                .map(clip_clock)
+                                                .unwrap_or("设终点".into())
                                         ),
                                         Action::Mark(false),
                                         cx,
                                     )
-                                    .disabled(self.loop_a.is_none())
+                                    .disabled(self.media.loop_a.is_none())
                                     .tooltip("将当前位置设为 B 点，自动循环此片段"),
                                 )
                                 .child(
@@ -5281,9 +5107,9 @@ impl AppView {
                                         cx,
                                     )
                                     .disabled(
-                                        self.loop_a.is_none()
-                                            && self.loop_b.is_none()
-                                            && self.video_sentence_repeat.is_none(),
+                                        self.media.loop_a.is_none()
+                                            && self.media.loop_b.is_none()
+                                            && self.video.sentence_repeat.is_none(),
                                     ),
                                 )
                                 .child(div().flex_1())
@@ -5294,7 +5120,7 @@ impl AppView {
                                         Action::Clip,
                                         cx,
                                     )
-                                    .disabled(!valid_loop || self.busy.is_some()),
+                                    .disabled(!valid_loop || self.tasks.cancel.is_some()),
                                 ),
                         )
                         .child(
@@ -5312,9 +5138,10 @@ impl AppView {
                                     )
                                     .disabled(
                                         !self
-                                            .video_cues
+                                            .video
+                                            .cues
                                             .iter()
-                                            .any(|c| c.start < self.playback.position - 0.5),
+                                            .any(|c| c.start < self.media.snapshot.position - 0.5),
                                     ),
                                 )
                                 .child(
@@ -5335,9 +5162,10 @@ impl AppView {
                                     )
                                     .disabled(
                                         !self
-                                            .video_cues
+                                            .video
+                                            .cues
                                             .iter()
-                                            .any(|c| c.start > self.playback.position + 0.1),
+                                            .any(|c| c.start > self.media.snapshot.position + 0.1),
                                     ),
                                 )
                                 .child(
@@ -5352,29 +5180,35 @@ impl AppView {
             .into_any_element()
     }
     fn blind_panel(&self, cx: &Context<Self>) -> AnyElement {
-        let ready = !self.current_audio.is_empty()
-            && self.busy.is_none()
-            && self.audio_blind_pending.is_none()
+        let ready = !self.audio.current_id.is_empty()
+            && self.tasks.cancel.is_none()
+            && self.audio.blind_pending.is_none()
             && self
-                .audio_blind_settle_until
+                .audio
+                .blind_settle_until
                 .is_none_or(|t| Instant::now() >= t)
             && self
-                .current_path
+                .media
+                .path
                 .as_ref()
-                .is_some_and(|p| p.to_string_lossy() == self.playback.path);
-        let target =
-            blind_listening::resolve(&self.cues, self.playback.position, self.playback.duration);
+                .is_some_and(|p| p.to_string_lossy() == self.media.snapshot.path);
+        let target = blind_listening::resolve(
+            &self.audio.cues,
+            self.media.snapshot.position,
+            self.media.snapshot.duration,
+        );
         let loop_range = self
+            .media
             .loop_a
-            .zip(self.loop_b)
-            .filter(|(a, b)| self.repeat == 2 && b > a);
+            .zip(self.media.loop_b)
+            .filter(|(a, b)| self.media.repeat == 2 && b > a);
         let can_sentence = |direction| {
             ready
                 && blind_listening::sentence_target(
-                    &self.cues,
-                    self.playback.position,
-                    self.playback.duration,
-                    self.audio_blind.revealed.as_ref(),
+                    &self.audio.cues,
+                    self.media.snapshot.position,
+                    self.media.snapshot.duration,
+                    self.audio.blind.revealed.as_ref(),
                     direction,
                     loop_range,
                 )
@@ -5398,7 +5232,7 @@ impl AppView {
                     .child(
                         self.player_menu(
                             "blind-caption-display",
-                            if self.audio_blind_chinese {
+                            if self.audio.blind_chinese {
                                 "查看：仅中文 ▾"
                             } else {
                                 "查看：中英字幕 ▾"
@@ -5408,13 +5242,13 @@ impl AppView {
                                 (
                                     "中英字幕".into(),
                                     Action::AudioBlindChinese(false),
-                                    !self.audio_blind_chinese,
+                                    !self.audio.blind_chinese,
                                     false,
                                 ),
                                 (
                                     "仅中文".into(),
                                     Action::AudioBlindChinese(true),
-                                    self.audio_blind_chinese,
+                                    self.audio.blind_chinese,
                                     false,
                                 ),
                             ],
@@ -5455,16 +5289,16 @@ impl AppView {
                     .child(
                         self.button(
                             "blind-reveal",
-                            if self.audio_blind_pending.is_some() {
+                            if self.audio.blind_pending.is_some() {
                                 "正在暂停…"
-                            } else if self.audio_blind.revealed.is_some() {
+                            } else if self.audio.blind.revealed.is_some() {
                                 "收起文字 H"
-                            } else if self.audio_blind_chinese {
+                            } else if self.audio.blind_chinese {
                                 "看中文 H"
                             } else {
                                 "看刚才一句 H"
                             },
-                            if self.audio_blind.revealed.is_some() {
+                            if self.audio.blind.revealed.is_some() {
                                 Action::AudioBlindHide
                             } else {
                                 Action::AudioBlindReveal
@@ -5473,10 +5307,10 @@ impl AppView {
                         )
                         .primary()
                         .disabled(
-                            !ready || (self.audio_blind.revealed.is_none() && target.is_none()),
+                            !ready || (self.audio.blind.revealed.is_none() && target.is_none()),
                         ),
                     )
-                    .when(self.audio_blind.revealed.is_some(), |v| {
+                    .when(self.audio.blind.revealed.is_some(), |v| {
                         v.child(
                             self.button(
                                 "blind-resume",
@@ -5487,7 +5321,7 @@ impl AppView {
                             .disabled(!ready),
                         )
                     })
-                    .when(self.playback.eof, |v| {
+                    .when(self.media.snapshot.eof, |v| {
                         v.child(
                             self.button(
                                 "blind-restart",
@@ -5501,18 +5335,18 @@ impl AppView {
                     .child(
                         self.button("blind-full", "查看全文", Action::AudioBlind(false), cx)
                             .ghost()
-                            .disabled(self.busy.is_some()),
+                            .disabled(self.tasks.cancel.is_some()),
                     ),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(if self.cues.is_empty() {
+                    .child(if self.audio.cues.is_empty() {
                         "暂无字幕，仍可盲听；切回字幕模式可导入字幕。"
-                    } else if self.audio_blind_chinese {
+                    } else if self.audio.blind_chinese {
                         "查看时仅显示刚才一句的中文，英文保持遮挡；继续播放后重新遮住中文。"
-                    } else if self.audio_blind.revealed.as_ref().is_some_and(|r| r.sparse) {
+                    } else if self.audio.blind.revealed.as_ref().is_some_and(|r| r.sparse) {
                         "已显示上一条字幕；继续播放会自动遮住文字。"
                     } else {
                         "点击词块从对应单词播放，点击时间戳从句首播放；词时间为估算。"
@@ -5521,28 +5355,31 @@ impl AppView {
             .into_any_element()
     }
     fn invalidate_blind(&mut self) {
-        self.audio_blind.invalidate();
-        self.audio_blind_pending = None;
+        self.audio.blind.invalidate();
+        self.audio.blind_pending = None;
     }
     fn audio_study(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let group = self
+            .audio
             .practices
             .iter()
-            .find(|r| text(r, "id") == self.practice_id)
+            .find(|r| text(r, "id") == self.audio.practice_id)
             .map(|r| text(r, "name"))
             .unwrap_or_else(|| "选择练习组".into());
         let audios = self
+            .audio
             .audios
             .iter()
-            .filter(|r| text(r, "practice_id") == self.practice_id)
+            .filter(|r| text(r, "practice_id") == self.audio.practice_id)
             .collect::<Vec<_>>();
         let index = audios
             .iter()
-            .position(|r| text(r, "id") == self.current_audio);
+            .position(|r| text(r, "id") == self.audio.current_id);
         let title = index
             .map(|i| text(audios[i], "name"))
             .unwrap_or_else(|| "选择音频".into());
         let group_options = self
+            .audio
             .practices
             .iter()
             .map(|r| {
@@ -5550,8 +5387,8 @@ impl AppView {
                 (
                     text(r, "name"),
                     Action::AudioPractice(key.clone()),
-                    key == self.practice_id,
-                    self.busy.is_some(),
+                    key == self.audio.practice_id,
+                    self.tasks.cancel.is_some(),
                 )
             })
             .collect();
@@ -5563,7 +5400,7 @@ impl AppView {
                     format!("{}  {}", i + 1, text(r, "name")),
                     Action::Audio(text(r, "id")),
                     Some(i) == index,
-                    self.busy.is_some(),
+                    self.tasks.cancel.is_some(),
                 )
             })
             .collect();
@@ -5576,37 +5413,37 @@ impl AppView {
         let page = index
             .map(|i| format!("{} / {}", i + 1, audios.len()))
             .unwrap_or_else(|| format!("0 / {}", audios.len()));
-        let available = !self.current_audio.is_empty();
+        let available = !self.audio.current_id.is_empty();
         let mut subtitle_options = vec![
             (
                 "导入英文字幕".into(),
                 Action::SubtitleImport(false),
                 false,
-                !available || self.busy.is_some(),
+                !available || self.tasks.cancel.is_some(),
             ),
             (
                 "导入中文字幕".into(),
                 Action::SubtitleImport(true),
                 false,
-                !available || self.busy.is_some(),
+                !available || self.tasks.cancel.is_some(),
             ),
             (
                 "生成原文字幕".into(),
                 Action::Transcribe,
                 false,
-                !available || self.busy.is_some(),
+                !available || self.tasks.cancel.is_some(),
             ),
             (
                 "生成中文字幕".into(),
                 Action::Translate,
                 false,
-                self.cues.is_empty() || self.busy.is_some(),
+                self.audio.cues.is_empty() || self.tasks.cancel.is_some(),
             ),
             ("刷新字幕".into(), Action::Refresh, false, !available),
             (
                 "单独显示当前句".into(),
                 Action::AudioCurrent,
-                self.audio_show_current,
+                self.audio.show_current,
                 false,
             ),
         ];
@@ -5614,16 +5451,16 @@ impl AppView {
             (
                 format!("字幕 {n}px"),
                 Action::AudioFont(n),
-                self.audio_font_size == n,
+                self.audio.font_size == n,
                 false,
             )
         }));
-        if self.audio_blind.enabled {
+        if self.audio.blind.enabled {
             subtitle_options = vec![(
                 "管理字幕（退出盲听）".into(),
                 Action::AudioBlind(false),
                 false,
-                self.busy.is_some(),
+                self.tasks.cancel.is_some(),
             )];
         }
         let header = div()
@@ -5637,13 +5474,13 @@ impl AppView {
             .border_color(cx.theme().border)
             .child(
                 self.button("audio-subtitle-mode", "字幕", Action::AudioBlind(false), cx)
-                    .selected(!self.audio_blind.enabled)
-                    .disabled(self.busy.is_some()),
+                    .selected(!self.audio.blind.enabled)
+                    .disabled(self.tasks.cancel.is_some()),
             )
             .child(
                 self.button("audio-blind-mode", "盲听", Action::AudioBlind(true), cx)
-                    .selected(self.audio_blind.enabled)
-                    .disabled(self.busy.is_some()),
+                    .selected(self.audio.blind.enabled)
+                    .disabled(self.tasks.cancel.is_some()),
             )
             .child(self.player_menu(
                 "audio-practice-picker",
@@ -5670,7 +5507,7 @@ impl AppView {
                     Action::Audio(previous.clone().unwrap_or_default()),
                     cx,
                 )
-                .disabled(previous.is_none() || self.busy.is_some()),
+                .disabled(previous.is_none() || self.tasks.cancel.is_some()),
             )
             .child(
                 self.button(
@@ -5679,13 +5516,13 @@ impl AppView {
                     Action::Audio(next.clone().unwrap_or_default()),
                     cx,
                 )
-                .disabled(next.is_none() || self.busy.is_some()),
+                .disabled(next.is_none() || self.tasks.cancel.is_some()),
             )
             .child(div().flex_1())
             .child(
                 self.button(
                     "audio-follow",
-                    if self.audio_follow {
+                    if self.audio.follow {
                         "跟随 ✓"
                     } else {
                         "跟随"
@@ -5695,16 +5532,16 @@ impl AppView {
                 )
                 .ghost(),
             )
-            .when(!self.audio_blind.enabled, |v| {
+            .when(!self.audio.blind.enabled, |v| {
                 v.child(
                     self.button(
                         "audio-copy-all",
                         "复制全部",
-                        Action::AudioCopySubtitle(self.current_audio.clone(), None),
+                        Action::AudioCopySubtitle(self.audio.current_id.clone(), None),
                         cx,
                     )
                     .ghost()
-                    .disabled(self.cues.is_empty()),
+                    .disabled(self.audio.cues.is_empty()),
                 )
             })
             .child(self.player_menu(
@@ -5722,28 +5559,30 @@ impl AppView {
                 )
                 .ghost(),
             );
-        let active = video_subtitles::active(&self.cues, self.playback.position);
+        let active = video_subtitles::active(&self.audio.cues, self.media.snapshot.position);
         let transcript = list(
-            self.audio_scroll.clone(),
+            self.audio.scroll.clone(),
             cx.processor(|this, i: usize, _, cx| {
-                let Some(cue) = this.cues.get(i) else {
+                let Some(cue) = this.audio.cues.get(i) else {
                     return div().into_any_element();
                 };
-                let active = video_subtitles::active(&this.cues, this.playback.position) == Some(i);
-                if this.audio_blind.enabled {
-                    let revealed = this.audio_blind.revealed.as_ref().filter(|r| {
+                let active =
+                    video_subtitles::active(&this.audio.cues, this.media.snapshot.position)
+                        == Some(i);
+                if this.audio.blind.enabled {
+                    let revealed = this.audio.blind.revealed.as_ref().filter(|r| {
                         r.cue.start == cue.start && r.cue.end == cue.end && r.cue.text == cue.text
                     });
                     let mut word_line = div().flex().flex_wrap().gap_x_1().gap_y_2().items_center();
-                    let show_original = revealed.is_some() && !this.audio_blind_chinese;
+                    let show_original = revealed.is_some() && !this.audio.blind_chinese;
                     let words = subtitles::words(cue);
                     let no_words = words.is_empty();
                     for (j, word) in words.into_iter().enumerate() {
-                        let audio_id = this.current_audio.clone();
+                        let audio_id = this.audio.current_id.clone();
                         let source_cue = cue.clone();
                         let current = active
-                            && word.start <= this.playback.position
-                            && this.playback.position < word.end;
+                            && word.start <= this.media.snapshot.position
+                            && this.media.snapshot.position < word.end;
                         let label = format!("第 {} 个词，从这里播放", j + 1);
                         let mut token = div()
                             .id(("blind-audio-word", i * 100000 + j))
@@ -5751,7 +5590,7 @@ impl AppView {
                             .rounded_sm()
                             .px_1()
                             .py_1()
-                            .text_size(px(this.audio_font_size as f32))
+                            .text_size(px(this.audio.font_size as f32))
                             .bg(if current {
                                 cx.theme().accent
                             } else {
@@ -5778,11 +5617,11 @@ impl AppView {
                         } else {
                             token = token
                                 .w(px((word.text.chars().count() as f32
-                                    * this.audio_font_size as f32
+                                    * this.audio.font_size as f32
                                     * 0.55
                                     + 8.)
                                     .clamp(24., 280.)))
-                                .h(px(this.audio_font_size as f32 + 12.));
+                                .h(px(this.audio.font_size as f32 + 12.));
                         }
                         word_line = word_line.child(token);
                     }
@@ -5796,21 +5635,21 @@ impl AppView {
                             v.child(
                                 div()
                                     .w(px(180.))
-                                    .h(px(this.audio_font_size as f32 + 4.))
+                                    .h(px(this.audio.font_size as f32 + 4.))
                                     .rounded_sm()
                                     .bg(cx.theme().border),
                             )
                         });
                     if let Some(revealed) = revealed {
-                        let chinese = if this.audio_blind_chinese {
+                        let chinese = if this.audio.blind_chinese {
                             blind_listening::chinese_hint(&revealed.cue.text)
                         } else {
                             subtitles::languages(std::slice::from_ref(&revealed.cue)).1
                         };
-                        if !chinese.is_empty() || this.audio_blind_chinese {
+                        if !chinese.is_empty() || this.audio.blind_chinese {
                             content = content.child(
                                 div()
-                                    .text_size(px((this.audio_font_size as f32 - 2.).max(12.)))
+                                    .text_size(px((this.audio.font_size as f32 - 2.).max(12.)))
                                     .text_color(cx.theme().muted_foreground)
                                     .whitespace_normal()
                                     .child(if chinese.is_empty() {
@@ -5825,14 +5664,14 @@ impl AppView {
                             div()
                                 .w_full()
                                 .max_w(px(380.))
-                                .h(px((this.audio_font_size as f32 - 2.).max(12.)))
+                                .h(px((this.audio.font_size as f32 - 2.).max(12.)))
                                 .rounded_sm()
                                 .bg(cx.theme().border),
                         );
                     }
-                    let clicked_audio = this.current_audio.clone();
+                    let clicked_audio = this.audio.current_id.clone();
                     let clicked_cue = cue.clone();
-                    let reveal_audio = this.current_audio.clone();
+                    let reveal_audio = this.audio.current_id.clone();
                     let reveal_cue = cue.clone();
                     return div()
                         .id(("blind-audio-cue", i))
@@ -5845,8 +5684,8 @@ impl AppView {
                             MouseButton::Right,
                             cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
-                                let is_revealed = reveal_audio == this.current_audio
-                                    && this.audio_blind.revealed.as_ref().is_some_and(|r| {
+                                let is_revealed = reveal_audio == this.audio.current_id
+                                    && this.audio.blind.revealed.as_ref().is_some_and(|r| {
                                         r.cue.start == reveal_cue.start
                                             && r.cue.end == reveal_cue.end
                                             && r.cue.text == reveal_cue.text
@@ -5910,14 +5749,16 @@ impl AppView {
                                     Action::AudioBlindHide
                                 } else {
                                     Action::AudioBlindRevealCue(
-                                        this.current_audio.clone(),
+                                        this.audio.current_id.clone(),
                                         cue.clone(),
                                     )
                                 },
                                 cx,
                             )
                             .ghost()
-                            .disabled(this.busy.is_some() || this.audio_blind_pending.is_some()),
+                            .disabled(
+                                this.tasks.cancel.is_some() || this.audio.blind_pending.is_some(),
+                            ),
                         )
                         .when(revealed.is_some(), |v| {
                             v.child(
@@ -5925,7 +5766,7 @@ impl AppView {
                                     format!("blind-row-copy-{i}"),
                                     "复制",
                                     Action::AudioCopySubtitle(
-                                        this.current_audio.clone(),
+                                        this.audio.current_id.clone(),
                                         Some(cue.clone()),
                                     ),
                                     cx,
@@ -5939,9 +5780,9 @@ impl AppView {
                 let mut line = div().flex().flex_wrap().gap_x_1().gap_y_1().items_center();
                 for (j, word) in subtitles::words(cue).into_iter().enumerate() {
                     let current = active
-                        && word.start <= this.playback.position
-                        && this.playback.position < word.end;
-                    let marked = this.key_points.iter().find(|p| {
+                        && word.start <= this.media.snapshot.position
+                        && this.media.snapshot.position < word.end;
+                    let marked = this.audio.key_points.iter().find(|p| {
                         p.text.split_whitespace().any(|w| {
                             w.trim_matches(|c: char| !c.is_alphanumeric())
                                 .eq_ignore_ascii_case(
@@ -5950,15 +5791,16 @@ impl AppView {
                         })
                     });
                     let tip = marked.map(|p| format!("{} · {}", p.text, p.translation));
-                    let selected = this.audio_clip_mode
+                    let selected = this.audio.clip_mode
                         && this
+                            .media
                             .loop_a
-                            .zip(this.loop_b)
+                            .zip(this.media.loop_b)
                             .is_some_and(|(a, b)| word.start < b && word.end > a);
                     line = line.child(
                         div()
                             .id(("audio-word", i * 100000 + j))
-                            .text_size(px(this.audio_font_size as f32))
+                            .text_size(px(this.audio.font_size as f32))
                             .px_0p5()
                             .rounded_sm()
                             .cursor_pointer()
@@ -6025,7 +5867,7 @@ impl AppView {
                             .when(!translation.is_empty(), |v| {
                                 v.child(
                                     div()
-                                        .text_size(px((this.audio_font_size as f32 - 2.).max(12.)))
+                                        .text_size(px((this.audio.font_size as f32 - 2.).max(12.)))
                                         .text_color(cx.theme().muted_foreground)
                                         .child(translation),
                                 )
@@ -6036,7 +5878,7 @@ impl AppView {
                             format!("audio-row-copy-{i}"),
                             "复制",
                             Action::AudioCopySubtitle(
-                                this.current_audio.clone(),
+                                this.audio.current_id.clone(),
                                 Some(cue.clone()),
                             ),
                             cx,
@@ -6057,19 +5899,19 @@ impl AppView {
                 .flex_col()
                 .overflow_hidden()
                 .when(
-                    !self.audio_blind.enabled && self.audio_show_current && active.is_some(),
+                    !self.audio.blind.enabled && self.audio.show_current && active.is_some(),
                     |v| {
                         v.child(
                             div()
                                 .px_5()
                                 .py_3()
                                 .bg(cx.theme().accent)
-                                .text_size(px(self.audio_font_size as f32))
-                                .child(self.cues[active.unwrap()].text.clone()),
+                                .text_size(px(self.audio.font_size as f32))
+                                .child(self.audio.cues[active.unwrap()].text.clone()),
                         )
                     },
                 )
-                .when(self.cues.is_empty(), |v| {
+                .when(self.audio.cues.is_empty(), |v| {
                     v.child(
                         div()
                             .flex_1()
@@ -6083,18 +5925,22 @@ impl AppView {
                             }),
                     )
                 })
-                .when(!self.cues.is_empty(), |v| v.child(transcript))
-                .when(self.audio_blind.enabled, |v| v.child(self.blind_panel(cx)))
+                .when(!self.audio.cues.is_empty(), |v| v.child(transcript))
+                .when(self.audio.blind.enabled, |v| v.child(self.blind_panel(cx)))
                 .into_any_element()
         };
-        let valid = self.loop_a.zip(self.loop_b).is_some_and(|(a, b)| b > a);
+        let valid = self
+            .media
+            .loop_a
+            .zip(self.media.loop_b)
+            .is_some_and(|(a, b)| b > a);
         let rates = [0.6, 0.7, 0.8, 1., 1.2, 1.25, 1.5, 2.]
             .into_iter()
             .map(|r| {
                 (
                     format!("{r}×"),
                     Action::Rate(r),
-                    (self.rate - r).abs() < 0.001,
+                    (self.media.rate - r).abs() < 0.001,
                     false,
                 )
             })
@@ -6106,7 +5952,7 @@ impl AppView {
                 (
                     n.into(),
                     Action::AudioRepeat(i),
-                    self.repeat == i,
+                    self.media.repeat == i,
                     i == 2 && !valid,
                 )
             })
@@ -6145,7 +5991,7 @@ impl AppView {
                         self.player_icon(
                             "audio-play",
                             "play",
-                            if self.playback.paused {
+                            if self.media.snapshot.paused {
                                 "播放 · 空格"
                             } else {
                                 "暂停 · 空格"
@@ -6153,13 +5999,13 @@ impl AppView {
                             Action::Play,
                             cx,
                         )
-                        .icon(
-                            Icon::new(IconName::ChevronDown).path(if self.playback.paused {
+                        .icon(Icon::new(IconName::ChevronDown).path(
+                            if self.media.snapshot.paused {
                                 "ui/play.svg"
                             } else {
                                 "ui/pause.svg"
-                            }),
-                        )
+                            },
+                        ))
                         .w(px(40.))
                         .h(px(40.))
                         .rounded_full()
@@ -6179,19 +6025,25 @@ impl AppView {
                     .child(div().text_xs().child(if available {
                         format!(
                             "{} / {}",
-                            clock(self.playback.position),
-                            clock(self.playback.duration)
+                            clock(self.media.snapshot.position),
+                            clock(self.media.snapshot.duration)
                         )
                     } else {
                         "00:00 / 00:00".into()
                     }))
-                    .child(self.player_menu("audio-speed", format!("{}× ▾", self.rate), rates, cx))
+                    .child(self.player_menu(
+                        "audio-speed",
+                        format!("{}× ▾", self.media.rate),
+                        rates,
+                        cx,
+                    ))
                     .child(div().flex_1())
                     .child(self.player_menu(
                         "audio-repeat",
                         format!(
                             "{} ▾",
-                            ["不循环", "单曲循环", "A–B 循环", "组循环", "单次连播"][self.repeat]
+                            ["不循环", "单曲循环", "A–B 循环", "组循环", "单次连播"]
+                                [self.media.repeat]
                         ),
                         repeat,
                         cx,
@@ -6199,7 +6051,7 @@ impl AppView {
                     .child(
                         self.button(
                             "audio-clip-mode",
-                            if self.audio_clip_mode && !self.audio_blind.enabled {
+                            if self.audio.clip_mode && !self.audio.blind.enabled {
                                 "截取片段 ✓"
                             } else {
                                 "截取片段"
@@ -6207,18 +6059,18 @@ impl AppView {
                             Action::AudioClipMode,
                             cx,
                         )
-                        .selected(self.audio_clip_mode)
-                        .disabled(!available || self.audio_blind.enabled),
+                        .selected(self.audio.clip_mode)
+                        .disabled(!available || self.audio.blind.enabled),
                     )
                     .child(
                         self.button(
                             "audio-highlights",
-                            if self.key_points.is_empty() {
+                            if self.audio.key_points.is_empty() {
                                 "✦ 标重点"
                             } else {
                                 "清除重点"
                             },
-                            if self.key_points.is_empty() {
+                            if self.audio.key_points.is_empty() {
                                 Action::Highlight
                             } else {
                                 Action::ClearHighlights
@@ -6227,19 +6079,25 @@ impl AppView {
                         )
                         .ghost()
                         .disabled(
-                            self.busy.is_some() || self.cues.is_empty() || self.audio_blind.enabled,
+                            self.tasks.cancel.is_some()
+                                || self.audio.cues.is_empty()
+                                || self.audio.blind.enabled,
                         ),
                     )
                     .child(self.player_icon(
                         "audio-mute",
-                        if self.volume == 0. { "muted" } else { "volume" },
+                        if self.media.volume == 0. {
+                            "muted"
+                        } else {
+                            "volume"
+                        },
                         "静音 / 恢复音量",
                         Action::Mute,
                         cx,
                     ))
                     .child(self.player_volume(cx)),
             );
-        if self.audio_clip_mode && !self.audio_blind.enabled {
+        if self.audio.clip_mode && !self.audio.blind.enabled {
             footer = footer.child(
                 div()
                     .flex()
@@ -6250,7 +6108,7 @@ impl AppView {
                         "audio-mark-a",
                         format!(
                             "A {}",
-                            self.loop_a.map(clip_clock).unwrap_or_else(|| "起点".into())
+                            self.media.loop_a.map(clip_clock).unwrap_or_else(|| "起点".into())
                         ),
                         Action::Mark(true),
                         cx,
@@ -6259,7 +6117,7 @@ impl AppView {
                         "audio-mark-b",
                         format!(
                             "B {}",
-                            self.loop_b.map(clip_clock).unwrap_or_else(|| "终点".into())
+                            self.media.loop_b.map(clip_clock).unwrap_or_else(|| "终点".into())
                         ),
                         Action::Mark(false),
                         cx,
@@ -6277,7 +6135,7 @@ impl AppView {
                     )
                     .child(self.button(
                         "audio-clip-editor",
-                        if self.audio_tools_open {
+                        if self.audio.tools_open {
                             "收起编辑"
                         } else {
                             "编辑片段"
@@ -6288,10 +6146,10 @@ impl AppView {
                     .child(
                         self.button("audio-save-clip", "保存为闪卡", Action::Clip, cx)
                             .primary()
-                            .disabled(!valid || self.busy.is_some()),
+                            .disabled(!valid || self.tasks.cancel.is_some()),
                     ),
             );
-            if self.audio_tools_open {
+            if self.audio.tools_open {
                 footer = footer.child(
                     div()
                         .flex()
@@ -6355,7 +6213,7 @@ impl AppView {
                     .child(
                         self.transport_button(
                             "play",
-                            if self.playback.paused {
+                            if self.media.snapshot.paused {
                                 "播放"
                             } else {
                                 "暂停"
@@ -6368,12 +6226,12 @@ impl AppView {
                     .child(self.transport_button("forward10", "+10秒", Action::Seek(10.), cx))
                     .child(format!(
                         "{} / {}",
-                        clock(self.playback.position),
-                        clock(self.playback.duration)
+                        clock(self.media.snapshot.position),
+                        clock(self.media.snapshot.duration)
                     ))
                     .child(self.transport_button(
                         "repeat",
-                        ["不循环", "单曲循环", "A/B循环", "组循环", "单次连播"][self.repeat],
+                        ["不循环", "单曲循环", "A/B循环", "组循环", "单次连播"][self.media.repeat],
                         Action::Repeat,
                         cx,
                     )),
@@ -6394,13 +6252,13 @@ impl AppView {
                     .child(self.transport_button(
                         "volume-down",
                         "音量 −",
-                        Action::Volume(self.volume - 10.),
+                        Action::Volume(self.media.volume - 10.),
                         cx,
                     ))
                     .child(self.transport_button(
                         "volume-up",
                         "音量 +",
-                        Action::Volume(self.volume + 10.),
+                        Action::Volume(self.media.volume + 10.),
                         cx,
                     )),
             )
@@ -6411,13 +6269,19 @@ impl AppView {
                     .flex_wrap()
                     .child(self.transport_button(
                         "point-a",
-                        format!("A {}", self.loop_a.map(clock).unwrap_or("未设置".into())),
+                        format!(
+                            "A {}",
+                            self.media.loop_a.map(clock).unwrap_or("未设置".into())
+                        ),
                         Action::Mark(true),
                         cx,
                     ))
                     .child(self.transport_button(
                         "point-b",
-                        format!("B {}", self.loop_b.map(clock).unwrap_or("未设置".into())),
+                        format!(
+                            "B {}",
+                            self.media.loop_b.map(clock).unwrap_or("未设置".into())
+                        ),
                         Action::Mark(false),
                         cx,
                     ))
@@ -6428,7 +6292,7 @@ impl AppView {
                             Action::Clip,
                             cx,
                         )
-                        .disabled(self.busy.is_some()),
+                        .disabled(self.tasks.cancel.is_some()),
                     ),
             )
             .into_any_element()
@@ -6445,6 +6309,12 @@ fn clock(s: f64) -> String {
 impl AppView {
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut content = div().flex().flex_col().gap_5().w_full();
+        if !self.data.error.is_empty() {
+            content = content.child(panel(cx).text_color(cx.theme().danger).child(format!(
+                "读取页面资料失败，正在显示上次内容：{}",
+                self.data.error
+            )));
+        }
         match self.page.as_str() {
             "flashcard" | "discover" => {
                 let discover = self.page == "discover";
@@ -6669,7 +6539,7 @@ impl AppView {
                     );
                     if !card.media.is_empty() {
                         if card.kind == "video" {
-                            if let Some(image) = &self.playback.frame {
+                            if let Some(image) = &self.media.snapshot.frame {
                                 content = content.child(
                                     img(image.clone())
                                         .w_full()
@@ -6829,15 +6699,15 @@ impl AppView {
                             .child(
                                 self.button("download", "下载并导入", Action::Download, cx)
                                     .primary()
-                                    .disabled(self.busy.is_some()),
+                                    .disabled(self.tasks.cancel.is_some()),
                             )
                             .child(
                                 self.button("read-parts", "读取分P / 选集", Action::ReadParts, cx)
-                                    .disabled(self.busy.is_some()),
+                                    .disabled(self.tasks.cancel.is_some()),
                             )
                             .child(
                                 self.button("cancel-download", "取消下载", Action::Cancel, cx)
-                                    .disabled(self.busy.is_none()),
+                                    .disabled(self.tasks.cancel.is_none()),
                             ),
                     )
                     .child(
@@ -6852,7 +6722,8 @@ impl AppView {
                     .max(300.);
                 let stacked = available < 780.;
                 let side_width = self
-                    .video_panel_width
+                    .video
+                    .panel_width
                     .clamp(300., (available * 0.48).max(300.));
                 let picture_height = if stacked {
                     (available * 9. / 16.).clamp(220., 360.)
@@ -6883,7 +6754,8 @@ impl AppView {
                             .gap_2()
                             .child(
                                 div().flex_1().min_w_0().text_sm().truncate().child(
-                                    self.current_path
+                                    self.media
+                                        .path
                                         .as_ref()
                                         .and_then(|p| p.file_name())
                                         .map(|v| v.to_string_lossy().to_string())
@@ -6891,7 +6763,8 @@ impl AppView {
                                 ),
                             )
                             .when_some(
-                                self.video_series
+                                self.video
+                                    .series
                                     .as_ref()
                                     .and_then(|s| s.current.map(|i| (i, s.parts.len()))),
                                 |v, (i, count)| {
@@ -6909,7 +6782,7 @@ impl AppView {
                                             cx,
                                         )
                                         .tooltip("上一 P")
-                                        .disabled(self.busy.is_some() || i == 0),
+                                        .disabled(self.tasks.cancel.is_some() || i == 0),
                                     )
                                     .child(
                                         self.button(
@@ -6919,21 +6792,23 @@ impl AppView {
                                             cx,
                                         )
                                         .tooltip("下一 P")
-                                        .disabled(self.busy.is_some() || i + 1 >= count),
+                                        .disabled(self.tasks.cancel.is_some() || i + 1 >= count),
                                     )
                                 },
                             )
                             .child(
                                 self.player_menu(
                                     "video-collection-picker",
-                                    format!("切换收藏 · {}", self.videos.items.len()),
-                                    self.videos
+                                    format!("切换收藏 · {}", self.video.collection.items.len()),
+                                    self.video
+                                        .collection
                                         .items
                                         .iter()
                                         .map(|v| {
                                             (
                                                 if self
-                                                    .videos
+                                                    .video
+                                                    .collection
                                                     .items
                                                     .iter()
                                                     .filter(|other| other.title == v.title)
@@ -6953,8 +6828,10 @@ impl AppView {
                                                     v.title.clone()
                                                 },
                                                 Action::VideoSelect(v.id.clone()),
-                                                self.videos.selected.as_ref() == Some(&v.id),
-                                                self.busy.is_some() || v.playable_path().is_none(),
+                                                self.video.collection.selected.as_ref()
+                                                    == Some(&v.id),
+                                                self.tasks.cancel.is_some()
+                                                    || v.playable_path().is_none(),
                                             )
                                         })
                                         .collect(),
@@ -6963,7 +6840,7 @@ impl AppView {
                             )
                             .child(self.button(
                                 "video-more",
-                                if self.video_tools_open {
+                                if self.video.tools_open {
                                     "收起更多 ▴"
                                 } else {
                                     "更多 ▾"
@@ -6974,7 +6851,7 @@ impl AppView {
                     );
                 stage = stage.child(self.video_picture(Some(px(picture_height)), cx));
                 stage = stage.child(self.transport(cx));
-                let count = self.video_series.as_ref().map_or(0, |s| s.parts.len());
+                let count = self.video.series.as_ref().map_or(0, |s| s.parts.len());
                 let tabs = div()
                     .flex()
                     .items_center()
@@ -6985,8 +6862,11 @@ impl AppView {
                     .border_color(cx.theme().border)
                     .children(
                         [
-                            (3, format!("我的视频 · {}", self.videos.items.len())),
-                            (0, format!("字幕 · {}", self.video_cues.len())),
+                            (
+                                3,
+                                format!("我的视频 · {}", self.video.collection.items.len()),
+                            ),
+                            (0, format!("字幕 · {}", self.video.cues.len())),
                             (1, format!("选集 · {count}")),
                             (2, "AI 提问".into()),
                         ]
@@ -6998,7 +6878,7 @@ impl AppView {
                                 Action::VideoPanel(tab),
                                 cx,
                             )
-                            .selected(self.video_tab == tab)
+                            .selected(self.video.tab == tab)
                             .flex_none()
                         }),
                     );
@@ -7015,21 +6895,21 @@ impl AppView {
                         v.w(px(side_width)).h(px(board_height)).flex_shrink_0()
                     })
                     .child(tabs);
-                match self.video_tab {
+                match self.video.tab {
                     3 => {
                         study = study.child(self.video_collection_panel(cx));
                     }
                     0 => {
                         let transcript = list(
-                            self.video_scroll.clone(),
+                            self.video.scroll.clone(),
                             cx.processor(|this, i: usize, _, cx| {
-                                let Some(cue) = this.video_cues.get(i) else {
+                                let Some(cue) = this.video.cues.get(i) else {
                                     return div().into_any_element();
                                 };
                                 let active = Some(i)
                                     == video_subtitles::active(
-                                        &this.video_cues,
-                                        this.playback.position,
+                                        &this.video.cues,
+                                        this.media.snapshot.position,
                                     );
                                 div()
                                     .id(("video-cue", i))
@@ -7134,7 +7014,7 @@ impl AppView {
                                                             cx,
                                                         )
                                                         .ghost()
-                                                        .disabled(this.chat_running)
+                                                        .disabled(this.chat.running)
                                                         .on_mouse_down(
                                                             MouseButton::Left,
                                                             |_, _, cx| cx.stop_propagation(),
@@ -7152,21 +7032,21 @@ impl AppView {
                         .min_h_0()
                         .w_full();
                         study = study.child(div().px_3().py_2().flex().items_center().gap_1().flex_wrap()
-                            .child(self.button("video-follow", if self.video_follow { "跟随 ✓" } else { "跟随" }, Action::VideoFollow, cx).ghost())
-                            .child(self.button("video-import-english", "导入英文字幕", Action::Pick("video-subtitle".into()),cx).ghost().disabled(self.current_path.is_none()||self.busy.is_some()||self.background_video.is_some()))
-                            .child(self.button("video-translate-zh", "英文生成中文", Action::VideoTranslate,cx).disabled(self.video_cues.is_empty()||self.busy.is_some()||self.background_video.is_some()||self.current_path.is_none()))
+                            .child(self.button("video-follow", if self.video.follow { "跟随 ✓" } else { "跟随" }, Action::VideoFollow, cx).ghost())
+                            .child(self.button("video-import-english", "导入英文字幕", Action::Pick("video-subtitle".into()),cx).ghost().disabled(self.media.path.is_none()||self.tasks.cancel.is_some()||self.tasks.video_job.is_some()))
+                            .child(self.button("video-translate-zh", "英文生成中文", Action::VideoTranslate,cx).disabled(self.video.cues.is_empty()||self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.media.path.is_none()))
                             .child(div().flex_1())
-                            .child(self.button("video-copy-all", "复制全部", Action::VideoCopySubtitle(None), cx).ghost().disabled(self.video_cues.is_empty()))
+                            .child(self.button("video-copy-all", "复制全部", Action::VideoCopySubtitle(None), cx).ghost().disabled(self.video.cues.is_empty()))
                             .child(self.button("video-transcribe-all", "全部P生成字幕", Action::VideoTranscribeAll,cx)
-                                .disabled(self.busy.is_some()||self.background_video.is_some()||self.video_series.is_none()||self.current_path.is_none()))
-                            .child(self.button("video-transcribe", if self.video_cues.is_empty() { "生成字幕" } else { "重新生成" }, Action::VideoTranscribe, cx)
-                                .disabled(self.busy.is_some() || self.background_video.is_some() || self.current_path.is_none())))
-                            .when(self.video_cues.is_empty(), |v| v.child(div().p_5().text_sm().text_color(cx.theme().muted_foreground)
+                                .disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.video.series.is_none()||self.media.path.is_none()))
+                            .child(self.button("video-transcribe", if self.video.cues.is_empty() { "生成字幕" } else { "重新生成" }, Action::VideoTranscribe, cx)
+                                .disabled(self.tasks.cancel.is_some() || self.tasks.video_job.is_some() || self.media.path.is_none())))
+                            .when(self.video.cues.is_empty(), |v| v.child(div().p_5().text_sm().text_color(cx.theme().muted_foreground)
                                 .child("生成或导入字幕后，点击句子即可播放。复制与 AI 提问位于每句下方。")))
-                            .when(!self.video_cues.is_empty(), |v| v.child(transcript));
+                            .when(!self.video.cues.is_empty(), |v| v.child(transcript));
                     }
                     1 => {
-                        if let Some(series) = &self.video_series {
+                        if let Some(series) = &self.video.series {
                             let current = series.current;
                             let parts = uniform_list(
                                 "bilibili-parts",
@@ -7174,10 +7054,10 @@ impl AppView {
                                 cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                                     range
                                         .map(|i| {
-                                            let series = this.video_series.as_ref().unwrap();
+                                            let series = this.video.series.as_ref().unwrap();
                                             let part = &series.parts[i];
                                             let playing = series.current == Some(i)
-                                                && part.path.as_ref() == this.current_path.as_ref();
+                                                && part.path.as_ref() == this.media.path.as_ref();
                                             div()
                                                 .id(("bili-part", i))
                                                 .h(px(64.))
@@ -7238,7 +7118,7 @@ impl AppView {
                                                 )
                                                 .on_click(cx.listener(
                                                     move |this, _, window, cx| {
-                                                        if this.busy.is_none() {
+                                                        if this.tasks.cancel.is_none() {
                                                             this.handle(
                                                                 Action::SelectPart(i),
                                                                 window,
@@ -7253,12 +7133,12 @@ impl AppView {
                                 }),
                             )
                             .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::FitList)
-                            .track_scroll(self.parts_scroll.clone())
+                            .track_scroll(self.video.parts_scroll.clone())
                             .size_full()
                             .pr_3();
                             study = study
                                 .child(div().px_3().py_2().flex().flex_col().gap_1()
-                                    .child(self.button("parts-transcribe-all", "全部P生成字幕",Action::VideoTranscribeAll,cx).primary().disabled(self.busy.is_some()||self.background_video.is_some()||self.current_path.is_none()))
+                                    .child(self.button("parts-transcribe-all", "全部P生成字幕",Action::VideoTranscribeAll,cx).primary().disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.media.path.is_none()))
                                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child("已有字幕跳过 · 未下载的P先下载 · 可切换播放，退出应用会停止任务")))
                                 .child(
                                     div()
@@ -7278,7 +7158,7 @@ impl AppView {
                                                 cx,
                                             )
                                             .disabled(
-                                                self.busy.is_some()
+                                                self.tasks.cancel.is_some()
                                                     || current.is_none_or(|i| i == 0),
                                             ),
                                         )
@@ -7290,14 +7170,14 @@ impl AppView {
                                                 cx,
                                             )
                                             .disabled(
-                                                self.busy.is_some()
+                                                self.tasks.cancel.is_some()
                                                     || current.is_none_or(|i| i + 1 >= count),
                                             ),
                                         )
                                         .child(
                                             self.button(
                                                 "auto-next-part",
-                                                if self.auto_next_part {
+                                                if self.video.auto_next_part {
                                                     "自动连播 ✓"
                                                 } else {
                                                     "自动连播"
@@ -7318,7 +7198,7 @@ impl AppView {
                                         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                                         .child(parts)
                                         .child(
-                                            Scrollbar::vertical(&self.parts_scroll)
+                                            Scrollbar::vertical(&self.video.parts_scroll)
                                                 .scrollbar_show(ScrollbarShow::Always),
                                         ),
                                 );
@@ -7360,16 +7240,16 @@ impl AppView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                            this.video_resize = Some((event.position.x, side_width));
+                            this.video.resize = Some((event.position.x, side_width));
                         }),
                     )
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(|this, _, _, _| this.video_resize = None),
+                        cx.listener(|this, _, _, _| this.video.resize = None),
                     )
                     .on_mouse_up_out(
                         MouseButton::Left,
-                        cx.listener(|this, _, _, _| this.video_resize = None),
+                        cx.listener(|this, _, _, _| this.video.resize = None),
                     );
                 content = content.child(
                     div()
@@ -7380,7 +7260,7 @@ impl AppView {
                         .when(!stacked, |v| v.child(divider))
                         .child(study),
                 );
-                if self.video_tools_open || self.current_path.is_none() {
+                if self.video.tools_open || self.media.path.is_none() {
                     content = content.child(
                         div()
                             .flex()
@@ -7399,7 +7279,7 @@ impl AppView {
                                     Action::VideoSubtitleExport,
                                     cx,
                                 )
-                                .disabled(self.video_cues.is_empty()),
+                                .disabled(self.video.cues.is_empty()),
                             ),
                     );
                     content = content.child(download_panel);
@@ -7431,7 +7311,7 @@ impl AppView {
                                     cx,
                                 )),
                         );
-                    for track in &self.playback.tracks {
+                    for track in &self.media.snapshot.tracks {
                         if track["type"] == "sub" {
                             let key = track["id"].as_i64().unwrap_or(0);
                             let label = track["title"]
@@ -7494,7 +7374,7 @@ impl AppView {
                             ))
                             .child(
                                 self.button("score-record", "转写并对齐评分", Action::Score, cx)
-                                    .disabled(self.busy.is_some()),
+                                    .disabled(self.tasks.cancel.is_some()),
                             ),
                     );
                 if let Some(path) = &self.recorded {
@@ -7513,13 +7393,7 @@ impl AppView {
                         cx,
                     ));
                 }
-                for (i, record) in documents::records(&self.lib, "speaking")
-                    .unwrap_or_default()
-                    .into_iter()
-                    .rev()
-                    .take(20)
-                    .enumerate()
-                {
+                for (i, record) in self.data.speaking.iter().enumerate() {
                     content = content.child(
                         panel(cx)
                             .child(format!(
@@ -7539,25 +7413,18 @@ impl AppView {
             }
             "pdf" => {
                 let mut library = div().flex().gap_2().flex_wrap();
-                if let Ok(files) = fs::read_dir(self.lib.root.join("pdf")) {
-                    for (i, path) in files
-                        .filter_map(Result::ok)
-                        .map(|e| e.path())
-                        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")))
-                        .enumerate()
-                    {
-                        library = library.child(
-                            self.button(
-                                format!("pdf-library-{i}"),
-                                path.file_stem()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .to_string(),
-                                Action::PdfOpen(path),
-                                cx,
-                            ),
-                        );
-                    }
+                for (i, path) in self.data.pdf_files.iter().cloned().enumerate() {
+                    library = library.child(
+                        self.button(
+                            format!("pdf-library-{i}"),
+                            path.file_stem()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string(),
+                            Action::PdfOpen(path),
+                            cx,
+                        ),
+                    );
                 }
                 content = content.child(library);
                 content = content.child(
@@ -7571,11 +7438,11 @@ impl AppView {
                         )
                         .child(
                             self.button("pdf-prev", "上一页", Action::PdfPage(-1), cx)
-                                .disabled(self.busy.is_some()),
+                                .disabled(self.tasks.cancel.is_some()),
                         )
                         .child(
                             self.button("pdf-next", "下一页", Action::PdfPage(1), cx)
-                                .disabled(self.busy.is_some()),
+                                .disabled(self.tasks.cancel.is_some()),
                         )
                         .child(self.button("pdf-smaller", "缩小", Action::PdfZoom(-200), cx))
                         .child(self.button("pdf-larger", "放大", Action::PdfZoom(200), cx))
@@ -7608,7 +7475,7 @@ impl AppView {
                         cx,
                     )
                     .primary()
-                    .disabled(self.busy.is_some()),
+                    .disabled(self.tasks.cancel.is_some()),
                 );
                 if !self.output.is_empty() {
                     content = content.child(TextView::markdown(
@@ -7618,12 +7485,7 @@ impl AppView {
                         cx,
                     ));
                 }
-                for record in documents::records(&self.lib, "ocr")
-                    .unwrap_or_default()
-                    .into_iter()
-                    .rev()
-                    .take(30)
-                {
+                for record in &self.data.ocr {
                     content = content.child(
                         panel(cx)
                             .child(record["name"].as_str().unwrap_or("图片").to_string())
@@ -7632,13 +7494,11 @@ impl AppView {
                 }
             }
             "graph" => {
-                let graph: Value =
-                    serde_json::from_str(include_str!("../../clarora-app/assets/graph-data.json"))
-                        .unwrap_or_default();
-                let nodes = graph["nodes"].as_array().cloned().unwrap_or_default();
+                let graph = clarora_gpui::view_data::graph();
+                let nodes = graph["nodes"].as_array().map(Vec::as_slice).unwrap_or(&[]);
                 content = content.child(Input::new(&self.inputs["search"]));
                 let mut lists = std::collections::BTreeSet::new();
-                for n in &nodes {
+                for n in nodes {
                     if let Some(list) = n["list_num"].as_i64() {
                         lists.insert(list);
                     }
@@ -7720,9 +7580,8 @@ impl AppView {
                 }
                 content = content.child(nodes_view);
                 for row in self
-                    .lib
-                    .list("words")
-                    .unwrap_or_default()
+                    .data
+                    .words
                     .iter()
                     .filter(|r| text(r, "word").to_lowercase().contains(&query))
                     .take(300)
@@ -7737,7 +7596,7 @@ impl AppView {
                 }
             }
             "stats" => {
-                let rows = self.lib.list("study_stats").unwrap_or_default();
+                let rows = &self.data.stats;
                 let listening: f64 = rows
                     .iter()
                     .filter_map(|r| r["listen_seconds"].as_f64())
@@ -7822,9 +7681,9 @@ impl AppView {
                     );
                 }
                 content = content.child("最近 14 天听力时长").child(listening_chart);
-                let attempts = documents::records(&self.lib, "speaking").unwrap_or_default();
+                let attempts = &self.data.speaking;
                 let mut trend = div().flex().gap_2().items_end().h(px(140.));
-                for record in attempts.iter().rev().take(20).rev() {
+                for record in attempts.iter().rev() {
                     let accuracy = record["score"]["accuracy"]
                         .as_f64()
                         .or_else(|| record["accuracy"].as_f64().map(|v| v * 100.))
@@ -7898,309 +7757,7 @@ impl AppView {
                 );
             }
             "settings" => {
-                content = content.child(
-                    panel(cx)
-                        .child("本机资料与外观")
-                        .child(self.lib.root.to_string_lossy().to_string())
-                        .child(self.button("theme", "切换深浅主题", Action::Theme, cx))
-                        .child(self.field("daily_limit", "每日新卡上限")),
-                );
-                content=content.child(panel(cx)
-                    .child(div().text_lg().child("密钥存储"))
-                    .child(Switch::new("credential-security-mode")
-                        .label("使用系统凭证库保护密钥")
-                        .checked(self.secure_credentials)
-                        .disabled(self.busy.is_some()||self.background_video.is_some())
-                        .on_click(cx.listener(|this,checked:&bool,window,cx|this.handle(Action::CredentialMode(*checked),window,cx))))
-                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("默认关闭：密钥保存到本机 SQLite，不访问钥匙串。开启后使用系统凭证库，系统可能要求授权。"))
-                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("SQLite 中的密钥未额外加密。应用导出的资料备份不包含密钥。"))
-                    .when(!self.secure_credentials && credentials::needs_legacy_import(&self.lib).unwrap_or(false),|v|v
-                        .child(div().text_sm().child("旧密钥还在钥匙串中。可重新输入后保存，或主动导入一次。"))
-                        .child(self.button("import-legacy-credentials","导入旧钥匙串密钥（可能需一次授权）",Action::ImportLegacyCredentials,cx)
-                            .disabled(self.busy.is_some()||self.background_video.is_some()))));
-                // Read only the saved configuration, without accessing the credential store
-                // during rendering. Keep draft selection distinct from the active engine.
-                let saved_ai = self.lib.setting("ai_config").ok().and_then(|raw| {
-                    if raw.is_empty() {
-                        Some(ai::Config {
-                            engine: "local".into(),
-                            local_model: "base.en".into(),
-                            ..Default::default()
-                        })
-                    } else {
-                        serde_json::from_str::<ai::Config>(&raw).ok()
-                    }
-                });
-                let draft_model = self.value("local_model", cx);
-                let draft_local = self.value("engine", cx) == "local";
-                let active_model = saved_ai
-                    .as_ref()
-                    .filter(|c| c.engine == "local")
-                    .map(|c| c.local_model.as_str());
-                let selection_summary = match saved_ai.as_ref() {
-                    Some(c) if c.engine == "local" => {
-                        format!("当前生效：本地模型 {}", c.local_model)
-                    }
-                    Some(_) => "当前生效：远端转写 API".into(),
-                    None => "无法读取已保存的模型设置".into(),
-                };
-                let pending = draft_local && active_model != Some(draft_model.as_str());
-                let mut models = panel(cx)
-                    .child(div().text_lg().child("本地语音识别模型 · ASR"))
-                    .child("用于音频、视频字幕及跟读转写。下载后可离线识别；聊天与图片识字仍使用 API。")
-                    .child("中文视频请选择多语言 Whisper 或 SenseVoice；.en 仅英语。体积为下载量，不是运行内存。")
-                    .child("操作：下载 → 选用 → 点击下方「保存 AI 与学习设置」。已下载仅表示文件存在。 ")
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child(selection_summary))
-                    .when(pending, |v| v.child(div().text_color(cx.theme().primary).child(format!("已选择：{draft_model} · 待保存，保存后生效"))));
-                if let Some(progress) = &self.model_progress {
-                    models = models.child(
-                        div()
-                            .p_4()
-                            .rounded_lg()
-                            .bg(cx.theme().accent)
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("模型下载进度（当前文件）"),
-                            )
-                            .child(div().text_sm().child(progress.label()))
-                            .when_some(progress.percent(), |v, p| {
-                                v.child(Progress::new().value(p).bg(cx.theme().primary))
-                            })
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!("下载源：{}", progress.source)),
-                            )
-                            .child(self.button("cancel-model", "取消下载", Action::Cancel, cx)),
-                    );
-                }
-                for (model, name, details) in [
-                    (
-                        "tiny.en",
-                        "OpenAI Whisper Tiny.en",
-                        "仅英语 · 39M 参数 · 约 75 MiB · 最小的英语版本",
-                    ),
-                    (
-                        "base.en",
-                        "OpenAI Whisper Base.en",
-                        "仅英语 · 74M 参数 · 约 142 MiB · 默认表单模型",
-                    ),
-                    (
-                        "small.en",
-                        "OpenAI Whisper Small.en",
-                        "仅英语 · 244M 参数 · 约 466 MiB · 更大的英语版本",
-                    ),
-                    (
-                        "base",
-                        "OpenAI Whisper Base · 多语言",
-                        "含中文、英语、日语等 · 74M 参数 · 约 142 MiB",
-                    ),
-                    (
-                        "small",
-                        "OpenAI Whisper Small · 多语言",
-                        "含中文、英语、日语等 · 244M 参数 · 约 466 MiB",
-                    ),
-                    (
-                        "sense-voice",
-                        "FunAudioLLM SenseVoiceSmall · 2024-07-17",
-                        "普通话、英语、日语、韩语、粤语 · INT8 ONNX 模型 + tokens.txt",
-                    ),
-                ] {
-                    let present = if model == "sense-voice" {
-                        self.lib
-                            .root
-                            .join("models/sense-voice/model.int8.onnx")
-                            .is_file()
-                            && self
-                                .lib
-                                .root
-                                .join("models/sense-voice/tokens.txt")
-                                .is_file()
-                    } else {
-                        self.lib
-                            .root
-                            .join("models")
-                            .join(format!("ggml-{model}.bin"))
-                            .is_file()
-                    };
-                    let selected = draft_local && draft_model == model;
-                    let active = active_model == Some(model);
-                    models = models.child(
-                        div()
-                            .p_3()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(if selected {
-                                cx.theme().primary
-                            } else {
-                                cx.theme().border
-                            })
-                            .when(selected, |v| v.bg(cx.theme().accent))
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .when(active, |v| {
-                                v.child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().primary)
-                                        .child("✓ 当前生效"),
-                                )
-                            })
-                            .when(selected && !active, |v| {
-                                v.child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().primary)
-                                        .child("✓ 已选择 · 待保存"),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(format!("{name}  [{model}]")),
-                            )
-                            .child(div().text_sm().child(details))
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap_2()
-                                    .child(
-                                        self.button(
-                                            format!("model-{model}"),
-                                            if present {
-                                                "文件已下载"
-                                            } else {
-                                                "下载模型"
-                                            },
-                                            Action::Models(model.into()),
-                                            cx,
-                                        )
-                                        .disabled(present || self.busy.is_some()),
-                                    )
-                                    .child(
-                                        self.button(
-                                            format!("select-model-{model}"),
-                                            if selected {
-                                                if active {
-                                                    "✓ 已选用"
-                                                } else {
-                                                    "✓ 已选择 · 待保存"
-                                                }
-                                            } else {
-                                                "选用"
-                                            },
-                                            Action::SelectModel(model.into()),
-                                            cx,
-                                        )
-                                        .selected(selected)
-                                        .disabled(!present || self.busy.is_some() || selected),
-                                    ),
-                            ),
-                    );
-                }
-                models = models
-                    .child("运行要求：FFmpeg；Whisper 需 clarora-asr 或 whisper-cli，SenseVoice 需 clarora-asr + sherpa-onnx。下载模型不会安装推理程序。")
-                    .child("本机已实测 Whisper tiny.en；其余模型尚未完成真实推理验收。详细来源、文件路径和安装方法见 GPUI README。 ");
-                content = content.child(models);
-                content = content.child(
-                    panel(cx)
-                        .child(div().text_lg().child("AI 服务"))
-                        .child(div().text_sm().text_color(cx.theme().muted_foreground)
-                            .child("聊天与远端转写共用下面一组设置，模型需支持这两种能力。保存后统一生效。"))
-                        .child(self.field("base_url", "共用 API Base URL"))
-                        .child(self.field("model", "聊天／远端转写共用模型 ID"))
-                        .child(self.field("chat_key", "共用 API Key · 留空保留已保存密钥"))
-                        .child(self.field("vision_model", "视觉模型（可选，留空使用共用模型）"))
-                        .child(
-                            self.field("engine", "转写引擎：local = 本机；compatible = 远端 API"),
-                        )
-                        .child(self.field(
-                            "local_model",
-                            "本地语音模型 ID（local 引擎使用，选用后需保存）",
-                        ))
-                        .child(self.field("command", "本机命令导入"))
-                        .child(
-                            self.button("save-ai", "保存 AI 与学习设置", Action::SaveAi, cx)
-                                .primary()
-                                .disabled(self.busy.is_some()),
-                        ),
-                );
-
-                content = content.child(
-                    panel(cx)
-                        .child(div().text_lg().child("同步与备份"))
-                        .child(self.field("provider", "存储类型 s3 / oss"))
-                        .child(self.field("endpoint", "Endpoint"))
-                        .child(self.field("region", "Region"))
-                        .child(self.field("bucket", "Bucket"))
-                        .child(self.field("access_key", "Access Key ID"))
-                        .child(self.field("secret_key", "Secret Access Key"))
-                        .child(self.field("session_token", "Session Token（可选）"))
-                        .child(self.field("prefix", "资料库前缀"))
-                        .child(self.field("path_style", "S3 路径模式 true / false"))
-                        .child(
-                            self.button("save-storage", "保存存储配置", Action::SaveStorage, cx)
-                                .disabled(self.busy.is_some()),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .gap_2()
-                                .flex_wrap()
-                                .child(
-                                    self.button(
-                                        "cloud-backup",
-                                        "备份本机资料",
-                                        Action::CloudBackup,
-                                        cx,
-                                    )
-                                    .disabled(self.busy.is_some()),
-                                )
-                                .child(
-                                    self.button(
-                                        "cloud-list",
-                                        "读取备份版本",
-                                        Action::CloudList,
-                                        cx,
-                                    )
-                                    .disabled(self.busy.is_some()),
-                                ),
-                        ),
-                );
-                for (i, key) in self.backups.iter().enumerate() {
-                    content = content.child(
-                        self.button(
-                            format!("restore-{i}"),
-                            format!("合并：{key}"),
-                            Action::CloudRestore(key.clone()),
-                            cx,
-                        )
-                        .disabled(self.busy.is_some()),
-                    );
-                }
-                content = content.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(self.button(
-                            "local-backup",
-                            "导出本机备份 ZIP",
-                            Action::Pick("backup".into()),
-                            cx,
-                        ))
-                        .child(self.button(
-                            "local-restore",
-                            "导入并合并 ZIP",
-                            Action::Pick("restore".into()),
-                            cx,
-                        )),
-                );
+                content = content.child(self.settings_view(window, cx));
             }
             _ => {}
         }
@@ -8225,20 +7782,20 @@ impl Render for AppView {
             .find(|(key, _, _)| *key == self.page)
             .map(|(_, a, b)| (*a, *b))
             .unwrap_or(("Clarora", ""));
-        if self.video_fullscreen {
+        if self.video.fullscreen {
             if window.is_fullscreen() {
-                if !self.video_fullscreen_seen {
+                if !self.video.fullscreen_seen {
                     window.focus(&self.focus);
                 }
-                self.video_fullscreen_seen = true;
-            } else if self.video_fullscreen_seen {
+                self.video.fullscreen_seen = true;
+            } else if self.video.fullscreen_seen {
                 // The user may exit through the native window controls.
-                self.video_fullscreen = false;
-                self.video_fullscreen_owned = false;
-                self.video_fullscreen_seen = false;
+                self.video.fullscreen = false;
+                self.video.fullscreen_owned = false;
+                self.video.fullscreen_seen = false;
             }
         }
-        if self.video_fullscreen && self.page == "video" {
+        if self.video.fullscreen && self.page == "video" {
             return self.fullscreen_video(cx);
         }
         let navigation_progress = self.navigation_progress();
@@ -8427,17 +7984,17 @@ impl Render for AppView {
             .track_focus(&self.focus)
             .key_context("Clarora")
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                if let Some((start, width)) = this.video_resize {
+                if let Some((start, width)) = this.video.resize {
                     if event.dragging() {
                         let available = (f32::from(window.viewport_size().width)
                             - if this.navigation_open { 224. } else { 0. }
                             - 32.)
                             .max(300.);
-                        this.video_panel_width = (width - f32::from(event.position.x - start))
+                        this.video.panel_width = (width - f32::from(event.position.x - start))
                             .clamp(300., (available * 0.48).max(300.));
                         cx.notify();
                     } else {
-                        this.video_resize = None;
+                        this.video.resize = None;
                     }
                 }
             }))
@@ -8468,7 +8025,8 @@ impl Render for AppView {
             .on_action(cx.listener(|this, _: &NextVideoPart, window, cx| {
                 if this.page == "video" {
                     if let Some(index) = this
-                        .video_series
+                        .video
+                        .series
                         .as_ref()
                         .and_then(|s| s.current)
                         .map(|i| i + 1)
@@ -8480,7 +8038,8 @@ impl Render for AppView {
             .on_action(cx.listener(|this, _: &PreviousVideoPart, window, cx| {
                 if this.page == "video" {
                     if let Some(index) = this
-                        .video_series
+                        .video
+                        .series
                         .as_ref()
                         .and_then(|s| s.current)
                         .and_then(|i| i.checked_sub(1))
@@ -8584,7 +8143,7 @@ impl Render for AppView {
                 cx.listener(|this, _: &AskAi, window, cx| this.handle(Action::Chat, window, cx)),
             )
             .on_action(cx.listener(|this, _: &ToggleBlindListening, window, cx| {
-                this.handle(Action::AudioBlind(!this.audio_blind.enabled), window, cx);
+                this.handle(Action::AudioBlind(!this.audio.blind.enabled), window, cx);
             }))
             .on_action(cx.listener(|this, _: &RevealBlindSentence, window, cx| {
                 this.handle(Action::AudioBlindReveal, window, cx);
@@ -8656,7 +8215,7 @@ impl Render for AppView {
                 }
                 if window.focused(cx) == Some(this.focus.clone()) {
                     if this.page == "listening"
-                        && this.audio_blind.enabled
+                        && this.audio.blind.enabled
                         && !event.keystroke.modifiers.alt
                         && !event.keystroke.modifiers.shift
                     {
@@ -8664,7 +8223,7 @@ impl Render for AppView {
                             "r" => Some(Action::AudioBlindSentence(0)),
                             "up" => Some(Action::AudioBlindSentence(-1)),
                             "down" => Some(Action::AudioBlindSentence(1)),
-                            "h" => Some(if this.audio_blind.revealed.is_some() {
+                            "h" => Some(if this.audio.blind.revealed.is_some() {
                                 Action::AudioBlindHide
                             } else {
                                 Action::AudioBlindReveal
@@ -8844,9 +8403,9 @@ impl Render for AppView {
                             .child(content),
                     )
                     .when(
-                        (self.task_notice.is_none() && self.video_job_notice.is_none())
-                            || (self.busy.is_some() && self.task_notice.is_none())
-                            || !self.playback.error.is_empty(),
+                        (self.tasks.notice.is_none() && self.tasks.video_notice.is_none())
+                            || (self.tasks.cancel.is_some() && self.tasks.notice.is_none())
+                            || !self.media.snapshot.error.is_empty(),
                         |view| {
                             view.child(
                                 div()
@@ -8859,7 +8418,7 @@ impl Render for AppView {
                                     .gap_3()
                                     .items_center()
                                     .child(div().size(px(6.)).rounded_full().bg(
-                                        if self.busy.is_some() {
+                                        if self.tasks.cancel.is_some() {
                                             cx.theme().primary
                                         } else {
                                             cx.theme().muted_foreground
@@ -8873,7 +8432,10 @@ impl Render for AppView {
                                             .child(self.status.clone()),
                                     )
                                     .when_some(
-                                        self.model_progress.as_ref().and_then(|p| p.percent()),
+                                        self.tasks
+                                            .model_progress
+                                            .as_ref()
+                                            .and_then(|p| p.percent()),
                                         |view, p| {
                                             view.child(
                                                 Progress::new()
@@ -8884,7 +8446,7 @@ impl Render for AppView {
                                         },
                                     )
                                     .when(
-                                        self.busy.is_some() && self.task_notice.is_none(),
+                                        self.tasks.cancel.is_some() && self.tasks.notice.is_none(),
                                         |view| {
                                             view.child(self.button(
                                                 "cancel-task",
@@ -8894,8 +8456,8 @@ impl Render for AppView {
                                             ))
                                         },
                                     )
-                                    .when(!self.playback.error.is_empty(), |view| {
-                                        view.child(self.playback.error.clone())
+                                    .when(!self.media.snapshot.error.is_empty(), |view| {
+                                        view.child(self.media.snapshot.error.clone())
                                     }),
                             )
                         },
@@ -8908,6 +8470,15 @@ impl Render for AppView {
 }
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
+    if let Some(index) = args.iter().position(|arg| arg == "--runtime-check") {
+        let path = PathBuf::from(
+            args.get(index + 1)
+                .context("--runtime-check 缺少报告路径")?,
+        );
+        let report = clarora_gpui::runtime::check(&path)?;
+        ensure!(report.passed, "运行环境检查失败，详情见 {}", path.display());
+        return Ok(());
+    }
     let root = if let Some(index) = args.iter().position(|arg| arg == "--data-dir") {
         PathBuf::from(args.get(index + 1).context("--data-dir 缺少目录")?)
     } else {
@@ -9062,13 +8633,13 @@ fn main() -> Result<()> {
 
 impl Drop for AppView {
     fn drop(&mut self) {
-        if let Some(cancel) = &self.busy {
+        if let Some(cancel) = &self.tasks.cancel {
             cancel.store(true, Ordering::SeqCst);
         }
-        if let Some(cancel) = &self.waveform_cancel {
+        if let Some(cancel) = &self.audio.waveform_cancel {
             cancel.store(true, Ordering::SeqCst);
         }
         self.save_media_position();
-        let _ = self.lib.stat("listen_seconds", self.stats_ticks);
+        let _ = self.lib.stat("listen_seconds", self.media.stats_ticks);
     }
 }

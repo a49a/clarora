@@ -11,12 +11,16 @@ mod backup_cancel;
 mod bilibili_parts;
 #[path = "support/blind_listening.rs"]
 mod blind_listening;
+#[path = "support/chat_store.rs"]
+mod chat_store;
 #[path = "support/credential_mode.rs"]
 mod credential_mode;
 #[path = "support/kokoro.rs"]
 mod kokoro;
 #[path = "support/model_progress.rs"]
 mod model_progress;
+#[path = "support/playback_state.rs"]
+mod playback_state;
 #[path = "support/protocol.rs"]
 mod protocol;
 #[path = "support/review_queue.rs"]
@@ -31,6 +35,8 @@ mod video_qa;
 mod video_repeat;
 #[path = "support/video_translation.rs"]
 mod video_translation;
+#[path = "support/view_data.rs"]
+mod view_data;
 #[path = "support/writing.rs"]
 mod writing;
 use anyhow::{Context, Result, ensure};
@@ -182,6 +188,9 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = output.join(format!("run-{}", data::id()));
     fs::create_dir_all(&root)?;
     let lib = Library::open(root.join("source"))?;
+    chat_store::run(&lib, results)?;
+    view_data::run(&lib, results)?;
+    playback_state::run(&lib, results)?;
     video_repeat::run(&lib, results)?;
     writing::run(&lib, results)?;
     reliability(&lib, results)?;
@@ -839,6 +848,7 @@ fn main() -> Result<()> {
         Some("--http-only") => "http-only",
         Some("--reliability-only") => "reliability-only",
         Some("--writing-only") => "writing-only",
+        Some("--state-only") => "state-only",
         Some("--video-repeat-only") => "video-repeat-only",
         _ => "full",
     };
@@ -850,6 +860,11 @@ fn main() -> Result<()> {
             &PathBuf::from(args.get(4).context("缺少图片夹具")?),
             &mut results,
         )
+    } else if mode == "state-only" {
+        let lib = Library::open(output.join(format!("state-{}", data::id())))?;
+        chat_store::run(&lib, &mut results)
+            .and_then(|_| view_data::run(&lib, &mut results))
+            .and_then(|_| playback_state::run(&lib, &mut results))
     } else if mode == "video-repeat-only" {
         let lib = Library::open(output.join(format!("video-repeat-{}", data::id())))?;
         video_repeat::run(&lib, &mut results)

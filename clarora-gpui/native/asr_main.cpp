@@ -16,19 +16,22 @@ int run(int argc, char **argv) {
   // Dynamic GGML installations (including Homebrew) require backend discovery.
   // A linked libwhisper alone can otherwise have no registered CPU device.
   if (std::strcmp(argv[1], "sense-voice") != 0 && !ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)) {
-    const char *backend = std::getenv("CLARORA_GGML_CPU_BACKEND");
-    const auto parent = std::filesystem::u8path(argv[0]).parent_path();
+    const auto parent = std::filesystem::absolute(std::filesystem::u8path(argv[0])).parent_path();
+    const bool packaged = std::filesystem::is_regular_file(parent / "runtime-manifest.json") ||
+                          std::filesystem::is_regular_file(parent.parent_path() / "runtime-manifest.json") ||
+                          std::filesystem::is_regular_file(parent.parent_path().parent_path() / "Resources/runtime-manifest.json");
+    const char *backend = packaged ? nullptr : std::getenv("CLARORA_GGML_CPU_BACKEND");
     std::string nearby;
     for (const char *name : {"ggml-cpu.dll", "libggml-cpu.so", "libggml-cpu.dylib"}) {
       auto path = parent / name;
       if (std::filesystem::is_regular_file(path)) { nearby = path.u8string(); break; }
     }
-    if ((!backend || !backend[0]) && !nearby.empty()) backend = nearby.c_str();
+    if (!nearby.empty()) backend = nearby.c_str();
 #ifdef CLARORA_GGML_CPU_BACKEND
-    if (!backend || !backend[0]) backend = CLARORA_GGML_CPU_BACKEND;
+    if (!packaged && (!backend || !backend[0])) backend = CLARORA_GGML_CPU_BACKEND;
 #endif
     if (backend && backend[0]) ggml_backend_load(backend);
-    else ggml_backend_load_all();
+    else if (!packaged) ggml_backend_load_all();
   }
   if (std::strcmp(argv[1], "sense-voice") != 0 && !ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)) {
     std::fprintf(stderr, "No GGML backend found; install its matching CPU backend runtime.\n");

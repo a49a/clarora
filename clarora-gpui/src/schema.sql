@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS review_schedule (card_kind TEXT NOT NULL, card_id TEX
 CREATE TABLE IF NOT EXISTS study_stats (day TEXT PRIMARY KEY, listen_seconds REAL NOT NULL DEFAULT 0, review_count INTEGER NOT NULL DEFAULT 0, pomodoro_count INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS video_clips (id TEXT PRIMARY KEY, en_text TEXT NOT NULL, zh_text TEXT, video_uri TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE TABLE IF NOT EXISTS ai_records (id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ai_records_context ON ai_records(kind, CASE WHEN json_valid(payload) THEN json_extract(payload,'$.context') END, created_at DESC);
 CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS discover_favorites (key TEXT PRIMARY KEY, payload TEXT NOT NULL);
 

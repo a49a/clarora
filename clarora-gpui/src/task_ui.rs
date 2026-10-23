@@ -32,7 +32,7 @@ impl TaskNotice {
 }
 impl AppView {
     pub(super) fn subtitle_task_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        if self.task_notice.is_none() && self.video_job_notice.is_none() {
+        if self.tasks.notice.is_none() && self.tasks.video_notice.is_none() {
             return None;
         }
         Some(
@@ -40,7 +40,7 @@ impl AppView {
                 .flex_shrink_0()
                 .flex()
                 .flex_col()
-                .children(self.video_job_notice.as_ref().map(|n| {
+                .children(self.tasks.video_notice.as_ref().map(|n| {
                     self.task_notice_card(
                         n,
                         "background-video",
@@ -49,7 +49,7 @@ impl AppView {
                         cx,
                     )
                 }))
-                .children(self.task_notice.as_ref().map(|n| {
+                .children(self.tasks.notice.as_ref().map(|n| {
                     self.task_notice_card(
                         n,
                         "subtitle",

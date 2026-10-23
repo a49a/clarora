@@ -32,7 +32,8 @@ pub fn load_pdf_page(lib: &Library, path: &Path, page: u16, width: i32) -> Resul
     })
 }
 fn pdfium() -> Result<Pdfium> {
-    if let Some(path) = std::env::var_os("PDFIUM_LIB_PATH") {
+    if let Some(path) = std::env::var_os("PDFIUM_LIB_PATH").filter(|_| !crate::runtime::packaged())
+    {
         return Ok(Pdfium::new(Pdfium::bind_to_library(
             Pdfium::pdfium_platform_library_name_at_path(&std::path::PathBuf::from(path)),
         )?));
@@ -46,9 +47,17 @@ fn pdfium() -> Result<Pdfium> {
             }
         }
     }
+    ensure!(
+        !crate::runtime::packaged(),
+        "安装包缺少或无法加载 PDFium，请重新安装完整版本"
+    );
     Ok(Pdfium::new(Pdfium::bind_to_system_library().context(
         "未找到 pdfium 动态库，请安装到程序旁或设置 PDFIUM_LIB_PATH",
     )?))
+}
+pub fn check_pdf_runtime() -> Result<()> {
+    let _ = pdfium()?;
+    Ok(())
 }
 pub fn pdf_text(path: &Path, page: u16) -> Result<String> {
     let pdf = pdfium()?;
@@ -366,14 +375,15 @@ pub fn save_sentence(lib: &Library, text: &str, translation: &str) -> Result<()>
     )
 }
 pub fn records(lib: &Library, kind: &str) -> Result<Vec<Value>> {
-    let mut rows = lib
-        .list("ai_records")?
-        .into_iter()
-        .filter(|r| crate::data::text(r, "kind") == kind)
-        .collect::<Vec<_>>();
-    rows.sort_by_key(|r| crate::data::text(r, "created_at"));
+    let db = lib.db()?;
+    let mut statement = db.prepare(
+        "SELECT payload FROM ai_records WHERE kind=?1 ORDER BY created_at ASC,rowid ASC",
+    )?;
+    let rows = statement
+        .query_map([kind], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows
         .into_iter()
-        .filter_map(|r| serde_json::from_str(&crate::data::text(&r, "payload")).ok())
+        .filter_map(|payload| serde_json::from_str(&payload).ok())
         .collect())
 }

@@ -2,12 +2,12 @@ use super::*;
 impl AppView {
     pub(super) fn begin_background_subtitles(&mut self, all: bool) -> Result<()> {
         ensure!(
-            self.background_video.is_none(),
+            self.tasks.video_job.is_none(),
             "已有后台视频字幕任务，可先取消或等待完成"
         );
-        ensure!(self.busy.is_none(), "请先完成当前前台任务");
+        ensure!(self.tasks.cancel.is_none(), "请先完成当前前台任务");
         ensure!(self.page == "video", "请先进入视频学习");
-        let path = self.video_path.clone().context("请先选择视频")?;
+        let path = self.video.path.clone().context("请先选择视频")?;
         let videos = video_library::Collection::load(&self.lib)?;
         let source = videos
             .items
@@ -17,7 +17,8 @@ impl AppView {
         let (plan, title) = if all {
             let stored = source.series.as_ref().context("当前视频没有分P选集")?;
             let series = self
-                .video_series
+                .video
+                .series
                 .as_ref()
                 .filter(|s| s.base == stored.base)
                 .unwrap_or(stored)
@@ -30,20 +31,20 @@ impl AppView {
                 "生成当前视频字幕".into(),
             )
         };
-        self.background_error.clear();
-        self.video_job_notice = Some(TaskNotice::new(
+        self.tasks.video_error.clear();
+        self.tasks.video_notice = Some(TaskNotice::new(
             &title,
             "后台队列已开始，可继续切换分P和播放",
         ));
-        self.background_video = Some(video_jobs::Job::start(
+        self.tasks.video_job = Some(video_jobs::Job::start(
             self.lib.clone(),
             plan,
-            self.part_downloads.clone(),
+            self.tasks.downloads.clone(),
         ));
         Ok(())
     }
     pub(super) fn poll_background_subtitles(&mut self) -> bool {
-        let Some(job) = &self.background_video else {
+        let Some(job) = &self.tasks.video_job else {
             return false;
         };
         let cancelling = job.cancel.load(Ordering::SeqCst);
@@ -56,7 +57,7 @@ impl AppView {
             }
         };
         let mut changed = !events.is_empty();
-        if let Some(n) = &mut self.video_job_notice {
+        if let Some(n) = &mut self.tasks.video_notice {
             if cancelling && n.state == TaskState::Running {
                 n.state = TaskState::Cancelling;
                 n.detail = "正在停止后台字幕队列，已完成的字幕会保留".into();
@@ -71,7 +72,8 @@ impl AppView {
             match event {
                 video_jobs::Event::Progress(detail) => {
                     if let Some(n) = self
-                        .video_job_notice
+                        .tasks
+                        .video_notice
                         .as_mut()
                         .filter(|n| n.state == TaskState::Running)
                     {
@@ -89,8 +91,8 @@ impl AppView {
                             return Ok(());
                         };
                         videos.save(&self.lib)?;
-                        self.videos = videos;
-                        if let Some(active) = self.video_series.as_mut().filter(|s| s.base == base)
+                        self.video.collection = videos;
+                        if let Some(active) = self.video.series.as_mut().filter(|s| s.base == base)
                         {
                             if let Some(part) = active.parts.get_mut(index) {
                                 part.path = Some(path);
@@ -100,7 +102,7 @@ impl AppView {
                         Ok(())
                     })();
                     if let Err(e) = saved {
-                        self.background_error = format!("保存分P下载记录失败：{e:#}");
+                        self.tasks.video_error = format!("保存分P下载记录失败：{e:#}");
                     }
                 }
                 video_jobs::Event::Ready {
@@ -110,26 +112,32 @@ impl AppView {
                     cues,
                 } => {
                     if self.page == "video"
-                        && self.video_path.as_ref() == Some(&path)
-                        && self.current_path.as_ref() == Some(&path)
-                        && self.videos.items.iter().any(|v| v.id == source_id)
+                        && self.video.path.as_ref() == Some(&path)
+                        && self.media.path.as_ref() == Some(&path)
+                        && self
+                            .video
+                            .collection
+                            .items
+                            .iter()
+                            .any(|v| v.id == source_id)
                     {
-                        self.video_cues = cues;
-                        self.video_scroll.reset(self.video_cues.len());
-                        self.video_active = None;
-                        self.video_caption_source = VideoCaptionSource::Transcript;
-                        self.video_material = None;
-                        self.video_material_error.clear();
-                        self.player
+                        self.video.cues = cues;
+                        self.video.scroll.reset(self.video.cues.len());
+                        self.video.active = None;
+                        self.video.caption_source = VideoCaptionSource::Transcript;
+                        self.video.material = None;
+                        self.video.material_error.clear();
+                        self.media
+                            .player
                             .command(["sub-add".into(), subtitle, "select".into()]);
                     }
                 }
                 video_jobs::Event::Finished(report) => {
-                    if let Some(n) = &mut self.video_job_notice {
+                    if let Some(n) = &mut self.tasks.video_notice {
                         n.elapsed = n.started.elapsed().as_secs();
                         n.state = if report.cancelled {
                             TaskState::Cancelled
-                        } else if !report.failed.is_empty() || !self.background_error.is_empty() {
+                        } else if !report.failed.is_empty() || !self.tasks.video_error.is_empty() {
                             TaskState::Failed
                         } else {
                             TaskState::Succeeded
@@ -144,17 +152,17 @@ impl AppView {
                         for (label, error) in report.failed {
                             n.detail.push_str(&format!("\n{label}：{error}"));
                         }
-                        if !self.background_error.is_empty() {
-                            n.detail.push_str(&format!("\n{}", self.background_error));
+                        if !self.tasks.video_error.is_empty() {
+                            n.detail.push_str(&format!("\n{}", self.tasks.video_error));
                         }
                     }
-                    self.background_video = None;
+                    self.tasks.video_job = None;
                 }
             }
         }
-        if disconnected && self.background_video.is_some() {
-            self.background_video = None;
-            if let Some(n) = &mut self.video_job_notice {
+        if disconnected && self.tasks.video_job.is_some() {
+            self.tasks.video_job = None;
+            if let Some(n) = &mut self.tasks.video_notice {
                 n.state = TaskState::Failed;
                 n.detail = "后台字幕任务意外结束，已保存的字幕保留，请重试".into();
             }

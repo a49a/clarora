@@ -12,7 +12,7 @@ impl AppView {
     }
 
     pub(super) fn focus_timer_bar(&self, cx: &Context<Self>) -> AnyElement {
-        let fullscreen = self.video_fullscreen;
+        let fullscreen = self.video.fullscreen;
         let foreground = if fullscreen {
             rgb(0xe8f0eb).into()
         } else {

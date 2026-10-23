@@ -2,13 +2,16 @@ pub mod ai;
 mod ai_chat;
 pub mod audio_tools;
 pub mod backup;
+pub mod chat_store;
 pub mod data;
 pub mod discover;
 pub mod documents;
 pub mod media;
 pub mod process;
 pub mod recording;
+pub mod runtime;
 pub mod subtitles;
+pub mod view_data;
 
 pub mod waveform;
 

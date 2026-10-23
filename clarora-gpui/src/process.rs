@@ -21,6 +21,13 @@ pub fn tool(name: &str) -> Result<PathBuf> {
     } else {
         name.into()
     };
+    if crate::runtime::packaged() {
+        let parent = crate::runtime::executable_dir().context("无法读取安装目录")?;
+        return [parent.join("tools").join(&binary), parent.join(&binary)]
+            .into_iter()
+            .find(|path| path.is_file())
+            .with_context(|| format!("安装包缺少 {binary}，请重新安装完整版本"));
+    }
     let mut dirs =
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>();
     dirs.extend([

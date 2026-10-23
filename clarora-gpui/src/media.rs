@@ -70,27 +70,14 @@ struct Api {
 }
 impl Api {
     unsafe fn load() -> Result<Self> {
-        let candidates = if cfg!(windows) {
+        let names = if cfg!(windows) {
             vec!["mpv-2.dll", "libmpv-2.dll"]
         } else {
-            vec![
-                "/opt/homebrew/lib/libmpv.2.dylib",
-                "/usr/local/lib/libmpv.2.dylib",
-                "libmpv.2.dylib",
-            ]
+            vec!["libmpv.2.dylib", "libmpv.dylib"]
         };
         let mut loaded = None;
-        for name in candidates {
-            let path = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|x| x.join(name)));
-            if let Some(p) = path {
-                if let Ok(lib) = unsafe { Library::new(p) } {
-                    loaded = Some(lib);
-                    break;
-                }
-            }
-            if let Ok(lib) = unsafe { Library::new(name) } {
+        for path in crate::runtime::library_candidates(&names) {
+            if let Ok(lib) = unsafe { Library::new(path) } {
                 loaded = Some(lib);
                 break;
             }
@@ -185,6 +172,7 @@ struct RunningSentenceRepeat {
 }
 #[derive(Clone, Default)]
 pub struct Playback {
+    pub initialized: bool,
     pub position: f64,
     pub duration: f64,
     pub paused: bool,
@@ -198,6 +186,29 @@ pub struct Playback {
     pub frame: Option<Arc<gpui::RenderImage>>,
     pub sentence_repeat: Option<SentenceRepeat>,
     pub error: String,
+}
+/// Compare every state field consumed by the UI, including paused errors and
+/// clearing an old frame. Progress alone cannot signal those transitions.
+pub fn visible_changed(before: &Playback, after: &Playback) -> bool {
+    let frame_changed = match (&before.frame, &after.frame) {
+        (Some(left), Some(right)) => !Arc::ptr_eq(left, right),
+        (None, None) => false,
+        _ => true,
+    };
+    frame_changed
+        || before.initialized != after.initialized
+        || (before.position - after.position).abs() > 0.01
+        || before.duration != after.duration
+        || before.paused != after.paused
+        || before.eof != after.eof
+        || before.path != after.path
+        || before.subtitle != after.subtitle
+        || before.subtitle_is_bitmap != after.subtitle_is_bitmap
+        || before.primary_subtitles_visible != after.primary_subtitles_visible
+        || before.secondary_subtitles_visible != after.secondary_subtitles_visible
+        || before.tracks != after.tracks
+        || before.sentence_repeat != after.sentence_repeat
+        || before.error != after.error
 }
 enum Message {
     Command(Vec<String>),
@@ -488,6 +499,7 @@ fn worker(
             "libmpv 软件帧接口初始化失败"
         );
         (api.update_callback)(owned.render, Some(wake), std::ptr::null_mut());
+        shared.lock().unwrap().initialized = true;
         let mut pixels = vec![0u64; 960 * 540 / 2];
         let mut tick = 0;
         let mut subtitle_is_bitmap = false;

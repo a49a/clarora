@@ -1,7 +1,7 @@
 use super::*;
 impl AppView {
     pub(super) fn video_collection_panel(&self, cx: &Context<Self>) -> AnyElement {
-        let busy = self.busy.is_some();
+        let busy = self.tasks.cancel.is_some();
         let mut body = div()
             .id("video-collection")
             .flex_1()
@@ -42,9 +42,9 @@ impl AppView {
                     .text_color(cx.theme().muted_foreground)
                     .child("每个视频收藏一条 · 分P在选集中切换"),
             );
-        for video in &self.videos.items {
+        for video in &self.video.collection.items {
             let key = video.id.clone();
-            let selected = self.videos.selected.as_ref() == Some(&key);
+            let selected = self.video.collection.selected.as_ref() == Some(&key);
             let missing = video.playable_path().is_none();
             let source = if video.series.is_some() {
                 "bilibili"
@@ -170,7 +170,7 @@ impl AppView {
                     ),
             );
         }
-        if self.videos.items.is_empty() {
+        if self.video.collection.items.is_empty() {
             body=body.child(div().p_4().flex().flex_col().gap_2().child(div().text_lg().child("收藏想学的视频"))
    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("可以一次导入多个本地视频，或从 bilibili 下载。所有导入结果都会保存在这里。")));
         }

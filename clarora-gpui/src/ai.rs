@@ -554,28 +554,7 @@ pub fn save_chat(
     title: &str,
     messages: &[Value],
 ) -> Result<()> {
-    let mut db = lib.db()?;
-    let tx = db.transaction()?;
-    tx.execute("INSERT INTO ai_records(id,kind,payload,created_at) VALUES(?,'chat',?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,created_at=excluded.created_at", rusqlite::params![session,json!({"id":session,"context":context,"title":title,"messages":messages}).to_string(),chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.9f").to_string()])?;
-    let rows = {
-        let mut stmt = tx.prepare("SELECT id,payload FROM ai_records WHERE kind='chat' ORDER BY created_at DESC,rowid DESC")?;
-        stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    };
-    let mut count = 0;
-    for (key, payload) in rows {
-        if serde_json::from_str::<Value>(&payload)
-            .ok()
-            .is_some_and(|p| p["context"] == context)
-        {
-            count += 1;
-            if count > 12 {
-                tx.execute("DELETE FROM ai_records WHERE id=?", [key])?;
-            }
-        }
-    }
-    tx.commit()?;
-    Ok(())
+    crate::chat_store::save(lib, session, context, title, messages)
 }
 pub fn score(reference: &str, actual: &str) -> Result<Value> {
     let word = regex::Regex::new(r"[a-z]+(?:'[a-z]+)?").unwrap();
