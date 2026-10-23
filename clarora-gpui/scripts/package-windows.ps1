@@ -22,7 +22,7 @@ $verifier = Join-Path $PSScriptRoot 'verify-windows-package.py'
 & python $verifier $RuntimeDir --runtime --report "$Output/runtime-verification.json" --native
 if ($LASTEXITCODE -ne 0) { throw 'Complete Windows runtime verification failed.' }
 $version = (Select-String -Path "$PSScriptRoot/../Cargo.toml" -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
-$stage = Join-Path $Output "Clarora-GPUI-$version-windows-x64"
+$stage = Join-Path $Output "Clarora-$version-windows-x64"
 if (Test-Path -LiteralPath $stage) {
     if (-not (Test-Path -LiteralPath "$stage/package-manifest.json") -and -not (Test-Path -LiteralPath "$stage/.clarora-package-stage")) { throw 'Refusing to replace a directory without a Clarora package manifest.' }
     Remove-Item -LiteralPath $stage -Recurse -Force
@@ -62,7 +62,7 @@ try {
     if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $runtimeReport)) { throw 'Packaged app runtime check failed.' }
     if (-not (Get-Content -Raw -LiteralPath $runtimeReport | ConvertFrom-Json).passed) { throw 'Packaged app runtime report did not pass.' }
 } finally { $env:PATH = $previousPath }
-$zip = Join-Path $Output "Clarora-GPUI-$version-windows-x64-$signing.zip"
+$zip = Join-Path $Output "Clarora-$version-windows-x64-$signing.zip"
 & python "$PSScriptRoot/windows-runtime.py" zip $stage $zip
 if ($LASTEXITCODE -ne 0) { throw 'Portable ZIP creation failed.' }
 & python $verifier $zip --report "$Output/zip-verification.json" --native
@@ -75,7 +75,7 @@ if ($Installer) {
         elseif (Test-Path "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe") { $InnoSetupCompiler = "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" }
         else { throw 'Installer requested but Inno Setup 6 ISCC.exe is missing.' }
     }
-    $setupName = "Clarora-GPUI-$version-windows-x64-setup-$signing"
+    $setupName = "Clarora-$version-windows-x64-setup-$signing"
     & $InnoSetupCompiler "/DSourceDir=$stage" "/DOutputDir=$Output" "/DAppVersion=$version" "/DOutputName=$setupName" "$PSScriptRoot/installer/clarora-gpui.iss"
     if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
     $setup = Join-Path $Output "$setupName.exe"

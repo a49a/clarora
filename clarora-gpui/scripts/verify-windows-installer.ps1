@@ -11,12 +11,12 @@ New-Item -ItemType Directory -Force $Evidence | Out-Null
 $registered = '{17F3D01D-07B1-45AC-8A65-4304FDCE9158}_is1'
 foreach ($hive in @('HKCU:', 'HKLM:')) {
     if (Test-Path -LiteralPath "$hive\Software\Microsoft\Windows\CurrentVersion\Uninstall\$registered") {
-        @{ schema_version = 1; status = 'failed'; error = 'Existing Clarora GPUI installation; isolated installer check refused.' } |
+        @{ schema_version = 1; status = 'failed'; error = 'Existing Clarora installation; isolated installer check refused.' } |
             ConvertTo-Json | Set-Content -Encoding utf8 "$Evidence/installer-lifecycle.json"
-        throw 'Installer lifecycle verification requires an isolated user without an existing Clarora GPUI installation.'
+        throw 'Installer lifecycle verification requires an isolated user without an existing Clarora installation.'
     }
 }
-$installRoot = Join-Path $env:TEMP ("Clarora GPUI installer check " + [guid]::NewGuid().ToString('N'))
+$installRoot = Join-Path $env:TEMP ("Clarora installer check " + [guid]::NewGuid().ToString('N'))
 $dataRoot = Join-Path $env:LOCALAPPDATA 'Clarora-GPUI'
 $dataExisted = Test-Path -LiteralPath $dataRoot
 New-Item -ItemType Directory -Force $dataRoot | Out-Null

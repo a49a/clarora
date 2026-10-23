@@ -16,6 +16,6 @@ if (process.platform === 'darwin') {
   const status = run('sh', [path.join(root, 'scripts/package-macos.sh')]);
   if (status !== 0) process.exit(status);
   // Running inside the bundle lets macOS resolve the Dock icon and metadata.
-  process.exit(run(path.join(root, 'target/Clarora-GPUI.app/Contents/MacOS/clarora-gpui'), args));
+  process.exit(run(path.join(root, 'target/Clarora.app/Contents/MacOS/clarora-gpui'), args));
 }
 process.exit(run('cargo', ['run', '--manifest-path', path.join(root, 'Cargo.toml'), '--locked', '--', ...args]));

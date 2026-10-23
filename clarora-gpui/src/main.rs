@@ -8999,13 +8999,13 @@ fn main() -> Result<()> {
             ]);
             cx.set_menus(vec![
                 Menu {
-                    name: "Clarora GPUI".into(),
+                    name: "Clarora".into(),
                     items: vec![
                         MenuItem::action("设置…", OpenSettings),
                         MenuItem::action("显示或隐藏左侧导航", ToggleNavigation),
                         MenuItem::action("切换浅色 / 深色", ToggleAppearance),
                         MenuItem::action("取消当前任务", CancelTask),
-                        MenuItem::action("退出 Clarora GPUI", Quit),
+                        MenuItem::action("退出 Clarora", Quit),
                     ],
                 },
                 Menu {
@@ -9064,7 +9064,7 @@ fn main() -> Result<()> {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("Clarora · GPUI".into()),
+                        title: Some("Clarora".into()),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -9075,7 +9075,7 @@ fn main() -> Result<()> {
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             )
-            .expect("无法打开 Clarora GPUI 窗口");
+            .expect("无法打开 Clarora 窗口");
             cx.activate(true);
         });
     Ok(())

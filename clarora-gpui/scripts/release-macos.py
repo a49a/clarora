@@ -304,7 +304,7 @@ class Assembler:
         self.minimum.sort(key=lambda x: tuple(map(int, x.split("."))))
         version = re.search(r'^version = "([^"]+)"', (ROOT / "Cargo.toml").read_text(), re.M).group(1)
         with (self.app / "Contents/Info.plist").open("wb") as stream:
-            plistlib.dump({"CFBundleIdentifier": "com.clarora.gpui", "CFBundleName": "Clarora GPUI", "CFBundleDisplayName": "Clarora GPUI", "CFBundleExecutable": "clarora-gpui", "CFBundleIconFile": "Clarora.icns", "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version, "CFBundleVersion": str(self.args.build_number), "NSHighResolutionCapable": True, "LSMinimumSystemVersion": self.minimum[-1], "NSMicrophoneUsageDescription": "录制朗读音频，用于本机保存、转写和跟读文本对齐。"}, stream)
+            plistlib.dump({"CFBundleIdentifier": "com.clarora.gpui", "CFBundleName": "Clarora", "CFBundleDisplayName": "Clarora", "CFBundleExecutable": "clarora-gpui", "CFBundleIconFile": "Clarora.icns", "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version, "CFBundleVersion": str(self.args.build_number), "NSHighResolutionCapable": True, "LSMinimumSystemVersion": self.minimum[-1], "NSMicrophoneUsageDescription": "录制朗读音频，用于本机保存、转写和跟读文本对齐。"}, stream)
         with tempfile.TemporaryDirectory(prefix="clarora-icon-") as temp:
             iconset = Path(temp) / "Clarora.iconset"
             iconset.mkdir()
@@ -360,7 +360,7 @@ def main():
     if args.notarize_profile and args.sign_identity == "-":
         parser.error("Notarization requires --sign-identity Developer ID")
     output.mkdir(parents=True, exist_ok=True)
-    final = output / "Clarora-GPUI.app"
+    final = output / "Clarora.app"
     if final.exists():
         parser.error(f"Refusing to overwrite existing app: {final}; choose a fresh output directory")
     config = json.loads(args.runtime_config.read_text())
@@ -394,7 +394,7 @@ def main():
     (output / "release-files.json").write_text(json.dumps({"schema_version": 1,
         "files": [{"path": str(file.relative_to(final)), "size": file.stat().st_size, "sha256": sha(file)}
                   for file in sorted(final.rglob("*")) if file.is_file()]}, indent=2) + "\n")
-    zip_file = output / f"Clarora-GPUI-{manifest['version']}-macOS-{manifest['architecture']}.zip"
+    zip_file = output / f"Clarora-{manifest['version']}-macOS-{manifest['architecture']}.zip"
     run(["/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", final, zip_file])
     archives = [zip_file]
     if args.dmg:
@@ -403,8 +403,8 @@ def main():
             payload.mkdir()
             run(["/usr/bin/ditto", final, payload / final.name])
             (payload / "Applications").symlink_to("/Applications")
-            dmg = output / f"Clarora-GPUI-{manifest['version']}-macOS-{manifest['architecture']}.dmg"
-            run(["/usr/bin/hdiutil", "create", "-volname", "Clarora GPUI", "-srcfolder", payload, "-format", "UDZO", dmg])
+            dmg = output / f"Clarora-{manifest['version']}-macOS-{manifest['architecture']}.dmg"
+            run(["/usr/bin/hdiutil", "create", "-volname", "Clarora", "-srcfolder", payload, "-format", "UDZO", dmg])
             run(["/usr/bin/hdiutil", "verify", dmg])
             archives.append(dmg)
     report = {"schema_version": 1, "app": str(final), "architecture": manifest["architecture"], "minimum_macos": manifest["minimum_macos"], "signing": manifest["signing"], "notarized": bool(args.notarize_profile), "archives": [{"path": p.name, "size": p.stat().st_size, "sha256": sha(p)} for p in archives]}

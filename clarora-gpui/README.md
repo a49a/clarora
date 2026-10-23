@@ -1,6 +1,6 @@
-# Clarora GPUI / Rust 桌面客户端
+# Clarora 桌面客户端
 
-与 `clarora-app/` 的 React Native 客户端并行保留，目标为 macOS、Windows 全功能对照。使用 GPUI 原生窗口和 Rust 业务代码，不需要 Metro，也不内嵌 React Native。当前是开发对照版，尚不能视为全部功能、全部平台验收完成。
+Clarora 的主桌面客户端，使用 GPUI 原生窗口和 Rust 业务代码，面向 macOS、Windows。React Native 版本保留在 `clarora-app/`，对应发行标注 RN。主版本应用与安装包统一显示 Clarora；当前验证范围和发行状态以对应构建记录为准。
 
 ## 启动
 
@@ -17,9 +17,9 @@ macOS 媒体工具：
 ```sh
 brew install mpv ffmpeg yt-dlp
 sh clarora-gpui/scripts/package-macos.sh
-python3 clarora-gpui/scripts/install-pdfium.py clarora-gpui/target/Clarora-GPUI.app/Contents/MacOS
-codesign --force --deep --sign - clarora-gpui/target/Clarora-GPUI.app
-open clarora-gpui/target/Clarora-GPUI.app
+python3 clarora-gpui/scripts/install-pdfium.py clarora-gpui/target/Clarora.app/Contents/MacOS
+codesign --force --deep --sign - clarora-gpui/target/Clarora.app
+open clarora-gpui/target/Clarora.app
 ```
 
 以上命令生成本机调试 `.app`，依赖开发机安装的 `libmpv`、FFmpeg、yt-dlp。包含运行库的 release ZIP／DMG 使用独立的[安装包流程](scripts/PACKAGING.md)，也可通过 `package-macos.sh --release` 转入该流程。Intel Mac 需自行提供并验证匹配架构的全部运行库；现有 PDFium 下载脚本仅包含 Apple Silicon 和 Windows x64 的固定版本及 SHA-256。
@@ -44,9 +44,9 @@ python ./clarora-gpui/scripts/install-pdfium.py ./clarora-gpui/target/package
 
 - 专注倒计时固定显示在每个模块的页面顶部，滚动内容、收起导航或切换学习模块后仍可见，视频全屏同样显示。可直接开始、暂停、继续、重置，或通过“专注时长”选择 5–60 分钟并开始新一轮；与冥想页共用同一个计时器，专注结束后自动切换休息。计时不因切页重新开始，退出应用后本轮计时不保留。
 - 计划复习先按所选卡片类型筛选，再使用当天剩余新卡额度；额度按实际首次评分跨类型共享，翻看、切换类型、暂停或恢复未学卡不会消耗额度。“全部类型”按单词、句子、AI、音频片段、视频片段轮流安排新卡，首次评分后记住下一类型，重启后延续；已到期旧卡优先，非计划复习仍可自主学习。
-- macOS 资料目录：`~/Library/Application Support/Clarora-GPUI/`；Windows：`%LOCALAPPDATA%\Clarora-GPUI\`。使用独立 SQLite 和附件目录，可与原版同时运行。
-- 可通过 `--data-dir /absolute/path` 指定测试资料目录。不会自动打开或修改原版数据库。
-- 设置页可只读导入原版 SQLite 快照、导入/导出 v2 ZIP 资料备份，或配置 S3/OSS。密钥默认保存于本机 SQLite，可选开启系统凭证库安全模式；应用导出的资料备份不包含密钥。
+- macOS 资料目录：`~/Library/Application Support/Clarora-GPUI/`；Windows：`%LOCALAPPDATA%\Clarora-GPUI\`。为兼容已有学习资料和凭证，资料目录及应用标识保持不变，无需手动迁移；使用独立 SQLite 和附件目录，可与 RN 版同时运行。
+- 可通过 `--data-dir /absolute/path` 指定测试资料目录。不会自动打开或修改 RN 版数据库。
+- 设置页可只读导入 RN 版 SQLite 快照、导入/导出 v2 ZIP 资料备份，或配置 S3/OSS。密钥默认保存于本机 SQLite，可选开启系统凭证库安全模式；应用导出的资料备份不包含密钥。
 - 视频页支持本地视频、bilibili BV/av/完整地址及 `?p=` 分 P、取消下载、字幕主副轨、外部字幕、A/B、倍速和片段卡。需本机媒体工具，网络和视频可用性由视频来源决定。
 - 视频控制栏“本句重复”可选择无限重复或“每句重复三次 · 自动下一句”；字幕行也提供两个直接入口，普通和全屏模式共用。三次模式从选中句句首播放三遍，再自动进入下一条有效字幕并重新播放三遍，最后一句完成后暂停，不自动换集。该模式下 `←/→` 及上一句／下一句按钮按选中字幕切句，新句从第一遍开始；首尾不越界，暂停／继续保留遍数。无限模式只循环本句，普通左右键仍前后跳 10 秒。手动拖动进度、前后跳转、换视频或离开视频模块会退出重复。此功能需要带时间轴的字幕；句尾超出视频时按实际视频长度截断。
 - 视频字幕可直接提问：生成字幕或加载 UTF-8 SRT / VTT 后，点“问当前句”“问整段字幕”，或某条字幕的“问 AI”，在右侧输入问题并发送。引用包含时间戳；当前句和指定行会暂停播放，并固定本次引用。不同视频、分P、字幕内容和引用范围各自保留会话，回答可存为问答卡。整段字幕超过 10,000 句或 120,000 字符时提示改用单句，不静默截断。内嵌字幕未解析为完整时间轴时只支持播放器当前句。使用设置中的共用 API；本地 Whisper / SenseVoice 仅负责转写，不负责问答。

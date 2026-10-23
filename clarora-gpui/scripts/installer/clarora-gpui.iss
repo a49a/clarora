@@ -14,11 +14,13 @@
 
 [Setup]
 AppId={{17F3D01D-07B1-45AC-8A65-4304FDCE9158}
-AppName=Clarora GPUI
+AppName=Clarora
 AppVersion={#AppVersion}
 AppPublisher=Clarora
-DefaultDirName={localappdata}\Programs\Clarora GPUI
-DefaultGroupName=Clarora GPUI
+DefaultDirName={localappdata}\Programs\Clarora
+UsePreviousAppDir=yes
+DefaultGroupName=Clarora
+UsePreviousGroup=no
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -37,6 +39,9 @@ LicenseFile={#SourceDir}\LICENSE
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
+; Remove only shortcuts owned by the previous GPUI display name.
+Type: files; Name: "{userprograms}\Clarora GPUI\Clarora GPUI.lnk"
+Type: files; Name: "{autodesktop}\Clarora GPUI.lnk"
 ; Remove obsolete runtime names during upgrades, before installing the new tree.
 ; {app} contains program files only; learning data is in %LOCALAPPDATA%\Clarora-GPUI.
 Type: files; Name: "{app}\*.dll"
@@ -47,10 +52,10 @@ Type: filesandordirs; Name: "{app}\licenses"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Icons]
-Name: "{group}\Clarora GPUI"; Filename: "{app}\clarora-gpui.exe"
-Name: "{autodesktop}\Clarora GPUI"; Filename: "{app}\clarora-gpui.exe"; Tasks: desktopicon
+Name: "{group}\Clarora"; Filename: "{app}\clarora-gpui.exe"
+Name: "{autodesktop}\Clarora"; Filename: "{app}\clarora-gpui.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\clarora-gpui.exe"; Description: "Launch Clarora GPUI"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\clarora-gpui.exe"; Description: "Launch Clarora"; Flags: nowait postinstall skipifsilent
 
 ; Application data is intentionally outside {app}; upgrades/uninstall preserve it.

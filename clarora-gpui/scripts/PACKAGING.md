@@ -1,4 +1,4 @@
-# GPUI release 安装包
+# Clarora 安装包
 
 开发入口 `package-macos.sh`／`build-windows.ps1` 保留本机调试用法。下面的分发流程要求完整运行库、许可证和真实运行检查，失败会中止，不生成“已验证”结果。模型由用户在应用中下载，安装包不包含语音模型或学习资料。
 
@@ -23,7 +23,7 @@ python3 scripts/release-macos.py \
 
 ```sh
 python3 scripts/verify-macos-package.py \
-  ../../artifacts/clarora/gpui/macos/release-001/Clarora-GPUI.app \
+  ../../artifacts/clarora/gpui/macos/release-001/Clarora.app \
   --evidence ../../artifacts/clarora/gpui/macos/verify-001 \
   --launch-seconds 3
 ```
@@ -45,7 +45,7 @@ python3 scripts/verify-macos-package.py \
 
 ```powershell
 ./scripts/verify-windows-installer.ps1 `
-  -Installer /absolute/path/Clarora-GPUI-0.2.1-windows-x64-setup-unsigned.exe `
+  -Installer /absolute/path/Clarora-0.2.2-windows-x64-setup-unsigned.exe `
   -Evidence /absolute/path/installer-evidence
 ```
 

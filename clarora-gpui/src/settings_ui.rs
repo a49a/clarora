@@ -223,7 +223,7 @@ impl AppView {
         }
         models = models
                     .child("运行要求：FFmpeg；Whisper 需 clarora-asr 或 whisper-cli，SenseVoice 需 clarora-asr + sherpa-onnx。下载模型不会安装推理程序。")
-                    .child("本机已实测 Whisper tiny.en；其余模型尚未完成真实推理验收。详细来源、文件路径和安装方法见 GPUI README。 ");
+                    .child("本机已实测 Whisper tiny.en；其余模型尚未完成真实推理验收。详细来源、文件路径和安装方法见项目说明文档。 ");
         content = content.child(models);
         content = content.child(
                     panel(cx)

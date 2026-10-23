@@ -5,8 +5,10 @@ if [ "${1:-}" = "--release" ]; then
   shift
   exec python3 "$root/scripts/release-macos.py" "$@"
 fi
-output=${1:-"$root/target/Clarora-GPUI.app"}
+output=${1:-"$root/target/Clarora.app"}
 cargo build --manifest-path "$root/Cargo.toml" --locked
+version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' "$root/Cargo.toml")
+[ -n "$version" ]
 # Use the same public Clarora artwork as the React Native macOS app.
 icon_source="$root/../clarora-app/macos/Clarora-macOS/Assets.xcassets/AppIcon.appiconset"
 icon_work=$(mktemp -d)
@@ -36,17 +38,17 @@ if [ -f "$root/target/tts/clarora-tts" ]; then
     mv -f "$output/Contents/MacOS/tools/$name.new" "$output/Contents/MacOS/tools/$name"
   done
 fi
-cat > "$output/Contents/Info.plist" <<'PLIST'
+cat > "$output/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>com.clarora.gpui</string>
-<key>CFBundleName</key><string>Clarora GPUI</string>
-<key>CFBundleDisplayName</key><string>Clarora GPUI</string>
+<key>CFBundleName</key><string>Clarora</string>
+<key>CFBundleDisplayName</key><string>Clarora</string>
 <key>CFBundleExecutable</key><string>clarora-gpui</string>
 <key>CFBundleIconFile</key><string>Clarora.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.1</string>
+<key>CFBundleShortVersionString</key><string>$version</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>录制朗读音频，用于本机保存、转写和跟读文本对齐。</string>

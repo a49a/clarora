@@ -279,7 +279,7 @@ pub fn generate(
     );
     validate_model(model)?;
     let helper = process::tool("clarora-tts")
-        .context("未安装 Kokoro 原生运行程序 clarora-tts，请按 GPUI README 构建并安装")?;
+        .context("未安装 Kokoro 原生运行程序 clarora-tts，请按项目说明文档构建并安装")?;
     let work = Work(lib.root.join("cache").join(format!("tts-{}", id())));
     fs::create_dir_all(&work.0)?;
     let input = work.0.join("text.txt");
