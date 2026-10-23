@@ -26,6 +26,7 @@ pub fn default_practice_name(practices: &[Row], date: NaiveDate) -> String {
 #[derive(Default)]
 pub struct State {
     pub selected: String,
+    pub renaming: Option<RenameTarget>,
     /// all / attached subtitle / missing subtitle
     pub filter: u8,
     /// newest / name / oldest
@@ -37,8 +38,47 @@ pub struct State {
     pub subtitle_count: usize,
     pub subtitle_ids: BTreeSet<String>,
 }
+
+pub struct RenameTarget {
+    pub id: String,
+    pub group: String,
+}
+
 impl State {
+    pub fn begin_rename(&mut self, group: &str, rows: &[Row], key: &str) -> Result<String> {
+        let row = rows
+            .iter()
+            .find(|r| text(r, "id") == key && text(r, "practice_id") == group)
+            .context("音频已不存在")?;
+        self.selected = key.to_string();
+        self.renaming = Some(RenameTarget {
+            id: key.to_string(),
+            group: group.to_string(),
+        });
+        Ok(text(row, "name"))
+    }
+
+    pub fn cancel_rename(&mut self) {
+        self.renaming = None;
+    }
+
+    pub fn save_rename(&mut self, lib: &Library, group: &str, name: &str) -> Result<()> {
+        let target = self.renaming.as_ref().context("请先双击音频名称")?;
+        ensure!(target.group == group, "练习组已切换，请重新选择音频");
+        rename_scoped(lib, "listening_audios", &target.id, name, Some(group))?;
+        self.renaming = None;
+        Ok(())
+    }
+
     pub fn sync(&mut self, group: &str, rows: &[Row]) {
+        if self.renaming.as_ref().is_some_and(|target| {
+            target.group != group
+                || !rows
+                    .iter()
+                    .any(|r| text(r, "id") == target.id && text(r, "practice_id") == target.group)
+        }) {
+            self.cancel_rename();
+        }
         self.subtitle_ids = rows
             .iter()
             .filter(|r| Path::new(&text(r, "subtitle_uri")).is_file())
@@ -98,6 +138,16 @@ pub fn scoped_ids(rows: &[Row], group: &str, checked: &BTreeSet<String>) -> Vec<
         .collect()
 }
 pub fn rename(lib: &Library, table: &str, key: &str, name: &str) -> Result<()> {
+    rename_scoped(lib, table, key, name, None)
+}
+
+fn rename_scoped(
+    lib: &Library,
+    table: &str,
+    key: &str,
+    name: &str,
+    expected_group: Option<&str>,
+) -> Result<()> {
     ensure!(
         ["listening_practices", "listening_audios"].contains(&table),
         "不支持的名称操作"
@@ -119,6 +169,9 @@ pub fn rename(lib: &Library, table: &str, key: &str, name: &str) -> Result<()> {
     } else {
         String::new()
     };
+    if let Some(expected) = expected_group {
+        ensure!(group == expected, "音频已移动，请重新选择音频");
+    }
     let duplicate: i64 = if table == "listening_audios" {
         tx.query_row("SELECT count(*) FROM listening_audios WHERE practice_id=? AND lower(trim(name))=lower(?) AND id<>?",[group.as_str(),name,key],|r|r.get(0))?
     } else {

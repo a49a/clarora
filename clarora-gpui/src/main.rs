@@ -33,7 +33,7 @@ use gpui_component::{
     WindowExt,
     button::*,
     dialog::DialogButtonProps,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     menu::{DropdownMenu, PopupMenuItem},
     progress::Progress,
     scroll::{Scrollbar, ScrollbarShow},
@@ -130,7 +130,10 @@ enum Action {
     AudioFollow,
     AudioCopySubtitle(String, Option<Cue>),
     AudioRepeat(usize),
-    LibrarySelect(String),
+    LibrarySelect { id: String, reveal: bool },
+    LibraryRenameAudio(String),
+    LibraryCommitRename,
+    LibraryCancelRename,
     LibraryTool(String),
     LibrarySaveName,
     LibraryFilter(u8),
@@ -345,6 +348,7 @@ impl AppView {
             ("library_search", "搜索当前组的音频", false, false),
             ("library_groups", "搜索练习组", false, false),
             ("library_name", "输入名称", false, false),
+            ("library_audio_name", "音频名称", false, false),
             ("group", "练习组名称", false, false),
             ("front", "原文 / 单词", true, false),
             ("back", "翻译 / 释义", true, false),
@@ -459,6 +463,21 @@ impl AppView {
             graph_node: "demo-1".into(),
             graph_list: 0,
         };
+        this.audio.rename_subscription = Some(cx.subscribe_in(
+            &this.inputs["library_audio_name"],
+            window,
+            |this, input, event, window, cx| {
+                if matches!(event, InputEvent::PressEnter { secondary: false })
+                    && this.page == "library"
+                    && this.audio.library.renaming.is_some()
+                    && !input.update(cx, |state, cx| {
+                        state.marked_text_range(window, cx).is_some()
+                    })
+                {
+                    this.handle(Action::LibraryCommitRename, window, cx);
+                }
+            },
+        ));
         this.video.series = bilibili::Series::load(&this.lib).unwrap_or(None);
         if let Some(series) = &this.video.series {
             this.video.parts_scroll.scroll_to_item(
@@ -1692,6 +1711,7 @@ impl AppView {
     }
 
     fn open_audio(&mut self, row: &Row) {
+        self.audio.library.cancel_rename();
         self.invalidate_blind();
         self.audio.blind_settle_until = Some(Instant::now() + Duration::from_millis(250));
         let path = PathBuf::from(text(row, "audio_uri"));
@@ -2142,6 +2162,7 @@ impl AppView {
                     self.audio.blind.enabled = false;
                     self.invalidate_blind();
                     let previous = self.page.clone();
+                    self.audio.library.cancel_rename();
                     self.video.remove = None;
                     self.audio.library.pending_delete.clear();
                     if self.audio.library.tool == "delete" {
@@ -2265,6 +2286,7 @@ impl AppView {
                     );
                     self.lib.set_setting("library_group", &key)?;
                     self.audio.practice_id = key;
+                    self.audio.library.cancel_rename();
                     self.audio.checked.clear();
                     self.audio.library.selected.clear();
                     self.audio.library.filter = 0;
@@ -2597,21 +2619,104 @@ impl AppView {
                     }
                     self.media.repeat = mode;
                 }
-                Action::LibrarySelect(key) => {
+                Action::LibrarySelect { id: key, reveal } => {
                     ensure!(
                         self.audio.audios.iter().any(|r| text(r, "id") == key
                             && text(r, "practice_id") == self.audio.practice_id),
                         "音频已不存在"
                     );
+                    if self
+                        .audio
+                        .library
+                        .renaming
+                        .as_ref()
+                        .is_some_and(|target| target.id != key)
+                    {
+                        self.audio.library.cancel_rename();
+                    }
                     self.audio.library.selected = key;
-                    self.audio.library.tool = "detail".into();
-                    self.page_scroll.set_offset(point(px(0.), px(0.)));
+                    if reveal {
+                        self.audio.library.tool = "detail".into();
+                        self.page_scroll.set_offset(point(px(0.), px(0.)));
+                    }
                     self.audio.library.pending_delete.clear();
                     self.audio
                         .library
                         .sync(&self.audio.practice_id, &self.audio.audios);
                 }
+                Action::LibraryRenameAudio(key) => {
+                    ensure!(self.page == "library", "请先返回音频管理");
+                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
+                    let name = self.audio.library.begin_rename(
+                        &self.audio.practice_id,
+                        &self.audio.audios,
+                        &key,
+                    )?;
+                    // Preserve the list's position when details already precede it in a narrow window.
+                    if self.audio.library.tool != "detail" {
+                        self.audio.library.tool.clear();
+                    }
+                    self.audio.library.pending_delete.clear();
+                    let query = self.value("library_search", cx);
+                    if !self
+                        .audio
+                        .library
+                        .visible(&self.audio.audios, &self.audio.practice_id, &query)
+                        .iter()
+                        .any(|r| text(r, "id") == key)
+                    {
+                        self.audio.library.filter = 0;
+                        self.set("library_search", "", window, cx);
+                    }
+                    self.audio
+                        .library
+                        .sync(&self.audio.practice_id, &self.audio.audios);
+                    self.set("library_audio_name", name, window, cx);
+                    self.inputs["library_audio_name"]
+                        .update(cx, |state, cx| state.focus(window, cx));
+                    cx.on_next_frame(window, move |this, window, cx| {
+                        if this.page == "library"
+                            && this
+                                .audio
+                                .library
+                                .renaming
+                                .as_ref()
+                                .is_some_and(|t| t.id == key)
+                        {
+                            let query = this.value("library_search", cx);
+                            if let Some(index) = this
+                                .audio
+                                .library
+                                .visible(&this.audio.audios, &this.audio.practice_id, &query)
+                                .iter()
+                                .position(|r| text(r, "id") == key)
+                            {
+                                this.audio.library_scroll.scroll_to_item(index);
+                            }
+                            this.inputs["library_audio_name"]
+                                .update(cx, |state, cx| state.focus(window, cx));
+                            window.dispatch_action(Box::new(gpui_component::input::SelectAll), cx);
+                            cx.notify();
+                        }
+                    });
+                }
+                Action::LibraryCommitRename => {
+                    ensure!(self.page == "library", "请先返回音频管理");
+                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
+                    let name = self.value("library_audio_name", cx);
+                    self.audio
+                        .library
+                        .save_rename(&self.lib, &self.audio.practice_id, &name)?;
+                    self.refresh();
+                    window.focus(&self.focus);
+                    self.report_status(FeedbackKind::Info, "名称已保存".into());
+                }
+                Action::LibraryCancelRename => {
+                    self.audio.library.cancel_rename();
+                    window.focus(&self.focus);
+                }
                 Action::LibraryTool(tool) => {
+                    self.audio.library.cancel_rename();
                     self.audio.library.pending_delete.clear();
                     let name = match tool.as_str() {
                         "group-new" => audio_library::default_practice_name(
@@ -2625,13 +2730,6 @@ impl AppView {
                             .find(|r| text(r, "id") == self.audio.practice_id)
                             .map(|r| text(r, "name"))
                             .unwrap_or_default(),
-                        "audio-rename" => self
-                            .audio
-                            .audios
-                            .iter()
-                            .find(|r| text(r, "id") == self.audio.library.selected)
-                            .map(|r| text(r, "name"))
-                            .unwrap_or_default(),
                         _ => String::new(),
                     };
                     self.set("library_name", name, window, cx);
@@ -2639,7 +2737,7 @@ impl AppView {
                     self.page_scroll.set_offset(point(px(0.), px(0.)));
                     let field = if self.audio.library.tool == "tts" {
                         Some("tts_text")
-                    } else if ["group-new", "group-rename", "audio-rename"]
+                    } else if ["group-new", "group-rename"]
                         .contains(&self.audio.library.tool.as_str())
                     {
                         Some("library_name")
@@ -2675,12 +2773,6 @@ impl AppView {
                             &self.lib,
                             "listening_practices",
                             &self.audio.practice_id,
-                            &name,
-                        )?,
-                        "audio-rename" => audio_library::rename(
-                            &self.lib,
-                            "listening_audios",
-                            &self.audio.library.selected,
                             &name,
                         )?,
                         _ => anyhow::bail!("请重新打开名称编辑"),
@@ -2747,6 +2839,7 @@ impl AppView {
                 }
                 Action::LibraryDelete(ids) => {
                     ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
+                    self.audio.library.cancel_rename();
                     self.audio.library.pending_delete = ids;
                     self.audio.library.tool = "delete".into();
                 }

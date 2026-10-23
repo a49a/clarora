@@ -333,6 +333,7 @@ impl AppView {
         list = list.child(list_head);
         let mut rows = div()
             .id("library-audio-list")
+            .track_scroll(&self.audio.library_scroll)
             .flex()
             .flex_col()
             .min_h_0()
@@ -343,6 +344,7 @@ impl AppView {
             let subtitle = self.audio.library.subtitle_ids.contains(&key);
             let missing = !self.data.available_audio.contains(&text(row, "audio_uri"));
             let click_key = key.clone();
+            let rename_key = key.clone();
             let mut item = div()
                 .id(SharedString::from(format!("library-row-{key}")))
                 .flex()
@@ -361,7 +363,14 @@ impl AppView {
                 .cursor_pointer()
                 .hover(|v| v.bg(cx.theme().accent))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.handle(Action::LibrarySelect(click_key.clone()), window, cx)
+                    this.handle(
+                        Action::LibrarySelect {
+                            id: click_key.clone(),
+                            reveal: true,
+                        },
+                        window,
+                        cx,
+                    )
                 }));
             if self.audio.library.batch {
                 item = item.child(
@@ -385,6 +394,98 @@ impl AppView {
                         .child(format!("{:02}", index + 1)),
                 );
             }
+            let name = if self
+                .audio
+                .library
+                .renaming
+                .as_ref()
+                .is_some_and(|target| target.id == key)
+            {
+                div()
+                    .id(SharedString::from(format!("library-inline-rename-{key}")))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .min_w_0()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .capture_action(cx.listener(
+                        |this, _: &gpui_component::input::Escape, window, cx| {
+                            let composing =
+                                this.inputs["library_audio_name"].update(cx, |state, cx| {
+                                    let composing = state.marked_text_range(window, cx).is_some();
+                                    if composing {
+                                        state.unmark_text(window, cx);
+                                        cx.notify();
+                                    }
+                                    composing
+                                });
+                            if !composing {
+                                this.handle(Action::LibraryCancelRename, window, cx);
+                            }
+                            cx.stop_propagation();
+                        },
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .min_w_0()
+                            .child(div().flex_1().min_w_0().child(
+                                Input::new(&self.inputs["library_audio_name"]).disabled(busy),
+                            ))
+                            .child(
+                                self.button(
+                                    "library-inline-save",
+                                    "保存",
+                                    Action::LibraryCommitRename,
+                                    cx,
+                                )
+                                .small()
+                                .disabled(busy),
+                            )
+                            .child(
+                                self.button(
+                                    "library-inline-cancel",
+                                    "取消",
+                                    Action::LibraryCancelRename,
+                                    cx,
+                                )
+                                .small(),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Enter 保存 · Esc 取消"),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .id(SharedString::from(format!("library-name-{key}")))
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .truncate()
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if !event.standard_click() {
+                            return;
+                        }
+                        let action = match event.click_count() {
+                            1 => Action::LibrarySelect {
+                                id: rename_key.clone(),
+                                reveal: false,
+                            },
+                            2 => Action::LibraryRenameAudio(rename_key.clone()),
+                            _ => return,
+                        };
+                        // Keep the first click's target in place in a narrow window.
+                        cx.stop_propagation();
+                        this.handle(action, window, cx);
+                    }))
+                    .child(text(row, "name"))
+                    .into_any_element()
+            };
             rows = rows.child(
                 item.child(
                     div()
@@ -393,13 +494,7 @@ impl AppView {
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .truncate()
-                                .child(text(row, "name")),
-                        )
+                        .child(name)
                         .child(
                             div()
                                 .text_xs()
@@ -482,11 +577,10 @@ impl AppView {
         );
         match self.audio.library.tool.as_str() {
             "tts" => return detail.child(close).child(self.tts_panel(cx)),
-            "group-new" | "group-rename" | "audio-rename" => {
+            "group-new" | "group-rename" => {
                 let title = match self.audio.library.tool.as_str() {
                     "group-new" => "新建练习组",
-                    "group-rename" => "重命名练习组",
-                    _ => "重命名音频",
+                    _ => "重命名练习组",
                 };
                 return detail.child(
                     panel(cx)
@@ -701,7 +795,7 @@ impl AppView {
                         self.button(
                             "library-rename-audio",
                             "重命名",
-                            Action::LibraryTool("audio-rename".into()),
+                            Action::LibraryRenameAudio(key.clone()),
                             cx,
                         )
                         .disabled(busy),

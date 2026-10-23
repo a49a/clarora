@@ -6,6 +6,7 @@ use clarora_gpui::{
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs, path::Path};
 pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()> {
+    run_inline_rename(lib, fixture, results)?;
     // An isolated real library prevents management operations affecting other E2E workflows.
     let lib = Library::open(lib.root.join("audio-manager"))?;
     let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 23).unwrap();
@@ -169,5 +170,120 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
         )?,
     )?;
     results.push(json!({"workflow":"音频管理：真实SQLite/文件 → 搜索筛选/分组选择 → 重命名/移动冲突回滚 → 删除作用域及附件保留 → 重开", "passed":true,"evidence":"audio-manager/management-evidence.json"}));
+    Ok(())
+}
+
+// Failure cases are specified before the inline editor implementation: cancellation must
+// not write, changing selection must not change the target, invalid names must leave the
+// draft open, and a changed/moved/deleted group target must never rename another record.
+fn run_inline_rename(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()> {
+    let lib = Library::open(lib.root.join("audio-inline-rename"))?;
+    let a = lib.practice("Inline A")?;
+    let b = lib.practice("Inline B")?;
+    lib.import_audio(&a, fixture)?;
+    let original = lib.list("listening_audios")?.remove(0);
+    let target_id = text(&original, "id");
+    audio_library::rename(&lib, "listening_audios", &target_id, "Original A")?;
+    let other_id = clarora_gpui::data::id();
+    let remote_id = clarora_gpui::data::id();
+    for (id, group, name) in [(&other_id, &a, "Other A"), (&remote_id, &b, "Shared B")] {
+        let mut row = original.clone();
+        row.insert("id".into(), json!(id));
+        row.insert("practice_id".into(), json!(group));
+        row.insert("name".into(), json!(name));
+        lib.put("listening_audios", serde_json::to_value(&row)?)?;
+    }
+    let stored_name = |id: &str| -> Result<String> {
+        let rows = lib.list("listening_audios")?;
+        let row = rows.iter().find(|r| text(r, "id") == id).unwrap();
+        Ok(text(row, "name"))
+    };
+    let mut state = State::default();
+    ensure!(
+        state.begin_rename(&a, &lib.list("listening_audios")?, &target_id)? == "Original A"
+            && state.selected == target_id,
+        "行内改名未预填原名或选中目标"
+    );
+    let target = state.renaming.as_ref().unwrap();
+    ensure!(
+        target.id == target_id && target.group == a,
+        "行内改名未绑定记录及组"
+    );
+    state.cancel_rename();
+    ensure!(
+        state.renaming.is_none() && stored_name(&target_id)? == "Original A",
+        "取消行内改名写入了数据库"
+    );
+
+    state.begin_rename(&a, &lib.list("listening_audios")?, &target_id)?;
+    state.selected = other_id.clone();
+    state.save_rename(&lib, &a, "Shared B")?;
+    ensure!(
+        state.renaming.is_none()
+            && stored_name(&target_id)? == "Shared B"
+            && stored_name(&other_id)? == "Other A"
+            && stored_name(&remote_id)? == "Shared B",
+        "行内改名跟随选择写错ID，或错误拒绝不同组同名"
+    );
+    state.begin_rename(&a, &lib.list("listening_audios")?, &target_id)?;
+    let too_long = "字".repeat(121);
+    for invalid in ["", "   ", too_long.as_str(), "  other a  "] {
+        ensure!(
+            state.save_rename(&lib, &a, invalid).is_err()
+                && state.renaming.as_ref().is_some_and(|r| r.id == target_id)
+                && stored_name(&target_id)? == "Shared B",
+            "空白、超长或同组重名保存未失败并保留编辑"
+        );
+    }
+    state.save_rename(&lib, &a, "  听力练习 🎧 café  ")?;
+    ensure!(
+        state.renaming.is_none() && stored_name(&target_id)? == "听力练习 🎧 café",
+        "Unicode名称或前后空格处理错误"
+    );
+
+    state.begin_rename(&a, &lib.list("listening_audios")?, &target_id)?;
+    ensure!(
+        state.save_rename(&lib, &b, "Wrong group").is_err()
+            && state.renaming.is_some()
+            && stored_name(&target_id)? == "听力练习 🎧 café",
+        "切换组后仍可保存旧组编辑"
+    );
+    state.sync(&b, &lib.list("listening_audios")?);
+    ensure!(state.renaming.is_none(), "切换组未清理行内编辑");
+
+    state.begin_rename(&a, &lib.list("listening_audios")?, &other_id)?;
+    audio_library::move_records(&lib, &a, &b, &[other_id.clone()])?;
+    ensure!(
+        state.save_rename(&lib, &a, "Moved by mistake").is_err()
+            && state.renaming.is_some()
+            && stored_name(&other_id)? == "Other A",
+        "后台移动后仍可保存旧组编辑"
+    );
+    state.sync(&a, &lib.list("listening_audios")?);
+    ensure!(state.renaming.is_none(), "后台移动后未清理行内编辑");
+
+    state.begin_rename(&b, &lib.list("listening_audios")?, &remote_id)?;
+    audio_library::delete_records(&lib, &b, &[remote_id.clone()])?;
+    state.sync(&b, &lib.list("listening_audios")?);
+    ensure!(state.renaming.is_none(), "目标被删除后未清理行内编辑");
+    let reopened = Library::open(lib.root.clone())?;
+    ensure!(
+        reopened
+            .list("listening_audios")?
+            .iter()
+            .any(|r| text(r, "id") == target_id && text(r, "name") == "听力练习 🎧 café"),
+        "行内改名重开后丢失"
+    );
+    fs::write(
+        lib.root.join("inline-rename-evidence.json"),
+        serde_json::to_vec_pretty(&json!({
+            "cancel_no_write":true,"target_id_independent_of_selection":true,
+            "invalid_name_keeps_editing":true,"cross_group_duplicate_allowed":true,
+            "changed_group_rejected":true,"moved_target_rejected":true,
+            "sync_clears_changed_moved_deleted_targets":true,
+            "unicode_trimmed_name":"听力练习 🎧 café","reopen":true
+        }))?,
+    )?;
+    results.push(json!({"workflow":"音频行内改名：真实SQLite → 目标ID及取消 → 名称校验/跨组冲突 → 移动删除失效 → Unicode重开持久化","passed":true,"evidence":"audio-inline-rename/inline-rename-evidence.json"}));
     Ok(())
 }

@@ -3,6 +3,8 @@ use super::*;
 
 pub(super) struct AudioState {
     pub(super) library: audio_library::State,
+    pub(super) rename_subscription: Option<Subscription>,
+    pub(super) library_scroll: ScrollHandle,
     pub(super) practices: Vec<Row>,
     pub(super) audios: Vec<Row>,
     pub(super) practice_id: String,
@@ -32,6 +34,8 @@ impl AudioState {
     pub(super) fn new() -> Self {
         Self {
             library: Default::default(),
+            rename_subscription: None,
+            library_scroll: ScrollHandle::new(),
             practices: vec![],
             audios: vec![],
             practice_id: String::new(),
