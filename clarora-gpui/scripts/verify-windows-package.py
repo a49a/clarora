@@ -33,7 +33,7 @@ coremessaging coreuicomponents dinput8 glu32 msvcp_win textinputframework
 uiautomationcore windows.storage windows.ui
 """.split())
 REQUIRED_COMPONENTS = {
-    "mpv", "ffmpeg", "yt-dlp", "pdfium", "whisper.cpp", "sherpa-onnx", "msvc-runtime", "rust-crates",
+    "mpv", "vulkan-loader", "ffmpeg", "yt-dlp", "pdfium", "whisper.cpp", "sherpa-onnx", "msvc-runtime", "rust-crates",
 }
 REQUIRED_FILES = (
     "pdfium.dll", "tools/ffmpeg.exe", "tools/ffprobe.exe", "tools/yt-dlp.exe",

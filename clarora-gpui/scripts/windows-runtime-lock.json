@@ -12,6 +12,16 @@
       "sha256": "562674ce7a0f6ac0681291037abc4c8595e0d1202d86d27eb341113eb7d984ba"
     },
     {
+      "name": "vulkan-loader", "version": "1.4.363.0", "kind": "zip",
+      "url": "https://vulkan.lunarg.com/sdk/download/1.4.363.0/windows/VulkanRT-X64-1.4.363.0-Components.zip",
+      "sha256": "a25a927aa8b9f0371048f1861cf88ac3b9bc9b1fb332c42d897c8ab32695769a"
+    },
+    {
+      "name": "vulkan-loader-license", "version": "vulkan-sdk-1.4.363.0", "kind": "file", "filename": "LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Loader/vulkan-sdk-1.4.363.0/LICENSE.txt",
+      "sha256": "43c0a37e6a0fa7ff3c843b3ec5a4fac84b712558ddac103fbd4c1649662a9ece"
+    },
+    {
       "name": "ffmpeg", "version": "9.0.2-essentials", "kind": "zip",
       "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip",
       "sha256": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba"

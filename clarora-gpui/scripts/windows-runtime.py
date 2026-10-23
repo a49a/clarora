@@ -152,6 +152,13 @@ def stage(work, output, msvc_redist, msvc_licenses):
     mpv_dlls = sorted(sources["mpv"].rglob("*.dll"))
     component("mpv", [(p, "mpv-2.dll" if p == mpv[0] else p.name) for p in mpv_dlls],
               license_files(sources["mpv-source"], output / "licenses/mpv") + license_files(sources["mpv"], output / "licenses/mpv-runtime"))
+    vulkan = sources["vulkan-loader"] / f"VulkanRT-X64-{lock['vulkan-loader']['version']}-Components"
+    vulkan_notice = output / "licenses/vulkan-loader/VulkanRT-License.txt"
+    vulkan_license = output / "licenses/vulkan-loader/LICENSE.txt"
+    copy(vulkan / "VulkanRT-License.txt", vulkan_notice)
+    copy(sources["vulkan-loader-license"] / "LICENSE.txt", vulkan_license)
+    component("vulkan-loader", [(vulkan / "x64/vulkan-1.dll", "vulkan-1.dll")],
+              [vulkan_notice, vulkan_license])
     component("ffmpeg", [(one(sources["ffmpeg"], name), "tools/" + name) for name in ("ffmpeg.exe", "ffprobe.exe")],
               license_files(sources["ffmpeg"], output / "licenses/ffmpeg"))
     yt_licenses = license_files(sources["yt-dlp-license"], output / "licenses/yt-dlp") + license_files(sources["yt-dlp-notices"], output / "licenses/yt-dlp")
