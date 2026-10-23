@@ -129,7 +129,7 @@ def system_dll(name):
 
 def inventory(root, excluded):
     result = []
-    for path in sorted(root.rglob("*")):
+    for path in sorted(root.rglob("*"), key=lambda path: path.relative_to(root).as_posix()):
         require(not path.is_symlink(), f"Package symlink is not allowed: {path}")
         if path.is_file() and path.relative_to(root).as_posix() not in excluded:
             result.append({"path": path.relative_to(root).as_posix(), "size": path.stat().st_size,
