@@ -99,6 +99,7 @@ jobs:
             clarora-gpui/target/windows-dependencies/runtime-build-failure.json
             clarora-gpui/target/distribution/*.json
             clarora-gpui/target/distribution/installer-evidence/
+            clarora-gpui/target/release/clarora-gpui.exe
           if-no-files-found: warn
       - uses: actions/upload-artifact@v7
         if: success()

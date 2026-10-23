@@ -18,6 +18,8 @@ import zipfile
 
 
 # OS-owned libraries only. VC++/OpenMP/codec runtimes deliberately are not here.
+# icuuc.dll is included in Windows 10 1703+, below our 10.0.17763 minimum.
+# https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-
 SYSTEM_DLLS = set("""
 advapi32 avicap32 avrt bcrypt bcryptprimitives cabinet cfgmgr32 combase comctl32 comdlg32
 crypt32 cryptbase cryptnet cryptsp d2d1 d3d9 d3d11 d3d12 dcomp dbghelp dhcpcsvc
@@ -30,7 +32,7 @@ winhttp wininet winmm winscard winspool wintrust wlanapi wldap32 ws2_32
 wtsapi32 ucrtbase urlmon winusb authz clbcatq fwpuclnt iertutil msasn1 ntasn1
 ntmarta nsi samcli srvcli sspicli windowscodecs winmmbase xinput1_4 d3dcompiler_47
 coremessaging coreuicomponents dinput8 glu32 msvcp_win textinputframework
-uiautomationcore windows.storage windows.ui
+uiautomationcore windows.storage windows.ui icuuc
 """.split())
 REQUIRED_COMPONENTS = {
     "mpv", "vulkan-loader", "ffmpeg", "yt-dlp", "pdfium", "whisper.cpp", "sherpa-onnx", "msvc-runtime", "rust-crates",

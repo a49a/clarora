@@ -39,7 +39,7 @@ python3 scripts/verify-macos-package.py \
 ./scripts/build-windows.ps1 -Distribution -RuntimeDir ./target/windows-runtime -Installer
 ```
 
-`windows-runtime-lock.json` 固定下载来源、版本和 SHA-256。准备流程构建 ASR／TTS，收集 mpv、FFmpeg／ffprobe、yt-dlp、PDFium、Whisper／GGML、Sherpa／ONNX 和 CRT。每个 EXE 的 DLL 闭包必须在自身目录或系统目录内可解析；辅助程序和 CPU 后端位于 `tools/`。
+`windows-runtime-lock.json` 固定下载来源、版本和 SHA-256。准备流程构建 ASR／TTS，收集 mpv、Vulkan loader、FFmpeg／ffprobe、yt-dlp、PDFium、Whisper／GGML、Sherpa／ONNX 和 CRT。每个 EXE 的 DLL 闭包必须在自身目录或系统目录内可解析；辅助程序和 CPU 后端位于 `tools/`。
 
 默认输出到工作区 `artifacts/clarora/gpui/windows/`；`-Output` 可指定路径。打包先检查运行库，再构建 ZIP 和可选安装器，使用 `PATH=System32` 执行运行检查并复验 ZIP。默认文件名标明 `unsigned`。已有代码签名证书时，可传 `-CertificateThumbprint <证书指纹>` 签署自有程序和安装器；第三方库保留原始签名。
 
@@ -49,7 +49,7 @@ python3 scripts/verify-macos-package.py \
   -Evidence /absolute/path/installer-evidence
 ```
 
-安装器按用户安装、无须管理员权限；验证覆盖安装、升级、运行环境检查和卸载，确认 `%LOCALAPPDATA%/Clarora-GPUI` 学习资料保留。验证拒绝接管已有同 AppId 安装。CI 已接入完整构建及安装生命周期；本次开发机为 macOS，Windows 原生构建、安装器和远端 CI 尚待执行。
+安装器按用户安装、无须管理员权限；验证覆盖安装、升级、运行环境检查和卸载，确认 `%LOCALAPPDATA%/Clarora-GPUI` 学习资料保留。验证拒绝接管已有同 AppId 安装。CI 在 Windows runner 实际执行完整构建与安装生命周期验证；发行验收以对应 run 的完整结果为准。
 
 ## 诊断、许可证与发布前检查
 
