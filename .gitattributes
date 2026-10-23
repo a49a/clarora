@@ -3,3 +3,6 @@ clarora-app/windows/clarora-asr/miniaudio.h linguist-vendored=true -diff
 
 # 生成文件
 clarora-app/package-lock.json linguist-generated=true
+
+# Preserve upstream license evidence exactly for pinned SHA-256 verification.
+clarora-gpui/scripts/third-party-licenses/** -text
