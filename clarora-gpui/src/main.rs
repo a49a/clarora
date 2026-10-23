@@ -3,6 +3,7 @@ mod app_state;
 mod assistant_ui;
 mod audio_current_ui;
 mod design;
+mod feedback_ui;
 mod focus_ui;
 mod library_ui;
 mod reading_ui;
@@ -25,6 +26,7 @@ use clarora_gpui::{
     tts, video_jobs, video_library, video_qa, video_subtitles,
     waveform::{self, Waveform},
 };
+use feedback_ui::FeedbackKind;
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Root, Selectable, Sizable, Theme, ThemeMode,
@@ -186,6 +188,8 @@ enum Action {
     AutoNextPart,
     Cancel,
     DismissTaskNotice,
+    DismissFeedback(bool),
+    RetryFeedback,
     Clip,
     Chat,
     SaveAnswer,
@@ -246,6 +250,7 @@ enum Action {
 enum Outcome {
     CredentialMode(bool),
     Message(String),
+    Issue(String),
     Parts(bilibili::Series),
     PartVideo(bilibili::Series, usize, PathBuf, bool, Option<PathBuf>),
     Output(String),
@@ -297,6 +302,7 @@ struct AppView {
     navigation_motion: Option<(Instant, f32)>,
     inputs: BTreeMap<String, Entity<InputState>>,
     status: String,
+    feedback: feedback_ui::FeedbackState,
     cards: Vec<Card>,
     index: usize,
     revealed: bool,
@@ -417,7 +423,8 @@ impl AppView {
             navigation_open: true,
             navigation_motion: None,
             inputs,
-            status: "准备好了，开始今天的学习。".into(),
+            status: String::new(),
+            feedback: Default::default(),
             cards: vec![],
             index: 0,
             revealed: false,
@@ -488,7 +495,7 @@ impl AppView {
         }
         match video_library::Collection::load(&this.lib) {
             Ok(videos) => this.video.collection = videos,
-            Err(e) => this.status = format!("{e:#}"),
+            Err(e) => this.report_status(FeedbackKind::Error, format!("{e:#}")),
         }
         let sources: Vec<_> = this
             .video
@@ -539,7 +546,7 @@ impl AppView {
                     this.set(k, v, window, cx);
                 }
             }
-            Err(e) => this.status = e.to_string(),
+            Err(e) => this.report_status(FeedbackKind::Error, e.to_string()),
         }
         if let Ok(c) = serde_json::from_str::<backup::StorageConfig>(
             &this.lib.setting("storage_config").unwrap_or_default(),
@@ -578,7 +585,10 @@ impl AppView {
             view.update(cx, |this, cx| match this.flush_writing(cx) {
                 Ok(()) => true,
                 Err(error) => {
-                    this.status = format!("写作草稿尚未保存，窗口保持打开：{error:#}");
+                    this.report_status(
+                        FeedbackKind::Error,
+                        format!("写作草稿尚未保存，窗口保持打开：{error:#}"),
+                    );
                     cx.notify();
                     false
                 }
@@ -743,14 +753,19 @@ impl AppView {
         if !self.chat.context.is_empty() {
             let draft = self.value("question", cx);
             if let Err(error) = self.chat.save_draft(&self.lib, &draft) {
-                self.status = format!("问题草稿尚未保存，已保留当前会话：{error:#}");
+                self.report_status(
+                    FeedbackKind::Error,
+                    format!("问题草稿尚未保存，已保留当前会话：{error:#}"),
+                );
                 return;
             }
         }
         match self.chat.switch_context(&self.lib, &context) {
             Ok(true) => self.set("question", self.chat.draft.clone(), window, cx),
             Ok(false) => {}
-            Err(error) => self.status = format!("读取材料会话失败：{error:#}"),
+            Err(error) => {
+                self.report_status(FeedbackKind::Error, format!("读取材料会话失败：{error:#}"))
+            }
         }
     }
     fn sync_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -888,7 +903,10 @@ impl AppView {
     }
     fn refresh_view_data(&mut self) {
         if let Err(error) = self.data.reload(&self.lib, &self.audio.audios) {
-            self.status = format!("页面资料读取失败，保留上次内容：{error:#}");
+            self.report_status(
+                FeedbackKind::Error,
+                format!("页面资料读取失败，保留上次内容：{error:#}"),
+            );
         }
         if self.page == "settings" || self.settings.runtime.components.is_empty() {
             self.settings.runtime = clarora_gpui::runtime::inspect();
@@ -928,18 +946,24 @@ impl AppView {
         task: impl FnOnce(Library, Cancel, mpsc::Sender<Event>) -> Result<Outcome> + Send + 'static,
     ) {
         if self.tasks.cancel.is_some() {
-            self.status = "已有任务正在执行，请完成或取消后重试".into();
+            self.report_status(
+                FeedbackKind::Error,
+                "已有任务正在执行，请完成或取消后重试".into(),
+            );
             return;
         }
         self.tasks.notice = None;
         self.tasks.scope = scope;
+        self.tasks.started = Some(Instant::now());
+        self.tasks.progress_elapsed = 0;
+        self.tasks.retry = self.feedback.retry_candidate.clone();
         let cancel = process::cancel_token();
         let token = cancel.clone();
         let lib = self.lib.clone();
         let (tx, rx) = mpsc::channel();
         self.tasks.events = Some(rx);
         self.tasks.cancel = Some(cancel);
-        self.status = label.into();
+        self.report_status(FeedbackKind::Progress, label.into());
         let chat_request = self.chat.current_request();
         std::thread::spawn(move || {
             let result = task(lib, token, tx.clone()).map_err(|e| format!("{e:#}"));
@@ -953,7 +977,10 @@ impl AppView {
         task: impl FnOnce(Library, Cancel, mpsc::Sender<Event>) -> Result<Outcome> + Send + 'static,
     ) {
         if self.tasks.cancel.is_some() {
-            self.status = "已有任务正在执行，请完成或取消后重试".into();
+            self.report_status(
+                FeedbackKind::Error,
+                "已有任务正在执行，请完成或取消后重试".into(),
+            );
             return;
         }
         self.begin(&format!("正在{title}…"), task);
@@ -964,7 +991,7 @@ impl AppView {
             let draft = self.value("question", cx);
             if draft != self.chat.draft {
                 if let Err(error) = self.chat.save_draft(&self.lib, &draft) {
-                    self.status = format!("保存问题草稿失败：{error:#}");
+                    self.report_status(FeedbackKind::Error, format!("保存问题草稿失败：{error:#}"));
                 }
             }
         }
@@ -972,7 +999,9 @@ impl AppView {
             if let Ok(result) = rx.try_recv() {
                 match result {
                     Ok(waveform) => self.audio.waveform = Some(waveform),
-                    Err(error) => self.status = format!("波形读取失败：{error}"),
+                    Err(error) => {
+                        self.report_status(FeedbackKind::Error, format!("波形读取失败：{error}"))
+                    }
                 }
                 self.audio.waveform_rx = None;
                 cx.notify();
@@ -1023,7 +1052,7 @@ impl AppView {
                     || !self.media.snapshot.error.is_empty()
                 {
                     self.invalidate_blind();
-                    self.status = "未能确认暂停，请重试查看原文".into();
+                    self.report_status(FeedbackKind::Error, "未能确认暂停，请重试查看原文".into());
                     blind_changed = true;
                 } else if self.media.snapshot.paused
                     && started.elapsed() >= Duration::from_millis(80)
@@ -1037,7 +1066,7 @@ impl AppView {
                     }
                     self.audio.blind.revealed = Some(target);
                     self.audio.blind_pending = None;
-                    self.status = "已暂停并显示所选字幕".into();
+                    self.report_status(FeedbackKind::Info, "已暂停并显示所选字幕".into());
                     blind_changed = true;
                 }
             } else if !self.media.snapshot.paused && self.audio.blind.revealed.is_some() {
@@ -1101,7 +1130,7 @@ impl AppView {
                     Ok(())
                 })();
                 if let Err(error) = result {
-                    self.status = format!("更新视频标题失败：{error:#}");
+                    self.report_status(FeedbackKind::Error, format!("更新视频标题失败：{error:#}"));
                 }
                 changed = true;
             }
@@ -1128,7 +1157,7 @@ impl AppView {
                             .as_ref()
                             .is_some_and(|t| !t.load(Ordering::SeqCst))
                         {
-                            self.status = progress.label();
+                            self.report_status(FeedbackKind::Progress, progress.label());
                             self.tasks.model_progress = Some(progress);
                         }
                     }
@@ -1147,7 +1176,8 @@ impl AppView {
                         }
                     }
                     Event::Done(request, result) => {
-                        let failed = result.is_err();
+                        let task_retry = self.tasks.retry.take();
+                        let failed = result.is_err() || matches!(&result, Ok(Outcome::Issue(_)));
                         let completed_chat = request.is_some();
                         let accepted = request.as_ref().is_none_or(|r| self.chat.finish_request(r));
                         let cancelled = self
@@ -1163,25 +1193,35 @@ impl AppView {
                             // was invalidated. Refresh the current index without painting
                             // the old request's output or selecting its conversation.
                             if let Err(error) = self.chat.refresh(&self.lib) {
-                                self.status = format!("刷新会话失败：{error:#}");
+                                self.report_status(
+                                    FeedbackKind::Error,
+                                    format!("刷新会话失败：{error:#}"),
+                                );
                             }
                             changed = true;
                             continue;
                         }
                         match result {
                             Ok(Outcome::TtsReady(row)) => {
-                                self.status =
-                                    "音频及逐句字幕已保存到生成时选择的练习组，点击试听查看".into();
+                                self.report_status(
+                                    FeedbackKind::Info,
+                                    "音频及逐句字幕已保存到生成时选择的练习组，点击试听查看".into(),
+                                );
                                 if text(&row, "practice_id") == self.audio.practice_id {
                                     self.audio.library.selected = text(&row, "id");
                                 }
                                 self.tts_last = Some(row);
                             }
                             Ok(Outcome::Parts(series)) if !cancelled => {
-                                self.status =
-                                    format!("已识别 {} P，点击列表选集播放", series.parts.len());
+                                self.report_status(
+                                    FeedbackKind::Info,
+                                    format!("已识别 {} P，点击列表选集播放", series.parts.len()),
+                                );
                                 if let Err(e) = series.save(&self.lib) {
-                                    self.status = format!("保存分P列表失败：{e}");
+                                    self.report_status(
+                                        FeedbackKind::Error,
+                                        format!("保存分P列表失败：{e}"),
+                                    );
                                 }
                                 self.video.parts_scroll.scroll_to_item(
                                     series.current.unwrap_or(series.requested),
@@ -1201,7 +1241,7 @@ impl AppView {
                                             let _ = fs::remove_dir_all(parent);
                                         }
                                     }
-                                    self.status = "已取消分P下载".into();
+                                    self.report_status(FeedbackKind::Info, "已取消分P下载".into());
                                 } else {
                                     series.parts[index].path = Some(path.clone());
                                     let activate =
@@ -1224,13 +1264,22 @@ impl AppView {
                                         if self.open(path) {
                                             self.video.tab = panel;
                                             self.media.player.set("pause", "no");
-                                            self.status = format!("正在播放 P{}", index + 1);
+                                            self.report_status(
+                                                FeedbackKind::Info,
+                                                format!("正在播放 P{}", index + 1),
+                                            );
                                         }
                                     } else {
-                                        self.status = "分P已下载，返回视频页选集播放".into();
+                                        self.report_status(
+                                            FeedbackKind::Info,
+                                            "分P已下载，返回视频页选集播放".into(),
+                                        );
                                     }
                                     if let Err(e) = saved {
-                                        self.status = format!("分P已导入，但保存列表失败：{e}");
+                                        self.report_status(
+                                            FeedbackKind::Error,
+                                            format!("分P已导入，但保存列表失败：{e}"),
+                                        );
                                     }
                                 }
                             }
@@ -1255,9 +1304,15 @@ impl AppView {
                                         path,
                                         "select".into(),
                                     ]);
-                                    self.status = "中文字幕已生成并保存，英文和时间轴已保留".into();
+                                    self.report_status(
+                                        FeedbackKind::Info,
+                                        "中文字幕已生成并保存，英文和时间轴已保留".into(),
+                                    );
                                 } else {
-                                    self.status = "翻译已完成，当前材料已改变，未切换显示".into();
+                                    self.report_status(
+                                        FeedbackKind::Info,
+                                        "翻译已完成，当前材料已改变，未切换显示".into(),
+                                    );
                                 }
                             }
                             Ok(Outcome::Output(s)) if !cancelled => {
@@ -1266,7 +1321,7 @@ impl AppView {
                                 } else {
                                     self.output = s;
                                 }
-                                self.status = "已完成".into();
+                                self.report_status(FeedbackKind::Info, "已完成".into());
                             }
                             Ok(Outcome::KeyPoints(audio, points)) if !cancelled => {
                                 let _ = self.lib.set_setting(
@@ -1276,17 +1331,23 @@ impl AppView {
                                 if self.audio.current_id == audio {
                                     self.audio.key_points = points;
                                 }
-                                self.status = "学习重点已标注，可悬停查看释义".into();
+                                self.report_status(
+                                    FeedbackKind::Info,
+                                    "学习重点已标注，可悬停查看释义".into(),
+                                );
                             }
                             Ok(Outcome::Ocr(text)) if !cancelled => {
                                 self.ocr_text = text.clone();
                                 self.output = text;
-                                self.status = "图片文字已识别".into();
+                                self.report_status(FeedbackKind::Info, "图片文字已识别".into());
                             }
                             Ok(Outcome::Ebook(mut reading)) => {
                                 if cancelled {
                                     drop(reading);
-                                    self.status = "已取消，保留原阅读内容".into();
+                                    self.report_status(
+                                        FeedbackKind::Info,
+                                        "已取消，保留原阅读内容".into(),
+                                    );
                                 } else {
                                     reading.accept_import();
                                     self.document_text = reading.text();
@@ -1294,9 +1355,15 @@ impl AppView {
                                     self.pdf_image = None;
                                     self.pdf_bookmarks.clear();
                                     if let Err(error) = ebook::save_progress(&self.lib, &reading) {
-                                        self.status = format!("已载入，但进度保存失败：{error:#}");
+                                        self.report_status(
+                                            FeedbackKind::Error,
+                                            format!("已载入，但进度保存失败：{error:#}"),
+                                        );
                                     } else {
-                                        self.status = format!("已载入《{}》", reading.book.title);
+                                        self.report_status(
+                                            FeedbackKind::Info,
+                                            format!("已载入《{}》", reading.book.title),
+                                        );
                                     }
                                     let _ = self.lib.set_setting("pdf_current", &json!({"path":reading.book.path,"page":reading.page,"width":self.pdf_width}).to_string());
                                     self.ebook_reading = Some(reading);
@@ -1316,23 +1383,33 @@ impl AppView {
                                     "pdf_current",
                                     &json!({"path":self.pdf_path,"page":self.pdf_page,"width":self.pdf_width}).to_string(),
                                 );
-                                self.status = "PDF 已载入".into();
+                                self.report_status(FeedbackKind::Info, "PDF 已载入".into());
                             }
                             Ok(Outcome::Backups(v)) => {
                                 self.backups = v;
-                                self.status = "已读取备份版本".into();
+                                self.report_status(FeedbackKind::Info, "已读取备份版本".into());
                             }
                             Ok(Outcome::Recording(path)) => {
                                 self.recorded = Some(path);
-                                self.status = "录音已保存，可转写评分".into();
+                                self.report_status(
+                                    FeedbackKind::Info,
+                                    "录音已保存，可转写评分".into(),
+                                );
                             }
                             Ok(Outcome::CredentialMode(enabled)) => {
                                 self.settings.secure_credentials = enabled;
-                                self.status=if enabled {"密钥安全模式已开启，现有本机密钥已迁入系统凭证库"} else {"密钥安全模式已关闭。已有钥匙串密钥可重新输入保存，或主动导入一次"}.into();
+                                self.report_status(FeedbackKind::Info, if enabled {"密钥安全模式已开启，现有本机密钥已迁入系统凭证库"} else {"密钥安全模式已关闭。已有钥匙串密钥可重新输入保存，或主动导入一次"}.into());
                             }
-                            Ok(Outcome::Message(s)) => self.status = s,
-                            Err(e) => self.status = e,
-                            _ => self.status = "已取消".into(),
+                            Ok(Outcome::Message(s)) => self.report_status(FeedbackKind::Info, s),
+                            Ok(Outcome::Issue(s)) => self.report_status(FeedbackKind::Error, s),
+                            Err(_) if cancelled => {
+                                self.report_status(FeedbackKind::Info, "已取消当前任务".into());
+                            }
+                            Err(e) => {
+                                self.report_status(FeedbackKind::Error, e);
+                                self.feedback.attach_retry(task_retry);
+                            }
+                            _ => self.report_status(FeedbackKind::Info, "已取消".into()),
                         }
                         if let Some(notice) = self.tasks.notice.as_mut().filter(|n| n.active()) {
                             notice.state = if cancelled {
@@ -1351,7 +1428,10 @@ impl AppView {
                             self.refresh();
                         }
                         if let Err(error) = self.chat.refresh(&self.lib) {
-                            self.status = format!("刷新会话失败：{error:#}");
+                            self.report_status(
+                                FeedbackKind::Error,
+                                format!("刷新会话失败：{error:#}"),
+                            );
                         }
                     }
                 }
@@ -1446,12 +1526,15 @@ impl AppView {
                 self.timer_remaining = if self.timer_focus { 1500 } else { 300 };
                 self.timer_end =
                     Some(SystemTime::now() + Duration::from_secs(self.timer_remaining));
-                self.status = if self.timer_focus {
-                    "休息结束，可以开始下一轮"
-                } else {
-                    "专注完成，休息一下"
-                }
-                .into();
+                self.report_status(
+                    FeedbackKind::Info,
+                    if self.timer_focus {
+                        "休息结束，可以开始下一轮"
+                    } else {
+                        "专注完成，休息一下"
+                    }
+                    .into(),
+                );
                 changed = true;
             } else if !self.timer_paused {
                 let remaining = end
@@ -1468,13 +1551,23 @@ impl AppView {
         let previous_error = self.chat.error.clone();
         self.sync_assistant(window, cx);
         changed |= previous_context != self.chat.context || previous_error != self.chat.error;
+        if self.tasks.cancel.is_some() {
+            if let Some(started) = self.tasks.started {
+                let elapsed = started.elapsed().as_secs();
+                if elapsed != self.tasks.progress_elapsed {
+                    self.tasks.progress_elapsed = elapsed;
+                    changed = true;
+                }
+            }
+        }
+        changed |= self.tick_feedback();
         if changed {
             cx.notify();
         }
     }
     fn start_part(&mut self, index: usize) {
         if self.tasks.cancel.is_some() {
-            self.status = "请先完成或取消当前前台任务".into();
+            self.report_status(FeedbackKind::Error, "请先完成或取消当前前台任务".into());
             return;
         }
         let Some(mut series) = self.video.series.clone() else {
@@ -1491,7 +1584,7 @@ impl AppView {
             if self.open(path) {
                 self.video.tab = panel;
                 self.media.player.set("pause", "no");
-                self.status = format!("正在播放 P{}", index + 1);
+                self.report_status(FeedbackKind::Info, format!("正在播放 P{}", index + 1));
             }
             return;
         }
@@ -1520,7 +1613,7 @@ impl AppView {
         let video = match result {
             Ok(video) => video,
             Err(e) => {
-                self.status = format!("无法选择视频：{e:#}");
+                self.report_status(FeedbackKind::Error, format!("无法选择视频：{e:#}"));
                 return false;
             }
         };
@@ -1590,7 +1683,7 @@ impl AppView {
         let cues = match video_subtitles::load(&self.lib, path) {
             Ok(cues) => cues,
             Err(e) => {
-                self.status = format!("字幕载入失败：{e}");
+                self.report_status(FeedbackKind::Error, format!("字幕载入失败：{e}"));
                 vec![]
             }
         };
@@ -1777,7 +1870,10 @@ impl AppView {
             if let Ok(Ok(Some(paths))) = picker.await {
                 let _ = this.update(cx, |this, cx| {
                     if kind == "audio" && this.audio.practice_id != audio_group {
-                        this.status = "选择文件期间练习组已切换，请在目标组重新导入".into();
+                        this.report_status(
+                            FeedbackKind::Error,
+                            "选择文件期间练习组已切换，请在目标组重新导入".into(),
+                        );
                     } else {
                         this.picked(&kind, paths);
                     }
@@ -1807,11 +1903,14 @@ impl AppView {
                     ensure!(self.open(first.path), "{}", self.status);
                     self.video.tab = 3;
                     self.video.tools_open = false;
-                    self.status = format!("已收藏 {} 个视频，可在“我的视频”切换或移除", ids.len());
+                    self.report_status(
+                        FeedbackKind::Info,
+                        format!("已收藏 {} 个视频，可在“我的视频”切换或移除", ids.len()),
+                    );
                     Ok(())
                 })();
                 if let Err(e) = result {
-                    self.status = format!("视频导入失败：{e:#}");
+                    self.report_status(FeedbackKind::Error, format!("视频导入失败：{e:#}"));
                 }
             }
             "video-subtitle" => {
@@ -1833,10 +1932,17 @@ impl AppView {
                     self.load_video_subtitles(video.clone().as_path());
                     Ok(())
                 })();
-                self.status = match result {
-                    Ok(()) => "已加载并缓存字幕，可同步高亮及向 AI 提问".into(),
-                    Err(error) => error.to_string(),
-                };
+                self.report_status(
+                    if result.is_err() {
+                        FeedbackKind::Error
+                    } else {
+                        FeedbackKind::Info
+                    },
+                    match result {
+                        Ok(()) => "已加载并缓存字幕，可同步高亮及向 AI 提问".into(),
+                        Err(error) => error.to_string(),
+                    },
+                );
             }
             "words" => self.begin("正在导入词条…", move |lib, _, _| {
                 Ok(Outcome::Message(format!(
@@ -1868,10 +1974,14 @@ impl AppView {
                             Err(e) => errors.push(e.to_string()),
                         }
                     }
-                    Ok(Outcome::Message(format!(
-                        "已导入 {count} 条。{}",
-                        errors.join("；")
-                    )))
+                    if errors.is_empty() {
+                        Ok(Outcome::Message(format!("已导入 {count} 条音频")))
+                    } else {
+                        Ok(Outcome::Issue(format!(
+                            "已导入 {count} 条；其余导入失败：{}",
+                            errors.join("；")
+                        )))
+                    }
                 });
             }
             "subtitle-en" | "subtitle-zh" => {
@@ -1902,7 +2012,10 @@ impl AppView {
             }
             "pdf" => {
                 if self.tasks.cancel.is_some() {
-                    self.status = "已有任务正在执行，请完成或取消后重试".into();
+                    self.report_status(
+                        FeedbackKind::Error,
+                        "已有任务正在执行，请完成或取消后重试".into(),
+                    );
                     return;
                 }
                 if ebook::is_ebook(&path) {
@@ -1914,10 +2027,13 @@ impl AppView {
                         Ok(p) => {
                             self.load_pdf(p, 0, self.pdf_width);
                         }
-                        Err(e) => self.status = e.to_string(),
+                        Err(e) => self.report_status(FeedbackKind::Error, e.to_string()),
                     }
                 } else {
-                    self.status = "请选择 PDF、EPUB 或 TXT 文件；MOBI/AZW3 暂不支持".into();
+                    self.report_status(
+                        FeedbackKind::Error,
+                        "请选择 PDF、EPUB 或 TXT 文件；MOBI/AZW3 暂不支持".into(),
+                    );
                 }
             }
             "rn-library" => self.begin("正在读取原版资料快照…", move |lib, _, _| {
@@ -1934,7 +2050,7 @@ impl AppView {
             }),
             "recording" => {
                 self.recorded = Some(path);
-                self.status = "已选择录音".into();
+                self.report_status(FeedbackKind::Info, "已选择录音".into());
             }
             "background" => {
                 self.media.player.open(&path);
@@ -1952,7 +2068,10 @@ impl AppView {
     }
     fn render_pdf(&mut self) {
         if self.tasks.cancel.is_some() {
-            self.status = "已有任务正在执行，请完成或取消后重试".into();
+            self.report_status(
+                FeedbackKind::Error,
+                "已有任务正在执行，请完成或取消后重试".into(),
+            );
             return;
         }
         if let Some(path) = self.pdf_path.clone() {
@@ -1971,6 +2090,10 @@ impl AppView {
         if window.has_active_dialog(cx) && !matches!(action, Action::VideoConfirmRemove) {
             return;
         }
+        if self.begin_feedback_action(&action, window, cx) {
+            return;
+        }
+        let action_retry = self.feedback.retry_candidate.clone();
         let refresh_chat = matches!(&action, Action::Refresh);
         let updates_settings = matches!(
             &action,
@@ -2202,10 +2325,10 @@ impl AppView {
                             }
                         }
                         self.audio.tools_open = false;
-                        self.status = "盲听已开启，字幕已隐藏".into();
+                        self.report_status(FeedbackKind::Info, "盲听已开启，字幕已隐藏".into());
                     } else {
                         self.media.player.set("pause", "yes");
-                        self.status = "已切回字幕模式，保持暂停".into();
+                        self.report_status(FeedbackKind::Info, "已切回字幕模式，保持暂停".into());
                     }
                     self.sync_chat(window, cx);
                     window.focus(&self.focus);
@@ -2224,12 +2347,15 @@ impl AppView {
                     self.assistant_open = false;
                     self.sync_chat(window, cx);
                     window.focus(&self.focus);
-                    self.status = if enabled {
-                        "查看时仅显示中文；平时中英文均遮挡"
-                    } else {
-                        "查看时显示中英字幕；平时均遮挡"
-                    }
-                    .into();
+                    self.report_status(
+                        FeedbackKind::Info,
+                        if enabled {
+                            "查看时仅显示中文；平时中英文均遮挡"
+                        } else {
+                            "查看时显示中英字幕；平时均遮挡"
+                        }
+                        .into(),
+                    );
                 }
                 action @ (Action::AudioBlindReveal | Action::AudioBlindRevealCue(..)) => {
                     ensure!(
@@ -2275,7 +2401,10 @@ impl AppView {
                     self.audio.blind_pending =
                         Some((Instant::now(), self.audio.current_id.clone(), target));
                     self.media.player.set("pause", "yes");
-                    self.status = "正在暂停，确认后显示所选字幕…".into();
+                    self.report_status(
+                        FeedbackKind::Progress,
+                        "正在暂停，确认后显示所选字幕…".into(),
+                    );
                 }
                 Action::AudioBlindHide => {
                     self.invalidate_blind();
@@ -2295,7 +2424,7 @@ impl AppView {
                         self.media.player.command(["seek", "0", "absolute+exact"]);
                     }
                     self.media.player.set("pause", "no");
-                    self.status = "正在盲听，字幕已隐藏".into();
+                    self.report_status(FeedbackKind::Info, "正在盲听，字幕已隐藏".into());
                     self.audio.blind_settle_until =
                         Some(Instant::now() + Duration::from_millis(200));
                     self.sync_chat(window, cx);
@@ -2351,12 +2480,15 @@ impl AppView {
                     self.media.player.set("pause", "no");
                     self.audio.blind_settle_until =
                         Some(Instant::now() + Duration::from_millis(250));
-                    self.status = if outside_loop {
-                        "已退出 A–B 循环，从所选句开始盲听"
-                    } else {
-                        "已从所选位置开始盲听，字幕保持遮挡"
-                    }
-                    .into();
+                    self.report_status(
+                        FeedbackKind::Info,
+                        if outside_loop {
+                            "已退出 A–B 循环，从所选句开始盲听"
+                        } else {
+                            "已从所选位置开始盲听，字幕保持遮挡"
+                        }
+                        .into(),
+                    );
                     self.sync_chat(window, cx);
                     window.focus(&self.focus);
                 }
@@ -2407,12 +2539,15 @@ impl AppView {
                     self.media.player.set("pause", "no");
                     self.audio.blind_settle_until =
                         Some(Instant::now() + Duration::from_millis(250));
-                    self.status = match direction {
-                        -1 => "已从上一句开始盲听",
-                        1 => "已从下一句开始盲听",
-                        _ => "已隐藏文字，从句首重听",
-                    }
-                    .into();
+                    self.report_status(
+                        FeedbackKind::Info,
+                        match direction {
+                            -1 => "已从上一句开始盲听",
+                            1 => "已从下一句开始盲听",
+                            _ => "已隐藏文字，从句首重听",
+                        }
+                        .into(),
+                    );
                     self.sync_chat(window, cx);
                     window.focus(&self.focus);
                 }
@@ -2431,6 +2566,7 @@ impl AppView {
                     ensure!(!self.audio.blind.enabled, "请先切回字幕模式");
                     self.audio.tools_open = !self.audio.tools_open;
                 }
+                Action::DismissFeedback(_) | Action::RetryFeedback => {}
                 Action::AudioCurrent => self.audio.show_current = !self.audio.show_current,
                 Action::AudioFollow => {
                     self.audio.follow = !self.audio.follow;
@@ -2549,7 +2685,7 @@ impl AppView {
                         .set_setting("library_group", &self.audio.practice_id)?;
                     self.audio.library.tool.clear();
                     self.refresh();
-                    self.status = "名称已保存".into();
+                    self.report_status(FeedbackKind::Info, "名称已保存".into());
                 }
                 Action::LibraryFilter(filter) => {
                     self.audio.library.filter = filter;
@@ -2603,7 +2739,7 @@ impl AppView {
                     self.audio.checked.clear();
                     self.audio.library.tool.clear();
                     self.refresh();
-                    self.status = format!("已移动 {} 条音频", ids.len());
+                    self.report_status(FeedbackKind::Info, format!("已移动 {} 条音频", ids.len()));
                 }
                 Action::LibraryDelete(ids) => {
                     ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
@@ -2618,7 +2754,10 @@ impl AppView {
                     self.audio.library.pending_delete.clear();
                     self.audio.library.tool.clear();
                     self.refresh();
-                    self.status = format!("已移除 {} 条记录，附件文件保留", ids.len());
+                    self.report_status(
+                        FeedbackKind::Info,
+                        format!("已移除 {} 条记录，附件文件保留", ids.len()),
+                    );
                 }
                 Action::LibraryStudy(paused) => {
                     let key = self.audio.library.selected.clone();
@@ -2691,7 +2830,7 @@ impl AppView {
                     let card = self.current_card().context("没有待复习卡片")?;
                     ensure!(self.revealed, "请先翻面再评分");
                     let due = self.lib.grade(&card, &grade)?;
-                    self.status = format!("下次复习：{due}");
+                    self.report_status(FeedbackKind::Info, format!("下次复习：{due}"));
                     self.cards.remove(self.index);
                     if grade == "again" {
                         self.cards.push(card);
@@ -2708,7 +2847,10 @@ impl AppView {
                     self.set("front", card.front.clone(), window, cx);
                     self.set("back", card.back.clone(), window, cx);
                     self.editing = Some(card);
-                    self.status = "在下方编辑原文与翻译，然后保存修改".into();
+                    self.report_status(
+                        FeedbackKind::Info,
+                        "在下方编辑原文与翻译，然后保存修改".into(),
+                    );
                 }
                 Action::SaveEditedCard => {
                     let card = self.editing.as_ref().context("请先选择编辑卡片")?;
@@ -2719,7 +2861,7 @@ impl AppView {
                     )?;
                     self.editing = None;
                     self.refresh();
-                    self.status = "卡片已更新，复习进度保留".into();
+                    self.report_status(FeedbackKind::Info, "卡片已更新，复习进度保留".into());
                 }
                 Action::SaveSentence => {
                     documents::save_sentence(
@@ -2728,7 +2870,7 @@ impl AppView {
                         &self.value("back", cx),
                     )?;
                     self.refresh();
-                    self.status = "句子卡已保存".into();
+                    self.report_status(FeedbackKind::Info, "句子卡已保存".into());
                 }
                 Action::Play => {
                     let paused = self.media.player.snapshot().paused;
@@ -2792,9 +2934,11 @@ impl AppView {
                             "absolute+exact".into(),
                         ]);
                         self.media.player.set("pause", "no");
-                        self.status =
+                        self.report_status(
+                            FeedbackKind::Info,
                             "已选中词语，可调整 A/B 边界、保存片段或询问 AI；时间按字幕长度估算"
-                                .into();
+                                .into(),
+                        );
                     }
                 }
                 Action::Boundary(time, start) => {
@@ -2927,12 +3071,15 @@ impl AppView {
                         self.media.player.set("sid", "auto");
                     }
                     self.media.player.set_subtitles_visible(enabled);
-                    self.status = if enabled {
-                        "画面字幕已开启"
-                    } else {
-                        "画面字幕已关闭，字幕列表仍保留"
-                    }
-                    .into();
+                    self.report_status(
+                        FeedbackKind::Info,
+                        if enabled {
+                            "画面字幕已开启"
+                        } else {
+                            "画面字幕已关闭，字幕列表仍保留"
+                        }
+                        .into(),
+                    );
                 }
                 Action::VideoTranslate => {
                     ensure!(self.tasks.video_job.is_none(), "请先完成后台字幕生成再翻译");
@@ -3025,12 +3172,15 @@ impl AppView {
                             self.video.sentence_repeat = Some(session);
                             self.follow_video_repeat();
                         } else {
-                            self.status = if next {
-                                "已经是最后一句"
-                            } else {
-                                "已经是第一句"
-                            }
-                            .into();
+                            self.report_status(
+                                FeedbackKind::Info,
+                                if next {
+                                    "已经是最后一句"
+                                } else {
+                                    "已经是第一句"
+                                }
+                                .into(),
+                            );
                         }
                         return Ok(());
                     }
@@ -3195,7 +3345,7 @@ impl AppView {
                 Action::Cancel => {
                     if let Some(cancel) = &self.tasks.cancel {
                         cancel.store(true, Ordering::SeqCst);
-                        self.status = "正在取消…".into();
+                        self.report_status(FeedbackKind::Progress, "正在取消…".into());
                         if let Some(notice) = self.tasks.notice.as_mut().filter(|n| n.active()) {
                             notice.state = TaskState::Cancelling;
                             notice.detail = "正在停止当前处理，请稍候…".into();
@@ -3351,7 +3501,7 @@ impl AppView {
                         .map(str::to_owned)
                         .unwrap_or_else(|| self.reference(cx));
                     self.lib.put("ai_cards",json!({"id":id(),"question":question,"answer":answer,"context_text":reference,"created_at":now()}))?;
-                    self.status = "已存为 AI 问答卡".into();
+                    self.report_status(FeedbackKind::Info, "已存为 AI 问答卡".into());
                 }
                 Action::Favorite => {
                     let card = self.current_card().context("当前没有内容")?;
@@ -3368,10 +3518,10 @@ impl AppView {
                                 self.lib.put("clip_cards",json!({"id":card.id,"en_text":card.front,"zh_text":card.back,"audio_uri":card.media,"start_ms":card.start*1000.,"end_ms":card.end*1000.,"created_at":now()}))?;
                             }
                         }
-                        self.status = "已收藏".into();
+                        self.report_status(FeedbackKind::Info, "已收藏".into());
                     } else {
                         self.lib.delete("discover_favorites", &key)?;
-                        self.status = "已取消收藏".into();
+                        self.report_status(FeedbackKind::Info, "已取消收藏".into());
                     }
                 }
                 Action::VideoAsk(scope) => {
@@ -3384,7 +3534,10 @@ impl AppView {
                     self.video.tab = 2;
                     self.sync_chat(window, cx);
                     self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
-                    self.status = "已引用字幕；输入问题后发送给设置中的聊天模型".into();
+                    self.report_status(
+                        FeedbackKind::Info,
+                        "已引用字幕；输入问题后发送给设置中的聊天模型".into(),
+                    );
                 }
                 Action::VideoTranscribe => self.begin_background_subtitles(false)?,
                 Action::VideoTranscribeAll => self.begin_background_subtitles(true)?,
@@ -3418,7 +3571,7 @@ impl AppView {
                     }
                     self.video.tab = 3;
                     self.video.tools_open = false;
-                    self.status = format!("已选择：{}", video.title);
+                    self.report_status(FeedbackKind::Info, format!("已选择：{}", video.title));
                 }
                 Action::VideoEpisodes(key) => {
                     ensure!(
@@ -3535,7 +3688,10 @@ impl AppView {
                         self.lib.set_setting("last_video_position", "")?;
                     }
                     self.video.tab = 3;
-                    self.status = format!("已移除「{}」收藏，视频和字幕文件保留", video.title);
+                    self.report_status(
+                        FeedbackKind::Info,
+                        format!("已移除「{}」收藏，视频和字幕文件保留", video.title),
+                    );
                 }
                 Action::VideoPanel(tab) => {
                     self.video.remove = None;
@@ -3570,7 +3726,10 @@ impl AppView {
                     cx.write_to_clipboard(ClipboardItem::new_string(
                         self.video.transcript.text.clone(),
                     ));
-                    self.status = "已复制整篇英文文稿（不含时间戳与中文翻译）".into();
+                    self.report_status(
+                        FeedbackKind::Info,
+                        "已复制整篇英文文稿（不含时间戳与中文翻译）".into(),
+                    );
                 }
                 Action::AudioCopySubtitle(audio_id, cue) => {
                     ensure!(
@@ -3587,12 +3746,15 @@ impl AppView {
                     )
                     .context("暂无可复制的字幕；盲听时请先翻开对应句子")?;
                     cx.write_to_clipboard(ClipboardItem::new_string(body));
-                    self.status = if cue.is_some() {
-                        "已复制这句字幕"
-                    } else {
-                        "已复制全部字幕（不含时间戳）"
-                    }
-                    .into();
+                    self.report_status(
+                        FeedbackKind::Info,
+                        if cue.is_some() {
+                            "已复制这句字幕"
+                        } else {
+                            "已复制全部字幕（不含时间戳）"
+                        }
+                        .into(),
+                    );
                 }
                 Action::VideoCopySubtitle(index) => {
                     let body = match index {
@@ -3613,10 +3775,13 @@ impl AppView {
                     };
                     ensure!(!body.trim().is_empty(), "没有可复制的字幕");
                     cx.write_to_clipboard(ClipboardItem::new_string(body));
-                    self.status = match index {
-                        Some(index) => format!("已复制第 {} 句字幕", index + 1),
-                        None => format!("已复制全部 {} 句字幕", self.video.cues.len()),
-                    };
+                    self.report_status(
+                        FeedbackKind::Info,
+                        match index {
+                            Some(index) => format!("已复制第 {} 句字幕", index + 1),
+                            None => format!("已复制全部 {} 句字幕", self.video.cues.len()),
+                        },
+                    );
                 }
                 Action::VideoSubtitleExport => {
                     ensure!(!self.video.cues.is_empty(), "请先生成字幕");
@@ -3627,10 +3792,17 @@ impl AppView {
                         if let Ok(Ok(Some(path))) = picker.await {
                             let result = fs::write(path, body);
                             let _ = this.update(cx, |this, cx| {
-                                this.status = match result {
-                                    Ok(()) => "SRT 字幕已导出".into(),
-                                    Err(e) => format!("导出失败：{e}"),
-                                };
+                                this.report_status(
+                                    if result.is_err() {
+                                        FeedbackKind::Error
+                                    } else {
+                                        FeedbackKind::Info
+                                    },
+                                    match result {
+                                        Ok(()) => "SRT 字幕已导出".into(),
+                                        Err(e) => format!("导出失败：{e}"),
+                                    },
+                                );
                                 cx.notify();
                             });
                         }
@@ -3652,7 +3824,7 @@ impl AppView {
                                 "UPDATE listening_audios SET subtitle_uri=? WHERE id=?",
                                 rusqlite::params![path, text(&row, "id")],
                             )?;
-                            Ok(Outcome::Message("字幕已生成，点击刷新载入".into()))
+                            Ok(Outcome::Message("字幕已生成并载入".into()))
                         },
                     );
                 }
@@ -3671,7 +3843,7 @@ impl AppView {
                                 "UPDATE listening_audios SET subtitle_uri=? WHERE id=?",
                                 rusqlite::params![path.to_string_lossy(), text(&row, "id")],
                             )?;
-                            Ok(Outcome::Message("双语字幕已生成，点击刷新载入".into()))
+                            Ok(Outcome::Message("双语字幕已生成并载入".into()))
                         },
                     );
                 }
@@ -3684,7 +3856,7 @@ impl AppView {
                         .join("recordings")
                         .join(format!("{}.wav", id()));
                     self.recording = Some(Recorder::start(path));
-                    self.status = "正在录音，完成后点击停止".into();
+                    self.report_status(FeedbackKind::Info, "正在录音，完成后点击停止".into());
                 }
                 Action::StopRecord => {
                     let recorder = self.recording.take().context("没有正在进行的录音")?;
@@ -3804,8 +3976,10 @@ impl AppView {
                     let name = model.clone();
                     self.set("local_model", model, window, cx);
                     self.set("engine", "local", window, cx);
-                    self.status =
-                        format!("已选择 {name} · 待保存；点击「保存 AI 与学习设置」后生效");
+                    self.report_status(
+                        FeedbackKind::Info,
+                        format!("已选择 {name} · 待保存；点击「保存 AI 与学习设置」后生效"),
+                    );
                 }
                 Action::Models(model) => {
                     self.begin_scoped(
@@ -3846,7 +4020,7 @@ impl AppView {
                 }
                 Action::DocumentCopy => {
                     cx.write_to_clipboard(ClipboardItem::new_string(self.document_text.clone()));
-                    self.status = "已复制当前阅读文字".into();
+                    self.report_status(FeedbackKind::Info, "已复制当前阅读文字".into());
                 }
                 Action::PdfPage(delta) => {
                     ensure!(self.tasks.cancel.is_none(), "文档仍在载入，请稍后翻页");
@@ -3915,12 +4089,15 @@ impl AppView {
                     let card = self.current_card().context("当前没有卡片")?;
                     self.lib.db()?.execute("INSERT INTO review_schedule(card_kind,card_id,suspended) VALUES(?,?,?) ON CONFLICT(card_kind,card_id) DO UPDATE SET suspended=excluded.suspended",rusqlite::params![card.kind,card.id,i32::from(suspend)])?;
                     self.refresh();
-                    self.status = if suspend {
-                        "已暂停此卡复习"
-                    } else {
-                        "已恢复此卡复习"
-                    }
-                    .into();
+                    self.report_status(
+                        FeedbackKind::Info,
+                        if suspend {
+                            "已暂停此卡复习"
+                        } else {
+                            "已恢复此卡复习"
+                        }
+                        .into(),
+                    );
                 }
                 Action::TtsVoice(voice) => {
                     ensure!((0..54).contains(&voice), "音色编号无效");
@@ -4017,14 +4194,15 @@ impl AppView {
             Ok(())
         })();
         if let Err(e) = result {
-            self.status = format!("{e:#}");
+            self.report_status(FeedbackKind::Error, format!("{e:#}"));
+            self.feedback.attach_retry(action_retry);
         }
         if updates_settings {
             self.refresh_view_data();
         }
         if refresh_chat {
             if let Err(error) = self.chat.refresh(&self.lib) {
-                self.status = format!("刷新会话失败：{error:#}");
+                self.report_status(FeedbackKind::Error, format!("刷新会话失败：{error:#}"));
             }
         }
         self.sync_assistant(window, cx);
@@ -4713,7 +4891,10 @@ impl AppView {
             if self.video.follow {
                 self.video.scroll.scroll_to_reveal_item(session.index);
             }
-            self.status = "每句播放三遍后自动下一句；← / → 切句并从第一遍开始".into();
+            self.report_status(
+                FeedbackKind::Info,
+                "每句播放三遍后自动下一句；← / → 切句并从第一遍开始".into(),
+            );
         }
     }
     fn poll_video_sentence_repeat(&mut self) -> bool {
@@ -4731,13 +4912,16 @@ impl AppView {
                 if transition == clarora_gpui::video_repeat::Transition::Advanced {
                     self.follow_video_repeat();
                 } else {
-                    self.status = "最后一句已播放三遍，已暂停；← 可切换上一句继续三次重复".into();
+                    self.report_status(
+                        FeedbackKind::Info,
+                        "最后一句已播放三遍，已暂停；← 可切换上一句继续三次重复".into(),
+                    );
                 }
                 true
             }
             Err(error) => {
                 self.clear_video_sentence_repeat();
-                self.status = error.to_string();
+                self.report_status(FeedbackKind::Error, error.to_string());
                 true
             }
         }
@@ -4814,7 +4998,10 @@ impl AppView {
         if three {
             self.follow_video_repeat();
         } else {
-            self.status = "正在无限重复本句，可从本句重复菜单停止".into();
+            self.report_status(
+                FeedbackKind::Info,
+                "正在无限重复本句，可从本句重复菜单停止".into(),
+            );
         }
         Ok(())
     }
@@ -7877,7 +8064,12 @@ impl Render for AppView {
             }
         }
         if self.video.fullscreen && self.page == "video" {
-            return self.fullscreen_video(cx);
+            return div()
+                .relative()
+                .size_full()
+                .child(self.fullscreen_video(cx))
+                .children(self.feedback_view(window, cx))
+                .into_any_element();
         }
         let navigation_progress = self.navigation_progress();
         if let Some((started, _)) = self.navigation_motion {
@@ -8098,7 +8290,10 @@ impl Render for AppView {
                 match this.flush_writing(cx) {
                     Ok(()) => cx.defer(|cx| cx.quit()),
                     Err(error) => {
-                        this.status = format!("写作草稿尚未保存，请先处理保存错误：{error:#}");
+                        this.report_status(
+                            FeedbackKind::Error,
+                            format!("写作草稿尚未保存，请先处理保存错误：{error:#}"),
+                        );
                         cx.notify();
                     }
                 }
@@ -8482,69 +8677,10 @@ impl Render for AppView {
                                 v.p_4()
                             })
                             .child(content),
-                    )
-                    .when(
-                        (self.tasks.notice.is_none() && self.tasks.video_notice.is_none())
-                            || (self.tasks.cancel.is_some() && self.tasks.notice.is_none())
-                            || !self.media.snapshot.error.is_empty(),
-                        |view| {
-                            view.child(
-                                div()
-                                    .px_6()
-                                    .py_3()
-                                    .bg(cx.theme().background)
-                                    .border_t_1()
-                                    .border_color(cx.theme().border)
-                                    .flex()
-                                    .gap_3()
-                                    .items_center()
-                                    .child(div().size(px(6.)).rounded_full().bg(
-                                        if self.tasks.cancel.is_some() {
-                                            cx.theme().primary
-                                        } else {
-                                            cx.theme().muted_foreground
-                                        },
-                                    ))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(self.status.clone()),
-                                    )
-                                    .when_some(
-                                        self.tasks
-                                            .model_progress
-                                            .as_ref()
-                                            .and_then(|p| p.percent()),
-                                        |view, p| {
-                                            view.child(
-                                                Progress::new()
-                                                    .value(p)
-                                                    .bg(cx.theme().primary)
-                                                    .w(px(120.)),
-                                            )
-                                        },
-                                    )
-                                    .when(
-                                        self.tasks.cancel.is_some() && self.tasks.notice.is_none(),
-                                        |view| {
-                                            view.child(self.button(
-                                                "cancel-task",
-                                                "取消任务",
-                                                Action::Cancel,
-                                                cx,
-                                            ))
-                                        },
-                                    )
-                                    .when(!self.media.snapshot.error.is_empty(), |view| {
-                                        view.child(self.media.snapshot.error.clone())
-                                    }),
-                            )
-                        },
                     ),
             )
             .when_some(assistant, |view, assistant| view.child(assistant))
+            .children(self.feedback_view(window, cx))
             .children(Root::render_dialog_layer(window, cx))
             .into_any_element()
     }

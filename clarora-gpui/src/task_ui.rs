@@ -32,7 +32,9 @@ impl TaskNotice {
 }
 impl AppView {
     pub(super) fn subtitle_task_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        if self.tasks.notice.is_none() && self.tasks.video_notice.is_none() {
+        let foreground =
+            self.tasks.cancel.is_some() && self.tasks.notice.is_none() && !self.chat.running;
+        if self.tasks.notice.is_none() && self.tasks.video_notice.is_none() && !foreground {
             return None;
         }
         Some(
@@ -40,6 +42,32 @@ impl AppView {
                 .flex_shrink_0()
                 .flex()
                 .flex_col()
+                .children(foreground.then(|| {
+                    let started = self.tasks.started.unwrap_or_else(Instant::now);
+                    let notice = TaskNotice {
+                        title: "处理任务".into(),
+                        detail: self.tasks.progress_label.clone(),
+                        state: if self
+                            .tasks
+                            .cancel
+                            .as_ref()
+                            .is_some_and(|token| token.load(Ordering::SeqCst))
+                        {
+                            TaskState::Cancelling
+                        } else {
+                            TaskState::Running
+                        },
+                        started,
+                        elapsed: started.elapsed().as_secs(),
+                    };
+                    self.task_notice_card(
+                        &notice,
+                        "foreground",
+                        Action::Cancel,
+                        Action::DismissTaskNotice,
+                        cx,
+                    )
+                }))
                 .children(self.tasks.video_notice.as_ref().map(|n| {
                     self.task_notice_card(
                         n,
@@ -168,7 +196,15 @@ impl AppView {
                                 notice.elapsed / 60,
                                 notice.elapsed % 60
                             )),
-                    ),
+                    )
+                    .when(key == "foreground", |v| {
+                        v.when_some(
+                            self.tasks.model_progress.as_ref().and_then(|p| p.percent()),
+                            |v, p| {
+                                v.child(Progress::new().value(p).bg(cx.theme().primary).w_full())
+                            },
+                        )
+                    }),
             )
             .child(
                 button
