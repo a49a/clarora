@@ -244,7 +244,7 @@ def main():
         elif args.command == "manifest":
             manifest(args.root.resolve(), args.version, args.signing)
         elif args.command == "zip":
-            with zipfile.ZipFile(args.output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+            with zipfile.ZipFile(args.output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9, strict_timestamps=False) as archive:
                 for path in sorted(args.root.rglob("*")):
                     if path.is_file():
                         archive.write(path, path.relative_to(args.root).as_posix())
