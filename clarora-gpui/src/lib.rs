@@ -6,6 +6,7 @@ pub mod chat_store;
 pub mod data;
 pub mod discover;
 pub mod documents;
+pub mod ebook;
 pub mod media;
 pub mod process;
 pub mod recording;

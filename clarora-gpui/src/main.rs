@@ -4,6 +4,7 @@ mod assistant_ui;
 mod design;
 mod focus_ui;
 mod library_ui;
+mod reading_ui;
 mod settings_ui;
 mod task_ui;
 mod video_job_ui;
@@ -13,7 +14,7 @@ use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::{
     ai, audio_library, backup, bilibili, blind_listening, credentials,
     data::{Card, Library, Row, id, now, text},
-    documents,
+    documents, ebook,
     media::{Playback, Player},
     model_download::Progress as ModelProgress,
     process::{self, Cancel},
@@ -96,7 +97,7 @@ const PAGES: &[(&str, &str, &str)] = &[
     ("speaking", "口语跟读", "录音与对齐"),
     ("writing", "写作练习", "保存草稿与 AI 批改"),
     ("library", "音频管理", "整理练习组"),
-    ("pdf", "文档阅读", "本机 PDF"),
+    ("pdf", "文档阅读", "PDF / EPUB / TXT"),
     ("ocr", "拍照识字", "从图片提取"),
     ("graph", "词汇表", "发现词语关系"),
     ("stats", "学习统计", "记录每一点进步"),
@@ -221,6 +222,7 @@ enum Action {
     CloudRestore(String),
     PdfPage(i32),
     PdfZoom(i32),
+    DocumentCopy,
     Theme,
     Highlight,
     ClearHighlights,
@@ -244,7 +246,8 @@ enum Outcome {
     PartVideo(bilibili::Series, usize, PathBuf, bool, Option<PathBuf>),
     Output(String),
     VideoTranslated(PathBuf, String, Vec<Cue>, Vec<Cue>),
-    Pdf(documents::PdfPage),
+    Pdf(PathBuf, i32, documents::PdfPage),
+    Ebook(ebook::Reading),
     Ocr(String),
     KeyPoints(String, Vec<ai::KeyPoint>),
     Backups(Vec<String>),
@@ -314,6 +317,7 @@ struct AppView {
     pdf_pages: u16,
     pdf_width: i32,
     pdf_bookmarks: Vec<(String, u16)>,
+    ebook_reading: Option<ebook::Reading>,
     document_text: String,
     ocr_text: String,
     ocr_path: Option<PathBuf>,
@@ -434,6 +438,7 @@ impl AppView {
             pdf_pages: 0,
             pdf_width: 1000,
             pdf_bookmarks: vec![],
+            ebook_reading: None,
             document_text: String::new(),
             ocr_text: String::new(),
             ocr_path: None,
@@ -1273,7 +1278,30 @@ impl AppView {
                                 self.output = text;
                                 self.status = "图片文字已识别".into();
                             }
-                            Ok(Outcome::Pdf(page)) if !cancelled => {
+                            Ok(Outcome::Ebook(mut reading)) => {
+                                if cancelled {
+                                    drop(reading);
+                                    self.status = "已取消，保留原阅读内容".into();
+                                } else {
+                                    reading.accept_import();
+                                    self.document_text = reading.text();
+                                    self.pdf_path = Some(reading.book.path.clone());
+                                    self.pdf_image = None;
+                                    self.pdf_bookmarks.clear();
+                                    if let Err(error) = ebook::save_progress(&self.lib, &reading) {
+                                        self.status = format!("已载入，但进度保存失败：{error:#}");
+                                    } else {
+                                        self.status = format!("已载入《{}》", reading.book.title);
+                                    }
+                                    let _ = self.lib.set_setting("pdf_current", &json!({"path":reading.book.path,"page":reading.page,"width":self.pdf_width}).to_string());
+                                    self.ebook_reading = Some(reading);
+                                    self.page_scroll.set_offset(point(px(0.), px(0.)));
+                                }
+                            }
+                            Ok(Outcome::Pdf(path, width, page)) if !cancelled => {
+                                self.pdf_path = Some(path);
+                                self.pdf_width = width;
+                                self.ebook_reading = None;
                                 self.document_text = page.text;
                                 self.pdf_image = Some(page.image);
                                 self.pdf_page = page.page;
@@ -1872,14 +1900,19 @@ impl AppView {
                     self.status = "已有任务正在执行，请完成或取消后重试".into();
                     return;
                 }
-                let lib = self.lib.clone();
-                match lib.copy_media(&path, "pdf") {
-                    Ok(p) => {
-                        self.pdf_path = Some(p);
-                        self.pdf_page = 0;
-                        self.render_pdf();
+                if ebook::is_ebook(&path) {
+                    self.begin("正在导入电子书…", move |lib, cancel, _| {
+                        Ok(Outcome::Ebook(ebook::open(&lib, &path, true, &cancel)?))
+                    });
+                } else if ebook::supported(&path) {
+                    match self.lib.copy_media(&path, "pdf") {
+                        Ok(p) => {
+                            self.load_pdf(p, 0, self.pdf_width);
+                        }
+                        Err(e) => self.status = e.to_string(),
                     }
-                    Err(e) => self.status = e.to_string(),
+                } else {
+                    self.status = "请选择 PDF、EPUB 或 TXT 文件；MOBI/AZW3 暂不支持".into();
                 }
             }
             "rn-library" => self.begin("正在读取原版资料快照…", move |lib, _, _| {
@@ -1905,26 +1938,26 @@ impl AppView {
             _ => {}
         }
     }
+    fn load_pdf(&mut self, path: PathBuf, page: u16, width: i32) {
+        self.begin("正在读取 PDF…", move |lib, cancel, _| {
+            ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+            let loaded = documents::load_pdf_page(&lib, &path, page, width)?;
+            Ok(Outcome::Pdf(path, width, loaded))
+        });
+    }
     fn render_pdf(&mut self) {
         if self.tasks.cancel.is_some() {
             self.status = "已有任务正在执行，请完成或取消后重试".into();
             return;
         }
         if let Some(path) = self.pdf_path.clone() {
-            self.pdf_image = None;
-            self.document_text.clear();
-            self.pdf_bookmarks.clear();
-            let _ = self.lib.set_setting(
-                "pdf_current",
-                &json!({"path":path,"page":self.pdf_page,"width":self.pdf_width}).to_string(),
-            );
-            let page = self.pdf_page;
-            let width = self.pdf_width;
-            self.begin("正在渲染 PDF…", move |lib, _, _| {
-                Ok(Outcome::Pdf(documents::load_pdf_page(
-                    &lib, &path, page, width,
-                )?))
-            });
+            if ebook::is_ebook(&path) {
+                self.begin("正在读取电子书…", move |lib, cancel, _| {
+                    Ok(Outcome::Ebook(ebook::open(&lib, &path, false, &cancel)?))
+                });
+            } else {
+                self.load_pdf(path, self.pdf_page, self.pdf_width);
+            }
         }
     }
     fn handle(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
@@ -2046,6 +2079,7 @@ impl AppView {
                     }
                     if self.page == "pdf"
                         && self.pdf_image.is_none()
+                        && self.ebook_reading.is_none()
                         && self.pdf_path.is_some()
                         && self.tasks.cancel.is_none()
                     {
@@ -3200,9 +3234,13 @@ impl AppView {
                         self.tasks.cancel.is_none(),
                         "已有任务正在执行，请完成或取消后重试"
                     );
-                    self.pdf_path = Some(path);
-                    self.pdf_page = 0;
-                    self.render_pdf();
+                    if ebook::is_ebook(&path) {
+                        self.begin("正在读取电子书…", move |lib, cancel, _| {
+                            Ok(Outcome::Ebook(ebook::open(&lib, &path, false, &cancel)?))
+                        });
+                    } else {
+                        self.load_pdf(path, 0, self.pdf_width);
+                    }
                 }
                 Action::ClearHighlights => {
                     self.audio.key_points.clear();
@@ -3789,17 +3827,48 @@ impl AppView {
                         )))
                     })
                 }
+                Action::DocumentCopy => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(self.document_text.clone()));
+                    self.status = "已复制当前阅读文字".into();
+                }
                 Action::PdfPage(delta) => {
-                    ensure!(self.tasks.cancel.is_none(), "PDF 仍在载入，请稍后翻页");
-                    self.pdf_page = (self.pdf_page as i32 + delta)
-                        .clamp(0, self.pdf_pages.saturating_sub(1) as i32)
-                        as u16;
-                    self.render_pdf();
+                    ensure!(self.tasks.cancel.is_none(), "文档仍在载入，请稍后翻页");
+                    if let Some(reading) = &self.ebook_reading {
+                        let page = (reading.page as i64 + i64::from(delta))
+                            .clamp(0, reading.book.pages.len() as i64 - 1)
+                            as usize;
+                        let book = reading.book.clone();
+                        let font = reading.font_size;
+                        self.begin("正在翻页…", move |_, cancel, _| {
+                            let mut reading = ebook::Reading::load(book, page, &cancel)?;
+                            reading.font_size = font;
+                            Ok(Outcome::Ebook(reading))
+                        });
+                    } else {
+                        let page = (self.pdf_page as i32 + delta)
+                            .clamp(0, self.pdf_pages.saturating_sub(1) as i32)
+                            as u16;
+                        self.load_pdf(
+                            self.pdf_path.clone().context("请先导入文档")?,
+                            page,
+                            self.pdf_width,
+                        );
+                    }
                 }
                 Action::PdfZoom(delta) => {
-                    ensure!(self.tasks.cancel.is_none(), "PDF 仍在载入，请稍后缩放");
-                    self.pdf_width = (self.pdf_width + delta).clamp(300, 2400);
-                    self.render_pdf();
+                    ensure!(self.tasks.cancel.is_none(), "文档仍在载入，请稍后缩放");
+                    if let Some(reading) = self.ebook_reading.as_mut() {
+                        reading.font_size =
+                            (i32::from(reading.font_size) + delta.signum() * 2).clamp(14, 32) as u8;
+                        ebook::save_progress(&self.lib, reading)?;
+                    } else {
+                        let width = (self.pdf_width + delta).clamp(300, 2400);
+                        self.load_pdf(
+                            self.pdf_path.clone().context("请先导入文档")?,
+                            self.pdf_page,
+                            width,
+                        );
+                    }
                 }
                 Action::Theme => {
                     self.dark = !self.dark;
@@ -7454,59 +7523,7 @@ impl AppView {
                 }
             }
             "pdf" => {
-                let mut library = div().flex().gap_2().flex_wrap();
-                for (i, path) in self.data.pdf_files.iter().cloned().enumerate() {
-                    library = library.child(
-                        self.button(
-                            format!("pdf-library-{i}"),
-                            path.file_stem()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string(),
-                            Action::PdfOpen(path),
-                            cx,
-                        ),
-                    );
-                }
-                content = content.child(library);
-                content = content.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .flex_wrap()
-                        .child(
-                            self.button("import-pdf", "导入 PDF", Action::Pick("pdf".into()), cx)
-                                .primary(),
-                        )
-                        .child(
-                            self.button("pdf-prev", "上一页", Action::PdfPage(-1), cx)
-                                .disabled(self.tasks.cancel.is_some()),
-                        )
-                        .child(
-                            self.button("pdf-next", "下一页", Action::PdfPage(1), cx)
-                                .disabled(self.tasks.cancel.is_some()),
-                        )
-                        .child(self.button("pdf-smaller", "缩小", Action::PdfZoom(-200), cx))
-                        .child(self.button("pdf-larger", "放大", Action::PdfZoom(200), cx))
-                        .child(format!("{}%", self.pdf_width / 10))
-                        .child(format!("{} / {}", self.pdf_page + 1, self.pdf_pages)),
-                );
-                if let Some(image) = &self.pdf_image {
-                    content = content.child(
-                        img(image.clone())
-                            .w(relative(self.pdf_width as f32 / 1000.))
-                            .flex_shrink_0()
-                            .object_fit(ObjectFit::Contain),
-                    );
-                }
-                for (i, (title, page)) in self.pdf_bookmarks.iter().enumerate() {
-                    content = content.child(self.button(
-                        format!("bookmark-{i}"),
-                        title.clone(),
-                        Action::PdfPage(*page as i32 - self.pdf_page as i32),
-                        cx,
-                    ));
-                }
+                content = content.child(self.document_view(window, cx));
             }
             "ocr" => {
                 content = content.child(
@@ -8619,8 +8636,8 @@ fn main() -> Result<()> {
                         MenuItem::action("下一P", NextVideoPart),
                         MenuItem::action("上一项", Backward),
                         MenuItem::action("下一项", Forward),
-                        MenuItem::action("放大 PDF", PdfZoomIn),
-                        MenuItem::action("缩小 PDF", PdfZoomOut),
+                        MenuItem::action("放大文档 / 字号", PdfZoomIn),
+                        MenuItem::action("缩小文档 / 字号", PdfZoomOut),
                     ],
                 },
                 Menu {

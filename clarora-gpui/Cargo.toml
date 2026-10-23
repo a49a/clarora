@@ -27,7 +27,7 @@ sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 base64 = "0.22"
-quick-xml = { version = "0.38", features = ["serialize"] }
+quick-xml = { version = "0.38", features = ["serialize", "escape-html"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 zstd = "0.13"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }

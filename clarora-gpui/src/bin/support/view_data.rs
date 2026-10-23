@@ -18,7 +18,7 @@ fn record(root: &Path, evidence: &mut Vec<Value>, case: &str, details: Value) ->
 
 fn visible(state: &view_data::State) -> Value {
     json!({"speaking":state.speaking,"ocr":state.ocr,"stats":state.stats,"words":state.words,
-        "pdf_files":state.pdf_files,"available_audio":state.available_audio,"asr_models":state.asr_models,
+        "document_files":state.document_files,"available_audio":state.available_audio,"asr_models":state.asr_models,
         "tts_ready":state.tts_ready,"saved_ai":state.saved_ai,"needs_legacy_import":state.needs_legacy_import,"revision":state.revision})
 }
 
@@ -113,7 +113,7 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
     );
     ensure!(
         state
-            .pdf_files
+            .document_files
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
             .collect::<Vec<_>>()
@@ -148,7 +148,7 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         &root,
         &mut evidence,
         "bounded-records-general-order-and-file-readiness",
-        json!({"speaking":20,"ocr":30,"unrelated_bad_json":1000,"pdf_files":state.pdf_files,"audio_count":state.available_audio.len(),"asr_models":state.asr_models,"revision":state.revision}),
+        json!({"speaking":20,"ocr":30,"unrelated_bad_json":1000,"document_files":state.document_files,"audio_count":state.available_audio.len(),"asr_models":state.asr_models,"revision":state.revision}),
     )?;
 
     let initial = visible(&state);
@@ -171,14 +171,14 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
             && state.words.len() == 2
             && !state.available_audio.contains(&local)
             && state.asr_models.contains("sense-voice")
-            && state.pdf_files.len() == 3,
+            && state.document_files.len() == 3,
         "explicit reload did not replace full snapshot"
     );
     record(
         &root,
         &mut evidence,
         "cached-presentation-and-explicit-refresh",
-        json!({"presentations_without_io":1000,"revision":state.revision,"word_count":state.words.len(),"audio_count":state.available_audio.len(),"pdf_count":state.pdf_files.len()}),
+        json!({"presentations_without_io":1000,"revision":state.revision,"word_count":state.words.len(),"audio_count":state.available_audio.len(),"pdf_count":state.document_files.len()}),
     )?;
 
     // These are deliberately synthetic secrets. Cache loading must not resolve them.

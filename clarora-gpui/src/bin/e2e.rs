@@ -15,6 +15,8 @@ mod blind_listening;
 mod chat_store;
 #[path = "support/credential_mode.rs"]
 mod credential_mode;
+#[path = "support/ebook.rs"]
+mod ebook;
 #[path = "support/kokoro.rs"]
 mod kokoro;
 #[path = "support/model_progress.rs"]
@@ -188,6 +190,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = output.join(format!("run-{}", data::id()));
     fs::create_dir_all(&root)?;
     let lib = Library::open(root.join("source"))?;
+    ebook::run(&lib, results)?;
     chat_store::run(&lib, results)?;
     view_data::run(&lib, results)?;
     playback_state::run(&lib, results)?;
@@ -848,6 +851,7 @@ fn main() -> Result<()> {
         Some("--http-only") => "http-only",
         Some("--reliability-only") => "reliability-only",
         Some("--writing-only") => "writing-only",
+        Some("--ebook-only") => "ebook-only",
         Some("--state-only") => "state-only",
         Some("--video-repeat-only") => "video-repeat-only",
         _ => "full",
@@ -860,6 +864,14 @@ fn main() -> Result<()> {
             &PathBuf::from(args.get(4).context("缺少图片夹具")?),
             &mut results,
         )
+    } else if mode == "ebook-only" {
+        let lib = Library::open(output.join(format!("ebook-{}", data::id())))?;
+        ebook::run(&lib, &mut results).and_then(|_| {
+            if let Some(path) = args.get(3) {
+                ebook::external_file(&lib, &PathBuf::from(path), &mut results)?;
+            }
+            Ok(())
+        })
     } else if mode == "state-only" {
         let lib = Library::open(output.join(format!("state-{}", data::id())))?;
         chat_store::run(&lib, &mut results)

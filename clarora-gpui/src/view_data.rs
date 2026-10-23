@@ -14,7 +14,7 @@ pub struct State {
     pub ocr: Vec<Value>,
     pub stats: Vec<Row>,
     pub words: Vec<Row>,
-    pub pdf_files: Vec<PathBuf>,
+    pub document_files: Vec<PathBuf>,
     pub available_audio: BTreeSet<String>,
     pub asr_models: BTreeSet<String>,
     pub tts_ready: bool,
@@ -65,19 +65,15 @@ impl State {
             let ocr = records(lib, "ocr", 30)?;
             let stats = lib.list("study_stats")?;
             let words = lib.list("words")?;
-            let mut pdf_files = vec![];
+            let mut document_files = vec![];
             for entry in fs::read_dir(lib.root.join("pdf"))? {
                 let entry = entry?;
                 let path = entry.path();
-                if path
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
-                    && entry.file_type()?.is_file()
-                {
-                    pdf_files.push(path);
+                if crate::ebook::supported(&path) && entry.file_type()?.is_file() {
+                    document_files.push(path);
                 }
             }
-            pdf_files.sort();
+            document_files.sort();
             let available_audio = audios
                 .iter()
                 .map(|r| text(r, "audio_uri"))
@@ -112,7 +108,7 @@ impl State {
                 ocr,
                 stats,
                 words,
-                pdf_files,
+                document_files,
                 available_audio,
                 asr_models,
                 tts_ready: tts::validate_model(&tts::model_dir(lib)).is_ok(),
