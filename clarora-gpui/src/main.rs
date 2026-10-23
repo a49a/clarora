@@ -1324,18 +1324,7 @@ impl AppView {
                 }
             }
         }
-        if let Some((index, _)) = self.video.sentence_repeat {
-            if self.video.sentence_range.is_some_and(|(start, end)| {
-                self.video.cues.get(index).is_none_or(|cue| {
-                    (cue.start - start).abs() > 0.001
-                        || (cue.end.min(self.media.snapshot.duration) - end).abs() > 0.001
-                })
-            }) {
-                self.clear_video_sentence_repeat();
-                self.status = "字幕时间轴已更新，已停止旧句重复".into();
-                changed = true;
-            }
-        }
+        changed |= self.poll_video_sentence_repeat();
         if let (Some(a), Some(b)) = (self.media.loop_a, self.media.loop_b) {
             if self.video.sentence_repeat.is_none()
                 && self.media.repeat == 2
@@ -1957,7 +1946,6 @@ impl AppView {
             Action::Seek(_)
             | Action::SeekTo(_)
             | Action::VideoPlayCue(_)
-            | Action::VideoSentence(_)
             | Action::VideoClearLoop
             | Action::LoopMode(_)
             | Action::Repeat
@@ -2704,18 +2692,14 @@ impl AppView {
                     self.status = "句子卡已保存".into();
                 }
                 Action::Play => {
+                    let paused = self.media.player.snapshot().paused;
                     self.clear_finished_video_sentence_repeat();
                     if self.page == "listening" {
                         self.invalidate_blind();
                     }
-                    self.media.player.set(
-                        "pause",
-                        if self.media.snapshot.paused {
-                            "no"
-                        } else {
-                            "yes"
-                        },
-                    );
+                    self.media
+                        .player
+                        .set("pause", if paused { "no" } else { "yes" });
                 }
                 Action::Seek(delta) => {
                     if self.page == "listening" {
@@ -2989,6 +2973,29 @@ impl AppView {
                     self.media.player.set("pause", "no");
                 }
                 Action::VideoSentence(next) => {
+                    if let Some(mut session) = self.video.sentence_repeat.filter(|s| s.three) {
+                        let path = self.video.path.as_ref().context("请先打开视频")?;
+                        ensure!(self.media.path.as_ref() == Some(path), "视频正在切换");
+                        if session.step(
+                            &self.media.player,
+                            path,
+                            &self.video.cues,
+                            next,
+                            self.media.snapshot.duration,
+                        )? {
+                            self.video.sentence_repeat = Some(session);
+                            self.follow_video_repeat();
+                        } else {
+                            self.status = if next {
+                                "已经是最后一句"
+                            } else {
+                                "已经是第一句"
+                            }
+                            .into();
+                        }
+                        return Ok(());
+                    }
+                    self.clear_video_sentence_repeat();
                     let pos = self.media.snapshot.position;
                     let target = if next {
                         self.video.cues.iter().find(|c| c.start > pos + 0.1)
@@ -4299,10 +4306,7 @@ impl AppView {
         } else {
             0.
         };
-        let sentence_range = self
-            .video
-            .sentence_repeat
-            .and_then(|(index, _)| self.video.cues.get(index).map(|cue| (cue.start, cue.end)));
+        let sentence_range = self.video.sentence_repeat.map(|session| session.range);
         let loop_range = sentence_range.or_else(|| {
             self.media
                 .loop_a
@@ -4613,31 +4617,86 @@ impl AppView {
         window.focus(&self.focus);
     }
     fn clear_video_sentence_repeat(&mut self) {
-        self.video.sentence_range = None;
-        self.video.sentence_request = None;
         if self.video.sentence_repeat.take().is_some() {
             self.media.player.clear_sentence_repeat();
         }
     }
+    fn follow_video_repeat(&mut self) {
+        if let Some(session) = self.video.sentence_repeat {
+            self.video.active = Some(session.index);
+            if self.video.follow {
+                self.video.scroll.scroll_to_reveal_item(session.index);
+            }
+            self.status = "每句播放三遍后自动下一句；← / → 切句并从第一遍开始".into();
+        }
+    }
+    fn poll_video_sentence_repeat(&mut self) -> bool {
+        let Some(mut session) = self.video.sentence_repeat else {
+            return false;
+        };
+        let Some(path) = self.video.path.as_ref() else {
+            return false;
+        };
+        let snapshot = self.media.player.snapshot();
+        match session.poll(&self.media.player, path, &self.video.cues, &snapshot) {
+            Ok(clarora_gpui::video_repeat::Transition::Unchanged) => false,
+            Ok(transition) => {
+                self.video.sentence_repeat = Some(session);
+                if transition == clarora_gpui::video_repeat::Transition::Advanced {
+                    self.follow_video_repeat();
+                } else {
+                    self.status = "最后一句已播放三遍，已暂停；← 可切换上一句继续三次重复".into();
+                }
+                true
+            }
+            Err(error) => {
+                self.clear_video_sentence_repeat();
+                self.status = error.to_string();
+                true
+            }
+        }
+    }
     fn clear_finished_video_sentence_repeat(&mut self) {
-        if self.video.sentence_repeat.is_some()
-            && self
-                .media
+        self.poll_video_sentence_repeat();
+        if self.video.sentence_repeat.is_some_and(|session| {
+            self.media
                 .player
                 .snapshot()
                 .sentence_repeat
                 .as_ref()
-                .is_some_and(|state| {
-                    Some(state.request_id) == self.video.sentence_request && state.finished
-                })
-        {
+                .is_some_and(|state| state.request_id == session.request_id && state.finished)
+        }) {
             self.clear_video_sentence_repeat();
+        }
+    }
+    fn video_horizontal_action(&self, next: bool) -> Action {
+        if self.page == "video" && self.video.sentence_repeat.is_some_and(|s| s.three) {
+            Action::VideoSentence(next)
+        } else {
+            Action::Seek(if next { 10. } else { -10. })
+        }
+    }
+    fn can_move_video_sentence(&self, next: bool) -> bool {
+        if let Some(session) = self.video.sentence_repeat.filter(|s| s.three) {
+            session
+                .neighbor(&self.video.cues, next, self.media.snapshot.duration)
+                .is_some()
+        } else if next {
+            self.video
+                .cues
+                .iter()
+                .any(|c| c.start > self.media.snapshot.position + 0.1)
+        } else {
+            self.video
+                .cues
+                .iter()
+                .any(|c| c.start < self.media.snapshot.position - 0.5)
         }
     }
     fn video_repeat_cue(&self) -> Option<usize> {
         self.video
             .sentence_repeat
-            .map(|(index, _)| index)
+            .map(|session| session.index)
             .or_else(|| video_subtitles::active(&self.video.cues, self.media.snapshot.position))
             .filter(|index| self.video.cues.get(*index).is_some())
     }
@@ -4654,31 +4713,23 @@ impl AppView {
         let index = index
             .or_else(|| self.video_repeat_cue())
             .context("当前没有带时间轴的字幕，请先选择一句字幕")?;
-        let cue = self.video.cues.get(index).context("字幕行不存在")?;
-        let end = cue.end.min(playback.duration);
-        ensure!(
-            cue.start.is_finite() && cue.end.is_finite() && cue.start >= 0. && end > cue.start,
-            "本句字幕时间无效"
-        );
-        let request_id = self.media.player.repeat_sentence(
+        self.video.sentence_repeat = Some(clarora_gpui::video_repeat::Session::start(
+            &self.media.player,
             path,
-            cue.start,
-            end,
-            if three { Some(3) } else { None },
-        )?;
-        self.video.sentence_repeat = Some((index, three));
-        self.video.sentence_range = Some((cue.start, end));
-        self.video.sentence_request = Some(request_id);
+            &self.video.cues,
+            index,
+            three,
+            playback.duration,
+        )?);
         self.media.repeat = 0;
         self.media.loop_a = None;
         self.media.loop_b = None;
         self.media.end_handled = true;
-        self.status = if three {
-            "本句从句首播放三遍，完成后暂停在句尾"
+        if three {
+            self.follow_video_repeat();
         } else {
-            "正在无限重复本句，可从本句重复菜单停止"
+            self.status = "正在无限重复本句，可从本句重复菜单停止".into();
         }
-        .into();
         Ok(())
     }
     fn navigation_progress(&self) -> f32 {
@@ -4778,9 +4829,12 @@ impl AppView {
                 window.focus(&this.focus);
                 match event.click_count() {
                     1 => {
+                        let paused = this.media.player.snapshot().paused;
                         this.clear_finished_video_sentence_repeat();
                         this.video.picture_click = Some(path);
-                        this.media.player.command(["cycle", "pause"]);
+                        this.media
+                            .player
+                            .set("pause", if paused { "no" } else { "yes" });
                     }
                     2 => {
                         if this.video.picture_click.take().as_ref() == Some(&path) {
@@ -4813,10 +4867,10 @@ impl AppView {
                 this.handle(Action::Play, window, cx)
             }))
             .on_action(cx.listener(|this, _: &FullscreenSeekBack, window, cx| {
-                this.handle(Action::Seek(-10.), window, cx)
+                this.handle(this.video_horizontal_action(false), window, cx)
             }))
             .on_action(cx.listener(|this, _: &FullscreenSeekForward, window, cx| {
-                this.handle(Action::Seek(10.), window, cx)
+                this.handle(this.video_horizontal_action(true), window, cx)
             }))
             .child(
                 div()
@@ -4857,18 +4911,18 @@ impl AppView {
             .zip(self.media.loop_b)
             .is_some_and(|(a, b)| b > a);
         let current_cue = self.video_repeat_cue();
-        let repeat_label = if let Some((_, three)) = self.video.sentence_repeat {
-            if three {
+        let repeat_label = if let Some(session) = self.video.sentence_repeat {
+            if session.three {
                 match self
                     .media
                     .snapshot
                     .sentence_repeat
                     .as_ref()
-                    .filter(|state| Some(state.request_id) == self.video.sentence_request)
+                    .filter(|state| state.request_id == session.request_id)
                 {
-                    Some(state) if state.finished => "本句三次：已完成 ▾".into(),
-                    Some(state) => format!("本句三次：{}/3 ▾", state.current_play),
-                    None => "本句三次：准备中 ▾".into(),
+                    Some(state) if state.finished => "逐句三次：已完成 ▾".into(),
+                    Some(state) => format!("逐句三次：{}/3 ▾", state.current_play),
+                    None => "逐句三次：准备中 ▾".into(),
                 }
             } else {
                 "本句：无限重复 ▾".into()
@@ -4880,13 +4934,13 @@ impl AppView {
             (
                 "本句无限重复".into(),
                 Action::VideoSentenceRepeat(None, false),
-                self.video.sentence_repeat.is_some_and(|(_, three)| !three),
+                self.video.sentence_repeat.is_some_and(|s| !s.three),
                 current_cue.is_none(),
             ),
             (
-                "本句重复三次 · 完成后暂停".into(),
+                "每句重复三次 · 自动下一句".into(),
                 Action::VideoSentenceRepeat(None, true),
-                self.video.sentence_repeat.is_some_and(|(_, three)| three),
+                self.video.sentence_repeat.is_some_and(|s| s.three),
                 current_cue.is_none(),
             ),
             (
@@ -5136,13 +5190,7 @@ impl AppView {
                                         Action::VideoSentence(false),
                                         cx,
                                     )
-                                    .disabled(
-                                        !self
-                                            .video
-                                            .cues
-                                            .iter()
-                                            .any(|c| c.start < self.media.snapshot.position - 0.5),
-                                    ),
+                                    .disabled(!self.can_move_video_sentence(false)),
                                 )
                                 .child(
                                     self.transport_button(
@@ -5160,13 +5208,7 @@ impl AppView {
                                         Action::VideoSentence(true),
                                         cx,
                                     )
-                                    .disabled(
-                                        !self
-                                            .video
-                                            .cues
-                                            .iter()
-                                            .any(|c| c.start > self.media.snapshot.position + 0.1),
-                                    ),
+                                    .disabled(!self.can_move_video_sentence(true)),
                                 )
                                 .child(
                                     div()
@@ -8249,7 +8291,7 @@ impl Render for AppView {
                         ),
                         "right" => this.handle(
                             if ["video", "listening"].contains(&this.page.as_str()) {
-                                Action::Seek(10.)
+                                this.video_horizontal_action(true)
                             } else {
                                 Action::Next
                             },
@@ -8258,7 +8300,7 @@ impl Render for AppView {
                         ),
                         "left" => this.handle(
                             if ["video", "listening"].contains(&this.page.as_str()) {
-                                Action::Seek(-10.)
+                                this.video_horizontal_action(false)
                             } else {
                                 Action::Previous
                             },

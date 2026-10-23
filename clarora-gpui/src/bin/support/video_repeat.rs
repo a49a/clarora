@@ -145,6 +145,251 @@ fn save_frame(path: &Path, state: &Playback) -> Result<()> {
     Ok(())
 }
 
+fn sequence(
+    player: &Player,
+    video: &Path,
+    root: &Path,
+    traces: &mut Vec<Value>,
+    checks: &mut Vec<Value>,
+) -> Result<()> {
+    use clarora_gpui::{
+        subtitles::Cue,
+        video_repeat::{Session, Transition},
+    };
+    let duration = ready(player, video, traces)?.duration;
+    let cues = vec![
+        Cue {
+            start: 0.3,
+            end: 0.65,
+            text: "First".into(),
+        },
+        Cue {
+            start: 0.8,
+            end: 0.8,
+            text: "Invalid".into(),
+        },
+        Cue {
+            start: 0.9,
+            end: 0.94,
+            text: "Short second".into(),
+        },
+        Cue {
+            start: 2.55,
+            end: duration + 0.08,
+            text: "Last".into(),
+        },
+        Cue {
+            start: duration + 1.,
+            end: duration + 2.,
+            text: "Outside video".into(),
+        },
+    ];
+    let mut session = Session::start(player, video, &cues, 0, true, duration)?;
+    for (index, next) in [(0, 2), (2, 3)] {
+        let old_request = session.request_id;
+        let completed = finished(
+            player,
+            "自动序列当前句严格三遍",
+            old_request,
+            session.range.0,
+            session.range.1,
+            traces,
+        )?;
+        ensure!(session.index == index, "自动序列跳句");
+        ensure!(
+            session.poll(player, video, &cues, &completed)? == Transition::Advanced,
+            "完成三遍未自动进入下一句"
+        );
+        ensure!(
+            session.index == next && session.three && session.request_id != old_request,
+            "新句未保留三次模式/未跳过无效字幕"
+        );
+        let new_request = session.request_id;
+        ensure!(
+            session.poll(player, video, &cues, &completed)? == Transition::Unchanged
+                && session.request_id == new_request,
+            "旧完成快照误触发下一次推进"
+        );
+    }
+    let completed = finished(
+        player,
+        "自动序列末句严格三遍",
+        session.request_id,
+        session.range.0,
+        session.range.1,
+        traces,
+    )?;
+    ensure!(
+        session.poll(player, video, &cues, &completed)? == Transition::Completed,
+        "末句没有结束序列"
+    );
+    ensure!(
+        session.poll(player, video, &cues, &completed)? == Transition::Unchanged,
+        "末句重复发布完成"
+    );
+    observe_for(
+        player,
+        "末句完成不跳分P",
+        Duration::from_millis(180),
+        traces,
+        |s| s.paused && !s.eof && s.path == video.to_string_lossy(),
+    )?;
+    save_frame(&root.join("sequence-last-frame.png"), &completed)?;
+    checks.push(json!({"scenario":"逐句自动各三遍/40ms短句/跳过无效字幕/旧请求隔离/末句暂停","passed":true}));
+
+    session = Session::start(player, video, &cues, 0, true, duration)?;
+    let first_id = session.request_id;
+    ensure!(
+        !session.step(player, video, &cues, false, duration)? && session.request_id == first_id,
+        "首句向左越界或重置计数"
+    );
+    ensure!(
+        session.step(player, video, &cues, true, duration)? && session.index == 2,
+        "向右未定位下一有效句"
+    );
+    let stale = player.snapshot();
+    ensure!(
+        session.step(player, video, &cues, true, duration)? && session.index == 3,
+        "快速向右未按选中索引定位"
+    );
+    ensure!(
+        session.step(player, video, &cues, false, duration)? && session.index == 2,
+        "向左未定位上一有效句"
+    );
+    ensure!(
+        session.three && session.request_id != first_id,
+        "切句丢失三次模式"
+    );
+    let newest = session.request_id;
+    session.poll(player, video, &cues, &stale)?;
+    ensure!(
+        session.request_id == newest && session.index == 2,
+        "旧快照覆盖快速切句"
+    );
+    finished(
+        player,
+        "左右切句后新句从第一遍完整三遍",
+        session.request_id,
+        session.range.0,
+        session.range.1,
+        traces,
+    )?;
+    checks
+        .push(json!({"scenario":"首句左边界/连续左右切句保留三次/新句独立完整三遍","passed":true}));
+
+    session = Session::start(player, video, &cues, 3, true, duration)?;
+    let last_id = session.request_id;
+    ensure!(
+        !session.step(player, video, &cues, true, duration)? && session.request_id == last_id,
+        "末句向右越界"
+    );
+    let completed = finished(
+        player,
+        "末句手动选择后三遍",
+        last_id,
+        session.range.0,
+        session.range.1,
+        traces,
+    )?;
+    session.poll(player, video, &cues, &completed)?;
+    ensure!(
+        session.step(player, video, &cues, false, duration)? && session.index == 2,
+        "已完成后向左不能恢复三次"
+    );
+    finished(
+        player,
+        "完成后向左仍完整三遍",
+        session.request_id,
+        session.range.0,
+        session.range.1,
+        traces,
+    )?;
+    checks.push(json!({"scenario":"末句右边界/完成后向左恢复三次","passed":true}));
+
+    session = Session::start(player, video, &cues, 0, true, duration)?;
+    let running = wait(
+        player,
+        "序列暂停前第二遍",
+        Duration::from_secs(4),
+        traces,
+        |s| {
+            s.sentence_repeat.as_ref().is_some_and(|r| {
+                r.request_id == session.request_id && r.current_play == 2 && !r.finished
+            }) && !s.paused
+        },
+    )?;
+    player.set("pause", "yes");
+    let paused = wait(
+        player,
+        "序列暂停就绪",
+        Duration::from_secs(2),
+        traces,
+        |s| s.paused,
+    )?;
+    ensure!(
+        session.poll(player, video, &cues, &paused)? == Transition::Unchanged,
+        "暂停时误自动切句"
+    );
+    observe_for(
+        player,
+        "序列暂停保留句子和遍数",
+        Duration::from_millis(200),
+        traces,
+        |s| {
+            s.paused
+                && s.sentence_repeat.as_ref().is_some_and(|r| {
+                    r.request_id == session.request_id
+                        && !r.finished
+                        && r.current_play == running.sentence_repeat.as_ref().unwrap().current_play
+                })
+        },
+    )?;
+    player.set("pause", "no");
+    let completed = finished(
+        player,
+        "序列恢复余下次数",
+        session.request_id,
+        session.range.0,
+        session.range.1,
+        traces,
+    )?;
+    ensure!(
+        session.poll(player, video, &cues, &completed)? == Transition::Advanced,
+        "暂停恢复后不再自动切句"
+    );
+    checks.push(json!({"scenario":"序列暂停保留遍数/继续后自动下一句","passed":true}));
+
+    let mut changed = cues.clone();
+    changed[session.index].start += 0.01;
+    ensure!(
+        session
+            .poll(player, video, &changed, &player.snapshot())
+            .is_err(),
+        "字幕时间轴变化仍沿用旧序列"
+    );
+    player.clear_sentence_repeat();
+    session = Session::start(player, video, &cues, 0, false, duration)?;
+    let infinite = wait(
+        player,
+        "序列无限模式保持本句",
+        Duration::from_secs(5),
+        traces,
+        |s| {
+            s.sentence_repeat
+                .as_ref()
+                .is_some_and(|r| r.request_id == session.request_id && r.current_play >= 4)
+        },
+    )?;
+    ensure!(
+        session.poll(player, video, &cues, &infinite)? == Transition::Unchanged
+            && session.index == 0,
+        "无限模式错误自动切句"
+    );
+    player.clear_sentence_repeat();
+    checks.push(json!({"scenario":"改时间轴拒绝旧序列/无限重复不自动推进","passed":true}));
+    Ok(())
+}
+
 pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     let root = lib.root.join("video-repeat");
     fs::create_dir_all(&root)?;
@@ -616,6 +861,8 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
         }
         checks
             .push(json!({"scenario":"无媒体/异媒体失败反馈与非法时间/遍数原子拒绝","passed":true}));
+        let sequence_player = Player::without_audio_device();
+        sequence(&sequence_player, &video, &root, &mut traces, &mut checks)?;
         Ok(())
     })();
     fs::write(
@@ -626,7 +873,7 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
             "clock": "real libmpv with null audio output", "fixture_fps": 120,
             "fixture": video, "ffmpeg": ffmpeg, "ffmpeg_args": args,
             "checks": checks, "observations": traces,
-            "frames": ["decoded-first-frame.png", "three-plays-paused.png"],
+            "frames": ["decoded-first-frame.png", "three-plays-paused.png", "sequence-last-frame.png"],
         }))?,
     )?;
     outcome?;
