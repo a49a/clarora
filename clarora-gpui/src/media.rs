@@ -2,15 +2,19 @@ use anyhow::{Context, Result, ensure};
 use libloading::Library;
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     ffi::{CStr, CString, c_char, c_int, c_void},
+    future::Future,
     path::Path,
+    pin::Pin,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
+    task::{Context as TaskContext, Poll, Waker},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 #[repr(C)]
 struct Param {
@@ -67,6 +71,8 @@ struct Api {
     update: unsafe extern "C" fn(Handle) -> u64,
     update_callback:
         unsafe extern "C" fn(Handle, Option<unsafe extern "C" fn(*mut c_void)>, *mut c_void),
+    wakeup_callback:
+        unsafe extern "C" fn(Handle, Option<unsafe extern "C" fn(*mut c_void)>, *mut c_void),
 }
 impl Api {
     unsafe fn load() -> Result<Self> {
@@ -106,6 +112,7 @@ impl Api {
             render: sym!("mpv_render_context_render"),
             update: sym!("mpv_render_context_update"),
             update_callback: sym!("mpv_render_context_set_update_callback"),
+            wakeup_callback: sym!("mpv_set_wakeup_callback"),
             _library: lib,
         })
     }
@@ -170,6 +177,72 @@ struct RunningSentenceRepeat {
     initial_seek_seen: bool,
     armed: bool,
 }
+#[derive(Clone, Default, Debug, serde::Serialize)]
+pub struct RenderStats {
+    pub rendered_frames: u64,
+    pub render_microseconds: u64,
+    pub allocated_bytes: u64,
+    /// Actual libmpv hwdec-current. `no` means software decoding.
+    pub decoder: String,
+    pub pixel_format: String,
+}
+#[derive(Default)]
+struct FrameEventState {
+    revision: AtomicU64,
+    next_id: AtomicU64,
+    waiters: Mutex<BTreeMap<u64, Waker>>,
+}
+/// Broadcast revision notification: no frame queue, and each subscriber keeps
+/// its own waker. A late subscriber observes the newest revision immediately.
+#[derive(Clone, Default)]
+pub struct FrameEvents(Arc<FrameEventState>);
+impl FrameEvents {
+    pub fn revision(&self) -> u64 {
+        self.0.revision.load(Ordering::Acquire)
+    }
+    pub fn changed(&self, after: u64) -> FrameChanged {
+        FrameChanged {
+            events: self.clone(),
+            after,
+            id: self.0.next_id.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+    fn publish(&self) -> u64 {
+        let (revision, waiters) = {
+            let mut waiters = self.0.waiters.lock().unwrap();
+            let revision = self.0.revision.fetch_add(1, Ordering::AcqRel) + 1;
+            (revision, std::mem::take(&mut *waiters))
+        };
+        for (_, waker) in waiters {
+            waker.wake();
+        }
+        revision
+    }
+}
+pub struct FrameChanged {
+    events: FrameEvents,
+    after: u64,
+    id: u64,
+}
+impl Future for FrameChanged {
+    type Output = u64;
+    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<u64> {
+        let mut waiters = self.events.0.waiters.lock().unwrap();
+        let revision = self.events.revision();
+        if revision != self.after {
+            waiters.remove(&self.id);
+            Poll::Ready(revision)
+        } else {
+            waiters.insert(self.id, cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+impl Drop for FrameChanged {
+    fn drop(&mut self) {
+        self.events.0.waiters.lock().unwrap().remove(&self.id);
+    }
+}
 #[derive(Clone, Default)]
 pub struct Playback {
     pub initialized: bool,
@@ -184,6 +257,10 @@ pub struct Playback {
     pub secondary_subtitles_visible: bool,
     pub tracks: Vec<Value>,
     pub frame: Option<Arc<gpui::RenderImage>>,
+    pub frame_revision: u64,
+    pub frame_width: u32,
+    pub frame_height: u32,
+    pub render_stats: RenderStats,
     pub sentence_repeat: Option<SentenceRepeat>,
     pub error: String,
 }
@@ -195,8 +272,12 @@ pub fn visible_changed(before: &Playback, after: &Playback) -> bool {
         (None, None) => false,
         _ => true,
     };
-    frame_changed
-        || before.initialized != after.initialized
+    frame_changed || controls_changed(before, after)
+}
+/// Controls and subtitles retain their own clock; decoding a new frame alone
+/// must not make the 50 ms controls poll responsible for frame delivery.
+pub fn controls_changed(before: &Playback, after: &Playback) -> bool {
+    before.initialized != after.initialized
         || (before.position - after.position).abs() > 0.01
         || before.duration != after.duration
         || before.paused != after.paused
@@ -211,6 +292,7 @@ pub fn visible_changed(before: &Playback, after: &Playback) -> bool {
         || before.error != after.error
 }
 enum Message {
+    Wake,
     Command(Vec<String>),
     Set(String, String),
     Subtitles(bool),
@@ -223,6 +305,8 @@ pub struct Player {
     next_sentence_repeat_id: AtomicU64,
     pub state: Arc<Mutex<Playback>>,
     worker: Option<thread::JoinHandle<()>>,
+    render_signal: Arc<RenderSignal>,
+    frame_events: FrameEvents,
 }
 impl Player {
     pub fn new() -> Self {
@@ -239,11 +323,27 @@ impl Player {
             ..Default::default()
         }));
         let shared = state.clone();
+        let render_signal = Arc::new(RenderSignal::default());
+        let worker_signal = render_signal.clone();
+        let frame_events = FrameEvents::default();
+        let worker_events = frame_events.clone();
+        let wake = Arc::new(CoreWake {
+            tx: tx.clone(),
+            pending: std::sync::atomic::AtomicBool::new(false),
+        });
         let worker = thread::spawn(move || {
-            if let Err(e) = worker(rx, shared.clone(), audio_device) {
+            if let Err(e) = worker(
+                rx,
+                shared.clone(),
+                audio_device,
+                worker_signal,
+                worker_events.clone(),
+                wake,
+            ) {
                 if let Ok(mut s) = shared.lock() {
                     s.error = e.to_string();
                 }
+                worker_events.publish();
             }
         });
         Self {
@@ -251,12 +351,32 @@ impl Player {
             next_sentence_repeat_id: AtomicU64::new(1),
             state,
             worker: Some(worker),
+            render_signal,
+            frame_events,
         }
     }
     pub fn command(&self, args: impl IntoIterator<Item = impl Into<String>>) {
         let _ = self
             .tx
             .send(Message::Command(args.into_iter().map(Into::into).collect()));
+    }
+    pub fn frame_events(&self) -> FrameEvents {
+        self.frame_events.clone()
+    }
+    /// Physical viewport pixels. Updates are coalesced in one shared target,
+    /// so layout passes cannot create a queue of stale resize messages.
+    pub fn set_video_target(&self, width: u32, height: u32, visible: bool) {
+        let target = VideoTarget {
+            width,
+            height,
+            visible: visible && width > 0 && height > 0,
+        };
+        let mut state = self.render_signal.state.lock().unwrap();
+        if state.target != target {
+            state.target = target;
+            state.dirty = true;
+            self.render_signal.changed.notify_one();
+        }
     }
     pub fn set(&self, key: &str, value: impl ToString) {
         let _ = self.tx.send(Message::Set(key.into(), value.to_string()));
@@ -339,19 +459,315 @@ impl Drop for Player {
 struct ContextOwner<'a> {
     api: &'a Api,
     handle: Handle,
-    render: Handle,
 }
 impl Drop for ContextOwner<'_> {
     fn drop(&mut self) {
         unsafe {
-            if !self.render.is_null() {
-                (self.api.render_free)(self.render)
-            }
+            (self.api.wakeup_callback)(self.handle, None, std::ptr::null_mut());
             (self.api.destroy)(self.handle)
         }
     }
 }
-unsafe extern "C" fn wake(_: *mut c_void) {}
+struct CoreWake {
+    tx: mpsc::Sender<Message>,
+    pending: std::sync::atomic::AtomicBool,
+}
+unsafe extern "C" fn wake_core(data: *mut c_void) {
+    let signal = unsafe { &*(data as *const CoreWake) };
+    if !signal.pending.swap(true, Ordering::AcqRel) {
+        let _ = signal.tx.send(Message::Wake);
+    }
+}
+#[derive(Clone, Copy, PartialEq)]
+struct VideoTarget {
+    width: u32,
+    height: u32,
+    visible: bool,
+}
+struct RenderSignalState {
+    target: VideoTarget,
+    source: (u32, u32),
+    generation: u64,
+    dirty: bool,
+    pending: bool,
+    closed: bool,
+}
+struct RenderSignal {
+    state: Mutex<RenderSignalState>,
+    changed: Condvar,
+}
+impl Default for RenderSignal {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(RenderSignalState {
+                target: VideoTarget {
+                    width: 960,
+                    height: 540,
+                    visible: true,
+                },
+                source: (0, 0),
+                generation: 0,
+                dirty: false,
+                pending: false,
+                closed: false,
+            }),
+            changed: Condvar::new(),
+        }
+    }
+}
+impl RenderSignal {
+    fn source(&self, source: (u32, u32), new_media: bool) {
+        let mut state = self.state.lock().unwrap();
+        if state.source != source || new_media {
+            state.source = source;
+            state.generation += 1;
+            state.dirty = true;
+            self.changed.notify_one();
+        }
+    }
+}
+unsafe extern "C" fn wake_render(data: *mut c_void) {
+    let signal = unsafe { &*(data as *const RenderSignal) };
+    let mut state = signal.state.lock().unwrap();
+    state.pending = true;
+    signal.changed.notify_one();
+}
+fn clear_frame(shared: &Mutex<Playback>, events: &FrameEvents) {
+    let mut state = shared.lock().unwrap();
+    if state.frame.take().is_some() || state.frame_width != 0 || state.frame_height != 0 {
+        state.frame_width = 0;
+        state.frame_height = 0;
+        state.frame_revision = events.revision() + 1;
+        events.publish();
+    }
+}
+/// Select content pixels, rather than letterboxing into an arbitrary target.
+/// Never upscale a source, and bound CPU conversion + each GPUI upload to 14 MiB.
+fn render_dimensions(target: VideoTarget, source: (u32, u32)) -> Option<(u32, u32)> {
+    if !target.visible || source.0 == 0 || source.1 == 0 {
+        return None;
+    }
+    let (sw, sh) = (f64::from(source.0), f64::from(source.1));
+    let scale = (f64::from(target.width) / sw)
+        .min(f64::from(target.height) / sh)
+        .min(1.)
+        .min(4096. / sw.max(sh))
+        .min(((2560. * 1440.) / (sw * sh)).sqrt());
+    Some((
+        (sw * scale).floor().max(1.) as u32,
+        (sh * scale).floor().max(1.) as u32,
+    ))
+}
+struct RenderWorker {
+    signal: Arc<RenderSignal>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+impl Drop for RenderWorker {
+    fn drop(&mut self) {
+        {
+            let mut state = self.signal.state.lock().unwrap();
+            state.closed = true;
+            self.signal.changed.notify_one();
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+impl RenderWorker {
+    fn start(
+        handle: Handle,
+        signal: Arc<RenderSignal>,
+        shared: Arc<Mutex<Playback>>,
+        events: FrameEvents,
+    ) -> Result<Self> {
+        let handle = handle as usize;
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let thread_signal = signal.clone();
+        let thread = thread::spawn(move || {
+            // The render thread only calls mpv_render_* APIs. Core commands and
+            // properties on this same thread can stall or deadlock libmpv.
+            let result = (|| -> Result<()> {
+                unsafe {
+                    let api = Api::load()?;
+                    let mut render = std::ptr::null_mut();
+                    let mut create = [
+                        Param {
+                            kind: 1,
+                            data: c"sw".as_ptr() as _,
+                        },
+                        Param {
+                            kind: 0,
+                            data: std::ptr::null_mut(),
+                        },
+                    ];
+                    ensure!(
+                        (api.render_create)(&mut render, handle as Handle, create.as_mut_ptr())
+                            >= 0,
+                        "libmpv 软件帧接口初始化失败"
+                    );
+                    struct Owner<'a> {
+                        api: &'a Api,
+                        render: Handle,
+                    }
+                    impl Drop for Owner<'_> {
+                        fn drop(&mut self) {
+                            unsafe {
+                                (self.api.update_callback)(self.render, None, std::ptr::null_mut());
+                                (self.api.render_free)(self.render);
+                            }
+                        }
+                    }
+                    let _owner = Owner { api: &api, render };
+                    (api.update_callback)(
+                        render,
+                        Some(wake_render),
+                        Arc::as_ptr(&thread_signal) as *mut _,
+                    );
+                    let _ = ready_tx.send(Ok(()));
+                    // Prefer a native alpha-bearing packed format to avoid a
+                    // Rust per-pixel alpha pass. Older mpv builds may only
+                    // accept the baseline bgr0 format; keep that fallback.
+                    let mut alpha_format = true;
+                    loop {
+                        let (target, source, generation, dirty) = {
+                            let mut state = thread_signal.state.lock().unwrap();
+                            while !state.pending && !state.dirty && !state.closed {
+                                state = thread_signal.changed.wait(state).unwrap();
+                            }
+                            if state.closed {
+                                break;
+                            }
+                            let next = (state.target, state.source, state.generation, state.dirty);
+                            state.pending = false;
+                            state.dirty = false;
+                            next
+                        };
+                        let updates = (api.update)(render);
+                        let Some((width, height)) = render_dimensions(target, source) else {
+                            // Acknowledge hidden frames without allocating pixels.
+                            // Otherwise mpv can wait for its embedding application.
+                            if updates & 1 != 0 {
+                                let mut skip = 1i32;
+                                let mut block = 0i32;
+                                let mut params = [
+                                    Param {
+                                        kind: 13,
+                                        data: &mut skip as *mut _ as _,
+                                    },
+                                    Param {
+                                        kind: 12,
+                                        data: &mut block as *mut _ as _,
+                                    },
+                                    Param {
+                                        kind: 0,
+                                        data: std::ptr::null_mut(),
+                                    },
+                                ];
+                                (api.render)(render, params.as_mut_ptr());
+                            }
+                            clear_frame(&shared, &events);
+                            continue;
+                        };
+                        if updates & 1 == 0 && !dirty {
+                            continue;
+                        }
+                        let started = Instant::now();
+                        let mut dimensions = [width as i32, height as i32];
+                        let mut stride = width as usize * 4;
+                        let mut block = 0i32;
+                        // Write directly into the immutable image's eventual owner.
+                        // There is no scratch-frame -> image full-frame copy.
+                        let mut buffer = vec![0u8; stride * height as usize];
+                        ensure!((buffer.as_ptr() as usize) % 4 == 0, "视频帧像素未对齐");
+                        let mut params = [
+                            Param {
+                                kind: 17,
+                                data: dimensions.as_mut_ptr() as _,
+                            },
+                            Param {
+                                kind: 18,
+                                data: if alpha_format {
+                                    c"bgra".as_ptr()
+                                } else {
+                                    c"bgr0".as_ptr()
+                                } as _,
+                            },
+                            Param {
+                                kind: 19,
+                                data: &mut stride as *mut _ as _,
+                            },
+                            Param {
+                                kind: 20,
+                                data: buffer.as_mut_ptr() as _,
+                            },
+                            Param {
+                                kind: 12,
+                                data: &mut block as *mut _ as _,
+                            },
+                            Param {
+                                kind: 0,
+                                data: std::ptr::null_mut(),
+                            },
+                        ];
+                        let mut status = (api.render)(render, params.as_mut_ptr());
+                        if status < 0 && alpha_format {
+                            alpha_format = false;
+                            params[1].data = c"bgr0".as_ptr() as _;
+                            status = (api.render)(render, params.as_mut_ptr());
+                        }
+                        ensure!(status >= 0, "视频帧渲染失败 ({status})");
+                        if !alpha_format {
+                            for pixel in buffer.chunks_exact_mut(4) {
+                                pixel[3] = 255;
+                            }
+                        }
+                        let image = image::RgbaImage::from_raw(width, height, buffer)
+                            .context("视频帧大小")?;
+                        let image =
+                            Arc::new(gpui::RenderImage::new(vec![image::Frame::new(image)]));
+                        let current = thread_signal.state.lock().unwrap();
+                        // A late render from a stopped or replaced file must never
+                        // publish on top of the new media or a hidden surface.
+                        if current.generation != generation || current.target != target {
+                            continue;
+                        }
+                        let mut state = shared.lock().unwrap();
+                        state.frame = Some(image);
+                        state.frame_width = width;
+                        state.frame_height = height;
+                        state.render_stats.rendered_frames += 1;
+                        state.render_stats.pixel_format =
+                            if alpha_format { "bgra" } else { "bgr0" }.into();
+                        state.render_stats.render_microseconds +=
+                            started.elapsed().as_micros() as u64;
+                        state.render_stats.allocated_bytes +=
+                            u64::from(width) * u64::from(height) * 4;
+                        state.frame_revision = events.revision() + 1;
+                        events.publish();
+                    }
+                    Ok(())
+                }
+            })();
+            if let Err(error) = result {
+                let message = error.to_string();
+                let _ = ready_tx.send(Err(message.clone()));
+                shared.lock().unwrap().error = message;
+                clear_frame(&shared, &events);
+                events.publish();
+            }
+        });
+        let owner = Self {
+            signal,
+            thread: Some(thread),
+        };
+        ready_rx
+            .recv()
+            .context("视频渲染线程未启动")?
+            .map_err(anyhow::Error::msg)?;
+        Ok(owner)
+    }
+}
 unsafe fn set_native(api: &Api, handle: Handle, key: &str, value: &str) -> Result<()> {
     let status = unsafe {
         (api.set)(
@@ -458,19 +874,20 @@ fn worker(
     rx: mpsc::Receiver<Message>,
     shared: Arc<Mutex<Playback>>,
     audio_device: bool,
+    render_signal: Arc<RenderSignal>,
+    frame_events: FrameEvents,
+    core_wake: Arc<CoreWake>,
 ) -> Result<()> {
     unsafe {
         let api = Api::load()?;
         let handle = (api.create)();
         ensure!(!handle.is_null(), "无法创建播放器");
-        let mut owned = ContextOwner {
-            api: &api,
-            handle,
-            render: std::ptr::null_mut(),
-        };
+        let _owned = ContextOwner { api: &api, handle };
         for (k, v) in [
             ("vo", "libmpv"),
-            ("hwdec", "no"),
+            ("hwdec", "auto-copy"),
+            ("hwdec-software-fallback", "yes"),
+            ("profile", "sw-fast"),
             ("terminal", "no"),
             ("idle", "yes"),
             ("keep-open", "yes"),
@@ -484,31 +901,31 @@ fn worker(
             (api.option)(handle, c"ao".as_ptr(), c"null".as_ptr());
         }
         ensure!((api.initialize)(handle) >= 0, "libmpv 初始化失败");
-        let mut create = [
-            Param {
-                kind: 1,
-                data: c"sw".as_ptr() as _,
-            },
-            Param {
-                kind: 0,
-                data: std::ptr::null_mut(),
-            },
-        ];
-        ensure!(
-            (api.render_create)(&mut owned.render, handle, create.as_mut_ptr()) >= 0,
-            "libmpv 软件帧接口初始化失败"
-        );
-        (api.update_callback)(owned.render, Some(wake), std::ptr::null_mut());
+        (api.wakeup_callback)(handle, Some(wake_core), Arc::as_ptr(&core_wake) as *mut _);
+        let _renderer = RenderWorker::start(
+            handle,
+            render_signal.clone(),
+            shared.clone(),
+            frame_events.clone(),
+        )?;
         shared.lock().unwrap().initialized = true;
-        let mut pixels = vec![0u64; 960 * 540 / 2];
-        let mut tick = 0;
+        let mut last_sample = Instant::now() - Duration::from_secs(1);
+        let mut video_ready = false;
         let mut subtitle_is_bitmap = false;
         let mut subtitles_visible = true;
         let mut sentence_repeat: Option<RunningSentenceRepeat> = None;
         loop {
             match rx.recv_timeout(Duration::from_millis(25)) {
+                Ok(Message::Wake) => {
+                    core_wake.pending.store(false, Ordering::Release);
+                }
                 Ok(Message::Close) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Ok(Message::Command(args)) => {
+                    if matches!(args.first().map(String::as_str), Some("loadfile" | "stop")) {
+                        video_ready = false;
+                        render_signal.source((0, 0), true);
+                        clear_frame(&shared, &frame_events);
+                    }
                     let cancels_repeat = matches!(
                         args.first().map(String::as_str),
                         Some("loadfile" | "stop" | "seek")
@@ -613,9 +1030,13 @@ fn worker(
                 }
                 if (*event).id == 8 {
                     shared.lock().unwrap().error.clear();
+                    video_ready = true;
+                    last_sample = Instant::now() - Duration::from_secs(1);
                 } else if (*event).id == 7 && !(*event).data.is_null() {
                     let end = &*((*event).data as *const EndFile);
                     if end.reason == 4 {
+                        video_ready = false;
+                        render_signal.source((0, 0), true);
                         if sentence_repeat.take().is_some() {
                             clear_native_sentence_repeat(&api, handle)?;
                         }
@@ -624,6 +1045,10 @@ fn worker(
                         let mut state = shared.lock().unwrap();
                         state.error = format!("无法播放媒体：{message}");
                         state.frame = None;
+                        state.frame_width = 0;
+                        state.frame_height = 0;
+                        state.frame_revision = frame_events.revision() + 1;
+                        frame_events.publish();
                         state.paused = true;
                         state.sentence_repeat = None;
                     }
@@ -668,74 +1093,29 @@ fn worker(
                 }
             }
             {
-                let mut state = shared.lock().unwrap();
-                state.sentence_repeat = sentence_repeat.as_ref().map(|repeat| repeat.state.clone());
-                if state
-                    .sentence_repeat
+                let finished = sentence_repeat
                     .as_ref()
-                    .is_some_and(|repeat| repeat.finished)
-                {
-                    let mut position = 0.;
-                    if (api.property)(
+                    .is_some_and(|repeat| repeat.state.finished);
+                let mut position = 0.;
+                let has_position = finished
+                    && (api.property)(
                         handle,
                         c"time-pos".as_ptr(),
                         5,
                         &mut position as *mut _ as _,
-                    ) >= 0
-                    {
+                    ) >= 0;
+                let mut state = shared.lock().unwrap();
+                state.sentence_repeat = sentence_repeat.as_ref().map(|repeat| repeat.state.clone());
+                if finished {
+                    if has_position {
                         state.position = position;
                     }
                     state.paused = true;
                     state.eof = false;
                 }
             }
-            if (api.update)(owned.render) & 1 != 0 {
-                let mut dimensions = [960i32, 540i32];
-                let mut stride = 960usize * 4;
-                let mut block = 0i32;
-                let mut params = [
-                    Param {
-                        kind: 17,
-                        data: dimensions.as_mut_ptr() as _,
-                    },
-                    Param {
-                        kind: 18,
-                        data: c"bgr0".as_ptr() as _,
-                    },
-                    Param {
-                        kind: 19,
-                        data: &mut stride as *mut _ as _,
-                    },
-                    Param {
-                        kind: 20,
-                        data: pixels.as_mut_ptr() as _,
-                    },
-                    Param {
-                        kind: 12,
-                        data: &mut block as *mut _ as _,
-                    },
-                    Param {
-                        kind: 0,
-                        data: std::ptr::null_mut(),
-                    },
-                ];
-                if (api.render)(owned.render, params.as_mut_ptr()) >= 0 {
-                    let bytes =
-                        std::slice::from_raw_parts(pixels.as_ptr() as *const u8, 960 * 540 * 4);
-                    let mut buffer = bytes.to_vec();
-                    for px in buffer.chunks_exact_mut(4) {
-                        px[3] = 255;
-                    }
-                    let image =
-                        image::RgbaImage::from_raw(960, 540, buffer).context("视频帧大小")?;
-                    shared.lock().unwrap().frame =
-                        Some(Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
-                            image,
-                        )])));
-                }
-            }
-            tick += 1;
-            if tick % 4 == 0 {
+            if last_sample.elapsed() >= Duration::from_millis(100) {
+                last_sample = Instant::now();
                 let mut pos = 0.;
                 let mut duration = 0.;
                 let mut paused = 1;
@@ -797,19 +1177,34 @@ fn worker(
                     subtitle = node_json(&node).as_str().unwrap_or("").into();
                     (api.node_free)(&mut node);
                 }
-                let mut s = shared.lock().unwrap();
-                s.position = pos;
-                s.duration = duration;
-                s.paused = paused != 0;
-                s.eof = eof != 0
-                    && !sentence_repeat
-                        .as_ref()
-                        .is_some_and(|repeat| repeat.state.finished);
-                s.path = media_path;
-                s.tracks = tracks;
-                s.subtitle = subtitle;
-                s.subtitle_is_bitmap = subtitle_is_bitmap;
-                s.sentence_repeat = sentence_repeat.as_ref().map(|repeat| repeat.state.clone());
+                let natural_eof = eof != 0 && sentence_repeat.is_none();
+                let mut width = 0i64;
+                let mut height = 0i64;
+                if video_ready && !natural_eof {
+                    (api.property)(handle, c"dwidth".as_ptr(), 4, &mut width as *mut _ as _);
+                    (api.property)(handle, c"dheight".as_ptr(), 4, &mut height as *mut _ as _);
+                }
+                render_signal.source((width.max(0) as u32, height.max(0) as u32), false);
+                if natural_eof || media_path.is_empty() {
+                    clear_frame(&shared, &frame_events);
+                }
+                let mut decoder = Node {
+                    data: NodeData { integer: 0 },
+                    format: 0,
+                };
+                let decoder = if (api.property)(
+                    handle,
+                    c"hwdec-current".as_ptr(),
+                    6,
+                    &mut decoder as *mut _ as _,
+                ) >= 0
+                {
+                    let value = node_json(&decoder).as_str().unwrap_or("no").to_owned();
+                    (api.node_free)(&mut decoder);
+                    value
+                } else {
+                    "no".into()
+                };
                 let mut main_visible = 0;
                 let mut second_visible = 0;
                 (api.property)(
@@ -824,10 +1219,25 @@ fn worker(
                     3,
                     &mut second_visible as *mut _ as _,
                 );
+                // Never call libmpv with Playback locked: the VO callback and
+                // renderer may need this mutex while core property calls wait.
+                let mut s = shared.lock().unwrap();
+                s.render_stats.decoder = decoder;
+                s.position = pos;
+                s.duration = duration;
+                s.paused = paused != 0;
+                s.eof = eof != 0
+                    && !sentence_repeat
+                        .as_ref()
+                        .is_some_and(|repeat| repeat.state.finished);
+                s.path = media_path;
+                s.tracks = tracks;
+                s.subtitle = subtitle;
+                s.subtitle_is_bitmap = subtitle_is_bitmap;
+                s.sentence_repeat = sentence_repeat.as_ref().map(|repeat| repeat.state.clone());
                 s.primary_subtitles_visible = main_visible != 0;
                 s.secondary_subtitles_visible = second_visible != 0;
                 if s.path.is_empty() {
-                    s.frame = None;
                     s.subtitle.clear();
                     s.tracks.clear();
                     s.position = 0.;

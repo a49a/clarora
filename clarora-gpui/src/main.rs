@@ -45,7 +45,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{atomic::Ordering, mpsc},
     time::{Duration, Instant, SystemTime},
 };
@@ -464,6 +464,40 @@ impl AppView {
             graph_node: "demo-1".into(),
             graph_list: 0,
         };
+        // Video is enabled by the actual picture's measured layout, never by an audio preload.
+        this.media.player.set_video_target(0, 0, false);
+        this.media.preloader.set_video_target(0, 0, false);
+        for player in [&this.media.player, &this.media.preloader] {
+            let frames = player.frame_events();
+            let source = player.state.clone();
+            cx.spawn_in(window, async move |this, cx| {
+                let mut revision = frames.revision();
+                loop {
+                    revision = frames.changed(revision).await;
+                    if this
+                        .update_in(cx, |this, _, cx| {
+                            // Audio preloading swaps these two players; follow identity, not a slot.
+                            if !std::sync::Arc::ptr_eq(&source, &this.media.player.state) {
+                                return;
+                            }
+                            let snapshot = this.media.player.snapshot();
+                            this.media.snapshot.frame = snapshot.frame;
+                            this.media.snapshot.frame_revision = snapshot.frame_revision;
+                            this.media.snapshot.frame_width = snapshot.frame_width;
+                            this.media.snapshot.frame_height = snapshot.frame_height;
+                            this.media.snapshot.render_stats = snapshot.render_stats;
+                            if this.video_frame_path().is_some() {
+                                cx.notify();
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         this.audio.rename_subscription = Some(cx.subscribe_in(
             &this.inputs["library_audio_name"],
             window,
@@ -1007,6 +1041,10 @@ impl AppView {
         self.tasks.notice = Some(TaskNotice::new(title, detail));
     }
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.media.preloader.set_video_target(0, 0, false);
+        if self.video_frame_path().is_none() {
+            self.media.player.set_video_target(0, 0, false);
+        }
         if !self.chat.context.is_empty() {
             let draft = self.value("question", cx);
             if draft != self.chat.draft {
@@ -1867,6 +1905,7 @@ impl AppView {
             if !card.media.is_empty() {
                 if self.media.preloaded_index == Some(self.index) {
                     std::mem::swap(&mut self.media.player, &mut self.media.preloader);
+                    self.media.preloader.set_video_target(0, 0, false);
                     self.media.player.set("pause", "no");
                 } else {
                     self.media.player.open_range(
@@ -5151,6 +5190,43 @@ impl AppView {
         let eased = 1. - (1. - elapsed).powi(3);
         from + (target - from) * eased
     }
+    fn video_frame_path(&self) -> Option<PathBuf> {
+        let path = self.media.path.as_ref()?;
+        let visible = if self.page == "video" {
+            self.video.path.as_ref() == Some(path)
+        } else if self.page == "flashcard" || self.page == "discover" {
+            self.current_card()
+                .is_some_and(|card| card.kind == "video" && Path::new(&card.media) == path)
+        } else {
+            false
+        };
+        visible.then(|| path.clone())
+    }
+
+    fn video_viewport_probe(&self, cx: &Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        let expected = self.video_frame_path();
+        canvas(
+            move |bounds, window, cx| {
+                let scale = window.scale_factor();
+                let width = (f32::from(bounds.size.width) * scale).ceil().max(0.) as u32;
+                let height = (f32::from(bounds.size.height) * scale).ceil().max(0.) as u32;
+                let _ = view.update(cx, |this, _| {
+                    if expected.is_some() && this.video_frame_path() == expected {
+                        this.media
+                            .player
+                            .set_video_target(width, height, width > 0 && height > 0);
+                    }
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    }
+
     fn video_picture(&self, height: Option<Pixels>, cx: &Context<Self>) -> impl IntoElement {
         let active = self.video.path.as_ref().is_some_and(|p| {
             self.media.path.as_ref() == Some(p) && self.media.snapshot.path == p.to_string_lossy()
@@ -5179,6 +5255,7 @@ impl AppView {
             .when(height.is_none(), |view| view.flex_1().min_h_0())
             .overflow_hidden()
             .bg(rgb(0x090e0c))
+            .child(self.video_viewport_probe(cx))
             .when_some(frame.clone(), |v, image| {
                 // Keep the intrinsic image ratio out of the flex flow. The
                 // decoder frame must fit entirely inside the available viewport.
@@ -6984,14 +7061,33 @@ impl AppView {
                     );
                     if !card.media.is_empty() {
                         if card.kind == "video" {
-                            if let Some(image) = &self.media.snapshot.frame {
-                                content = content.child(
-                                    img(image.clone())
-                                        .w_full()
-                                        .h(px(300.))
-                                        .object_fit(ObjectFit::Contain),
-                                );
-                            }
+                            content = content.child(
+                                div()
+                                    .id("card-video-picture")
+                                    .relative()
+                                    .w_full()
+                                    .h(px(300.))
+                                    .overflow_hidden()
+                                    .bg(rgb(0x090e0c))
+                                    .child(self.video_viewport_probe(cx))
+                                    .when_some(
+                                        self.media
+                                            .snapshot
+                                            .frame
+                                            .clone()
+                                            .filter(|_| self.media.snapshot.path == card.media),
+                                        |view, image| {
+                                            view.child(
+                                                img(image)
+                                                    .absolute()
+                                                    .top_0()
+                                                    .left_0()
+                                                    .size_full()
+                                                    .object_fit(ObjectFit::Contain),
+                                            )
+                                        },
+                                    ),
+                            );
                         }
                         content = content.child(self.transport(cx));
                     }

@@ -141,7 +141,14 @@ fn save_frame(path: &Path, state: &Playback) -> Result<()> {
     for pixel in bytes.chunks_exact_mut(4) {
         pixel.swap(0, 2);
     }
-    image::save_buffer(path, &bytes, 960, 540, image::ColorType::Rgba8)?;
+    let size = frame.size(0);
+    image::save_buffer(
+        path,
+        &bytes,
+        u32::from(size.width),
+        u32::from(size.height),
+        image::ColorType::Rgba8,
+    )?;
     Ok(())
 }
 

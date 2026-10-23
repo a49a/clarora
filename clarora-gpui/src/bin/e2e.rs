@@ -37,6 +37,8 @@ mod video_jobs;
 mod video_library;
 #[path = "support/video_qa.rs"]
 mod video_qa;
+#[path = "support/video_render.rs"]
+mod video_render;
 #[path = "support/video_repeat.rs"]
 mod video_repeat;
 #[path = "support/video_translation.rs"]
@@ -384,8 +386,8 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     image::save_buffer(
         output.join("playback-frame.png"),
         &bytes,
-        960,
-        540,
+        frame.size(0).width.into(),
+        frame.size(0).height.into(),
         image::ColorType::Rgba8,
     )?;
     let eof_deadline = Instant::now() + Duration::from_secs(12);
@@ -478,6 +480,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     results.push(json!({"workflow":"只读 RN 快照导入与跨表恢复失败事务回滚","passed":true}));
     video_library::run(&lib, &video, results)?;
     backup_library::run(&lib, &video, results)?;
+    video_render::run(&lib, results)?;
     credential_mode::run(&lib, results)?;
     audio_library::run(&lib, &video, results)?;
     blind_listening::run(&lib, &video, results)?;
@@ -862,6 +865,7 @@ fn main() -> Result<()> {
         Some("--state-only") => "state-only",
         Some("--video-repeat-only") => "video-repeat-only",
         Some("--backup-library-only") => "backup-library-only",
+        Some("--video-render-only") => "video-render-only",
         _ => "full",
     };
     let result = if mode == "http-only" {
@@ -882,6 +886,9 @@ fn main() -> Result<()> {
             ),
             &mut results,
         )
+    } else if mode == "video-render-only" {
+        let lib = Library::open(output.join(format!("video-render-{}", data::id())))?;
+        video_render::run(&lib, &mut results)
     } else if mode == "transcript-only" {
         let lib = Library::open(output.join(format!("transcript-{}", data::id())))?;
         transcript::run(&lib, &mut results)

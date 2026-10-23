@@ -162,7 +162,7 @@ pub(super) struct PlaybackState {
 impl PlaybackState {
     pub(super) fn poll(&mut self) -> bool {
         let snapshot = self.player.snapshot();
-        let changed = clarora_gpui::media::visible_changed(&self.snapshot, &snapshot);
+        let changed = clarora_gpui::media::controls_changed(&self.snapshot, &snapshot);
         self.snapshot = snapshot;
         changed
     }
