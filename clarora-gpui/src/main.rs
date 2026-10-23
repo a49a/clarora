@@ -9,6 +9,7 @@ mod settings_ui;
 mod task_ui;
 mod video_job_ui;
 mod video_library_ui;
+mod video_transcript_ui;
 mod writing_ui;
 use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::{
@@ -200,6 +201,8 @@ enum Action {
     VideoFollow,
     VideoPanel(usize),
     VideoTools,
+    VideoTranscript,
+    VideoCopyTranscript,
     VideoSelect(String),
     VideoEpisodes(String),
     VideoRemove(String),
@@ -1239,8 +1242,7 @@ impl AppView {
                                     && self.media.path.as_ref() == Some(&video)
                                     && same_source
                                 {
-                                    self.video.cues = cues;
-                                    self.video.scroll.reset(self.video.cues.len());
+                                    self.video.set_cues(cues);
                                     self.video.active = None;
                                     self.video.caption_source = VideoCaptionSource::Transcript;
                                     self.video.material = None;
@@ -1582,15 +1584,14 @@ impl AppView {
         self.video.caption_source = VideoCaptionSource::Transcript;
         self.video.material = None;
         self.video.material_error.clear();
-        self.video.cues = match video_subtitles::load(&self.lib, path) {
+        let cues = match video_subtitles::load(&self.lib, path) {
             Ok(cues) => cues,
             Err(e) => {
                 self.status = format!("字幕载入失败：{e}");
                 vec![]
             }
         };
-        self.video.active = None;
-        self.video.scroll.reset(self.video.cues.len());
+        self.video.set_cues(cues);
         self.video.tab = 0;
     }
 
@@ -3516,8 +3517,7 @@ impl AppView {
                         self.media.path = None;
                         self.video.path = None;
                         self.video.series = None;
-                        self.video.cues.clear();
-                        self.video.scroll.reset(0);
+                        self.video.set_cues(vec![]);
                         self.video.active = None;
                         self.video.material = None;
                         self.video.material_error.clear();
@@ -3554,6 +3554,19 @@ impl AppView {
                             self.video.scroll.scroll_to_reveal_item(i);
                         }
                     }
+                }
+                Action::VideoTranscript => {
+                    self.video.transcript_open = !self.video.transcript_open;
+                }
+                Action::VideoCopyTranscript => {
+                    ensure!(
+                        !self.video.transcript.text.is_empty(),
+                        "没有可复制的英文文稿"
+                    );
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        self.video.transcript.text.clone(),
+                    ));
+                    self.status = "已复制整篇英文文稿（不含时间戳与中文翻译）".into();
                 }
                 Action::AudioCopySubtitle(audio_id, cue) => {
                     ensure!(
@@ -6949,6 +6962,15 @@ impl AppView {
                                     cx,
                                 ),
                             )
+                            .child(
+                                self.button(
+                                    "video-english-transcript",
+                                    "英文文稿",
+                                    Action::VideoTranscript,
+                                    cx,
+                                )
+                                .selected(self.video.transcript_open),
+                            )
                             .child(self.button(
                                 "video-more",
                                 if self.video.tools_open {
@@ -7371,6 +7393,9 @@ impl AppView {
                         .when(!stacked, |v| v.child(divider))
                         .child(study),
                 );
+                if self.video.transcript_open {
+                    content = content.child(self.video_transcript_view(window, cx));
+                }
                 if self.video.tools_open || self.media.path.is_none() {
                     content = content.child(
                         div()

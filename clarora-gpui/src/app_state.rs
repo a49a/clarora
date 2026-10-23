@@ -64,6 +64,10 @@ pub(super) struct VideoState {
     pub(super) auto_next_part: bool,
     pub(super) cues: Vec<Cue>,
     pub(super) caption_source: VideoCaptionSource,
+    pub(super) transcript: clarora_gpui::video_transcript::Transcript,
+    pub(super) transcript_open: bool,
+    pub(super) transcript_html: SharedString,
+    pub(super) transcript_revision: u64,
     pub(super) captions_enabled: bool,
     pub(super) material: Option<video_qa::Material>,
     pub(super) material_error: String,
@@ -88,6 +92,15 @@ pub(super) struct VideoState {
     pub(super) remove: Option<String>,
 }
 impl VideoState {
+    pub(super) fn set_cues(&mut self, cues: Vec<Cue>) {
+        self.transcript = clarora_gpui::video_transcript::Transcript::from_cues(&cues);
+        self.transcript_html = self.transcript.html.clone().into();
+        self.transcript_revision = self.transcript_revision.wrapping_add(1);
+        self.scroll.reset(cues.len());
+        self.active = None;
+        self.cues = cues;
+    }
+
     pub(super) fn new() -> Self {
         Self {
             path: None,
@@ -95,6 +108,10 @@ impl VideoState {
             auto_next_part: true,
             cues: vec![],
             caption_source: VideoCaptionSource::Transcript,
+            transcript: Default::default(),
+            transcript_open: false,
+            transcript_html: "".into(),
+            transcript_revision: 0,
             captions_enabled: true,
             material: None,
             material_error: String::new(),

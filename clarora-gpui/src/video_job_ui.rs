@@ -121,8 +121,7 @@ impl AppView {
                             .iter()
                             .any(|v| v.id == source_id)
                     {
-                        self.video.cues = cues;
-                        self.video.scroll.reset(self.video.cues.len());
+                        self.video.set_cues(cues);
                         self.video.active = None;
                         self.video.caption_source = VideoCaptionSource::Transcript;
                         self.video.material = None;

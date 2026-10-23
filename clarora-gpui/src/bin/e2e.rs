@@ -27,6 +27,8 @@ mod playback_state;
 mod protocol;
 #[path = "support/review_queue.rs"]
 mod review_queue;
+#[path = "support/transcript.rs"]
+mod transcript;
 #[path = "support/video_jobs.rs"]
 mod video_jobs;
 #[path = "support/video_library.rs"]
@@ -191,6 +193,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     fs::create_dir_all(&root)?;
     let lib = Library::open(root.join("source"))?;
     ebook::run(&lib, results)?;
+    transcript::run(&lib, results)?;
     chat_store::run(&lib, results)?;
     view_data::run(&lib, results)?;
     playback_state::run(&lib, results)?;
@@ -852,6 +855,7 @@ fn main() -> Result<()> {
         Some("--reliability-only") => "reliability-only",
         Some("--writing-only") => "writing-only",
         Some("--ebook-only") => "ebook-only",
+        Some("--transcript-only") => "transcript-only",
         Some("--state-only") => "state-only",
         Some("--video-repeat-only") => "video-repeat-only",
         _ => "full",
@@ -864,6 +868,9 @@ fn main() -> Result<()> {
             &PathBuf::from(args.get(4).context("缺少图片夹具")?),
             &mut results,
         )
+    } else if mode == "transcript-only" {
+        let lib = Library::open(output.join(format!("transcript-{}", data::id())))?;
+        transcript::run(&lib, &mut results)
     } else if mode == "ebook-only" {
         let lib = Library::open(output.join(format!("ebook-{}", data::id())))?;
         ebook::run(&lib, &mut results).and_then(|_| {
