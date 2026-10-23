@@ -54,7 +54,7 @@ def collect_rust_licenses(manifest_path, target, destination, overrides=None, sp
     overrides, spdx_sources = overrides or {}, spdx_sources or {}
     result = subprocess.run(["cargo", "metadata", "--manifest-path", str(manifest_path), "--locked", "--offline",
                              "--format-version", "1", "--filter-platform", target], check=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
     metadata = json.loads(result.stdout)
     ids = {node["id"] for node in metadata["resolve"]["nodes"]}
     inventory, standards, missing = [], set(), []
@@ -85,7 +85,7 @@ def collect_rust_licenses(manifest_path, target, destination, overrides=None, sp
             shutil.copy2(notice, copied)
             files.append(str(copied.relative_to(destination)).replace("\\", "/"))
         checksum_file = directory / ".cargo-checksum.json"
-        package_checksum = json.loads(checksum_file.read_text()).get("package") if checksum_file.is_file() else None
+        package_checksum = json.loads(checksum_file.read_text(encoding="utf-8")).get("package") if checksum_file.is_file() else None
         entry = {"name": package["name"], "version": package["version"], "license_expression": expression,
                  "authors": package.get("authors", []), "repository": package.get("repository"),
                  "registry_source": package.get("source"), "package_checksum_sha256": package_checksum,
