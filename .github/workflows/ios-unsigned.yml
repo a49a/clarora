@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing version tag (v0.1.0)
+        description: Existing RN version tag (rn-v0.2.1)
         required: true
         type: string
       build_number:
@@ -44,11 +44,11 @@ jobs:
             echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$TAG" =~ ^rn-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
           sha="$(git rev-parse "$TAG^{commit}")"
           version="$(git show "$sha:clarora-app/package.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')"
-          test "$TAG" = "v$version"
+          test "$TAG" = "rn-v$version"
           echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
           echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
   build:

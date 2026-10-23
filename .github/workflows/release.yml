@@ -1,11 +1,11 @@
-name: Release
+name: Release RN
 on:
   push:
-    tags: ["v*"]
+    tags: ["rn-v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "要打包的 tag（如 v0.2.0）；留空使用当前 ref"
+        description: "要打包的 RN tag（如 rn-v0.2.1）；留空使用当前 ref"
         required: false
         default: ""
 permissions:
@@ -34,14 +34,14 @@ jobs:
           elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             tag="$GITHUB_REF_NAME"
           else
-            echo "::error::手动发布必须提供有效 tag(如 v0.2.0)"; exit 1
+            echo "::error::手动发布必须提供有效 RN tag(如 rn-v0.2.1)"; exit 1
           fi
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$tag" =~ ^rn-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
           sha="$(git rev-parse "$tag^{commit}")"
           # 应用显示版本必须与 tag 一致,不允许只改 Release 标题。
           pkg_version="$(git show "$tag:clarora-app/package.json" | python3 -c "import json,sys;print(json.load(sys.stdin)['version'])")"
-          if [ "${tag#v}" != "$pkg_version" ]; then
+          if [ "${tag#rn-v}" != "$pkg_version" ]; then
             echo "::error::tag($tag) 与 package.json 版本($pkg_version)不一致,请先对齐版本再发布"; exit 1
           fi
           echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
@@ -233,7 +233,7 @@ jobs:
           fi
           cat > release/release-metadata.json <<METADATA
           {
-            "version": "${RELEASE_TAG#v}",
+            "version": "${RELEASE_TAG#rn-v}",
             "tag": "$RELEASE_TAG",
             "source_sha": "$SOURCE_SHA",
             "repository": "https://github.com/a49a/clarora",
@@ -326,7 +326,7 @@ jobs:
           require(actual == expected, f'Release asset set mismatch: expected {sorted(expected)}, got {sorted(actual)}')
 
           metadata = json.loads((root / 'release-metadata.json').read_text())
-          require(metadata['tag'] == tag and metadata['version'] == tag.removeprefix('v'), 'Release metadata version/tag mismatch')
+          require(metadata['tag'] == tag and metadata['version'] == tag.removeprefix('rn-v'), 'Release metadata version/tag mismatch')
           require(metadata['source_sha'] == source_sha, 'Release metadata source SHA mismatch')
           android = metadata['platforms']['android']
           notes = Path('release-notes.md').read_text()
@@ -363,4 +363,4 @@ jobs:
           gh release create "$RELEASE_TAG" \
             release/* --verify-tag --generate-notes \
             --notes-file release-notes.md \
-            --title "Clarora $RELEASE_TAG"
+            --title "Clarora RN v${RELEASE_TAG#rn-v}" --latest=false

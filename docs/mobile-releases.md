@@ -40,7 +40,7 @@ SOURCE_SHA="$(git rev-parse HEAD)" CLARORA_BUILD_NUMBER=1001 bash scripts/build-
 
 ## 先构建产物，再执行分发
 
-1. 在包含这些脚本的提交上创建版本 tag，保证 tag 的 `v<版本>` 与 `clarora-app/package.json` 一致。运行旧 tag 不会自动使用新脚本；不要移动已经发布的 tag。
+1. 在包含这些脚本的提交上创建 RN 版本 tag，使用 `rn-v<版本>`，其中版本与 `clarora-app/package.json` 一致。主桌面客户端使用独立的 `v<版本>` 发行；RN 发行标题标注 RN，且不占用 latest。历史 `v*` tag 保持原样；运行旧 tag 不会自动使用新脚本，不要移动已经发布的 tag。
 2. Actions → **Mobile release artifacts (no publishing)**：填写 tag、platform 和 build_number。工作流解析 tag 的完整 SHA，再按此 SHA 构建。选择 iOS 时填写 `ios_method`：默认 `unsigned`，无需任何 Apple secrets；已有付费会员和分发资源时可选 `app-store-connect` 或 `release-testing`。
 3. 下载该 run 的 `Clarora-android` 或 `Clarora-ios-<method>` artifact，核对 `android-build.json`／`ios-unsigned-build.json`／`ios-build.json` 的 SHA、版本、构建号和产物 SHA-256。正式签名 iOS artifact 保留 7 天，应及时保存到受控位置。
 4. Android 安装最终签名 APK，验证首次安装、覆盖升级和用户数据保留。正式 Release 工作流使用相同构建入口并上传 `Clarora-android.apk`、构建报告及校验和。若这是首个正式签名版本，没有可覆盖的旧版，应记录“升级待下版”，不能把首次安装写成升级通过。
