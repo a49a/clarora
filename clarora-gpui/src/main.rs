@@ -252,6 +252,7 @@ enum Action {
 }
 enum Outcome {
     CredentialMode(bool),
+    LibraryRestored(usize, video_library::Collection),
     Message(String),
     Issue(String),
     Parts(bilibili::Series),
@@ -1419,6 +1420,45 @@ impl AppView {
                                 self.settings.secure_credentials = enabled;
                                 self.report_status(FeedbackKind::Info, if enabled {"密钥安全模式已开启，现有本机密钥已迁入系统凭证库"} else {"密钥安全模式已关闭。已有钥匙串密钥可重新输入保存，或主动导入一次"}.into());
                             }
+                            Ok(Outcome::LibraryRestored(_count, videos)) => {
+                                if self.video.path.as_ref().is_none_or(|path| !path.is_file()) {
+                                    if let Some(video) =
+                                        videos.active().filter(|v| v.path.is_file())
+                                    {
+                                        self.video.path = Some(video.path.clone());
+                                        self.video.series = video.series.clone();
+                                    }
+                                }
+                                self.video.collection = videos;
+                                if self.pdf_path.as_ref().is_none_or(|path| !path.is_file()) {
+                                    if let Ok(saved) = self.lib.setting("pdf_current") {
+                                        if let Ok(value) = serde_json::from_str::<Value>(&saved) {
+                                            let path =
+                                                PathBuf::from(value["path"].as_str().unwrap_or(""));
+                                            if path.is_file() && ebook::supported(&path) {
+                                                self.pdf_path = Some(path);
+                                                self.pdf_page = value["page"]
+                                                    .as_u64()
+                                                    .unwrap_or(0)
+                                                    .min(u16::MAX as u64)
+                                                    as u16;
+                                                self.pdf_width = value["width"]
+                                                    .as_i64()
+                                                    .unwrap_or(1000)
+                                                    .clamp(300, 3000)
+                                                    as i32;
+                                                self.pdf_image = None;
+                                                self.ebook_reading = None;
+                                                self.document_text.clear();
+                                            }
+                                        }
+                                    }
+                                }
+                                self.report_status(
+                                    FeedbackKind::Info,
+                                    "资料、附件与学习进度已恢复".into(),
+                                );
+                            }
                             Ok(Outcome::Message(s)) => self.report_status(FeedbackKind::Info, s),
                             Ok(Outcome::Issue(s)) => self.report_status(FeedbackKind::Error, s),
                             Err(_) if cancelled => {
@@ -2062,11 +2102,11 @@ impl AppView {
                     backup::import_sqlite(&lib, &path)?
                 )))
             }),
-            "restore" => self.begin("正在合并资料备份…", move |lib, _, _| {
-                Ok(Outcome::Message(format!(
-                    "已合并 {} 条资料",
-                    backup::import_local(&lib, &path)?
-                )))
+            "restore" => self.begin("正在合并资料备份…", move |lib, cancel, _| {
+                let count = backup::import_local_cancellable(&lib, &path, &cancel)?;
+                let videos = video_library::Collection::load(&lib)
+                    .context("资料已恢复，但重新载入视频库失败，请刷新")?;
+                Ok(Outcome::LibraryRestored(count, videos))
             }),
             "recording" => {
                 self.recorded = Some(path);
@@ -2254,8 +2294,8 @@ impl AppView {
                         cx.spawn(async move |this, cx| {
                             if let Ok(Ok(Some(path))) = picker.await {
                                 let _ = this.update(cx, |this, cx| {
-                                    this.begin("正在备份资料…", move |lib, _, _| {
-                                        backup::export_local(&lib, &path)?;
+                                    this.begin("正在备份资料…", move |lib, cancel, _| {
+                                        backup::export_local_cancellable(&lib, &path, &cancel)?;
                                         Ok(Outcome::Message("已导出资料与附件".into()))
                                     });
                                     cx.notify();
@@ -4109,10 +4149,10 @@ impl AppView {
                 }
                 Action::CloudRestore(key) => {
                     self.begin("正在恢复并合并…", move |lib, cancel, _| {
-                        Ok(Outcome::Message(format!(
-                            "已合并 {} 条资料",
-                            backup::Storage::load(&lib)?.restore(&lib, &key, &cancel)?
-                        )))
+                        let count = backup::Storage::load(&lib)?.restore(&lib, &key, &cancel)?;
+                        let videos = video_library::Collection::load(&lib)
+                            .context("资料已恢复，但重新载入视频库失败，请刷新")?;
+                        Ok(Outcome::LibraryRestored(count, videos))
                     })
                 }
                 Action::DocumentCopy => {

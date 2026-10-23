@@ -40,6 +40,305 @@ pub struct Manifest {
     pub created_at: String,
     pub data: BTreeMap<String, Vec<Row>>,
     pub files: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library: Option<LibraryState>,
+}
+/// Optional v2 extension. Old GPUI/RN backups omit this section entirely.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LibraryState {
+    pub videos: Option<crate::video_library::Collection>,
+    pub books: Vec<BookAttachment>,
+    pub subtitles: Vec<SubtitleAttachment>,
+    pub contexts: Vec<ContextBinding>,
+    pub settings: BTreeMap<String, String>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BookAttachment {
+    pub path: String,
+    pub name: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubtitleAttachment {
+    pub video: String,
+    pub subtitle: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextBinding {
+    pub context: String,
+    pub page: String,
+    pub path: String,
+    /// None = ordinary material path, -1 = all video subtitles, >=0 = subtitle index.
+    pub cue: Option<i64>,
+}
+const PREFERENCES: &[&str] = &[
+    "video_captions_enabled",
+    "video_subtitle_size",
+    "subtitle_font_size",
+    "blind_chinese_hint",
+    "video_auto_next",
+    "navigation_open",
+    "last_page",
+    "new_cards_per_day",
+    "daily_limit",
+    "review_new_card_next_kind",
+    "tts_voice",
+    "tts_speed",
+    "library_group",
+    "last_listening_audio",
+    "last_listening_position",
+    "last_video_position",
+    "pdf_current",
+];
+fn hash(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(value.as_bytes()))
+}
+fn material_context(page: &str, material: &str) -> String {
+    hash(&format!("{page}:{material}"))
+}
+fn hash_id(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit())
+}
+fn safe_setting(key: &str) -> bool {
+    PREFERENCES.contains(&key)
+        || key.strip_prefix("reader_progress_").is_some_and(hash_id)
+        || key.strip_prefix("chat_draft_").is_some_and(hash_id)
+        || key.strip_prefix("key_points_").is_some_and(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-_".contains(&c))
+        })
+}
+fn valid_book_name(name: &str) -> bool {
+    let path = Path::new(name);
+    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
+        || stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"))
+            .is_some_and(|s| matches!(s, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"));
+    !name.is_empty()
+        && name.len() <= 255
+        && !reserved
+        && !name.starts_with('.')
+        && !name.ends_with([' ', '.'])
+        && !name
+            .chars()
+            .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+        && path.file_name().and_then(|s| s.to_str()) == Some(name)
+        && crate::ebook::supported(path)
+}
+impl LibraryState {
+    fn map_paths(&mut self, map: &mut impl FnMut(&str) -> Result<String>) -> Result<()> {
+        if let Some(collection) = &mut self.videos {
+            for video in &mut collection.items {
+                video.path = PathBuf::from(map(&video.path.to_string_lossy())?);
+                if let Some(series) = &mut video.series {
+                    for part in &mut series.parts {
+                        if let Some(path) = &mut part.path {
+                            *path = PathBuf::from(map(&path.to_string_lossy())?);
+                        }
+                    }
+                }
+            }
+        }
+        for book in &mut self.books {
+            book.path = map(&book.path)?;
+        }
+        for subtitle in &mut self.subtitles {
+            subtitle.video = map(&subtitle.video)?;
+            subtitle.subtitle = map(&subtitle.subtitle)?;
+        }
+        for binding in &mut self.contexts {
+            binding.path = map(&binding.path)?;
+        }
+        for key in ["last_video_position", "pdf_current"] {
+            if let Some(value) = self.settings.get_mut(key) {
+                let mut object: Value =
+                    serde_json::from_str(value).context("备份阅读/播放位置损坏")?;
+                if let Some(path) = object["path"].as_str().filter(|s| !s.is_empty()) {
+                    object["path"] = json!(map(path)?);
+                }
+                *value = object.to_string();
+            }
+        }
+        Ok(())
+    }
+}
+fn library_state(
+    lib: &Library,
+    data: &BTreeMap<String, Vec<Row>>,
+    settings: &BTreeMap<String, String>,
+    cancel: &Cancel,
+) -> Result<LibraryState> {
+    let mut state = LibraryState::default();
+    let value = settings
+        .get("video_favorites_v1")
+        .map(String::as_str)
+        .unwrap_or("");
+    if !value.is_empty() {
+        let videos: crate::video_library::Collection =
+            serde_json::from_str(value).context("视频收藏数据损坏，未备份")?;
+        videos.validate()?;
+        state.videos = Some(videos);
+    } else if let Some(value) = settings.get("recent_videos").filter(|s| !s.is_empty()) {
+        let paths: Vec<PathBuf> = serde_json::from_str(value)?;
+        if !paths.is_empty() {
+            let series = settings
+                .get("bilibili_series")
+                .filter(|s| !s.is_empty())
+                .map(|s| serde_json::from_str::<crate::bilibili::Series>(s))
+                .transpose()?;
+            let mut videos = crate::video_library::Collection::default();
+            let ids = videos.add(&paths, series.as_ref())?;
+            videos.selected = ids.first().cloned();
+            state.videos = Some(videos);
+        }
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(lib.root.join("pdf"))? {
+        check_cancel(cancel)?;
+        let path = entry?.path();
+        if path.is_file() && crate::ebook::supported(&path) {
+            paths.insert(path);
+        }
+    }
+    if let Some(current) = settings.get("pdf_current").filter(|s| !s.is_empty()) {
+        let current: Value = serde_json::from_str(current).context("当前阅读位置损坏，未备份")?;
+        if let Some(path) = current["path"].as_str().filter(|s| !s.is_empty()) {
+            let path = PathBuf::from(path);
+            ensure!(crate::ebook::supported(&path), "当前阅读文件格式无效");
+            paths.insert(path);
+        }
+    }
+    for path in paths {
+        ensure!(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(valid_book_name),
+            "书库文件名不兼容，请重命名后备份：{}",
+            path.display()
+        );
+        state.books.push(BookAttachment {
+            name: path
+                .file_name()
+                .context("书籍名称无效")?
+                .to_string_lossy()
+                .into_owned(),
+            path: path.to_string_lossy().into_owned(),
+        });
+    }
+    // Only explicitly named UI/learning settings cross the backup boundary.
+    state.settings = settings
+        .iter()
+        .filter(|(key, value)| {
+            safe_setting(key) && !key.starts_with("chat_draft_") && !value.is_empty()
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let mut contexts = std::collections::BTreeSet::new();
+    for row in data
+        .get("ai_records")
+        .into_iter()
+        .flatten()
+        .filter(|row| text(row, "kind") == "chat")
+    {
+        if let Ok(payload) = serde_json::from_str::<Value>(&text(row, "payload")) {
+            if let Some(context) = payload["context"].as_str() {
+                contexts.insert(context.to_string());
+            }
+        }
+    }
+    for key in settings.keys() {
+        if let Some(context) = key.strip_prefix("chat_draft_").filter(|s| hash_id(s)) {
+            contexts.insert(context.to_string());
+        }
+    }
+    let mut add = |page: &str, path: &Path, cue: Option<i64>, material: &str| {
+        let context = material_context(page, material);
+        if contexts.contains(&context) {
+            state.contexts.push(ContextBinding {
+                context,
+                page: page.into(),
+                path: path.to_string_lossy().into_owned(),
+                cue,
+            });
+        }
+    };
+    for book in &state.books {
+        add("pdf", Path::new(&book.path), None, &book.path);
+    }
+    let mut video_paths = std::collections::BTreeSet::new();
+    if let Some(videos) = &state.videos {
+        for video in &videos.items {
+            video_paths.insert(video.path.clone());
+            if let Some(series) = &video.series {
+                for part in &series.parts {
+                    if let Some(path) = &part.path {
+                        video_paths.insert(path.clone());
+                    }
+                }
+            }
+        }
+    }
+    for video in video_paths {
+        check_cancel(cancel)?;
+        add("video", &video, None, &video.to_string_lossy());
+        let key = crate::video_subtitles::identity_key(&video)?;
+        if let Some(subtitle) = settings.get(&key).filter(|s| !s.is_empty()) {
+            let path = PathBuf::from(subtitle);
+            ensure!(path.starts_with(lib.root.join("media")), "字幕缓存路径无效");
+            let cues = crate::subtitles::parse(
+                &fs::read_to_string(&path).context("视频字幕缓存缺失，未备份")?,
+            );
+            state.subtitles.push(SubtitleAttachment {
+                video: video.to_string_lossy().into_owned(),
+                subtitle: subtitle.clone(),
+            });
+            if !contexts.is_empty() {
+                if let Ok(material) =
+                    crate::video_qa::build(&video, &cues, crate::video_qa::Scope::All, 0., "")
+                {
+                    add("video", &video, Some(-1), &material.key);
+                }
+            }
+            for index in 0..if contexts.is_empty() { 0 } else { cues.len() } {
+                check_cancel(cancel)?;
+                if let Ok(material) = crate::video_qa::build(
+                    &video,
+                    &cues,
+                    crate::video_qa::Scope::Cue(index),
+                    0.,
+                    "",
+                ) {
+                    add("video", &video, Some(index as i64), &material.key);
+                }
+            }
+        }
+    }
+    // Preserve drafts for known stable contexts and reconstructible path contexts.
+    for (key, value) in settings {
+        if key.starts_with("chat_draft_") && safe_setting(key) && !value.is_empty() {
+            state.settings.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(state)
+}
+fn map_manifest(
+    manifest: &mut Manifest,
+    mut map: impl FnMut(&str) -> Result<String>,
+) -> Result<()> {
+    map_media(&mut manifest.data, &mut map)?;
+    if let Some(library) = &mut manifest.library {
+        library.map_paths(&mut map)?;
+    }
+    Ok(())
 }
 fn map_media(
     data: &mut BTreeMap<String, Vec<Row>>,
@@ -74,62 +373,141 @@ fn map_media(
     Ok(())
 }
 pub fn collect(lib: &Library) -> Result<(Manifest, BTreeMap<String, PathBuf>)> {
-    let mut data = lib.vault()?;
+    collect_cancellable(lib, &crate::process::cancel_token())
+}
+fn collect_cancellable(
+    lib: &Library,
+    cancel: &Cancel,
+) -> Result<(Manifest, BTreeMap<String, PathBuf>)> {
+    check_cancel(cancel)?;
+    let (data, settings) = lib.vault_with_settings()?;
+    let library = library_state(lib, &data, &settings, cancel)?;
+    let mut manifest = Manifest {
+        version: 2,
+        id: id(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        data,
+        files: BTreeMap::new(),
+        library: Some(library),
+    };
     let mut paths = BTreeMap::new();
-    let mut refs: HashMap<String, String> = HashMap::new();
-    map_media(&mut data, |uri| {
-        if let Some(r) = refs.get(uri) {
-            return Ok(r.clone());
+    let mut refs: HashMap<PathBuf, String> = HashMap::new();
+    map_manifest(&mut manifest, |uri| {
+        check_cancel(cancel)?;
+        let path = local_path(uri)?.canonicalize().with_context(|| {
+            format!(
+                "备份附件缺失：{}",
+                Path::new(uri)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            )
+        })?;
+        if let Some(reference) = refs.get(&path) {
+            return Ok(reference.clone());
         }
-        let path = if uri.starts_with("file:") {
-            url::Url::parse(uri)?
-                .to_file_path()
-                .map_err(|_| anyhow::anyhow!("附件路径无效"))?
-        } else {
-            PathBuf::from(uri)
-        };
-        ensure!(
-            path.is_file(),
-            "备份附件缺失：{}",
-            path.file_name().unwrap_or_default().to_string_lossy()
-        );
+        ensure!(path.is_file(), "备份附件不是文件");
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("bin");
+        ensure!(valid_extension(ext), "备份附件扩展名无效");
         let reference = format!("media:{}", paths.len());
-        paths.insert(reference.clone(), path);
-        refs.insert(uri.to_string(), reference.clone());
+        paths.insert(reference.clone(), path.clone());
+        refs.insert(path, reference.clone());
         Ok(reference)
     })?;
-    Ok((
-        Manifest {
-            version: 2,
-            id: id(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            data,
-            files: BTreeMap::new(),
-        },
-        paths,
-    ))
+    Ok((manifest, paths))
+}
+fn attachment_stamps(
+    files: &BTreeMap<String, PathBuf>,
+) -> Result<BTreeMap<PathBuf, (u64, std::time::SystemTime)>> {
+    files
+        .values()
+        .map(|path| {
+            let meta = fs::metadata(path)?;
+            Ok((path.clone(), (meta.len(), meta.modified()?)))
+        })
+        .collect()
+}
+fn check_attachments(
+    stamps: &BTreeMap<PathBuf, (u64, std::time::SystemTime)>,
+    cancel: &Cancel,
+) -> Result<()> {
+    for (path, stamp) in stamps {
+        check_cancel(cancel)?;
+        let meta = fs::metadata(path)?;
+        ensure!(
+            (meta.len(), meta.modified()?) == *stamp,
+            "备份期间附件已改变，请重试：{}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        );
+    }
+    Ok(())
+}
+fn local_path(uri: &str) -> Result<PathBuf> {
+    if uri.starts_with("file:") {
+        url::Url::parse(uri)?
+            .to_file_path()
+            .map_err(|_| anyhow::anyhow!("附件路径无效"))
+    } else {
+        Ok(PathBuf::from(uri))
+    }
+}
+fn valid_extension(ext: &str) -> bool {
+    !ext.is_empty() && ext.len() <= 15 && ext.bytes().all(|c| c.is_ascii_alphanumeric())
+}
+fn copy_cancellable(mut input: impl Read, output: &mut impl Write, cancel: &Cancel) -> Result<u64> {
+    let mut bytes = [0; 128 * 1024];
+    let mut length = 0;
+    loop {
+        check_cancel(cancel)?;
+        let count = input.read(&mut bytes)?;
+        if count == 0 {
+            break;
+        }
+        length += count as u64;
+        ensure!(length < 8 * 1024 * 1024 * 1024, "附件过大");
+        output.write_all(&bytes[..count])?;
+    }
+    check_cancel(cancel)?;
+    Ok(length)
 }
 pub fn export_local(lib: &Library, path: &Path) -> Result<()> {
-    let (mut manifest, files) = collect(lib)?;
-    let temp = path.with_extension("part");
+    export_local_cancellable(lib, path, &crate::process::cancel_token())
+}
+pub fn export_local_cancellable(lib: &Library, path: &Path, cancel: &Cancel) -> Result<()> {
+    let (mut manifest, files) = collect_cancellable(lib, cancel)?;
+    let stamps = attachment_stamps(&files)?;
+    let temp = path.with_file_name(format!(
+        ".{}-{}.part",
+        path.file_name()
+            .context("备份文件名无效")?
+            .to_string_lossy(),
+        id()
+    ));
     let result = (|| {
-        let mut zip = zip::ZipWriter::new(fs::File::create(&temp)?);
+        let mut zip = zip::ZipWriter::new(
+            fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temp)?,
+        );
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
         for (reference, file) in files {
-            let ext = file.extension().and_then(|s| s.to_str()).unwrap_or("bin");
+            check_cancel(cancel)?;
             let name = format!(
                 "media/{}.{}",
-                reference.strip_prefix("media:").unwrap(),
-                ext
+                reference.trim_start_matches("media:"),
+                file.extension().and_then(|s| s.to_str()).unwrap_or("bin")
             );
             manifest.files.insert(reference, name.clone());
             zip.start_file(name, options)?;
-            std::io::copy(&mut fs::File::open(file)?, &mut zip)?;
+            copy_cancellable(fs::File::open(file)?, &mut zip, cancel)?;
         }
+        check_cancel(cancel)?;
         zip.start_file("manifest.json", options)?;
         zip.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
         zip.finish()?.sync_all()?;
+        check_attachments(&stamps, cancel)?;
         fs::rename(&temp, path)?;
         Ok(())
     })();
@@ -140,7 +518,9 @@ pub fn export_local(lib: &Library, path: &Path) -> Result<()> {
 }
 pub fn validate(manifest: &mut Manifest) -> Result<()> {
     ensure!(
-        manifest.version == 2 && regex::Regex::new(r"^[a-z0-9-]+$")?.is_match(&manifest.id),
+        manifest.version == 2
+            && manifest.id.len() <= 128
+            && regex::Regex::new(r"^[a-z0-9-]+$")?.is_match(&manifest.id),
         "备份版本或标识错误"
     );
     manifest.data.entry("sentence_cards".into()).or_default();
@@ -156,45 +536,247 @@ pub fn validate(manifest: &mut Manifest) -> Result<()> {
             );
         }
     }
+    if let Some(library) = &manifest.library {
+        ensure!(
+            library.books.len() <= 10000
+                && library.subtitles.len() <= 10000
+                && library.contexts.len() <= 100000
+                && library.settings.len() <= 500000,
+            "备份书库或设置过大"
+        );
+        for (key, value) in &library.settings {
+            ensure!(
+                safe_setting(key) && value.len() <= 4 * 1024 * 1024,
+                "备份包含不允许的设置：{key}"
+            );
+        }
+        for book in &library.books {
+            ensure!(valid_book_name(&book.name), "备份书籍名称无效");
+        }
+        for binding in &library.contexts {
+            ensure!(
+                hash_id(&binding.context)
+                    && ["pdf", "video"].contains(&binding.page.as_str())
+                    && (binding.page == "video" || binding.cue.is_none())
+                    && binding.cue.is_none_or(|i| (-1..10000).contains(&i)),
+                "备份材料会话无效"
+            );
+        }
+    }
+    let references = regex::Regex::new(r"^media:[0-9]+$")?;
+    let files = &manifest.files;
+    let mut check = manifest.clone();
+    map_manifest(&mut check, |reference| {
+        ensure!(
+            references.is_match(reference) && files.contains_key(reference),
+            "备份缺少或包含无效附件引用"
+        );
+        Ok(std::env::temp_dir()
+            .join(reference.replace(':', "-"))
+            .to_string_lossy()
+            .into_owned())
+    })?;
+    if let Some(videos) = check.library.as_ref().and_then(|s| s.videos.as_ref()) {
+        videos.validate()?;
+    }
     Ok(())
 }
 pub fn import_local(lib: &Library, path: &Path) -> Result<usize> {
+    import_local_cancellable(lib, path, &crate::process::cancel_token())
+}
+pub fn import_local_cancellable(lib: &Library, path: &Path, cancel: &Cancel) -> Result<usize> {
+    check_cancel(cancel)?;
     let mut zip = zip::ZipArchive::new(fs::File::open(path)?)?;
     let mut raw = String::new();
-    zip.by_name("manifest.json")?
-        .take(64 * 1024 * 1024)
-        .read_to_string(&mut raw)?;
+    let entry = zip.by_name("manifest.json")?;
+    ensure!(entry.size() <= 64 * 1024 * 1024, "备份清单过大");
+    entry.take(64 * 1024 * 1024 + 1).read_to_string(&mut raw)?;
+    check_cancel(cancel)?;
     let mut manifest: Manifest = serde_json::from_str(&raw)?;
     validate(&mut manifest)?;
     let stage = lib.root.join("media").join(format!("restored-{}", id()));
     fs::create_dir_all(&stage)?;
     let result = (|| {
         let mut mapped: HashMap<String, String> = HashMap::new();
-        map_media(&mut manifest.data, |reference| {
+        let files = manifest.files.clone();
+        map_manifest(&mut manifest, |reference| {
+            check_cancel(cancel)?;
             if let Some(path) = mapped.get(reference) {
                 return Ok(path.clone());
             }
-            let key = manifest.files.get(reference).context("备份缺少附件引用")?;
+            let key = files.get(reference).context("备份缺少附件引用")?;
             ensure!(
                 regex::Regex::new(r"^media/[0-9]+\.[A-Za-z0-9]{1,15}$")?.is_match(key),
                 "备份附件路径无效"
             );
             let target = stage.join(Path::new(key).file_name().context("附件名称无效")?);
-            let mut entry = zip.by_name(key)?;
-            ensure!(entry.size() < 8 * 1024 * 1024 * 1024, "附件过大");
+            let entry = zip.by_name(key)?;
+            let size = entry.size();
+            ensure!(size < 8 * 1024 * 1024 * 1024, "附件过大");
             let mut output = fs::File::create(&target)?;
-            std::io::copy(&mut entry, &mut output)?;
+            ensure!(
+                copy_cancellable(entry, &mut output, cancel)? == size,
+                "备份附件不完整"
+            );
             output.sync_all()?;
-            let path = target.to_string_lossy().to_string();
-            mapped.insert(reference.to_string(), path.clone());
+            let path = target.to_string_lossy().into_owned();
+            mapped.insert(reference.into(), path.clone());
             Ok(path)
         })?;
-        merge(lib, &manifest.data)
+        finish_restore(lib, &mut manifest, &stage, cancel)
     })();
     if result.is_err() {
-        let _ = fs::remove_dir_all(stage);
+        let _ = fs::remove_dir_all(&stage);
     }
     result
+}
+fn file_hash(path: &Path, cancel: &Cancel) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut bytes = [0; 128 * 1024];
+    loop {
+        check_cancel(cancel)?;
+        let n = file.read(&mut bytes)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&bytes[..n]);
+    }
+    Ok(hex::encode(hash.finalize()))
+}
+fn finish_restore(
+    lib: &Library,
+    manifest: &mut Manifest,
+    stage: &Path,
+    cancel: &Cancel,
+) -> Result<usize> {
+    let mut created = vec![];
+    let result = (|| {
+        let mut relocated: HashMap<String, String> = HashMap::new();
+        let mut existing = BTreeMap::new();
+        if let Some(library) = &mut manifest.library {
+            for entry in fs::read_dir(lib.root.join("pdf"))? {
+                let path = entry?.path();
+                if path.is_file() && crate::ebook::supported(&path) {
+                    existing.insert(
+                        (
+                            file_hash(&path, cancel)?,
+                            path.extension()
+                                .map(|s| s.to_string_lossy().to_ascii_lowercase())
+                                .unwrap_or_default(),
+                        ),
+                        path,
+                    );
+                }
+            }
+            for book in &mut library.books {
+                check_cancel(cancel)?;
+                if let Some(path) = relocated.get(&book.path) {
+                    book.path = path.clone();
+                    continue;
+                }
+                let original = PathBuf::from(&book.path);
+                let hash = file_hash(&original, cancel)?;
+                let ext = Path::new(&book.name)
+                    .extension()
+                    .context("书籍扩展名无效")?
+                    .to_string_lossy()
+                    .to_ascii_lowercase();
+                ensure!(
+                    original
+                        .extension()
+                        .is_some_and(|s| s.to_string_lossy().eq_ignore_ascii_case(&ext)),
+                    "书籍附件格式不一致"
+                );
+                let target = if let Some(path) = existing.get(&(hash.clone(), ext.clone())) {
+                    path.clone()
+                } else {
+                    let candidate = lib.root.join("pdf").join(&book.name);
+                    let target = if candidate.exists() {
+                        let mut stem = Path::new(&book.name)
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned();
+                        while stem.len() > 180 {
+                            stem.pop();
+                        }
+                        lib.root
+                            .join("pdf")
+                            .join(format!("{}-{}.{}", stem, &hash[..32], ext))
+                    } else {
+                        candidate
+                    };
+                    if target.exists() {
+                        ensure!(file_hash(&target, cancel)? == hash, "书库恢复目标名称冲突");
+                    } else {
+                        let mut output = fs::OpenOptions::new()
+                            .create_new(true)
+                            .write(true)
+                            .open(&target)?;
+                        created.push(target.clone());
+                        copy_cancellable(fs::File::open(&original)?, &mut output, cancel)?;
+                        output.sync_all()?;
+                    }
+                    existing.insert((hash, ext), target.clone());
+                    target
+                };
+                relocated.insert(book.path.clone(), target.to_string_lossy().into_owned());
+            }
+        }
+        map_manifest(manifest, |path| {
+            Ok(relocated.get(path).cloned().unwrap_or_else(|| path.into()))
+        })?;
+        merge_snapshot(lib, &manifest.data, manifest.library.as_ref(), cancel)
+    })();
+    if result.is_err() {
+        for path in created {
+            let _ = fs::remove_file(path);
+        }
+    }
+    if result.is_ok() {
+        prune_stage(lib, stage);
+    }
+    result
+}
+fn references(value: &Value, path: &str, depth: u8) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    match value {
+        Value::String(value) => {
+            value == path
+                || serde_json::from_str::<Value>(value)
+                    .is_ok_and(|v| references(&v, path, depth + 1))
+        }
+        Value::Array(values) => values.iter().any(|v| references(v, path, depth + 1)),
+        Value::Object(values) => values.values().any(|v| references(v, path, depth + 1)),
+        _ => false,
+    }
+}
+fn prune_stage(lib: &Library, stage: &Path) {
+    // Cleanup after the atomic DB commit is conservative: a failed read keeps files.
+    let Ok((data, settings)) = lib.vault_with_settings() else {
+        return;
+    };
+    let Ok(data) = serde_json::to_value(data) else {
+        return;
+    };
+    let Ok(settings) = serde_json::to_value(settings) else {
+        return;
+    };
+    if let Ok(entries) = fs::read_dir(stage) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let value = path.to_string_lossy();
+            if path.is_file() && !references(&data, &value, 0) && !references(&settings, &value, 0)
+            {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+    let _ = fs::remove_dir(stage);
 }
 pub fn merge(lib: &Library, data: &BTreeMap<String, Vec<Row>>) -> Result<usize> {
     merge_cancellable(lib, data, &crate::process::cancel_token())
@@ -202,6 +784,14 @@ pub fn merge(lib: &Library, data: &BTreeMap<String, Vec<Row>>) -> Result<usize> 
 fn merge_cancellable(
     lib: &Library,
     data: &BTreeMap<String, Vec<Row>>,
+    cancel: &Cancel,
+) -> Result<usize> {
+    merge_snapshot(lib, data, None, cancel)
+}
+fn merge_snapshot(
+    lib: &Library,
+    original_data: &BTreeMap<String, Vec<Row>>,
+    library: Option<&LibraryState>,
     cancel: &Cancel,
 ) -> Result<usize> {
     check_cancel(cancel)?;
@@ -228,6 +818,12 @@ fn merge_cancellable(
     };
     check_cancel(cancel)?;
     tx.busy_timeout(Duration::from_secs(10))?;
+    let mut data = original_data.clone();
+    let mut library = library.cloned();
+    if let Some(library) = &mut library {
+        prepare_library(&tx, &mut data, library, cancel)?;
+    }
+    let data = &data;
     let mut mapping: HashMap<(String, String), String> = HashMap::new();
     let mut imported = 0;
     for (table, _) in TABLES {
@@ -288,6 +884,11 @@ fn merge_cancellable(
                     .ok();
             }
             let key = if let Some(existing) = existing {
+                if *table == "ai_records" && text(&row, "kind") == "chat" {
+                    if let Some(library) = &library {
+                        repair_chat_context(&tx, &existing, &text(&row, "payload"), library)?;
+                    }
+                }
                 existing
             } else {
                 if *table == "words" {
@@ -341,10 +942,324 @@ fn merge_cancellable(
         }
         insert(&tx, "discover_favorites", &row, true)?;
     }
+    if let Some(library) = &mut library {
+        merge_library(&tx, library, &mapping, cancel)?;
+    }
     // Once commit starts, return its actual result; a late cancel cannot undo it.
     check_cancel(cancel)?;
     tx.commit()?;
     Ok(imported)
+}
+fn repair_chat_context(
+    db: &rusqlite::Connection,
+    id: &str,
+    incoming: &str,
+    library: &LibraryState,
+) -> Result<()> {
+    use rusqlite::OptionalExtension;
+    let Ok(imported) = serde_json::from_str::<Value>(incoming) else {
+        return Ok(());
+    };
+    let Some(context) = imported["context"].as_str().filter(|context| {
+        library
+            .contexts
+            .iter()
+            .any(|binding| binding.context == *context)
+    }) else {
+        return Ok(());
+    };
+    let previous: Option<String> = db
+        .query_row(
+            "SELECT payload FROM ai_records WHERE id=? AND kind='chat'",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(mut previous) = previous.and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    else {
+        return Ok(());
+    };
+    if previous["context"] != context {
+        if let Some(old) = previous["context"].as_str() {
+            let draft = setting_in(db, &format!("chat_draft_{old}"))?;
+            if !draft.is_empty() {
+                preserve_setting(db, &format!("chat_draft_{context}"), &draft)?;
+            }
+        }
+        previous["context"] = json!(context);
+        db.execute(
+            "UPDATE ai_records SET payload=? WHERE id=?",
+            rusqlite::params![previous.to_string(), id],
+        )?;
+    }
+    Ok(())
+}
+fn setting_in(db: &rusqlite::Connection, key: &str) -> Result<String> {
+    use rusqlite::OptionalExtension;
+    Ok(db
+        .query_row("SELECT value FROM app_settings WHERE key=?", [key], |row| {
+            row.get(0)
+        })
+        .optional()?
+        .unwrap_or_default())
+}
+fn usable_file(path: &Path) -> bool {
+    path.is_file() && fs::metadata(path).is_ok_and(|meta| meta.len() > 0)
+}
+fn preserve_setting(db: &rusqlite::Connection, key: &str, value: &str) -> Result<()> {
+    let existing = setting_in(db, key)?;
+    let usable = if existing.is_empty() {
+        false
+    } else if ["pdf_current", "last_video_position"].contains(&key) {
+        serde_json::from_str::<Value>(&existing)
+            .ok()
+            .and_then(|value| value["path"].as_str().map(PathBuf::from))
+            .is_some_and(|path| usable_file(&path))
+    } else if key.starts_with("video_subtitles_") {
+        usable_file(Path::new(&existing))
+    } else {
+        true
+    };
+    if !usable {
+        db.execute("INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",rusqlite::params![key,value])?;
+    }
+    Ok(())
+}
+fn prepare_library(
+    db: &rusqlite::Connection,
+    data: &mut BTreeMap<String, Vec<Row>>,
+    library: &mut LibraryState,
+    cancel: &Cancel,
+) -> Result<()> {
+    let mut mapped = HashMap::<String, String>::new();
+    if let Some(imported) = &library.videos {
+        let current = setting_in(db, "video_favorites_v1")?;
+        let mut current: crate::video_library::Collection = if current.is_empty() {
+            crate::video_library::Collection::default()
+        } else {
+            serde_json::from_str(&current).context("当前视频收藏损坏，未恢复")?
+        };
+        current.validate()?;
+        let initially_empty = current.items.is_empty();
+        let mut repaired = HashMap::<String, String>::new();
+        for video in &imported.items {
+            check_cancel(cancel)?;
+            let old = current.items.iter_mut().find(|old| {
+                old.id == video.id
+                    || video.series.as_ref().is_some_and(|series| {
+                        old.series.as_ref().is_some_and(|s| s.base == series.base)
+                    })
+            });
+            if let Some(old) = old {
+                if let (Some(existing), Some(source)) = (&mut old.series, &video.series) {
+                    for part in &source.parts {
+                        if let Some(path) = &part.path {
+                            if let Some(target) =
+                                existing.parts.iter_mut().find(|p| p.number == part.number)
+                            {
+                                if let Some(target_path) = &target.path {
+                                    if usable_file(target_path) {
+                                        mapped.insert(
+                                            path.to_string_lossy().into_owned(),
+                                            target_path.to_string_lossy().into_owned(),
+                                        );
+                                    } else {
+                                        repaired.insert(
+                                            target_path.to_string_lossy().into_owned(),
+                                            path.to_string_lossy().into_owned(),
+                                        );
+                                        target.path = Some(path.clone());
+                                    }
+                                } else {
+                                    target.path = Some(path.clone());
+                                }
+                            } else {
+                                existing.parts.push(part.clone());
+                            }
+                        } else if !existing
+                            .parts
+                            .iter()
+                            .any(|existing| existing.number == part.number)
+                        {
+                            existing.parts.push(part.clone());
+                        }
+                    }
+                    if !usable_file(&old.path) {
+                        old.path = PathBuf::from(
+                            repaired
+                                .get(&old.path.to_string_lossy().into_owned())
+                                .cloned()
+                                .unwrap_or_else(|| video.path.to_string_lossy().into_owned()),
+                        );
+                    }
+                    existing.parts.sort_by_key(|part| part.number);
+                    if let Some(target) = source
+                        .parts
+                        .iter()
+                        .find(|part| part.path.as_ref() == Some(&video.path))
+                        .and_then(|source| {
+                            existing
+                                .parts
+                                .iter()
+                                .find(|part| part.number == source.number)
+                        })
+                        .and_then(|part| part.path.as_ref())
+                    {
+                        mapped.insert(
+                            video.path.to_string_lossy().into_owned(),
+                            target.to_string_lossy().into_owned(),
+                        );
+                    }
+                } else if usable_file(&old.path) {
+                    mapped.insert(
+                        video.path.to_string_lossy().into_owned(),
+                        old.path.to_string_lossy().into_owned(),
+                    );
+                } else {
+                    repaired.insert(
+                        old.path.to_string_lossy().into_owned(),
+                        video.path.to_string_lossy().into_owned(),
+                    );
+                    old.path = video.path.clone();
+                }
+            } else {
+                current.items.push(video.clone());
+            }
+        }
+        // A deliberate deselection in an existing library stays deselected.
+        if initially_empty {
+            current.selected = imported.selected.clone();
+        }
+        let value = setting_in(db, "last_video_position")?;
+        if let Ok(mut position) = serde_json::from_str::<Value>(&value) {
+            if let Some(path) = position["path"].as_str().and_then(|old| repaired.get(old)) {
+                position["path"] = json!(path);
+                db.execute(
+                    "UPDATE app_settings SET value=? WHERE key='last_video_position'",
+                    [position.to_string()],
+                )?;
+            }
+        }
+        current.validate()?;
+        library.videos = Some(current);
+    }
+    library.map_paths(&mut |path| Ok(mapped.get(path).cloned().unwrap_or_else(|| path.into())))?;
+    map_media(data, |path| {
+        Ok(mapped.get(path).cloned().unwrap_or_else(|| path.into()))
+    })?;
+    let mut contexts = HashMap::new();
+    for binding in &mut library.contexts {
+        check_cancel(cancel)?;
+        let material = if let Some(cue) = binding.cue {
+            let subtitle = library
+                .subtitles
+                .iter()
+                .find(|s| s.video == binding.path)
+                .context("备份材料缺少视频字幕")?;
+            let cues = crate::subtitles::parse(&fs::read_to_string(&subtitle.subtitle)?);
+            crate::video_qa::build(
+                Path::new(&binding.path),
+                &cues,
+                if cue < 0 {
+                    crate::video_qa::Scope::All
+                } else {
+                    crate::video_qa::Scope::Cue(cue as usize)
+                },
+                0.,
+                "",
+            )?
+            .key
+        } else {
+            binding.path.clone()
+        };
+        let context = material_context(&binding.page, &material);
+        contexts.insert(binding.context.clone(), context.clone());
+        binding.context = context;
+    }
+    for row in data
+        .get_mut("ai_records")
+        .into_iter()
+        .flatten()
+        .filter(|row| text(row, "kind") == "chat")
+    {
+        if let Ok(mut payload) = serde_json::from_str::<Value>(&text(row, "payload")) {
+            if let Some(context) = payload["context"]
+                .as_str()
+                .and_then(|old| contexts.get(old))
+            {
+                payload["context"] = json!(context);
+                row.insert("payload".into(), json!(payload.to_string()));
+            }
+        }
+    }
+    let mut drafts = vec![];
+    library.settings.retain(|key, value| {
+        if let Some(context) = key
+            .strip_prefix("chat_draft_")
+            .and_then(|old| contexts.get(old))
+        {
+            drafts.push((format!("chat_draft_{context}"), value.clone()));
+            false
+        } else {
+            true
+        }
+    });
+    library.settings.extend(drafts);
+    Ok(())
+}
+fn merge_library(
+    db: &rusqlite::Connection,
+    library: &mut LibraryState,
+    mapping: &HashMap<(String, String), String>,
+    cancel: &Cancel,
+) -> Result<()> {
+    if let Some(videos) = &library.videos {
+        videos.validate()?;
+        db.execute("INSERT INTO app_settings(key,value) VALUES('video_favorites_v1',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(videos)?])?;
+        if let Some(series) = videos.active().and_then(|v| v.series.as_ref()) {
+            preserve_setting(db, "bilibili_series", &serde_json::to_string(series)?)?;
+        }
+    }
+    for subtitle in &library.subtitles {
+        check_cancel(cancel)?;
+        let key = crate::video_subtitles::identity_key(Path::new(&subtitle.video))?;
+        preserve_setting(db, &key, &subtitle.subtitle)?;
+    }
+    for (key, value) in &library.settings {
+        check_cancel(cancel)?;
+        ensure!(safe_setting(key), "备份包含不允许的设置");
+        let (mut key, mut value) = (key.clone(), value.clone());
+        if let Some(id) = key.strip_prefix("key_points_") {
+            if let Some(mapped) = mapping.get(&("audio".into(), id.into())) {
+                key = format!("key_points_{mapped}");
+            }
+        }
+        if ["library_group", "last_listening_audio"].contains(&key.as_str()) {
+            if let Some(mapped) = mapping.get(&(
+                if key == "library_group" {
+                    "practice"
+                } else {
+                    "audio"
+                }
+                .into(),
+                value.clone(),
+            )) {
+                value = mapped.clone();
+            }
+        }
+        if key == "last_listening_position" {
+            let mut position: Value = serde_json::from_str(&value)?;
+            if let Some(id) = position["id"]
+                .as_str()
+                .and_then(|id| mapping.get(&("audio".into(), id.into())))
+            {
+                position["id"] = json!(id);
+                value = position.to_string();
+            }
+        }
+        preserve_setting(db, &key, &value)?;
+    }
+    Ok(())
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -731,7 +1646,8 @@ impl Storage {
     }
     pub fn upload(&self, lib: &Library, cancel: &crate::process::Cancel) -> Result<String> {
         check_cancel(cancel)?;
-        let (mut manifest, files) = collect(lib)?;
+        let (mut manifest, files) = collect_cancellable(lib, cancel)?;
+        let stamps = attachment_stamps(&files)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -755,6 +1671,7 @@ impl Storage {
             ))?;
             manifest.files.insert(reference, key);
         }
+        check_attachments(&stamps, cancel)?;
         let key = format!("{}/snapshots/{}.json", self.config.prefix, manifest.id);
         let bytes = serde_json::to_vec(&manifest)?;
         check_cancel(cancel)?;
@@ -803,16 +1720,18 @@ impl Storage {
         let root = lib.root.join("media").join(format!("restored-{}", id()));
         fs::create_dir_all(&root)?;
         let mut paths: HashMap<String, String> = HashMap::new();
+        let files = manifest.files.clone();
+        let remote_prefix = format!("{}/media/{}/", self.config.prefix, manifest.id);
         let result = (|| {
-            map_media(&mut manifest.data, |reference| {
+            map_manifest(&mut manifest, |reference| {
                 check_cancel(cancel)?;
                 if let Some(p) = paths.get(reference) {
                     return Ok(p.clone());
                 }
-                let key = manifest.files.get(reference).context("备份缺少附件")?;
-                let prefix = format!("{}/media/{}/", self.config.prefix, manifest.id);
+                let key = files.get(reference).context("备份缺少附件")?;
+                let prefix = remote_prefix.as_str();
                 ensure!(
-                    key.starts_with(&prefix)
+                    key.starts_with(prefix)
                         && regex::Regex::new(r"^[0-9]+\.[A-Za-z0-9]{1,15}$")?
                             .is_match(&key[prefix.len()..]),
                     "远端附件路径无效"
@@ -841,7 +1760,7 @@ impl Storage {
                 paths.insert(reference.into(), path.clone());
                 Ok(path)
             })?;
-            merge_cancellable(lib, &manifest.data, cancel)
+            finish_restore(lib, &mut manifest, &root, cancel)
         })();
         if result.is_err() {
             let _ = fs::remove_dir_all(root);
@@ -928,7 +1847,9 @@ pub fn import_sqlite(lib: &Library, path: &Path) -> Result<usize> {
         merge(lib, &data)
     })();
     if result.is_err() {
-        let _ = fs::remove_dir_all(stage);
+        let _ = fs::remove_dir_all(&stage);
+    } else {
+        prune_stage(lib, &stage);
     }
     result
 }

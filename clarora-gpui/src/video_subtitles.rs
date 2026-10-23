@@ -8,7 +8,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path, sync::atomic::Ordering, time::Duration};
-fn key(video: &Path) -> Result<String> {
+pub(crate) fn identity_key(video: &Path) -> Result<String> {
     let path = video.canonicalize()?;
     let meta = fs::metadata(&path)?;
     Ok(format!(
@@ -22,7 +22,7 @@ pub fn active(cues: &[Cue], time: f64) -> Option<usize> {
     cues.iter().rposition(|c| time >= c.start && time < c.end)
 }
 pub fn load(lib: &Library, video: &Path) -> Result<Vec<Cue>> {
-    let saved = lib.setting(&key(video)?)?;
+    let saved = lib.setting(&identity_key(video)?)?;
     if saved.is_empty() {
         return Ok(vec![]);
     }
@@ -44,7 +44,7 @@ pub fn save(lib: &Library, video: &Path, cues: &[Cue], cancel: &Cancel) -> Resul
                 && !c.text.trim().is_empty()),
         "没有有效的带时间轴字幕"
     );
-    let key = key(video)?;
+    let key = identity_key(video)?;
     let target = lib.root.join("media").join(format!("video-{}.srt", id()));
     fs::write(&target, subtitles::srt(cues))?;
     let result = (|| {
@@ -67,7 +67,7 @@ pub fn generate_with_progress(
     mut progress: impl FnMut(&str),
 ) -> Result<(String, Vec<Cue>)> {
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
-    let identity = key(video)?;
+    let identity = identity_key(video)?;
     let audio = lib
         .root
         .join("media")
@@ -99,7 +99,7 @@ pub fn generate_with_progress(
         let mut cues = ai::transcribe(lib, &audio, cancel)?;
         cues.sort_by(|a, b| a.start.total_cmp(&b.start));
         ensure!(
-            key(video)? == identity,
+            identity_key(video)? == identity,
             "转写期间视频文件已改变，请重新生成"
         );
         progress("3/3 · 正在保存字幕");
@@ -165,7 +165,7 @@ pub fn translate_with_progress(
 ) -> Result<(String, Vec<Cue>)> {
     use rusqlite::OptionalExtension;
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
-    let identity = key(video)?;
+    let identity = identity_key(video)?;
     let revision = lib.setting(&identity)?;
     let source = english_source(cues)?;
     let mut translated = Vec::with_capacity(source.len());
@@ -174,7 +174,7 @@ pub fn translate_with_progress(
     while offset < source.len() {
         ensure!(!cancel.load(Ordering::SeqCst), "已取消");
         ensure!(
-            key(video)? == identity && lib.setting(&identity)? == revision,
+            identity_key(video)? == identity && lib.setting(&identity)? == revision,
             "视频或英文字幕已改变，请重新生成中文"
         );
         let mut end = offset;
@@ -201,7 +201,10 @@ pub fn translate_with_progress(
         progress(&format!("正在翻译字幕 · {offset}/{} 段", source.len()));
     }
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
-    ensure!(key(video)? == identity, "视频文件已改变，请重新生成中文");
+    ensure!(
+        identity_key(video)? == identity,
+        "视频文件已改变，请重新生成中文"
+    );
     progress("正在保存双语字幕");
     let path = lib.root.join("media").join(format!("video-{}.srt", id()));
     fs::write(&path, subtitles::srt(&translated))?;

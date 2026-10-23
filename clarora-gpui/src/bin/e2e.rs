@@ -7,6 +7,8 @@ mod asr_pauses;
 mod audio_library;
 #[path = "support/backup_cancel.rs"]
 mod backup_cancel;
+#[path = "support/backup_library.rs"]
+mod backup_library;
 #[path = "support/bilibili_parts.rs"]
 mod bilibili_parts;
 #[path = "support/blind_listening.rs"]
@@ -475,6 +477,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     );
     results.push(json!({"workflow":"只读 RN 快照导入与跨表恢复失败事务回滚","passed":true}));
     video_library::run(&lib, &video, results)?;
+    backup_library::run(&lib, &video, results)?;
     credential_mode::run(&lib, results)?;
     audio_library::run(&lib, &video, results)?;
     blind_listening::run(&lib, &video, results)?;
@@ -858,6 +861,7 @@ fn main() -> Result<()> {
         Some("--transcript-only") => "transcript-only",
         Some("--state-only") => "state-only",
         Some("--video-repeat-only") => "video-repeat-only",
+        Some("--backup-library-only") => "backup-library-only",
         _ => "full",
     };
     let result = if mode == "http-only" {
@@ -866,6 +870,16 @@ fn main() -> Result<()> {
             &lib,
             &PathBuf::from(args.get(3).context("缺少媒体夹具")?),
             &PathBuf::from(args.get(4).context("缺少图片夹具")?),
+            &mut results,
+        )
+    } else if mode == "backup-library-only" {
+        let lib = Library::open(output.join(format!("backup-library-{}", data::id())))?;
+        backup_library::run(
+            &lib,
+            &PathBuf::from(
+                args.get(3)
+                    .context("缺少媒体夹具：--backup-library-only <video.mp4>")?,
+            ),
             &mut results,
         )
     } else if mode == "transcript-only" {

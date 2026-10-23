@@ -133,32 +133,7 @@ impl Library {
     }
     pub fn rows(&self, query: &str, values: &[SqlValue]) -> Result<Vec<Row>> {
         let db = self.db()?;
-        let mut stmt = db.prepare(query)?;
-        let cols = stmt
-            .column_names()
-            .iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>();
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(values), |r| {
-                let mut row = Row::new();
-                for (i, col) in cols.iter().enumerate() {
-                    let v: SqlValue = r.get(i)?;
-                    row.insert(
-                        col.clone(),
-                        match v {
-                            SqlValue::Null => Value::Null,
-                            SqlValue::Integer(n) => json!(n),
-                            SqlValue::Real(n) => json!(n),
-                            SqlValue::Text(s) => json!(s),
-                            SqlValue::Blob(_) => Value::Null,
-                        },
-                    );
-                }
-                Ok(row)
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        query_rows(&db, query, values)
     }
     pub fn list(&self, table: &str) -> Result<Vec<Row>> {
         ensure!(TABLES.iter().any(|(t, _)| *t == table), "无效资料表");
@@ -529,11 +504,59 @@ impl Library {
         Ok(())
     }
     pub fn vault(&self) -> Result<BTreeMap<String, Vec<Row>>> {
-        TABLES
-            .iter()
-            .map(|(t, _)| Ok((t.to_string(), self.list(t)?)))
-            .collect()
+        Ok(self.vault_with_settings()?.0)
     }
+    /// Tables and setting metadata belong to one WAL read snapshot. Callers must
+    /// explicitly whitelist any settings they publish; credentials are never tables here.
+    pub(crate) fn vault_with_settings(
+        &self,
+    ) -> Result<(BTreeMap<String, Vec<Row>>, BTreeMap<String, String>)> {
+        let mut db = self.db()?;
+        let tx = db.transaction()?;
+        let data = TABLES
+            .iter()
+            .map(|(table, _)| {
+                Ok((
+                    table.to_string(),
+                    query_rows(&tx, &format!("SELECT * FROM {table}"), &[])?,
+                ))
+            })
+            .collect::<Result<_>>()?;
+        let settings = query_rows(&tx, "SELECT key,value FROM app_settings", &[])?
+            .into_iter()
+            .map(|row| (text(&row, "key"), text(&row, "value")))
+            .collect();
+        tx.commit()?;
+        Ok((data, settings))
+    }
+}
+fn query_rows(db: &Connection, query: &str, values: &[SqlValue]) -> Result<Vec<Row>> {
+    let mut stmt = db.prepare(query)?;
+    let cols = stmt
+        .column_names()
+        .iter()
+        .map(|x| x.to_string())
+        .collect::<Vec<_>>();
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(values), |r| {
+            let mut row = Row::new();
+            for (i, col) in cols.iter().enumerate() {
+                let v: SqlValue = r.get(i)?;
+                row.insert(
+                    col.clone(),
+                    match v {
+                        SqlValue::Null => Value::Null,
+                        SqlValue::Integer(n) => json!(n),
+                        SqlValue::Real(n) => json!(n),
+                        SqlValue::Text(s) => json!(s),
+                        SqlValue::Blob(_) => Value::Null,
+                    },
+                );
+            }
+            Ok(row)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 pub fn insert(db: &Connection, table: &str, row: &Row, ignore: bool) -> Result<()> {
     let allowed = TABLES

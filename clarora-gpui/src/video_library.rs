@@ -159,7 +159,7 @@ impl Collection {
         series.parts.get_mut(index).context("后台分P已不存在")?.path = Some(path.to_path_buf());
         Ok(Some(series.base.clone()))
     }
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             self.version == 1 && self.items.len() <= 10000,
             "视频收藏版本或条目数量无效"
