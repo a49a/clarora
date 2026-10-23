@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(clarora_gpui_asr LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
+if(WIN32)
+  # Both helpers include Windows headers through their native dependencies.
+  add_compile_definitions(NOMINMAX)
+endif()
 # Reuse the project's public native ASR adapter, without any React Native bridge.
 set(ASR_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../../clarora-app/windows/clarora-asr")
 add_executable(clarora-asr asr_main.cpp "${ASR_SOURCE}/clarora_asr.cpp")
