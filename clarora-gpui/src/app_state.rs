@@ -24,6 +24,7 @@ pub(super) struct AudioState {
     pub(super) clip_mode: bool,
     pub(super) tools_open: bool,
     pub(super) show_current: bool,
+    pub(super) current_scroll: ScrollHandle,
     pub(super) font_size: u8,
     pub(super) key_points: Vec<ai::KeyPoint>,
 }
@@ -52,6 +53,7 @@ impl AudioState {
             clip_mode: false,
             tools_open: false,
             show_current: true,
+            current_scroll: ScrollHandle::new(),
             font_size: 18,
             key_points: vec![],
         }

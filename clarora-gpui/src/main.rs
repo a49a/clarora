@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod app_state;
 mod assistant_ui;
+mod audio_current_ui;
 mod design;
 mod focus_ui;
 mod library_ui;
@@ -881,6 +882,7 @@ impl AppView {
             self.invalidate_blind();
             self.audio.scroll.reset(self.audio.cues.len());
             self.audio.active = None;
+            self.audio.current_scroll.set_offset(Point::default());
         }
         self.refresh_view_data();
     }
@@ -981,6 +983,7 @@ impl AppView {
             let active = video_subtitles::active(&self.audio.cues, self.media.snapshot.position);
             if active != self.audio.active {
                 self.audio.active = active;
+                self.audio.current_scroll.set_offset(Point::default());
                 if self.audio.follow {
                     if let Some(i) = active {
                         self.audio.scroll.scroll_to_reveal_item(i);
@@ -1621,6 +1624,7 @@ impl AppView {
         self.invalidate_blind();
         self.audio.scroll.reset(self.audio.cues.len());
         self.audio.active = None;
+        self.audio.current_scroll.set_offset(Point::default());
         self.audio.clip_mode = false;
         self.audio.tools_open = false;
         if self.media.repeat == 2 {
@@ -6023,17 +6027,10 @@ impl AppView {
                 .flex_col()
                 .overflow_hidden()
                 .when(
-                    !self.audio.blind.enabled && self.audio.show_current && active.is_some(),
-                    |v| {
-                        v.child(
-                            div()
-                                .px_5()
-                                .py_3()
-                                .bg(cx.theme().accent)
-                                .text_size(px(self.audio.font_size as f32))
-                                .child(self.audio.cues[active.unwrap()].text.clone()),
-                        )
-                    },
+                    !self.audio.blind.enabled
+                        && self.audio.show_current
+                        && !self.audio.cues.is_empty(),
+                    |v| v.child(self.audio_current_cue(active, window, cx)),
                 )
                 .when(self.audio.cues.is_empty(), |v| {
                     v.child(
