@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "library_search_paths": [
+    "/absolute/path/to/native-runtime/lib",
+    "/opt/homebrew/lib"
+  ],
+  "components": {
+    "libmpv": "/opt/homebrew/lib/libmpv.2.dylib",
+    "ffmpeg": "/opt/homebrew/bin/ffmpeg",
+    "ffprobe": "/opt/homebrew/bin/ffprobe",
+    "yt_dlp": "/absolute/path/to/checksum-verified/yt-dlp_macos",
+    "pdfium": "/absolute/path/to/checksum-verified/libpdfium.dylib",
+    "asr": "/absolute/path/to/just-built/clarora-asr",
+    "tts": "/absolute/path/to/just-built/clarora-tts",
+    "ggml_cpu": "/opt/homebrew/opt/ggml/libexec/libggml-cpu.so"
+  },
+  "providers": [
+    {
+      "name": "clarora-native-helpers",
+      "version": "0.2.1",
+      "source": "https://github.com/OWNER/REPO",
+      "roots": [
+        "/absolute/path/to/clarora/clarora-gpui/target/native",
+        "/absolute/path/to/clarora/clarora-gpui/target/tts"
+      ],
+      "licenses": [
+        "/absolute/path/to/clarora/LICENSE"
+      ]
+    },
+    {
+      "name": "yt-dlp",
+      "version": "2026.08.19",
+      "source": "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19",
+      "roots": [
+        "/absolute/path/to/checksum-verified/yt-dlp_macos"
+      ],
+      "licenses": [
+        "/absolute/path/to/yt-dlp-LICENSE",
+        "/absolute/path/to/standalone-THIRD_PARTY_LICENSES"
+      ]
+    },
+    {
+      "name": "pdfium",
+      "version": "chromium/8057",
+      "source": "https://github.com/bblanchon/pdfium-binaries/releases/tag/chromium%2F8057",
+      "roots": [
+        "/absolute/path/to/checksum-verified/libpdfium.dylib"
+      ],
+      "licenses": [
+        "/absolute/path/to/pdfium-licenses"
+      ]
+    },
+    {
+      "name": "sherpa-onnx",
+      "version": "FIX-ME-MATCH-ACTUAL-BINARY",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases",
+      "roots": [
+        "/absolute/path/to/native-runtime/lib/libsherpa-onnx-c-api.dylib"
+      ],
+      "licenses": [
+        "/absolute/path/to/sherpa-LICENSE"
+      ]
+    },
+    {
+      "name": "onnxruntime",
+      "version": "FIX-ME-MATCH-ACTUAL-BINARY",
+      "source": "https://github.com/microsoft/onnxruntime/releases",
+      "roots": [
+        "/absolute/path/to/native-runtime/lib/libonnxruntime.dylib"
+      ],
+      "licenses": [
+        "/absolute/path/to/onnxruntime-LICENSE",
+        "/absolute/path/to/onnxruntime-ThirdPartyNotices.txt"
+      ]
+    }
+  ],
+  "python": {
+    "home": "/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14",
+    "version": "3.14",
+    "site_packages": [
+      "/opt/homebrew/opt/yt-dlp/libexec/lib/python3.14/site-packages",
+      "/opt/homebrew/opt/certifi/lib/python3.14/site-packages"
+    ]
+  }
+}

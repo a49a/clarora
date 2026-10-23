@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "upstream_repository": "https://github.com/spdx/license-list-data",
+  "tag": "v3.26.0",
+  "revision": "8a04f0303d95c4f932210b118588c662665bd383",
+  "standard_terms_only": true,
+  "license_texts": {
+    "0BSD": {
+      "path": "0BSD.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/0BSD.txt",
+      "sha256": "e3f18c71e10d673590eb9856c1d79dd3b4b0d65404efb5e8584dbede7edd608b",
+      "git_blob_sha": "0b8ae762b2405a862d8592c5ff2799a1bd9c43e0",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "Apache-2.0": {
+      "path": "Apache-2.0.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/Apache-2.0.txt",
+      "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+      "git_blob_sha": "137069b823873b8bcf42979bcf8e9371052d26a2",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "BSD-2-Clause": {
+      "path": "BSD-2-Clause.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/BSD-2-Clause.txt",
+      "sha256": "f32fb3b417a194167cfad068223fc975ba96c5960513a10f66a3c28720aec1df",
+      "git_blob_sha": "5f662b354cd40cd5339d5aa05d74b15405138230",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "BSD-3-Clause": {
+      "path": "BSD-3-Clause.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/BSD-3-Clause.txt",
+      "sha256": "5a93d5831e1297ab10fe643e1a631e83be392896da14ee2951285a79012df69d",
+      "git_blob_sha": "ea890afbc70c94011b765722a95e2c8c7d4f1233",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "BSL-1.0": {
+      "path": "BSL-1.0.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/BSL-1.0.txt",
+      "sha256": "84c6ef3ea9e3254a54d0acf5d3e0c61ae011b8fef7dd6940591cf060e6380a8f",
+      "git_blob_sha": "2d87ab1a9fa42781f9eec80c1d29e605ad313b85",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "CC0-1.0": {
+      "path": "CC0-1.0.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/CC0-1.0.txt",
+      "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+      "git_blob_sha": "0e259d42c996742e9e3cba14c677129b2c1b6311",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "CDLA-Permissive-2.0": {
+      "path": "CDLA-Permissive-2.0.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/CDLA-Permissive-2.0.txt",
+      "sha256": "4531a67d443284d93ffed0803df5b10634aff21c3d77e381f2d48af01d875868",
+      "git_blob_sha": "cc0f954b59ba22a5c892e9833b0013aa281f5838",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "ISC": {
+      "path": "ISC.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/ISC.txt",
+      "sha256": "f2ec607f67bb0dd3053b49835b02110d5cd0f8eb6da3aac4dc0b142a6b299be9",
+      "git_blob_sha": "b9c199c98f9bec183a195a9c0afc0a2e4fcc7654",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "LLVM-exception": {
+      "path": "LLVM-exception.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/LLVM-exception.txt",
+      "sha256": "e34c58338bd89d43e709e226610d8f32b3e3c47f4ad9a99a8dc1d4ac7842488e",
+      "git_blob_sha": "fa4b725a0ee50ef723ce5292865e54de7b0bfca4",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "MIT": {
+      "path": "MIT.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/MIT.txt",
+      "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+      "git_blob_sha": "fc2cf8e6b667b752cf62d1306521071db34c0a63",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "MIT-0": {
+      "path": "MIT-0.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/MIT-0.txt",
+      "sha256": "59746d6285ffa44bfc7ecada352aa5d6a20dc8eab418a60ce091cc739012c135",
+      "git_blob_sha": "a4e9dc9061885b4d1d4dde9d5db62608a973b26a",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "MPL-2.0": {
+      "path": "MPL-2.0.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/MPL-2.0.txt",
+      "sha256": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
+      "git_blob_sha": "ee6256cdb62a765749a71aae3abea32884301cd1",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "Unicode-3.0": {
+      "path": "Unicode-3.0.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/Unicode-3.0.txt",
+      "sha256": "f7db81051789b729fea528a63ec4c938fdcb93d9d61d97dc8cc2e9df6d47f2a1",
+      "git_blob_sha": "11f2842a303a7935740f7a1d09139b0b9c28c3b6",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "Unlicense": {
+      "path": "Unlicense.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/Unlicense.txt",
+      "sha256": "0bdebfeda07d45dada625ae1317c6f833186e798b171d0db640bcf32e92a8240",
+      "git_blob_sha": "cde4ac6981861bbb9025ce5e77a4a0e232fe6329",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "Zlib": {
+      "path": "Zlib.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/Zlib.txt",
+      "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+      "git_blob_sha": "e0e3605ba4269a62d38ef0a510d5e96c0ae009cc",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    },
+    "bzip2-1.0.6": {
+      "path": "bzip2-1.0.6.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/8a04f0303d95c4f932210b118588c662665bd383/text/bzip2-1.0.6.txt",
+      "sha256": "0a56dbabe7d2ff65dea26e8b795fe42c6204a192b974d8e9304fe356ccda9fd1",
+      "git_blob_sha": "d9b9184877808e715a32efa34607afa3414aa94a",
+      "standard_terms_only": true,
+      "upstream_copyright_notice": false
+    }
+  }
+}

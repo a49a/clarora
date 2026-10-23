@@ -2,19 +2,25 @@ name: GPUI desktop
 on:
   push:
     branches: [master]
-    paths: ['clarora-gpui/**', '.github/workflows/gpui-desktop.yml']
+    paths:
+      - 'clarora-gpui/**'
+      - 'clarora-app/windows/clarora-asr/**'
+      - 'clarora-app/macos/Clarora-macOS/Assets.xcassets/AppIcon.appiconset/**'
+      - 'LICENSE'
+      - '.github/workflows/gpui-desktop.yml'
   pull_request:
-    paths: ['clarora-gpui/**', '.github/workflows/gpui-desktop.yml']
+    paths:
+      - 'clarora-gpui/**'
+      - 'clarora-app/windows/clarora-asr/**'
+      - 'clarora-app/macos/Clarora-macOS/Assets.xcassets/AppIcon.appiconset/**'
+      - 'LICENSE'
+      - '.github/workflows/gpui-desktop.yml'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, windows-2022]
-    runs-on: ${{ matrix.os }}
+  macos:
+    runs-on: macos-15
     timeout-minutes: 60
     defaults:
       run:
@@ -28,26 +34,16 @@ jobs:
       - run: cargo fmt --check
       - run: cargo check --locked --all-targets
       - run: cargo build --locked
-        if: runner.os == 'macOS'
-      - name: Package Windows desktop executable
-        if: runner.os == 'Windows'
-        run: ./scripts/build-windows.ps1
-      - name: Install Windows PDF runtime
-        if: runner.os == 'Windows'
-        run: python scripts/install-pdfium.py target/package
       - name: Install macOS media dependencies
-        if: runner.os == 'macOS'
         run: brew install mpv ffmpeg
       - name: Install pinned PDF runtime
-        if: runner.os == 'macOS'
         run: python3 scripts/install-pdfium.py target/debug
       - name: Run native workflow E2E
-        if: runner.os == 'macOS'
         env:
           PDFIUM_LIB_PATH: ${{ github.workspace }}/clarora-gpui/target/debug
         run: cargo run --locked --bin e2e -- e2e-artifacts
       - uses: actions/upload-artifact@v7
-        if: always() && runner.os == 'macOS'
+        if: always()
         with:
           name: Clarora-GPUI-macos-E2E
           path: |
@@ -55,9 +51,62 @@ jobs:
             clarora-gpui/e2e-artifacts/*.png
             clarora-gpui/e2e-artifacts/waveform.json
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v7
-        if: runner.os == 'Windows'
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: clarora-gpui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
-          name: Clarora-GPUI-Windows-x64
-          path: clarora-gpui/target/package/
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.93.1'
+          components: rustfmt, clippy
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Parse Windows packaging scripts with the native PowerShell parser
+        run: |
+          Get-ChildItem ./scripts/*windows*.ps1 | ForEach-Object {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+      - run: cargo fmt --check
+      - run: cargo check --locked --all-targets
+      - name: Build all Windows ASR/TTS and stage checksum-pinned media runtimes
+        timeout-minutes: 45
+        run: ./scripts/prepare-windows-runtime.ps1
+      - name: Build complete unsigned portable ZIP and per-user installer
+        run: ./scripts/build-windows.ps1 -Distribution -RuntimeDir ./target/windows-runtime -Output ./target/distribution -Installer
+      - name: Exercise installer install, upgrade, runtime and data-preserving uninstall
+        run: |
+          $installer = @(Get-ChildItem ./target/distribution/*-setup-unsigned.exe)
+          if ($installer.Count -ne 1) { throw 'Expected exactly one unsigned GPUI installer.' }
+          ./scripts/verify-windows-installer.ps1 -Installer $installer[0].FullName -Evidence ./target/distribution/installer-evidence
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: Clarora-GPUI-Windows-x64-verification
+          path: |
+            clarora-gpui/target/windows-dependencies/*-verification.json
+            clarora-gpui/target/windows-dependencies/runtime-build-provenance.json
+            clarora-gpui/target/windows-dependencies/runtime-build-failure.json
+            clarora-gpui/target/distribution/*.json
+            clarora-gpui/target/distribution/installer-evidence/
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v7
+        if: success()
+        with:
+          name: Clarora-GPUI-Windows-x64-unsigned
+          path: |
+            clarora-gpui/target/distribution/*.zip
+            clarora-gpui/target/distribution/*-setup-unsigned.exe
+            clarora-gpui/target/distribution/release-manifest.json
+            clarora-gpui/target/distribution/SHA256SUMS.txt
           if-no-files-found: error

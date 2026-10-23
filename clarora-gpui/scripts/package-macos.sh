@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+if [ "${1:-}" = "--release" ]; then
+  shift
+  exec python3 "$root/scripts/release-macos.py" "$@"
+fi
 output=${1:-"$root/target/Clarora-GPUI.app"}
 cargo build --manifest-path "$root/Cargo.toml" --locked
 # Use the same public Clarora artwork as the React Native macOS app.

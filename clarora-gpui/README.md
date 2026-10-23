@@ -22,7 +22,7 @@ codesign --force --deep --sign - clarora-gpui/target/Clarora-GPUI.app
 open clarora-gpui/target/Clarora-GPUI.app
 ```
 
-打包脚本生成本机调试 `.app`，不是已经完成签名、公证和运行库分发的安装包。`libmpv`、FFmpeg、yt-dlp 仍需安装。Intel Mac 的 PDFium 需自行提供匹配架构的库，安装脚本仅包含 Apple Silicon 和 Windows x64 的固定版本及 SHA-256。
+以上命令生成本机调试 `.app`，依赖开发机安装的 `libmpv`、FFmpeg、yt-dlp。包含运行库的 release ZIP／DMG 使用独立的[安装包流程](scripts/PACKAGING.md)，也可通过 `package-macos.sh --release` 转入该流程。Intel Mac 需自行提供并验证匹配架构的全部运行库；现有 PDFium 下载脚本仅包含 Apple Silicon 和 Windows x64 的固定版本及 SHA-256。
 
 Windows PowerShell：
 
@@ -33,6 +33,8 @@ python ./clarora-gpui/scripts/install-pdfium.py ./clarora-gpui/target/package
 ```
 
 将匹配架构的 `mpv-2.dll` 及其依赖放在 EXE 旁；将 `ffmpeg.exe`、`ffprobe.exe`、`yt-dlp.exe` 放在 EXE 旁的 `tools/`，或加入 PATH。Windows 程序是普通桌面 EXE，不使用现有 React Native Windows 的 UWP 下载伴随进程。两平台共享下载实现；进程组取消分别使用 Unix 进程组、Windows Job Object。
+
+完整 Windows 分发使用 `prepare-windows-runtime.ps1` 和 `build-windows.ps1 -Distribution -Installer`，收齐工具、ASR／TTS、PDFium、DLL 和许可证后生成 ZIP 与按用户安装的安装器。详细参数与验证命令见[安装包流程](scripts/PACKAGING.md)。分发包只加载包内运行库，不借用开发机 PATH；设置页的“运行环境”及 `--runtime-check /absolute/report.json` 可检查组件，后者不打开学习资料库。
 
 ## 界面与快捷操作
 
@@ -119,7 +121,7 @@ cmake -S clarora-gpui/native -B clarora-gpui/target/native -DCMAKE_BUILD_TYPE=Re
 cmake --build clarora-gpui/target/native --config Release
 ```
 
-需 `whisper.h`、`libwhisper`、GGML 头文件/库、`sherpa-onnx/c-api/c-api.h`、`sherpa-onnx-c-api` 及相应运行库。将产出的 `clarora-asr`（Windows 为 `.exe`）和运行依赖放在程序旁的 `tools/` 或 PATH。动态 GGML 的 CPU 后端也需提供；辅助程序优先寻找自身旁的 CPU 后端，然后使用编译时找到的路径。可用 `CLARORA_GGML_CPU_BACKEND` 指定 CPU 后端文件。
+需 `whisper.h`、`libwhisper`、GGML 头文件/库、`sherpa-onnx/c-api/c-api.h`、`sherpa-onnx-c-api` 及相应运行库。开发构建将产出的 `clarora-asr`（Windows 为 `.exe`）和运行依赖放在程序旁的 `tools/` 或 PATH。动态 GGML 的 CPU 后端也需提供；辅助程序优先寻找自身旁的 CPU 后端，开发环境可回退到编译路径或用 `CLARORA_GGML_CPU_BACKEND` 指定。完整分发包仅使用包内后端，忽略这些开发回退。
 
 ## bilibili 分P选集与自动续播
 
@@ -176,7 +178,13 @@ cmake --build clarora-gpui/target/native --config Release
 
 当前视频采用 libmpv 软件解码/软件渲染，960×540 帧传递给 GPUI。该路径与原版原生播放器的 GPU 路径不同，不能用视频帧率或 CPU 占用直接归因于 GPUI 和 React Native 框架差异。整个客户端仍使用 GPUI 原生界面。
 
-已做 macOS 编译和实际界面操作；Windows CI 工作流已加入，但未在本机或远端验证通过。原生界面可访问性支持有限。未完成独立 review、正式签名公证和可分发安装包，不作为发布验收结论。
+已做 macOS 编译和部分实际界面操作。完整 release 安装包流程已加入，macOS arm64 候选包完成隔离环境运行库检查；默认 ad-hoc 签名，正式 Developer ID 签名、公证及许可证审计仍待完成。Windows 构建、安装／升级／卸载验证已接入 CI，尚未在 Windows 或远端执行通过。原生界面可访问性支持有限，当前不作为完整发布验收结论。
+
+## 界面状态与数据读取
+
+`app_state.rs` 分别持有音频学习、视频学习、播放器、后台任务和设置状态；聊天由 `chat_store::State` 管理。助手、设置及记录页面渲染消费缓存，材料切换、保存、任务结束、恢复和手动刷新时才更新数据。聊天按材料 context 通过 SQLite 索引查询最多 12 条会话，避免每次重绘扫描并解析全部 AI 记录。请求身份同时校验材料、会话和代次，旧请求不能覆盖切换后的对话；草稿保存或读取失败时保留当前内容。
+
+`view_data::State` 缓存跟读、OCR、统计、词条、PDF 书库、文件及模型状态，显式刷新失败保留上一次完整快照并显示错误。公共词汇关系数据在刷新时预加载并共享。播放器比较完整可见快照，包含初始化、错误、字幕、轨道与画面清空，暂停期间的变化同样触发重绘。
 
 ## 可复现验证
 
@@ -191,6 +199,8 @@ PDFIUM_LIB_PATH=/absolute/path/containing/pdfium cargo run --manifest-path claro
 本句重复场景由默认 E2E 收集，也可用 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence --video-repeat-only` 定向复验。使用真实 FFmpeg/libmpv 检查无限循环、三次后暂停、短句、视频末句、重选、暂停继续、手动跳转和换片，保留逐步播放快照和解码帧。
 
 默认 E2E 同时收集复习类型与限额、AI 完成校验、云备份取消三组回归场景。只复验这三组可执行 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence --reliability-only`；同样生成 `e2e-report.json`，子目录保留队列、HTTP、取消耗时和 SQLite 前后状态证据。
+
+聊天仓储、界面数据缓存和播放器状态变化也由默认 E2E 收集，可用 `--state-only` 定向复验，共 19 个场景／检查。覆盖大量无关及损坏 JSON 记录、索引查询、草稿故障保护、旧请求隔离、SQLite／配置／目录刷新失败、ZIP 恢复和真实媒体解码；保留 SQLite、JSON 报告和播放帧。2026-10-22 本机最终完整 E2E 的 40 条工作流全部通过，包含真实 Whisper tiny.en、Kokoro、PDFium 和后台字幕队列；本轮未重跑完整窗口操作或 Windows。
 
 E2E 使用独立临时资料，经过真实 SQLite、文件、ZIP、FFmpeg、libmpv、PDFium 和本机 HTTP 服务，输出 `e2e-report.json`、播放帧与 PDF 图片。libmpv 使用 null 音频输出，供 CI 验证解码和时钟，不验证系统声卡。HTTP 用固定本机响应验证协议，不代表外部 AI 或云桶已通过。未设置 `PDFIUM_LIB_PATH` 时 PDF 检查会明确跳过。
 
