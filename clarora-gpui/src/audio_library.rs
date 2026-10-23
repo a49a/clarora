@@ -4,7 +4,25 @@ use crate::{
     subtitles::{self, Cue},
 };
 use anyhow::{Context, Result, ensure};
+use chrono::NaiveDate;
 use std::{collections::BTreeSet, fs, path::Path};
+
+/// Suggest an unused local-date name without creating a practice group.
+pub fn default_practice_name(practices: &[Row], date: NaiveDate) -> String {
+    let names: BTreeSet<_> = practices
+        .iter()
+        .map(|row| text(row, "name").trim().to_string())
+        .collect();
+    let base = date.format("%Y-%m-%d").to_string();
+    let mut name = base.clone();
+    let mut suffix = 2;
+    while names.contains(&name) {
+        name = format!("{base} ({suffix})");
+        suffix += 1;
+    }
+    name
+}
+
 #[derive(Default)]
 pub struct State {
     pub selected: String,

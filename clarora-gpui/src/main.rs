@@ -2614,6 +2614,10 @@ impl AppView {
                 Action::LibraryTool(tool) => {
                     self.audio.library.pending_delete.clear();
                     let name = match tool.as_str() {
+                        "group-new" => audio_library::default_practice_name(
+                            &self.audio.practices,
+                            chrono::Local::now().date_naive(),
+                        ),
                         "group-rename" => self
                             .audio
                             .practices

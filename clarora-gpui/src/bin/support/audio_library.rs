@@ -8,6 +8,30 @@ use std::{collections::BTreeSet, fs, path::Path};
 pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()> {
     // An isolated real library prevents management operations affecting other E2E workflows.
     let lib = Library::open(lib.root.join("audio-manager"))?;
+    let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 23).unwrap();
+    let first_name = audio_library::default_practice_name(&lib.list("listening_practices")?, date);
+    ensure!(first_name == "2026-10-23", "新建组未建议日期名称");
+    let first_group_id = lib.practice(&first_name)?;
+    let second_name = audio_library::default_practice_name(&lib.list("listening_practices")?, date);
+    ensure!(second_name == "2026-10-23 (2)", "同日新组建议名称未避让");
+    let second_group_id = lib.practice(&second_name)?;
+    ensure!(first_group_id != second_group_id, "同日新建误用已有组");
+    lib.practice(" 2026-10-23 (3) ")?;
+    let third = audio_library::default_practice_name(&lib.list("listening_practices")?, date);
+    ensure!(third == "2026-10-23 (4)", "同日多组建议名称冲突");
+    let count = lib.list("listening_practices")?.len();
+    ensure!(
+        audio_library::default_practice_name(&lib.list("listening_practices")?, date) == third
+            && lib.list("listening_practices")?.len() == count,
+        "仅打开或取消新建表单就创建了练习组"
+    );
+    // The suggestion remains editable; saving must persist the user's chosen name.
+    let custom_id = lib.practice("My writing and listening")?;
+    let next_day = audio_library::default_practice_name(
+        &lib.list("listening_practices")?,
+        date.succ_opt().unwrap(),
+    );
+    ensure!(next_day == "2026-10-24", "新日期沿用旧日期名称");
     let a = lib.practice("Course A")?;
     let b = lib.practice("Course B")?;
     lib.import_audio(&a, fixture)?;
@@ -118,6 +142,19 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
         "移除记录误删附件"
     );
     let reopened = Library::open(lib.root.clone())?;
+    let groups = reopened.list("listening_practices")?;
+    ensure!(
+        [
+            (first_group_id.as_str(), first_name.as_str()),
+            (second_group_id.as_str(), second_name.as_str()),
+            (custom_id.as_str(), "My writing and listening")
+        ]
+        .iter()
+        .all(|(id, name)| groups
+            .iter()
+            .any(|r| text(r, "id") == *id && text(r, "name") == *name)),
+        "日期组或自定义名称重开后丢失"
+    );
     ensure!(
         !reopened
             .list("listening_audios")?
@@ -128,7 +165,7 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
     fs::write(
         lib.root.join("management-evidence.json"),
         serde_json::to_vec_pretty(
-            &json!({"rename":true,"search_filter":true,"group_scope":true,"move_with_subtitles":true,"duplicate_rollback":true,"delete_snapshot_scope":true,"attachments_retained":true,"reopen":true}),
+            &json!({"default_practice_names":{"first":first_name,"second":second_name,"next_available":third,"next_day":next_day,"custom_name_persisted":true,"suggestion_does_not_create":true},"rename":true,"search_filter":true,"group_scope":true,"move_with_subtitles":true,"duplicate_rollback":true,"delete_snapshot_scope":true,"attachments_retained":true,"reopen":true}),
         )?,
     )?;
     results.push(json!({"workflow":"音频管理：真实SQLite/文件 → 搜索筛选/分组选择 → 重命名/移动冲突回滚 → 删除作用域及附件保留 → 重开", "passed":true,"evidence":"audio-manager/management-evidence.json"}));
