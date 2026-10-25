@@ -203,3 +203,57 @@ pub fn languages(cues: &[Cue]) -> (String, String) {
         (en, zh)
     }
 }
+
+/// A boundary anchored inside a word cell; wraps with that word in the native UI.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct WordEdge {
+    pub cue: usize,
+    pub word: usize,
+    pub fraction: f32,
+}
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct SelectionEdges {
+    pub start: WordEdge,
+    pub end: WordEdge,
+}
+/// Project the actual A/B range onto the first/last overlapping subtitle word.
+/// A boundary in a subtitle gap snaps inward; an entirely empty gap has no marks.
+pub fn selection_edges(cues: &[Cue], a: Option<f64>, b: Option<f64>) -> Option<SelectionEdges> {
+    let (a, b) = a
+        .zip(b)
+        .filter(|(a, b)| a.is_finite() && b.is_finite() && *a >= 0. && b > a)?;
+    let overlaps = |c: &Cue| c.end > a && c.start < b;
+    let start = cues
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| overlaps(c))
+        .find_map(|(i, c)| {
+            words(c)
+                .iter()
+                .enumerate()
+                .find(|(_, w)| w.end > a && w.start < b)
+                .map(|(j, w)| WordEdge {
+                    cue: i,
+                    word: j,
+                    fraction: ((a - w.start) / (w.end - w.start)).clamp(0., 1.) as f32,
+                })
+        })?;
+    let end = cues
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, c)| overlaps(c))
+        .find_map(|(i, c)| {
+            words(c)
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, w)| w.end > a && w.start < b)
+                .map(|(j, w)| WordEdge {
+                    cue: i,
+                    word: j,
+                    fraction: ((b - w.start) / (w.end - w.start)).clamp(0., 1.) as f32,
+                })
+        })?;
+    Some(SelectionEdges { start, end })
+}

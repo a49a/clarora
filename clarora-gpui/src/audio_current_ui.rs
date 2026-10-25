@@ -99,7 +99,27 @@ impl AppView {
                                     } else {
                                         cx.theme().muted_foreground
                                     })
-                                    .child(original),
+                                    .child(
+                                        if let Some((cue, index)) =
+                                            cue.zip(active).filter(|(cue, _)| {
+                                                self.audio.clip_mode
+                                                    || !self
+                                                        .saved_at(true, cue.start, cue.end)
+                                                        .is_empty()
+                                            })
+                                        {
+                                            self.marked_cue(
+                                                true,
+                                                index,
+                                                cue,
+                                                (font + 8.).clamp(24., 36.),
+                                                true,
+                                                cx,
+                                            )
+                                        } else {
+                                            div().child(original).into_any_element()
+                                        },
+                                    ),
                             )
                             .when(!translation.is_empty(), |v| {
                                 v.child(

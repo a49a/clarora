@@ -17,6 +17,8 @@ mod bilibili_parts;
 mod blind_listening;
 #[path = "support/chat_store.rs"]
 mod chat_store;
+#[path = "support/clip_marks.rs"]
+mod clip_marks;
 #[path = "support/command_import.rs"]
 mod command_import;
 #[path = "support/credential_mode.rs"]
@@ -489,6 +491,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     audio_library::run(&lib, &video, results)?;
     command_import::run(&lib, results)?;
     audio_batch::run(&lib, results)?;
+    clip_marks::run(&lib, &video, results)?;
     blind_listening::run(&lib, &video, results)?;
     bilibili_parts::run(&lib, results)?;
     model_progress::run(&lib, results)?;
@@ -874,9 +877,17 @@ fn main() -> Result<()> {
         Some("--video-render-only") => "video-render-only",
         Some("--command-import-only") => "command-import-only",
         Some("--audio-batch-only") => "audio-batch-only",
+        Some("--clip-marks-only") => "clip-marks-only",
         _ => "full",
     };
-    let result = if mode == "audio-batch-only" {
+    let result = if mode == "clip-marks-only" {
+        let lib = Library::open(output.join(format!("clip-marks-{}", data::id())))?;
+        clip_marks::run(
+            &lib,
+            &PathBuf::from(args.get(3).context("缺少媒体夹具")?),
+            &mut results,
+        )
+    } else if mode == "audio-batch-only" {
         let lib = Library::open(output.join(format!("audio-batch-{}", data::id())))?;
         audio_batch::run(&lib, &mut results)
     } else if mode == "command-import-only" {

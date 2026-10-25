@@ -342,10 +342,19 @@ fn map_manifest(
     manifest: &mut Manifest,
     mut map: impl FnMut(&str) -> Result<String>,
 ) -> Result<()> {
-    map_media(&mut manifest.data, &mut map)?;
-    if let Some(library) = &mut manifest.library {
-        library.map_paths(&mut map)?;
+    let mut mapped = HashMap::new();
+    {
+        let mut remember = |path: &str| -> Result<String> {
+            let target = map(path)?;
+            mapped.insert(path.to_string(), target.clone());
+            Ok(target)
+        };
+        map_media(&mut manifest.data, &mut remember)?;
+        if let Some(library) = &mut manifest.library {
+            library.map_paths(&mut remember)?;
+        }
     }
+    crate::clip_marks::map_sources(&mut manifest.data, &mapped)?;
     Ok(())
 }
 fn map_media(
@@ -958,6 +967,9 @@ fn merge_snapshot(
             check_cancel(cancel)?;
             let mut row = original.clone();
             let old = text(&row, "id");
+            if *table == "ai_records" {
+                crate::clip_marks::map_audio(&mut row, &mapping)?;
+            }
             let mut existing = None;
             if *table == "words" {
                 existing = tx
@@ -1261,6 +1273,7 @@ fn prepare_library(
     map_media(data, |path| {
         Ok(mapped.get(path).cloned().unwrap_or_else(|| path.into()))
     })?;
+    crate::clip_marks::map_sources(data, &mapped)?;
     let mut contexts = HashMap::new();
     for binding in &mut library.contexts {
         check_cancel(cancel)?;

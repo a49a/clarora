@@ -41,3 +41,5 @@ pub mod video_jobs;
 pub mod credentials;
 
 pub mod writing;
+
+pub mod clip_marks;

@@ -3,12 +3,14 @@ mod app_state;
 mod assistant_ui;
 mod audio_current_ui;
 mod audio_subtitle_ui;
+mod clip_selection_ui;
 mod design;
 mod feedback_ui;
 mod floating_ui;
 mod focus_ui;
 mod library_ui;
 mod reading_ui;
+mod saved_clip_ui;
 mod settings_ui;
 mod task_ui;
 mod video_job_ui;
@@ -17,7 +19,7 @@ mod video_transcript_ui;
 mod writing_ui;
 use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::{
-    ai, audio_library, backup, bilibili, blind_listening, credentials,
+    ai, audio_library, backup, bilibili, blind_listening, clip_marks, credentials,
     data::{Card, Library, Row, id, now, text},
     documents, ebook,
     media::{Playback, Player},
@@ -133,6 +135,7 @@ enum Action {
     AudioCurrent,
     AudioFollow,
     AudioCopySubtitle(String, Option<Cue>),
+    SavedClips(Vec<clip_marks::Saved>),
     AudioRepeat(usize),
     LibrarySelect { id: String, reveal: bool },
     LibraryRenameAudio(String),
@@ -320,6 +323,9 @@ struct AppView {
     status: String,
     feedback: feedback_ui::FeedbackState,
     cards: Vec<Card>,
+    clip_catalog: clip_marks::Catalog,
+    audio_saved: Vec<clip_marks::Range>,
+    video_saved: Vec<clip_marks::Range>,
     index: usize,
     revealed: bool,
     editing: Option<Card>,
@@ -448,6 +454,9 @@ impl AppView {
             status: String::new(),
             feedback: Default::default(),
             cards: vec![],
+            clip_catalog: Default::default(),
+            audio_saved: vec![],
+            video_saved: vec![],
             index: 0,
             revealed: false,
             editing: None,
@@ -976,6 +985,11 @@ impl AppView {
             self.audio.active = None;
             self.audio.current_scroll.set_offset(Point::default());
         }
+        match clip_marks::Catalog::load(&self.lib) {
+            Ok(catalog) => self.clip_catalog = catalog,
+            Err(e) => self.report_status(FeedbackKind::Error, format!("收藏标记读取失败：{e:#}")),
+        }
+        self.refresh_saved_ranges();
         self.refresh_view_data();
     }
     fn refresh_view_data(&mut self) {
@@ -1399,6 +1413,7 @@ impl AppView {
                                     && same_source
                                 {
                                     self.video.set_cues(cues);
+                                    self.refresh_saved_ranges();
                                     self.video.active = None;
                                     self.video.caption_source = VideoCaptionSource::Transcript;
                                     self.video.material = None;
@@ -1831,6 +1846,7 @@ impl AppView {
             }
         };
         self.video.set_cues(cues);
+        self.refresh_saved_ranges();
         self.video.tab = 0;
     }
 
@@ -1878,6 +1894,7 @@ impl AppView {
         }
         self.media.loop_a = None;
         self.media.loop_b = None;
+        self.refresh_saved_ranges();
     }
     fn restore_listening(&mut self) {
         let last = self.lib.setting("last_listening_audio").unwrap_or_default();
@@ -3588,6 +3605,7 @@ impl AppView {
                         }
                     }
                 }
+                Action::SavedClips(saved) => self.show_saved_clips(saved, window, cx),
                 Action::Clip => {
                     ensure!(
                         !(self.page == "listening" && self.audio.blind.enabled),
@@ -3599,7 +3617,19 @@ impl AppView {
                     let front = self.value("front", cx);
                     let back = self.value("back", cx);
                     let is_audio = self.page == "listening";
-                    self.begin("正在导出片段…",move|lib,cancel,_|{let output=lib.root.join("media").join(format!("{}.mp4",id()));process::clip(&path,&output,a,b,&cancel)?;let result=if is_audio{lib.put("clip_cards",json!({"id":id(),"en_text":front,"zh_text":back,"audio_uri":output.to_string_lossy(),"start_ms":0,"end_ms":((b-a)*1000.) as u64,"created_at":now()}))}else{lib.put("video_clips",json!({"id":id(),"en_text":front,"zh_text":back,"video_uri":output.to_string_lossy(),"created_at":now()}))};if let Err(e)=result{let _=fs::remove_file(output);return Err(e)}Ok(Outcome::Message("片段已存为闪卡".into()))});
+                    let source = if is_audio {
+                        clip_marks::Source::audio(&self.audio.current_id)
+                    } else {
+                        clip_marks::Source::video(&path)
+                    };
+                    self.begin_scoped(
+                        TaskScope::Application,
+                        "正在导出片段…",
+                        move |lib, cancel, _| {
+                            clip_marks::save(&lib, source, &path, a, b, &front, &back, &cancel)?;
+                            Ok(Outcome::Message("片段已存为闪卡，字幕已加下划线".into()))
+                        },
+                    );
                 }
                 Action::ToggleReasoning => self.chat.reasoning_open = !self.chat.reasoning_open,
                 Action::ChatSession(session) => {
@@ -3917,6 +3947,7 @@ impl AppView {
                         self.video.path = None;
                         self.video.series = None;
                         self.video.set_cues(vec![]);
+                        self.refresh_saved_ranges();
                         self.video.active = None;
                         self.video.material = None;
                         self.video.material_error.clear();
@@ -4525,6 +4556,7 @@ impl AppView {
             .child(
                 div()
                     .id("audio-waveform")
+                    .relative()
                     .w_full()
                     .h(px(48.))
                     .cursor_pointer()
@@ -4565,8 +4597,8 @@ impl AppView {
                                 }
                                 for (time, color) in [
                                     (Some(position), rgb(0xe87240)),
-                                    (a, rgb(0x2a9465)),
-                                    (b, rgb(0x3b70be)),
+                                    (a, clip_selection_ui::edge_color(true)),
+                                    (b, clip_selection_ui::edge_color(false)),
                                 ] {
                                     if let Some(time) = time {
                                         window.paint_quad(fill(
@@ -4588,6 +4620,12 @@ impl AppView {
                         )
                         .size_full(),
                     )
+                    .when_some(a, |v, time| {
+                        v.child(clip_selection_ui::waveform_edge(time, duration, true))
+                    })
+                    .when_some(b, |v, time| {
+                        v.child(clip_selection_ui::waveform_edge(time, duration, false))
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -4864,6 +4902,7 @@ impl AppView {
         } else {
             0.
         };
+        let listening = self.page == "listening";
         let sentence_range = self.video.sentence_repeat.map(|session| session.range);
         let loop_range = sentence_range.or_else(|| {
             self.media
@@ -4911,7 +4950,11 @@ impl AppView {
                                     rgb(0x3c7260),
                                 ));
                             }
-                            for time in markers.into_iter().flatten() {
+                            for (index, time) in markers
+                                .into_iter()
+                                .enumerate()
+                                .filter_map(|(i, t)| t.map(|t| (i, t)))
+                            {
                                 let x =
                                     (time / duration).clamp(0., 1.) as f32 * (width - 2.).max(0.);
                                 window.paint_quad(fill(
@@ -4919,7 +4962,11 @@ impl AppView {
                                         point(area.left() + px(x), y - px(4.)),
                                         size(px(2.), px(12.)),
                                     ),
-                                    rgb(0xe7bd7b),
+                                    if listening {
+                                        clip_selection_ui::edge_color(index == 0)
+                                    } else {
+                                        rgb(0xe7bd7b)
+                                    },
                                 ));
                             }
                         }
@@ -6389,6 +6436,17 @@ impl AppView {
                         .into_any_element();
                 }
                 let (_, translation) = subtitles::languages(std::slice::from_ref(cue));
+                let edges = this
+                    .audio
+                    .clip_mode
+                    .then(|| {
+                        subtitles::selection_edges(
+                            &this.audio.cues,
+                            this.media.loop_a,
+                            this.media.loop_b,
+                        )
+                    })
+                    .flatten();
                 let mut line = div().flex().flex_wrap().gap_x_1().gap_y_1().items_center();
                 for (j, word) in subtitles::words(cue).into_iter().enumerate() {
                     let current = active
@@ -6402,7 +6460,13 @@ impl AppView {
                                 )
                         })
                     });
-                    let tip = marked.map(|p| format!("{} · {}", p.text, p.translation));
+                    let saved = this.saved_at(true, word.start, word.end);
+                    let is_saved = !saved.is_empty();
+                    let tip = if is_saved {
+                        Some("已加入闪卡 · 右键管理收藏复习；左键定位播放或选取片段".into())
+                    } else {
+                        marked.map(|p| format!("{} · {}", p.text, p.translation))
+                    };
                     let selected = this.audio.clip_mode
                         && this
                             .media
@@ -6412,6 +6476,16 @@ impl AppView {
                     line = line.child(
                         div()
                             .id(("audio-word", i * 100000 + j))
+                            .relative()
+                            .when(this.audio.clip_mode, |v| v.py(px(14.)))
+                            .when_some(
+                                edges.filter(|e| e.start.cue == i && e.start.word == j),
+                                |v, e| v.child(clip_selection_ui::text_edge(e.start, true)),
+                            )
+                            .when_some(
+                                edges.filter(|e| e.end.cue == i && e.end.word == j),
+                                |v, e| v.child(clip_selection_ui::text_edge(e.end, false)),
+                            )
                             .text_size(px(this.audio.font_size as f32))
                             .px_0p5()
                             .rounded_sm()
@@ -6422,6 +6496,7 @@ impl AppView {
                                 cx.theme().foreground
                             })
                             .when(current || selected, |v| v.bg(cx.theme().accent))
+                            .when(is_saved, |v| v.underline().text_color(cx.theme().primary))
                             .when(marked.is_some(), |v| {
                                 v.border_b_2().border_color(rgb(0xd8a947))
                             })
@@ -6432,6 +6507,15 @@ impl AppView {
                             })
                             .hover(|v| v.bg(cx.theme().accent))
                             .child(word.text.clone())
+                            .when(is_saved, |v| {
+                                v.on_mouse_down(
+                                    MouseButton::Right,
+                                    cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.handle(Action::SavedClips(saved.clone()), window, cx);
+                                    }),
+                                )
+                            })
                             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                                 this.handle(
                                     Action::Word(
@@ -6711,24 +6795,36 @@ impl AppView {
                     .gap_2()
                     .items_center()
                     .flex_wrap()
-                    .child(self.button(
-                        "audio-mark-a",
-                        format!(
-                            "A {}",
-                            self.media.loop_a.map(clip_clock).unwrap_or_else(|| "起点".into())
-                        ),
-                        Action::Mark(true),
-                        cx,
-                    ))
-                    .child(self.button(
-                        "audio-mark-b",
-                        format!(
-                            "B {}",
-                            self.media.loop_b.map(clip_clock).unwrap_or_else(|| "终点".into())
-                        ),
-                        Action::Mark(false),
-                        cx,
-                    ))
+                    .child(
+                        self.button(
+                            "audio-mark-a",
+                            format!(
+                                "A ▶ {}",
+                                self.media
+                                    .loop_a
+                                    .map(clip_clock)
+                                    .unwrap_or_else(|| "起点".into())
+                            ),
+                            Action::Mark(true),
+                            cx,
+                        )
+                        .text_color(clip_selection_ui::edge_color(true)),
+                    )
+                    .child(
+                        self.button(
+                            "audio-mark-b",
+                            format!(
+                                "◀ B {}",
+                                self.media
+                                    .loop_b
+                                    .map(clip_clock)
+                                    .unwrap_or_else(|| "终点".into())
+                            ),
+                            Action::Mark(false),
+                            cx,
+                        )
+                        .text_color(clip_selection_ui::edge_color(false)),
+                    )
                     .child(
                         self.button("audio-clear-ab", "清除", Action::VideoClearLoop, cx)
                             .ghost(),
@@ -7583,10 +7679,38 @@ impl AppView {
                                             .flex_col()
                                             .gap_1()
                                             .child(
-                                                div()
-                                                    .text_sm()
-                                                    .whitespace_normal()
-                                                    .child(cue.text.clone()),
+                                                if this
+                                                    .saved_at(false, cue.start, cue.end)
+                                                    .is_empty()
+                                                {
+                                                    div()
+                                                        .text_sm()
+                                                        .whitespace_normal()
+                                                        .child(cue.text.clone())
+                                                        .into_any_element()
+                                                } else {
+                                                    let (_, translation) = subtitles::languages(
+                                                        std::slice::from_ref(cue),
+                                                    );
+                                                    div()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .gap_1()
+                                                        .child(this.marked_cue(
+                                                            false, i, cue, 14., false, cx,
+                                                        ))
+                                                        .when(!translation.is_empty(), |v| {
+                                                            v.child(
+                                                                div()
+                                                                    .text_sm()
+                                                                    .text_color(
+                                                                        cx.theme().muted_foreground,
+                                                                    )
+                                                                    .child(translation),
+                                                            )
+                                                        })
+                                                        .into_any_element()
+                                                },
                                             )
                                             .child(
                                                 div()
