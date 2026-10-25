@@ -27,7 +27,7 @@ use clarora_gpui::{
     process::{self, Cancel},
     recording::Recorder,
     subtitles::{self, Cue},
-    tts, video_jobs, video_library, video_qa, video_subtitles,
+    timer_chimes, tts, video_jobs, video_library, video_qa, video_subtitles,
     waveform::{self, Waveform},
 };
 use feedback_ui::FeedbackKind;
@@ -339,6 +339,7 @@ struct AppView {
     backups: Vec<String>,
     recording: Option<Recorder>,
     recorded: Option<PathBuf>,
+    timer_chimes: timer_chimes::Chimes,
     timer_end: Option<SystemTime>,
     timer_remaining: u64,
     timer_paused: bool,
@@ -431,6 +432,7 @@ impl AppView {
             media: app_state::PlaybackState::new(),
             video: app_state::VideoState::new(),
             audio: app_state::AudioState::new(),
+            timer_chimes: timer_chimes::Chimes::new(lib.root.join("cache/timer-chimes")),
             tts_voice: lib
                 .setting("tts_voice")
                 .ok()
@@ -991,6 +993,14 @@ impl AppView {
         }
         self.refresh_saved_ranges();
         self.refresh_view_data();
+    }
+    fn play_timer_chime(&mut self, cue: timer_chimes::Cue) {
+        if let Err(error) = self.timer_chimes.play(cue) {
+            self.report_status(
+                FeedbackKind::Error,
+                format!("计时提示音播放失败：{error:#}"),
+            );
+        }
     }
     fn refresh_view_data(&mut self) {
         if let Err(error) = self.data.reload(&self.lib, &self.audio.audios) {
@@ -1671,8 +1681,12 @@ impl AppView {
                 }
             }
         }
+        if let Some(error) = self.timer_chimes.take_error() {
+            self.report_status(FeedbackKind::Error, format!("计时提示音播放失败：{error}"));
+        }
         if let Some(end) = self.timer_end {
             if SystemTime::now() >= end {
+                self.play_timer_chime(timer_chimes::Cue::End);
                 self.timer_end = None;
                 if self.timer_focus {
                     let _ = self.lib.stat("pomodoro_count", 1.);
@@ -4138,6 +4152,7 @@ impl AppView {
                     });
                 }
                 Action::Timer(seconds) => {
+                    self.play_timer_chime(timer_chimes::Cue::Start);
                     self.timer_remaining = seconds;
                     self.timer_end = Some(SystemTime::now() + Duration::from_secs(seconds));
                     self.timer_paused = false;
@@ -4151,12 +4166,16 @@ impl AppView {
                             .as_secs();
                         self.timer_paused = true;
                     } else {
+                        if !self.timer_paused {
+                            self.play_timer_chime(timer_chimes::Cue::Start);
+                        }
                         self.timer_end =
                             Some(SystemTime::now() + Duration::from_secs(self.timer_remaining));
                         self.timer_paused = false;
                     }
                 }
                 Action::TimerReset => {
+                    self.timer_chimes.stop();
                     self.timer_focus = true;
                     self.timer_end = None;
                     self.timer_remaining = 1500;
@@ -8459,6 +8478,12 @@ impl AppView {
                                 )
                             }),
                         ))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("新一轮开始响一声，每轮结束响两声；暂停和继续不重复提醒。"),
+                        )
                         .child(self.button(
                             "background-sound",
                             "选择本机背景音乐",

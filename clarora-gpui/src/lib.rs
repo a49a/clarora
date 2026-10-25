@@ -43,3 +43,5 @@ pub mod credentials;
 pub mod writing;
 
 pub mod clip_marks;
+
+pub mod timer_chimes;

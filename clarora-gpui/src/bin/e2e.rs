@@ -35,6 +35,8 @@ mod playback_state;
 mod protocol;
 #[path = "support/review_queue.rs"]
 mod review_queue;
+#[path = "support/timer_chimes.rs"]
+mod timer_chimes;
 #[path = "support/transcript.rs"]
 mod transcript;
 #[path = "support/video_jobs.rs"]
@@ -492,6 +494,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     command_import::run(&lib, results)?;
     audio_batch::run(&lib, results)?;
     clip_marks::run(&lib, &video, results)?;
+    timer_chimes::run(&lib, results)?;
     blind_listening::run(&lib, &video, results)?;
     bilibili_parts::run(&lib, results)?;
     model_progress::run(&lib, results)?;
@@ -878,9 +881,17 @@ fn main() -> Result<()> {
         Some("--command-import-only") => "command-import-only",
         Some("--audio-batch-only") => "audio-batch-only",
         Some("--clip-marks-only") => "clip-marks-only",
+        Some("--timer-chimes-only") => "timer-chimes-only",
+        Some("--timer-chimes-audible") => "timer-chimes-audible",
         _ => "full",
     };
-    let result = if mode == "clip-marks-only" {
+    let result = if mode == "timer-chimes-audible" {
+        let lib = Library::open(output.join(format!("timer-chimes-device-{}", data::id())))?;
+        timer_chimes::audible(&lib, &mut results)
+    } else if mode == "timer-chimes-only" {
+        let lib = Library::open(output.join(format!("timer-chimes-{}", data::id())))?;
+        timer_chimes::run(&lib, &mut results)
+    } else if mode == "clip-marks-only" {
         let lib = Library::open(output.join(format!("clip-marks-{}", data::id())))?;
         clip_marks::run(
             &lib,
