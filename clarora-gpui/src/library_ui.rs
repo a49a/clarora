@@ -232,6 +232,36 @@ impl AppView {
                         group_total - attached
                     )),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        self.button(
+                            "library-group-english",
+                            "整组生成英文字幕",
+                            Action::AudioGroupSubtitles(clarora_gpui::audio_batch::Mode::English),
+                            cx,
+                        )
+                        .primary()
+                        .h(px(32.))
+                        .disabled(busy || group_total == 0)
+                        .tooltip("处理全组，不受搜索和筛选影响；已有英文字幕跳过"),
+                    )
+                    .child(
+                        self.button(
+                            "library-group-chinese",
+                            "整组翻译中文字幕",
+                            Action::AudioGroupSubtitles(clarora_gpui::audio_batch::Mode::Chinese),
+                            cx,
+                        )
+                        .outline()
+                        .h(px(32.))
+                        .disabled(busy || group_total == 0)
+                        .tooltip("只翻译缺少中文的句子；没有英文字幕时先自动生成，已有中文保留"),
+                    ),
+            )
             .child(Input::new(&self.inputs["library_search"]));
         let mut filters = div().flex().gap_1().items_center().flex_wrap();
         for (i, label) in [(0, "全部"), (1, "附字幕"), (2, "待配字幕")] {

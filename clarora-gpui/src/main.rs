@@ -250,6 +250,7 @@ enum Action {
     CheckAudio(String),
     Suspend(bool),
     CommandImport,
+    AudioGroupSubtitles(clarora_gpui::audio_batch::Mode),
     ConfigureCommandImport,
     SaveCommandImport,
     FloatingImport,
@@ -276,6 +277,7 @@ enum Outcome {
     Recording(PathBuf),
     TtsReady(Row),
     CommandImported(clarora_gpui::command_import::Report),
+    AudioBatch(clarora_gpui::audio_batch::Report),
 }
 enum Event {
     SubtitleProgress(String),
@@ -1256,10 +1258,12 @@ impl AppView {
                     }
                     Event::Done(request, result) => {
                         let task_retry = self.tasks.retry.take();
-                        let failed = result.is_err() || matches!(&result, Ok(Outcome::Issue(_)));
+                        let failed = result.is_err()
+                            || matches!(&result, Ok(Outcome::Issue(_)))
+                            || matches!(&result, Ok(Outcome::AudioBatch(report)) if !report.failed.is_empty());
                         let completed_chat = request.is_some();
                         let accepted = request.as_ref().is_none_or(|r| self.chat.finish_request(r));
-                        let cancelled = self
+                        let mut cancelled = self
                             .tasks
                             .cancel
                             .as_ref()
@@ -1281,6 +1285,17 @@ impl AppView {
                             continue;
                         }
                         match result {
+                            Ok(Outcome::AudioBatch(report)) => {
+                                cancelled = report.cancelled;
+                                self.report_status(
+                                    if report.failed.is_empty() {
+                                        FeedbackKind::Info
+                                    } else {
+                                        FeedbackKind::Error
+                                    },
+                                    report.message(),
+                                );
+                            }
                             Ok(Outcome::CommandImported(report)) if !cancelled => {
                                 self.report_status(FeedbackKind::Info, report.message());
                                 self.command_imported = Some(report);
@@ -4411,6 +4426,24 @@ impl AppView {
                         clarora_gpui::audio_tools::merge(&lib, &rows, &group, &cancel)?;
                         Ok(Outcome::Message("已合并音频与字幕，原文件保留".into()))
                     });
+                }
+                Action::AudioGroupSubtitles(mode) => {
+                    ensure!(self.tasks.cancel.is_none(), "请完成或取消当前任务后重试");
+                    let plan = clarora_gpui::audio_batch::Plan::new(
+                        &self.lib,
+                        &self.audio.practice_id,
+                        mode,
+                    )?;
+                    let title = format!("{} · {}", mode.label(), plan.group_name);
+                    self.begin_scoped(TaskScope::Application, &title, move |lib, cancel, tx| {
+                        Ok(Outcome::AudioBatch(plan.run(&lib, &cancel, |stage| {
+                            let _ = tx.send(Event::SubtitleProgress(stage.into()));
+                        })))
+                    });
+                    self.tasks.notice = Some(TaskNotice::new(
+                        &title,
+                        "逐条处理全组；已有字幕自动跳过，可随时取消",
+                    ));
                 }
                 Action::CommandImport => {
                     let command = self.import_command.clone();

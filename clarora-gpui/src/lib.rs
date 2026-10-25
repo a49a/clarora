@@ -30,6 +30,7 @@ pub mod blind_listening;
 
 pub mod tts;
 
+pub mod audio_batch;
 pub mod audio_library;
 pub mod command_import;
 

@@ -3,6 +3,8 @@
 mod ai_completion;
 #[path = "support/asr_pauses.rs"]
 mod asr_pauses;
+#[path = "support/audio_batch.rs"]
+mod audio_batch;
 #[path = "support/audio_library.rs"]
 mod audio_library;
 #[path = "support/backup_cancel.rs"]
@@ -486,6 +488,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     credential_mode::run(&lib, results)?;
     audio_library::run(&lib, &video, results)?;
     command_import::run(&lib, results)?;
+    audio_batch::run(&lib, results)?;
     blind_listening::run(&lib, &video, results)?;
     bilibili_parts::run(&lib, results)?;
     model_progress::run(&lib, results)?;
@@ -870,9 +873,13 @@ fn main() -> Result<()> {
         Some("--backup-library-only") => "backup-library-only",
         Some("--video-render-only") => "video-render-only",
         Some("--command-import-only") => "command-import-only",
+        Some("--audio-batch-only") => "audio-batch-only",
         _ => "full",
     };
-    let result = if mode == "command-import-only" {
+    let result = if mode == "audio-batch-only" {
+        let lib = Library::open(output.join(format!("audio-batch-{}", data::id())))?;
+        audio_batch::run(&lib, &mut results)
+    } else if mode == "command-import-only" {
         let lib = Library::open(output.join(format!("command-import-{}", data::id())))?;
         command_import::run(&lib, &mut results)
     } else if mode == "http-only" {
