@@ -149,6 +149,8 @@ impl AppView {
             })
             .flatten();
         let mut line = div()
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_wrap()
             .gap_x_1()

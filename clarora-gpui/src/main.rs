@@ -12,6 +12,7 @@ mod library_ui;
 mod reading_ui;
 mod saved_clip_ui;
 mod settings_ui;
+mod subtitle_follow_ui;
 mod subtitle_text_ui;
 mod task_ui;
 mod video_job_ui;
@@ -54,6 +55,7 @@ use std::{
     sync::{atomic::Ordering, mpsc},
     time::{Duration, Instant, SystemTime},
 };
+use subtitle_follow_ui::centered_list;
 use task_ui::{TaskNotice, TaskState};
 actions!(
     clarora_gpui_actions,
@@ -1128,7 +1130,7 @@ impl AppView {
                 self.audio.current_scroll.set_offset(Point::default());
                 if self.audio.follow && !self.has_subtitle_selection() {
                     if let Some(i) = active {
-                        self.audio.scroll.scroll_to_reveal_item(i);
+                        self.audio.center.request(i);
                     }
                 }
             }
@@ -1139,7 +1141,7 @@ impl AppView {
                 self.video.active = active;
                 if self.video.follow && !self.has_subtitle_selection() {
                     if let Some(i) = active {
-                        self.video.scroll.scroll_to_reveal_item(i);
+                        self.video.center.request(i);
                     }
                 }
             }
@@ -2774,7 +2776,7 @@ impl AppView {
                     self.audio.follow = !self.audio.follow;
                     if self.audio.follow {
                         if let Some(i) = self.audio.active {
-                            self.audio.scroll.scroll_to_reveal_item(i);
+                            self.audio.center.request(i);
                         }
                     }
                 }
@@ -2785,6 +2787,9 @@ impl AppView {
                         .set_setting("subtitle_font_size", &size.to_string())?;
                     self.invalidate_blind();
                     self.audio.scroll.reset(self.audio.cues.len());
+                    if let Some(index) = self.audio.active {
+                        self.audio.center.request(index);
+                    }
                 }
                 Action::AudioRepeat(mode) => {
                     ensure!(mode <= 4, "无效循环方式");
@@ -4014,7 +4019,7 @@ impl AppView {
                     self.video.follow = !self.video.follow;
                     if self.video.follow {
                         if let Some(i) = self.video.active {
-                            self.video.scroll.scroll_to_reveal_item(i);
+                            self.video.center.request(i);
                         }
                     }
                 }
@@ -5265,7 +5270,7 @@ impl AppView {
         if let Some(session) = self.video.sentence_repeat {
             self.video.active = Some(session.index);
             if self.video.follow {
-                self.video.scroll.scroll_to_reveal_item(session.index);
+                self.video.center.request(session.index);
             }
             self.report_status(
                 FeedbackKind::Info,
@@ -6272,8 +6277,11 @@ impl AppView {
                 v.child(self.audio_subtitle_toolbar(cx))
             });
         let active = video_subtitles::active(&self.audio.cues, self.media.snapshot.position);
-        let transcript = list(
+        let transcript = centered_list(
+            &self.audio.center,
             self.audio.scroll.clone(),
+            self.audio.follow && !self.has_subtitle_selection(),
+            self.audio.active,
             cx.processor(|this, i: usize, _, cx| {
                 let Some(cue) = this.audio.cues.get(i) else {
                     return div().into_any_element();
@@ -7699,8 +7707,11 @@ impl AppView {
                         study = study.child(self.video_collection_panel(cx));
                     }
                     0 => {
-                        let transcript = list(
+                        let transcript = centered_list(
+                            &self.video.center,
                             self.video.scroll.clone(),
+                            self.video.follow && !self.has_subtitle_selection(),
+                            self.video.active,
                             cx.processor(|this, i: usize, _, cx| {
                                 let Some(cue) = this.video.cues.get(i) else {
                                     return div().into_any_element();

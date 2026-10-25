@@ -82,55 +82,61 @@ impl AppView {
                             .h(px((font * 4. + 40.).clamp(112., 180.).min(body_height)))
                             .overflow_y_scroll()
                             .track_scroll(&self.audio.current_scroll)
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap_3()
                             .child(
                                 div()
                                     .w_full()
-                                    .flex_shrink_0()
-                                    .max_w(px(1000.))
-                                    .min_w_0()
-                                    .text_center()
-                                    .text_size(px((font + 8.).clamp(24., 36.)))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(if cue.is_some() {
-                                        cx.theme().foreground
-                                    } else {
-                                        cx.theme().muted_foreground
-                                    })
-                                    .child(if let Some((cue, index)) = cue.zip(active) {
-                                        self.marked_cue(
-                                            true,
-                                            index,
-                                            cue,
-                                            (font + 8.).clamp(24., 36.),
-                                            true,
-                                            cx,
+                                    .min_h_full()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .flex_shrink_0()
+                                            .max_w(px(1000.))
+                                            .min_w_0()
+                                            .text_center()
+                                            .text_size(px((font + 8.).clamp(24., 36.)))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(if cue.is_some() {
+                                                cx.theme().foreground
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            })
+                                            .child(if let Some((cue, index)) = cue.zip(active) {
+                                                self.marked_cue(
+                                                    true,
+                                                    index,
+                                                    cue,
+                                                    (font + 8.).clamp(24., 36.),
+                                                    true,
+                                                    cx,
+                                                )
+                                            } else {
+                                                div().child(original).into_any_element()
+                                            }),
+                                    )
+                                    .when(!translation.is_empty(), |v| {
+                                        v.child(
+                                            div()
+                                                .w_full()
+                                                .flex_shrink_0()
+                                                .max_w(px(1000.))
+                                                .min_w_0()
+                                                .text_center()
+                                                .text_size(px((font + 2.).clamp(18., 24.)))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(self.subtitle_fragment(
+                                                    subtitle_text_ui::Surface::Focus,
+                                                    active.unwrap_or(0),
+                                                    None,
+                                                    cx,
+                                                )),
                                         )
-                                    } else {
-                                        div().child(original).into_any_element()
                                     }),
-                            )
-                            .when(!translation.is_empty(), |v| {
-                                v.child(
-                                    div()
-                                        .w_full()
-                                        .flex_shrink_0()
-                                        .max_w(px(1000.))
-                                        .min_w_0()
-                                        .text_center()
-                                        .text_size(px((font + 2.).clamp(18., 24.)))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(self.subtitle_fragment(
-                                            subtitle_text_ui::Surface::Focus,
-                                            active.unwrap_or(0),
-                                            None,
-                                            cx,
-                                        )),
-                                )
-                            }),
+                            ),
                     )
                     .child(
                         div().absolute().top_0().left_0().size_full().child(
