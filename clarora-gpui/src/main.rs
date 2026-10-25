@@ -2,6 +2,7 @@
 mod app_state;
 mod assistant_ui;
 mod audio_current_ui;
+mod audio_subtitle_ui;
 mod design;
 mod feedback_ui;
 mod floating_ui;
@@ -6021,64 +6022,13 @@ impl AppView {
             .map(|i| format!("{} / {}", i + 1, audios.len()))
             .unwrap_or_else(|| format!("0 / {}", audios.len()));
         let available = !self.audio.current_id.is_empty();
-        let mut subtitle_options = vec![
-            (
-                "导入英文字幕".into(),
-                Action::SubtitleImport(false),
-                false,
-                !available || self.tasks.cancel.is_some(),
-            ),
-            (
-                "导入中文字幕".into(),
-                Action::SubtitleImport(true),
-                false,
-                !available || self.tasks.cancel.is_some(),
-            ),
-            (
-                "生成原文字幕".into(),
-                Action::Transcribe,
-                false,
-                !available || self.tasks.cancel.is_some(),
-            ),
-            (
-                "生成中文字幕".into(),
-                Action::Translate,
-                false,
-                self.audio.cues.is_empty() || self.tasks.cancel.is_some(),
-            ),
-            ("刷新字幕".into(), Action::Refresh, false, !available),
-            (
-                "单独显示当前句".into(),
-                Action::AudioCurrent,
-                self.audio.show_current,
-                false,
-            ),
-        ];
-        subtitle_options.extend([14, 16, 18, 20, 24, 28, 32].into_iter().map(|n| {
-            (
-                format!("字幕 {n}px"),
-                Action::AudioFont(n),
-                self.audio.font_size == n,
-                false,
-            )
-        }));
-        if self.audio.blind.enabled {
-            subtitle_options = vec![(
-                "管理字幕（退出盲听）".into(),
-                Action::AudioBlind(false),
-                false,
-                self.tasks.cancel.is_some(),
-            )];
-        }
-        let header = div()
+        let navigation = div()
             .flex()
             .items_center()
             .gap_2()
             .flex_wrap()
             .px_4()
             .py_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
             .child(
                 self.button("audio-subtitle-mode", "字幕", Action::AudioBlind(false), cx)
                     .selected(!self.audio.blind.enabled)
@@ -6151,12 +6101,18 @@ impl AppView {
                     .disabled(self.audio.cues.is_empty()),
                 )
             })
-            .child(self.player_menu(
-                "audio-subtitle-options",
-                "字幕 ▾".into(),
-                subtitle_options,
-                cx,
-            ))
+            .when(self.audio.blind.enabled, |v| {
+                v.child(
+                    self.button(
+                        "audio-manage-subtitles",
+                        "管理字幕",
+                        Action::AudioBlind(false),
+                        cx,
+                    )
+                    .ghost()
+                    .disabled(self.tasks.cancel.is_some()),
+                )
+            })
             .child(
                 self.button(
                     "audio-manage",
@@ -6166,6 +6122,16 @@ impl AppView {
                 )
                 .ghost(),
             );
+        let header = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(navigation)
+            .when(!self.audio.blind.enabled, |v| {
+                v.child(self.audio_subtitle_toolbar(cx))
+            });
         let active = video_subtitles::active(&self.audio.cues, self.media.snapshot.position);
         let transcript = list(
             self.audio.scroll.clone(),
@@ -6518,8 +6484,10 @@ impl AppView {
                             .p_8()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(if available {
-                                "在右上角“字幕”菜单导入字幕或生成原文，开始逐句学习。"
+                            .child(if available && self.audio.blind.enabled {
+                                "暂无字幕；可继续盲听，或点击“管理字幕”退出盲听后生成字幕。"
+                            } else if available {
+                                "点击上方“生成字幕”开始逐句学习，再点“翻译成中文”添加译文。已有字幕可从“更多”导入。"
                             } else {
                                 "选择练习组和音频后开始学习，也可前往“管理音频”导入材料。"
                             }),
