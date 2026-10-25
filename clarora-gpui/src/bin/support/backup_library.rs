@@ -396,6 +396,27 @@ pub fn run(parent: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result
     let cloud = Cloud::start()?;
     let storage = cloud.storage()?;
     let remote = storage.upload(&source, &cancel)?;
+    let cloud_manifest: Value = serde_json::from_slice(&cloud.objects.lock().unwrap()[&remote])?;
+    ensure!(
+        cloud_manifest["sources"]
+            .as_object()
+            .is_some_and(|s| s.len() == 2),
+        "B站云备份没有保存分P来源链接"
+    );
+    let video_bytes = fs::read(fixture)?;
+    ensure!(
+        cloud
+            .objects
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(key, bytes)| !key.contains("/media/") || *bytes != video_bytes),
+        "B站原视频仍被上传"
+    );
+    fs::write(
+        root.join("cloud-links-manifest.json"),
+        serde_json::to_vec_pretty(&cloud_manifest)?,
+    )?;
     let changing = Library::open(root.join("changing-source"))?;
     let changing_file = changing.root.join("media/changing.bin");
     fs::write(&changing_file, vec![42u8; 65536])?;
@@ -566,6 +587,65 @@ pub fn run(parent: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result
     cases.push(json!({"case":"same source merges new P metadata/cache while preserving valid current P and position","passed":true}));
     let remote_lib = Library::open(root.join("cloud-restored"))?;
     storage.restore(&remote_lib, &remote, &cancel)?;
+    let linked = video_library::Collection::load(&remote_lib)?;
+    let linked_series = linked
+        .active()
+        .context("链接收藏未恢复")?
+        .series
+        .as_ref()
+        .unwrap();
+    let linked_zip = root.join("pending-links.zip");
+    backup::export_local(&remote_lib, &linked_zip)?;
+    let pending_copy = Library::open(root.join("pending-copy"))?;
+    backup::import_local(&pending_copy, &linked_zip)?;
+    let copied = video_library::Collection::load(&pending_copy)?;
+    ensure!(
+        !copied.active().unwrap().path.exists()
+            && clarora_gpui::video_subtitles::load(&pending_copy, &copied.active().unwrap().path)?
+                .len()
+                == 1,
+        "未下载链接的本地备份不能恢复字幕/收藏"
+    );
+    let pending_cloud = storage.upload(&pending_copy, &cancel)?;
+    let pending_manifest: Value =
+        serde_json::from_slice(&cloud.objects.lock().unwrap()[&pending_cloud])?;
+    ensure!(
+        pending_manifest["sources"]
+            .as_object()
+            .is_some_and(|s| s.len() == 2),
+        "未下载的来源无法再次云备份"
+    );
+    let downloader = clarora_gpui::video_jobs::Downloads::default();
+    for index in 0..2 {
+        let path = linked_series.parts[index]
+            .path
+            .as_ref()
+            .context("链接分P丢失")?;
+        ensure!(!path.exists(), "链接恢复不应下载或创建视频文件");
+        let cues = clarora_gpui::video_subtitles::load(&remote_lib, path)?;
+        ensure!(cues.len() == 1, "未下载时无法保留字幕");
+        let before_key = video_qa::build(path, &cues, video_qa::Scope::All, 0., "")?.key;
+        let pending = remote_lib
+            .root
+            .join("downloads")
+            .join(format!("fixture-{index}.mp4"));
+        fs::copy(fixture, &pending)?;
+        let ready =
+            downloader
+                .obtain_with_library(&remote_lib, linked_series, index, &cancel, || Ok(pending))?;
+        ensure!(ready == *path && ready.is_file(), "重新下载未接回链接收藏");
+        ensure!(
+            video_qa::build(
+                &ready,
+                &clarora_gpui::video_subtitles::load(&remote_lib, &ready)?,
+                video_qa::Scope::All,
+                0.,
+                ""
+            )?
+            .key == before_key,
+            "重新下载导致字幕问答上下文变化"
+        );
+    }
     let state = assert_restored(
         &remote_lib,
         &epub_identity,
@@ -574,6 +654,93 @@ pub fn run(parent: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result
         false,
     )?;
     cases.push(json!({"case":"loopback cloud full-library roundtrip","passed":true,"state":state,"objects":cloud.objects.lock().unwrap().keys().cloned().collect::<Vec<_>>()}));
+    let again = storage.upload(&remote_lib, &cancel)?;
+    let again_manifest: Value = serde_json::from_slice(&cloud.objects.lock().unwrap()[&again])?;
+    ensure!(
+        again_manifest["sources"]
+            .as_object()
+            .is_some_and(|s| s.len() == 2),
+        "重新下载后再次云备份上传原视频"
+    );
+    let local_again = root.join("linked-local.zip");
+    backup::export_local(&remote_lib, &local_again)?;
+    let local_manifest: Value = {
+        let mut zip = zip::ZipArchive::new(fs::File::open(local_again)?)?;
+        let mut bytes = vec![];
+        zip.by_name("manifest.json")?.read_to_end(&mut bytes)?;
+        serde_json::from_slice(&bytes)?
+    };
+    ensure!(
+        local_manifest
+            .get("sources")
+            .is_none_or(|s| s.as_object().unwrap().is_empty()),
+        "有原文件的本地ZIP不应降级为链接"
+    );
+    cases.push(json!({"case":"cloud bilibili links omit video bytes; restore subtitles/chat/progress; reacquire keeps identity; rebackup stays links; ZIP stays complete","passed":true,"manifest":root.join("cloud-links-manifest.json")}));
+    storage.restore(&remote_lib, &remote, &cancel)?;
+    ensure!(
+        video_library::Collection::load(&remote_lib)?
+            .active()
+            .unwrap()
+            .path
+            .is_file(),
+        "重复恢复链接覆盖了本机已下载视频"
+    );
+    let native = Library::open(root.join("native-cloud"))?;
+    let native_path = native.root.join("media/native.mp4");
+    fs::copy(fixture, &native_path)?;
+    let mut native_videos = video_library::Collection::default();
+    let native_ids = native_videos.add(&[native_path], None)?;
+    native_videos.select(&native_ids[0])?;
+    native_videos.save(&native)?;
+    let native_key = storage.upload(&native, &cancel)?;
+    let native_target = Library::open(root.join("native-cloud-restored"))?;
+    storage.restore(&native_target, &native_key, &cancel)?;
+    ensure!(
+        fs::read(
+            video_library::Collection::load(&native_target)?
+                .active()
+                .unwrap()
+                .path
+                .clone()
+        )? == video_bytes,
+        "无来源链接的本地视频被漏掉"
+    );
+    let mut attack = cloud_manifest.clone();
+    let reference = attack["sources"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    attack["sources"][&reference] = json!("https://example.com/not-bilibili.mp4");
+    let mut attack: backup::Manifest = serde_json::from_value(attack)?;
+    ensure!(backup::validate(&mut attack).is_err(), "任意远程来源被接受");
+    let mut mismatch = cloud_manifest.clone();
+    let refs = mismatch["sources"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    let current_ref = mismatch["library"]["videos"]["items"][0]["path"]
+        .as_str()
+        .unwrap();
+    let other = refs
+        .iter()
+        .find(|r| r.as_str() != current_ref)
+        .unwrap()
+        .clone();
+    mismatch["library"]["videos"]["items"][0]["path"] = json!(other);
+    // The selected path must still name the current P, rather than another valid URL.
+    mismatch["library"]["videos"]["items"][0]["series"]["parts"][0]["path"] = Value::Null;
+    let mut mismatch: backup::Manifest = serde_json::from_value(mismatch)?;
+    ensure!(
+        backup::validate(&mut mismatch).is_err(),
+        "分P来源错配未拒绝"
+    );
+    cases.push(json!({"case":"pending link ZIP/cloud roundtrip; repeat restore preserves cached video; local video bytes retained; foreign/mismatched sources rejected","passed":true}));
     let before = local.vault()?;
     let before_media = files(&local.root.join("media"))?;
     let broken = root.join("missing-attachment.zip");

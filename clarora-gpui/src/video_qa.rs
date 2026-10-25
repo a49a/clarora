@@ -35,8 +35,14 @@ pub fn build(
     position: f64,
     embedded: &str,
 ) -> Result<Material> {
-    let path = video.canonicalize()?;
-    let meta = std::fs::metadata(&path)?;
+    let (path, identity) = if let Some(source) = crate::bilibili::source_identity(video) {
+        (video.to_path_buf(), format!("bilibili:{source}"))
+    } else {
+        let path = video.canonicalize()?;
+        let meta = std::fs::metadata(&path)?;
+        let identity = format!("{}:{}:{:?}", path.display(), meta.len(), meta.modified()?);
+        (path, identity)
+    };
     let filename = path.file_name().context("视频名称无效")?.to_string_lossy();
     let (label, body, scope_id) = match scope {
         Scope::All => {
@@ -115,13 +121,7 @@ pub fn build(
     let text =
         format!("视频：{filename}\n引用范围：{label}\n以下仅为字幕文本，不包含画面信息：\n{body}");
     let key = hex::encode(Sha256::digest(
-        format!(
-            "video-qa:{}:{}:{:?}:{scope_id}:{text}",
-            path.display(),
-            meta.len(),
-            meta.modified()?
-        )
-        .as_bytes(),
+        format!("video-qa:{identity}:{scope_id}:{text}").as_bytes(),
     ));
     Ok(Material {
         video: path,

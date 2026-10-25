@@ -1,5 +1,40 @@
 use super::*;
 impl AppView {
+    pub(super) fn select_source_only(&mut self, key: &str, play: bool) -> Result<bool> {
+        let mut videos = video_library::Collection::load(&self.lib)?;
+        let video = videos
+            .items
+            .iter()
+            .find(|v| v.id == key)
+            .context("该视频已移出收藏")?
+            .clone();
+        if video.playable_path().is_some() || video.series.is_none() {
+            return Ok(false);
+        }
+        let series = video.series.unwrap();
+        let index = series.current.unwrap_or(series.requested);
+        self.save_media_position();
+        videos.selected = Some(key.into());
+        videos.save(&self.lib)?;
+        series.save(&self.lib)?;
+        self.clear_video_sentence_repeat();
+        self.media.player.command(["stop"]);
+        self.media.path = None;
+        self.video.path = None;
+        self.video.set_cues(vec![]);
+        self.video.active = None;
+        self.video.caption_source = VideoCaptionSource::Hidden;
+        self.video.material = None;
+        self.video.material_error.clear();
+        self.video.series = Some(series);
+        self.video.collection = videos;
+        self.video.tab = 1;
+        self.video.tools_open = false;
+        if play {
+            self.start_part(index);
+        }
+        Ok(true)
+    }
     pub(super) fn video_collection_panel(&self, cx: &Context<Self>) -> AnyElement {
         let busy = self.tasks.cancel.is_some();
         let mut body = div()
@@ -46,6 +81,7 @@ impl AppView {
             let key = video.id.clone();
             let selected = self.video.collection.selected.as_ref() == Some(&key);
             let missing = video.playable_path().is_none();
+            let can_download = video.series.is_some();
             let source = if video.series.is_some() {
                 "bilibili"
             } else if video.path.starts_with(self.lib.root.join("downloads")) {
@@ -62,7 +98,7 @@ impl AppView {
             body = body.child(
                 div()
                     .id(SharedString::from(format!("video-favorite-{key}")))
-                    .when(!busy && !missing, |v| {
+                    .when(!busy && (!missing || can_download), |v| {
                         v.cursor_pointer()
                             .hover(|v| v.bg(cx.theme().accent))
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -94,7 +130,9 @@ impl AppView {
                             .text_color(cx.theme().muted_foreground)
                             .child(format!(
                                 "{} · {source}",
-                                if missing {
+                                if missing && can_download {
+                                    "仅保存来源链接 · 播放时下载"
+                                } else if missing {
                                     "文件已移动或删除"
                                 } else if selected {
                                     "当前选中"
@@ -137,7 +175,9 @@ impl AppView {
                             .child(
                                 self.button(
                                     SharedString::from(format!("video-select-{key}")),
-                                    if selected {
+                                    if missing && can_download {
+                                        "下载并播放"
+                                    } else if selected {
                                         "从头播放"
                                     } else {
                                         "选择播放"
@@ -145,7 +185,7 @@ impl AppView {
                                     Action::VideoSelect(key.clone()),
                                     cx,
                                 )
-                                .disabled(busy || missing),
+                                .disabled(busy || (missing && !can_download)),
                             )
                             .when(video.series.is_some(), |v| {
                                 v.child(
@@ -155,7 +195,7 @@ impl AppView {
                                         Action::VideoEpisodes(key.clone()),
                                         cx,
                                     )
-                                    .disabled(busy || missing),
+                                    .disabled(busy),
                                 )
                             })
                             .child(

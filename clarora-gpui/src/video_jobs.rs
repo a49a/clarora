@@ -49,8 +49,32 @@ impl Downloads {
         index: usize,
         cancel: &Cancel,
     ) -> Result<PathBuf> {
-        self.obtain_with(series, index, cancel, || {
+        self.obtain_with_library(lib, series, index, cancel, || {
             process::download(&lib.root, &series.url(index)?, cancel)
+        })
+    }
+    /// Same coordinated download and cache installation, with an injectable transport for E2E.
+    pub fn obtain_with_library(
+        &self,
+        lib: &Library,
+        series: &Series,
+        index: usize,
+        cancel: &Cancel,
+        fetch: impl FnOnce() -> Result<PathBuf>,
+    ) -> Result<PathBuf> {
+        self.obtain_with(series, index, cancel, || {
+            let path = fetch()?;
+            let target = crate::bilibili::source_path(lib, &series.url(index)?)?;
+            if series.parts[index].path.as_ref() == Some(&target) && path != target {
+                ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+                ensure!(playable(&path), "下载结果为空或不存在");
+                std::fs::create_dir_all(target.parent().context("视频缓存路径无效")?)?;
+                // process::download and this cache are on the same library filesystem.
+                std::fs::rename(&path, &target).context("无法安装重新下载的视频缓存")?;
+                Ok(target)
+            } else {
+                Ok(path)
+            }
         })
     }
     /// The fetch callback supports real filesystem/concurrency E2E without external downloads.

@@ -3782,6 +3782,9 @@ impl AppView {
                         self.tasks.cancel.is_none(),
                         "请完成或取消当前任务后再切换视频"
                     );
+                    if self.select_source_only(&key, true)? {
+                        return Ok(());
+                    }
                     let mut videos = video_library::Collection::load(&self.lib)?;
                     let video = videos.select(&key)?;
                     videos.save(&self.lib)?;
@@ -3799,6 +3802,9 @@ impl AppView {
                         self.tasks.cancel.is_none(),
                         "请完成或取消当前任务后再切换视频"
                     );
+                    if self.select_source_only(&key, false)? {
+                        return Ok(());
+                    }
                     if self.video.collection.selected.as_ref() != Some(&key)
                         || self.video.path.is_none()
                     {
@@ -7418,7 +7424,8 @@ impl AppView {
                                                 self.video.collection.selected.as_ref()
                                                     == Some(&v.id),
                                                 self.tasks.cancel.is_some()
-                                                    || v.playable_path().is_none(),
+                                                    || (v.playable_path().is_none()
+                                                        && v.series.is_none()),
                                             )
                                         })
                                         .collect(),

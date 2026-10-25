@@ -12,6 +12,33 @@ use std::{
     time::Duration,
 };
 
+/// A restored source has a stable local cache slot, without a fake video file.
+pub(crate) fn source_path(lib: &Library, url: &str) -> Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+    ensure!(process::normalize_bilibili(url)? == url, "视频来源链接无效");
+    Ok(lib
+        .root
+        .join("downloads")
+        .join("remote-bilibili")
+        .join(hex::encode(Sha256::digest(url.as_bytes())))
+        .join("video.mp4"))
+}
+pub(crate) fn source_identity(path: &Path) -> Option<String> {
+    if path.file_name()?.to_str()? != "video.mp4" {
+        return None;
+    }
+    let parent = path.parent()?;
+    let key = parent.file_name()?.to_str()?;
+    if key.len() != 64
+        || !key.bytes().all(|b| b.is_ascii_hexdigit())
+        || parent.parent()?.file_name()?.to_str()? != "remote-bilibili"
+        || parent.parent()?.parent()?.file_name()?.to_str()? != "downloads"
+    {
+        return None;
+    }
+    Some(key.to_string())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Part {
     pub number: u32,

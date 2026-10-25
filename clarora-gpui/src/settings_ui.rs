@@ -260,6 +260,8 @@ impl AppView {
         content = content.child(
             panel(cx)
                 .child(div().text_lg().child("同步与备份"))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                    .child("云备份中的 bilibili 原视频仅保存来源链接，恢复后按需下载；字幕、学习记录和本地视频文件继续备份。本机 ZIP 保留可用视频原文件。"))
                 .child(self.field("provider", "存储类型 s3 / oss"))
                 .child(self.field("endpoint", "Endpoint"))
                 .child(self.field("region", "Region"))

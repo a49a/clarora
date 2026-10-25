@@ -40,6 +40,9 @@ pub struct Manifest {
     pub created_at: String,
     pub data: BTreeMap<String, Vec<Row>>,
     pub files: BTreeMap<String, String>,
+    /// Re-downloadable Bilibili originals; never object-storage file keys.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sources: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub library: Option<LibraryState>,
 }
@@ -260,6 +263,7 @@ fn library_state(
             contexts.insert(context.to_string());
         }
     }
+    let known_sources = source_paths(&state)?;
     let mut add = |page: &str, path: &Path, cue: Option<i64>, material: &str| {
         let context = material_context(page, material);
         if contexts.contains(&context) {
@@ -290,7 +294,11 @@ fn library_state(
     for video in video_paths {
         check_cancel(cancel)?;
         add("video", &video, None, &video.to_string_lossy());
-        let key = crate::video_subtitles::identity_key(&video)?;
+        let key = match crate::video_subtitles::identity_key(&video) {
+            Ok(key) => key,
+            Err(_) if known_sources.contains_key(&video) && !video.is_file() => continue,
+            Err(error) => return Err(error),
+        };
         if let Some(subtitle) = settings.get(&key).filter(|s| !s.is_empty()) {
             let path = PathBuf::from(subtitle);
             ensure!(path.starts_with(lib.root.join("media")), "字幕缓存路径无效");
@@ -373,28 +381,72 @@ fn map_media(
     Ok(())
 }
 pub fn collect(lib: &Library) -> Result<(Manifest, BTreeMap<String, PathBuf>)> {
-    collect_cancellable(lib, &crate::process::cancel_token())
+    collect_cancellable(lib, &crate::process::cancel_token(), false)
+}
+fn source_paths(state: &LibraryState) -> Result<BTreeMap<PathBuf, String>> {
+    let mut sources = BTreeMap::new();
+    if let Some(videos) = &state.videos {
+        for video in &videos.items {
+            if let Some(series) = &video.series {
+                for (index, part) in series.parts.iter().enumerate() {
+                    if let Some(path) = &part.path {
+                        sources.insert(path.clone(), series.url(index)?);
+                    }
+                }
+                let index = series
+                    .parts
+                    .iter()
+                    .position(|p| p.path.as_ref() == Some(&video.path))
+                    .or(series.current)
+                    .unwrap_or(series.requested);
+                sources.insert(video.path.clone(), series.url(index)?);
+            }
+        }
+    }
+    Ok(sources)
 }
 fn collect_cancellable(
     lib: &Library,
     cancel: &Cancel,
+    links_only: bool,
 ) -> Result<(Manifest, BTreeMap<String, PathBuf>)> {
     check_cancel(cancel)?;
     let (data, settings) = lib.vault_with_settings()?;
     let library = library_state(lib, &data, &settings, cancel)?;
+    let mut source_paths = source_paths(&library)?;
+    for (path, url) in source_paths.clone() {
+        if let Ok(path) = path.canonicalize() {
+            source_paths.insert(path, url);
+        }
+    }
     let mut manifest = Manifest {
         version: 2,
         id: id(),
         created_at: chrono::Utc::now().to_rfc3339(),
         data,
         files: BTreeMap::new(),
+        sources: BTreeMap::new(),
         library: Some(library),
     };
     let mut paths = BTreeMap::new();
     let mut refs: HashMap<PathBuf, String> = HashMap::new();
+    let mut sources = BTreeMap::new();
     map_manifest(&mut manifest, |uri| {
         check_cancel(cancel)?;
-        let path = local_path(uri)?.canonicalize().with_context(|| {
+        let original = local_path(uri)?;
+        let source = source_paths.get(&original).or_else(|| {
+            original
+                .canonicalize()
+                .ok()
+                .as_ref()
+                .and_then(|p| source_paths.get(p))
+        });
+        if let Some(url) = source.filter(|_| links_only || !original.is_file()) {
+            let reference = format!("source:{}", hash(url));
+            sources.insert(reference.clone(), url.clone());
+            return Ok(reference);
+        }
+        let path = original.canonicalize().with_context(|| {
             format!(
                 "备份附件缺失：{}",
                 Path::new(uri)
@@ -414,6 +466,7 @@ fn collect_cancellable(
         refs.insert(path, reference.clone());
         Ok(reference)
     })?;
+    manifest.sources = sources;
     Ok((manifest, paths))
 }
 fn attachment_stamps(
@@ -474,7 +527,7 @@ pub fn export_local(lib: &Library, path: &Path) -> Result<()> {
     export_local_cancellable(lib, path, &crate::process::cancel_token())
 }
 pub fn export_local_cancellable(lib: &Library, path: &Path, cancel: &Cancel) -> Result<()> {
-    let (mut manifest, files) = collect_cancellable(lib, cancel)?;
+    let (mut manifest, files) = collect_cancellable(lib, cancel, false)?;
     let stamps = attachment_stamps(&files)?;
     let temp = path.with_file_name(format!(
         ".{}-{}.part",
@@ -563,10 +616,65 @@ pub fn validate(manifest: &mut Manifest) -> Result<()> {
             );
         }
     }
+    ensure!(manifest.sources.len() <= 100000, "备份视频来源过多");
+    let mut used = std::collections::BTreeSet::new();
+    for (reference, url) in &manifest.sources {
+        ensure!(
+            reference == &format!("source:{}", hash(url))
+                && crate::process::normalize_bilibili(url)? == *url,
+            "备份视频来源无效"
+        );
+    }
+    if let Some(videos) = manifest.library.as_ref().and_then(|s| s.videos.as_ref()) {
+        for video in &videos.items {
+            let mut check_source = |path: &Path, expected: String| -> Result<()> {
+                let reference = path.to_string_lossy();
+                if reference.starts_with("source:") {
+                    ensure!(
+                        manifest.sources.get(reference.as_ref()) == Some(&expected),
+                        "视频来源与分P不匹配"
+                    );
+                    used.insert(reference.into_owned());
+                }
+                Ok(())
+            };
+            if let Some(series) = &video.series {
+                for (index, part) in series.parts.iter().enumerate() {
+                    if let Some(path) = &part.path {
+                        check_source(path, series.url(index)?)?;
+                    }
+                }
+                let index = series
+                    .parts
+                    .iter()
+                    .position(|p| p.path.as_ref() == Some(&video.path))
+                    .or(series.current)
+                    .unwrap_or(series.requested);
+                check_source(&video.path, series.url(index)?)?;
+            } else {
+                ensure!(
+                    !video.path.to_string_lossy().starts_with("source:"),
+                    "本地视频不能引用网络来源"
+                );
+            }
+        }
+    }
+    ensure!(
+        used.len() == manifest.sources.len(),
+        "备份包含未绑定视频的来源链接"
+    );
     let references = regex::Regex::new(r"^media:[0-9]+$")?;
     let files = &manifest.files;
     let mut check = manifest.clone();
     map_manifest(&mut check, |reference| {
+        if let Some(url) = manifest.sources.get(reference) {
+            return Ok(std::env::temp_dir()
+                .join("downloads/remote-bilibili")
+                .join(hash(url))
+                .join("video.mp4")
+                .to_string_lossy()
+                .into_owned());
+        }
         ensure!(
             references.is_match(reference) && files.contains_key(reference),
             "备份缺少或包含无效附件引用"
@@ -599,8 +707,14 @@ pub fn import_local_cancellable(lib: &Library, path: &Path, cancel: &Cancel) -> 
     let result = (|| {
         let mut mapped: HashMap<String, String> = HashMap::new();
         let files = manifest.files.clone();
+        let sources = manifest.sources.clone();
         map_manifest(&mut manifest, |reference| {
             check_cancel(cancel)?;
+            if let Some(url) = sources.get(reference) {
+                return Ok(crate::bilibili::source_path(lib, url)?
+                    .to_string_lossy()
+                    .into_owned());
+            }
             if let Some(path) = mapped.get(reference) {
                 return Ok(path.clone());
             }
@@ -1646,7 +1760,7 @@ impl Storage {
     }
     pub fn upload(&self, lib: &Library, cancel: &crate::process::Cancel) -> Result<String> {
         check_cancel(cancel)?;
-        let (mut manifest, files) = collect_cancellable(lib, cancel)?;
+        let (mut manifest, files) = collect_cancellable(lib, cancel, true)?;
         let stamps = attachment_stamps(&files)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1721,10 +1835,16 @@ impl Storage {
         fs::create_dir_all(&root)?;
         let mut paths: HashMap<String, String> = HashMap::new();
         let files = manifest.files.clone();
+        let sources = manifest.sources.clone();
         let remote_prefix = format!("{}/media/{}/", self.config.prefix, manifest.id);
         let result = (|| {
             map_manifest(&mut manifest, |reference| {
                 check_cancel(cancel)?;
+                if let Some(url) = sources.get(reference) {
+                    return Ok(crate::bilibili::source_path(lib, url)?
+                        .to_string_lossy()
+                        .into_owned());
+                }
                 if let Some(p) = paths.get(reference) {
                     return Ok(p.clone());
                 }

@@ -9,6 +9,9 @@ use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path, sync::atomic::Ordering, time::Duration};
 pub(crate) fn identity_key(video: &Path) -> Result<String> {
+    if let Some(source) = crate::bilibili::source_identity(video) {
+        return Ok(format!("video_subtitles_source_{source}"));
+    }
     let path = video.canonicalize()?;
     let meta = fs::metadata(&path)?;
     Ok(format!(
