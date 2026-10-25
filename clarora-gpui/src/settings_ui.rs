@@ -8,6 +8,15 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut content = div().flex().flex_col().gap_5().w_full();
+        content = content.child(panel(cx)
+            .child(div().text_lg().child("悬浮窗与命令导入"))
+            .child(self.field("command", "本机导入命令"))
+            .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                .child("仅在点击导入时执行。命令每行输出一个本机音频文件的完整路径，音频保存到点击时选择的练习组。"))
+            .child(div().flex().gap_2()
+                .child(self.button("save-import-command", "保存导入命令", Action::SaveCommandImport, cx)
+                    .primary().disabled(self.tasks.cancel.is_some()))
+                .child(self.button("settings-floating-import", "显示 / 隐藏悬浮窗", Action::FloatingImport, cx))));
         let mut runtime = panel(cx)
             .child(div().text_lg().child("运行环境"))
             .child(if self.settings.runtime.packaged {
@@ -241,7 +250,6 @@ impl AppView {
                             "local_model",
                             "本地语音模型 ID（local 引擎使用，选用后需保存）",
                         ))
-                        .child(self.field("command", "本机命令导入"))
                         .child(
                             self.button("save-ai", "保存 AI 与学习设置", Action::SaveAi, cx)
                                 .primary()

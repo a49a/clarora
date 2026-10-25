@@ -4,6 +4,7 @@ mod assistant_ui;
 mod audio_current_ui;
 mod design;
 mod feedback_ui;
+mod floating_ui;
 mod focus_ui;
 mod library_ui;
 mod reading_ui;
@@ -56,6 +57,8 @@ actions!(
         Quit,
         OpenFile,
         ToggleAssistant,
+        ToggleFloatingImport,
+        ImportAudioCommand,
         ToggleNavigation,
         AskAi,
         NewChat,
@@ -246,6 +249,11 @@ enum Action {
     CheckAudio(String),
     Suspend(bool),
     CommandImport,
+    ConfigureCommandImport,
+    SaveCommandImport,
+    FloatingImport,
+    NameImportedAudio,
+    CloseFloatingNames,
     Refresh,
     GraphSelect(String),
     GraphList(i64),
@@ -266,6 +274,7 @@ enum Outcome {
     Backups(Vec<String>),
     Recording(PathBuf),
     TtsReady(Row),
+    CommandImported(clarora_gpui::command_import::Report),
 }
 enum Event {
     SubtitleProgress(String),
@@ -338,6 +347,10 @@ struct AppView {
     dark: bool,
     focus: FocusHandle,
     assistant_open: bool,
+    floating_window: Option<AnyWindowHandle>,
+    floating_name_window: Option<AnyWindowHandle>,
+    command_imported: Option<clarora_gpui::command_import::Report>,
+    import_command: String,
     graph_node: String,
     graph_list: i64,
 }
@@ -422,6 +435,7 @@ impl AppView {
                 .filter(|v| v.is_finite() && (0.5..=2.).contains(v))
                 .unwrap_or(1.),
             tts_last: None,
+            import_command: lib.setting("command").unwrap_or_default(),
             lib,
             writing: None,
             page: "flashcard".into(),
@@ -461,6 +475,9 @@ impl AppView {
             dark: cx.theme().is_dark(),
             focus: cx.focus_handle(),
             assistant_open: false,
+            floating_window: None,
+            floating_name_window: None,
+            command_imported: None,
             graph_node: "demo-1".into(),
             graph_list: 0,
         };
@@ -582,10 +599,13 @@ impl AppView {
         this.navigation_open = this.lib.setting("navigation_open").ok().as_deref() != Some("false");
         this.writing =
             Some(cx.new(|cx| writing_ui::WritingView::new(this.lib.clone(), window, cx)));
-        if this.page == "library" {
-            this.audio.practice_id = this.lib.setting("library_group").unwrap_or_default();
-        }
+        this.audio.practice_id = this.lib.setting("library_group").unwrap_or_default();
         this.refresh();
+        if this.lib.setting("floating_import_open").ok().as_deref() == Some("true") {
+            cx.defer_in(window, |this, window, cx| {
+                this.toggle_floating_import(window, cx)
+            });
+        }
         let ai_result = ai::load_config(&this.lib);
         match ai_result {
             Ok(c) => {
@@ -1260,6 +1280,16 @@ impl AppView {
                             continue;
                         }
                         match result {
+                            Ok(Outcome::CommandImported(report)) if !cancelled => {
+                                self.report_status(FeedbackKind::Info, report.message());
+                                self.command_imported = Some(report);
+                                if let Err(error) = self.show_floating_names(window, cx) {
+                                    self.report_status(
+                                        FeedbackKind::Error,
+                                        format!("音频已导入，打开命名面板失败：{error:#}"),
+                                    );
+                                }
+                            }
                             Ok(Outcome::TtsReady(row)) => {
                                 self.report_status(
                                     FeedbackKind::Info,
@@ -1808,6 +1838,15 @@ impl AppView {
         )
         .unwrap_or_default();
         self.audio.practice_id = text(row, "practice_id");
+        if let Err(error) = self
+            .lib
+            .set_setting("library_group", &self.audio.practice_id)
+        {
+            self.report_status(
+                FeedbackKind::Error,
+                format!("保存所选练习组失败：{error:#}"),
+            );
+        }
         self.audio.cues = fs::read_to_string(text(&row, "subtitle_uri"))
             .ok()
             .map(|s| subtitles::parse(&s))
@@ -2379,6 +2418,11 @@ impl AppView {
                 Action::AudioPractice(key) => {
                     self.invalidate_blind();
                     ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
+                    ensure!(
+                        self.audio.practices.iter().any(|r| text(r, "id") == key),
+                        "练习组不存在"
+                    );
+                    self.lib.set_setting("library_group", &key)?;
                     self.audio.practice_id = key;
                     if let Some(row) = self
                         .audio
@@ -4111,6 +4155,7 @@ impl AppView {
                     self.lib.set_setting("daily_limit", &limit)?;
                     self.lib
                         .set_setting("command", &self.value("command", cx))?;
+                    self.import_command = self.value("command", cx);
                     self.begin("正在保存 AI 设置…", move |lib, _, _| {
                         ai::save_preferences(&lib, config, &key)?;
                         let location = if credentials::secure_mode(&lib)? {
@@ -4361,10 +4406,43 @@ impl AppView {
                     });
                 }
                 Action::CommandImport => {
+                    let command = self.import_command.clone();
+                    ensure!(
+                        self.tasks.cancel.is_none(),
+                        "已有任务正在执行，请完成或取消后重试"
+                    );
+                    ensure!(
+                        !self
+                            .floating_name_window
+                            .is_some_and(|handle| cx.windows().contains(&handle)),
+                        "请先保存音频名称，或关闭命名面板后继续导入"
+                    );
+                    let request = clarora_gpui::command_import::Request::new(
+                        &self.lib,
+                        &self.audio.practice_id,
+                        &command,
+                    )?;
+                    let label = format!("正在导入至「{}」…", request.group_name());
+                    self.command_imported = None;
+                    self.begin_scoped(TaskScope::Application, &label, move |lib, cancel, _| {
+                        Ok(Outcome::CommandImported(request.run(&lib, &cancel)?))
+                    });
+                    self.tasks.notice = Some(TaskNotice::new("命令导入音频", &label));
+                }
+                Action::FloatingImport => self.toggle_floating_import(window, cx),
+                Action::NameImportedAudio => self.show_floating_names(window, cx)?,
+                Action::CloseFloatingNames => self.close_floating_names(cx),
+                Action::ConfigureCommandImport => {
+                    self.handle(Action::Page("settings".into()), window, cx);
+                    if self.page == "settings" {
+                        self.inputs["command"].update(cx, |state, cx| state.focus(window, cx));
+                    }
+                }
+                Action::SaveCommandImport => {
                     let command = self.value("command", cx);
-                    let practice = self.audio.practice_id.clone();
-                    ensure!(!command.is_empty(), "请先在设置中填写本机命令");
-                    self.begin("正在运行本机导入命令…",move|lib,cancel,_|{let(exe,args)=if cfg!(windows){(PathBuf::from("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),vec!["-NoProfile".into(),"-Command".into(),command])}else{(PathBuf::from("/bin/zsh"),vec!["-c".into(),command])};let output=process::run(&exe,&args,&cancel,Duration::from_secs(60))?;let mut count=0;for line in output.lines(){let p=PathBuf::from(line.trim());if p.is_file()&&lib.import_audio(&practice,&p).is_ok(){count+=1;}}Ok(Outcome::Message(format!("已导入 {count} 条")))});
+                    self.lib.set_setting("command", &command)?;
+                    self.import_command = command;
+                    self.report_status(FeedbackKind::Info, "本机导入命令已保存".into());
                 }
             }
             Ok(())
@@ -8489,6 +8567,12 @@ impl Render for AppView {
             .id("app")
             .track_focus(&self.focus)
             .key_context("Clarora")
+            .on_action(cx.listener(|this, _: &ToggleFloatingImport, window, cx| {
+                this.toggle_floating_import(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ImportAudioCommand, window, cx| {
+                this.handle(Action::CommandImport, window, cx);
+            }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 if let Some((start, width)) = this.video.resize {
                     if event.dragging() {
@@ -8886,13 +8970,28 @@ impl Render for AppView {
                                     ),
                             )
                             .child(
-                                self.button(
-                                    "assistant-toggle",
-                                    "✦  学习助手",
-                                    Action::Assistant,
-                                    cx,
-                                )
-                                .outline(),
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(
+                                        self.button(
+                                            "floating-import-toggle",
+                                            "悬浮窗",
+                                            Action::FloatingImport,
+                                            cx,
+                                        )
+                                        .outline(),
+                                    )
+                                    .child(
+                                        self.button(
+                                            "assistant-toggle",
+                                            "✦  学习助手",
+                                            Action::Assistant,
+                                            cx,
+                                        )
+                                        .outline(),
+                                    ),
                             ),
                     )
                     .child(self.focus_timer_bar(cx))
@@ -8984,6 +9083,10 @@ fn main() -> Result<()> {
                 KeyBinding::new("ctrl-b", ToggleNavigation, None),
                 KeyBinding::new("cmd-j", ToggleAssistant, None),
                 KeyBinding::new("ctrl-j", ToggleAssistant, None),
+                KeyBinding::new("cmd-shift-i", ToggleFloatingImport, None),
+                KeyBinding::new("ctrl-shift-i", ToggleFloatingImport, None),
+                KeyBinding::new("cmd-shift-enter", ImportAudioCommand, None),
+                KeyBinding::new("ctrl-shift-enter", ImportAudioCommand, None),
                 KeyBinding::new("cmd-enter", AskAi, None),
                 KeyBinding::new("ctrl-enter", AskAi, None),
                 KeyBinding::new("cmd-n", NewChat, None),
@@ -9046,6 +9149,8 @@ fn main() -> Result<()> {
                     items: vec![
                         MenuItem::action("下载当前表单的本地语音模型", DownloadLocalModel),
                         MenuItem::action("显示或隐藏助手", ToggleAssistant),
+                        MenuItem::action("显示或隐藏导入悬浮窗", ToggleFloatingImport),
+                        MenuItem::action("命令导入音频", ImportAudioCommand),
                         MenuItem::action("向当前视频字幕提问", AskVideoCurrent),
                         MenuItem::action("向整段视频字幕提问", AskVideoAll),
                         MenuItem::action("新会话", NewChat),
@@ -9053,29 +9158,34 @@ fn main() -> Result<()> {
                     ],
                 },
             ]);
-            cx.on_window_closed(|cx| {
-                if cx.windows().is_empty() {
+            let bounds = Bounds::centered(None, size(px(1240.), px(860.)), cx);
+            let main = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        titlebar: Some(TitlebarOptions {
+                            title: Some("Clarora".into()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        let view = cx.new(|cx| AppView::new(library, window, cx));
+                        view.read(cx).focus.focus(window);
+                        cx.new(|cx| Root::new(view, window, cx))
+                    },
+                )
+                .expect("无法打开 Clarora 窗口");
+            cx.on_window_closed(move |cx| {
+                if !cx
+                    .windows()
+                    .iter()
+                    .any(|w| w.window_id() == main.window_id())
+                {
                     cx.quit();
                 }
             })
             .detach();
-            let bounds = Bounds::centered(None, size(px(1240.), px(860.)), cx);
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("Clarora".into()),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                |window, cx| {
-                    let view = cx.new(|cx| AppView::new(library, window, cx));
-                    view.read(cx).focus.focus(window);
-                    cx.new(|cx| Root::new(view, window, cx))
-                },
-            )
-            .expect("无法打开 Clarora 窗口");
             cx.activate(true);
         });
     Ok(())

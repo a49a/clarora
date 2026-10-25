@@ -15,6 +15,8 @@ mod bilibili_parts;
 mod blind_listening;
 #[path = "support/chat_store.rs"]
 mod chat_store;
+#[path = "support/command_import.rs"]
+mod command_import;
 #[path = "support/credential_mode.rs"]
 mod credential_mode;
 #[path = "support/ebook.rs"]
@@ -483,6 +485,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     video_render::run(&lib, results)?;
     credential_mode::run(&lib, results)?;
     audio_library::run(&lib, &video, results)?;
+    command_import::run(&lib, results)?;
     blind_listening::run(&lib, &video, results)?;
     bilibili_parts::run(&lib, results)?;
     model_progress::run(&lib, results)?;
@@ -866,9 +869,13 @@ fn main() -> Result<()> {
         Some("--video-repeat-only") => "video-repeat-only",
         Some("--backup-library-only") => "backup-library-only",
         Some("--video-render-only") => "video-render-only",
+        Some("--command-import-only") => "command-import-only",
         _ => "full",
     };
-    let result = if mode == "http-only" {
+    let result = if mode == "command-import-only" {
+        let lib = Library::open(output.join(format!("command-import-{}", data::id())))?;
+        command_import::run(&lib, &mut results)
+    } else if mode == "http-only" {
         let lib = Library::open(output.join(format!("http-{}", data::id())))?;
         protocol::run(
             &lib,

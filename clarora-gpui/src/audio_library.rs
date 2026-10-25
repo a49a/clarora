@@ -141,7 +141,7 @@ pub fn rename(lib: &Library, table: &str, key: &str, name: &str) -> Result<()> {
     rename_scoped(lib, table, key, name, None)
 }
 
-fn rename_scoped(
+pub(crate) fn rename_scoped(
     lib: &Library,
     table: &str,
     key: &str,

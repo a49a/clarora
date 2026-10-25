@@ -476,6 +476,10 @@ impl Library {
         Ok(key)
     }
     pub fn import_audio(&self, practice: &str, path: &Path) -> Result<()> {
+        self.import_audio_record(practice, path).map(|_| ())
+    }
+    /// Return the exact inserted row so subsequent actions never infer identity from selection.
+    pub(crate) fn import_audio_record(&self, practice: &str, path: &Path) -> Result<Row> {
         let name = path
             .file_stem()
             .unwrap_or_default()
@@ -500,8 +504,12 @@ impl Library {
         } else {
             String::new()
         };
-        if let Err(e)=self.put("listening_audios",json!({"id":id(),"practice_id":practice,"name":name,"audio_uri":media.to_string_lossy(),"subtitle_uri":subtitle,"created_at":now()})){let _=fs::remove_file(media);return Err(e)}
-        Ok(())
+        let row = json!({"id":id(),"practice_id":practice,"name":name,"audio_uri":media.to_string_lossy(),"subtitle_uri":subtitle,"created_at":now()});
+        if let Err(e) = self.put("listening_audios", row.clone()) {
+            let _ = fs::remove_file(media);
+            return Err(e);
+        }
+        Ok(row.as_object().expect("audio row is an object").clone())
     }
     pub fn vault(&self) -> Result<BTreeMap<String, Vec<Row>>> {
         Ok(self.vault_with_settings()?.0)

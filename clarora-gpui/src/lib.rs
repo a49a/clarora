@@ -31,6 +31,7 @@ pub mod blind_listening;
 pub mod tts;
 
 pub mod audio_library;
+pub mod command_import;
 
 pub mod video_library;
 
