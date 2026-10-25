@@ -35,6 +35,8 @@ mod playback_state;
 mod protocol;
 #[path = "support/review_queue.rs"]
 mod review_queue;
+#[path = "support/subtitle_selection.rs"]
+mod subtitle_selection;
 #[path = "support/timer_chimes.rs"]
 mod timer_chimes;
 #[path = "support/transcript.rs"]
@@ -495,6 +497,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     audio_batch::run(&lib, results)?;
     clip_marks::run(&lib, &video, results)?;
     timer_chimes::run(&lib, results)?;
+    subtitle_selection::run(&lib, results)?;
     blind_listening::run(&lib, &video, results)?;
     bilibili_parts::run(&lib, results)?;
     model_progress::run(&lib, results)?;
@@ -881,11 +884,15 @@ fn main() -> Result<()> {
         Some("--command-import-only") => "command-import-only",
         Some("--audio-batch-only") => "audio-batch-only",
         Some("--clip-marks-only") => "clip-marks-only",
+        Some("--subtitle-selection-only") => "subtitle-selection-only",
         Some("--timer-chimes-only") => "timer-chimes-only",
         Some("--timer-chimes-audible") => "timer-chimes-audible",
         _ => "full",
     };
-    let result = if mode == "timer-chimes-audible" {
+    let result = if mode == "subtitle-selection-only" {
+        let lib = Library::open(output.join(format!("subtitle-selection-{}", data::id())))?;
+        subtitle_selection::run(&lib, &mut results)
+    } else if mode == "timer-chimes-audible" {
         let lib = Library::open(output.join(format!("timer-chimes-device-{}", data::id())))?;
         timer_chimes::audible(&lib, &mut results)
     } else if mode == "timer-chimes-only" {

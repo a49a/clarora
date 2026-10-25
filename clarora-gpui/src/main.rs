@@ -12,6 +12,7 @@ mod library_ui;
 mod reading_ui;
 mod saved_clip_ui;
 mod settings_ui;
+mod subtitle_text_ui;
 mod task_ui;
 mod video_job_ui;
 mod video_library_ui;
@@ -58,6 +59,8 @@ actions!(
     clarora_gpui_actions,
     [
         Quit,
+        CopySubtitleSelection,
+        ClearSubtitleSelection,
         OpenFile,
         ToggleAssistant,
         ToggleFloatingImport,
@@ -134,6 +137,7 @@ enum Action {
     AudioFont(u8),
     AudioCurrent,
     AudioFollow,
+    CopySelectedSubtitle,
     AudioCopySubtitle(String, Option<Cue>),
     SavedClips(Vec<clip_marks::Saved>),
     AudioRepeat(usize),
@@ -323,6 +327,7 @@ struct AppView {
     status: String,
     feedback: feedback_ui::FeedbackState,
     cards: Vec<Card>,
+    subtitle_text: std::rc::Rc<std::cell::RefCell<subtitle_text_ui::State>>,
     clip_catalog: clip_marks::Catalog,
     audio_saved: Vec<clip_marks::Range>,
     video_saved: Vec<clip_marks::Range>,
@@ -456,6 +461,9 @@ impl AppView {
             status: String::new(),
             feedback: Default::default(),
             cards: vec![],
+            subtitle_text: std::rc::Rc::new(std::cell::RefCell::new(subtitle_text_ui::State::new(
+                cx,
+            ))),
             clip_catalog: Default::default(),
             audio_saved: vec![],
             video_saved: vec![],
@@ -1118,7 +1126,7 @@ impl AppView {
             if active != self.audio.active {
                 self.audio.active = active;
                 self.audio.current_scroll.set_offset(Point::default());
-                if self.audio.follow {
+                if self.audio.follow && !self.has_subtitle_selection() {
                     if let Some(i) = active {
                         self.audio.scroll.scroll_to_reveal_item(i);
                     }
@@ -1129,7 +1137,7 @@ impl AppView {
             let active = video_subtitles::active(&self.video.cues, self.media.snapshot.position);
             if active != self.video.active {
                 self.video.active = active;
-                if self.video.follow {
+                if self.video.follow && !self.has_subtitle_selection() {
                     if let Some(i) = active {
                         self.video.scroll.scroll_to_reveal_item(i);
                     }
@@ -2321,6 +2329,7 @@ impl AppView {
                 Action::GraphSelect(node) => self.graph_node = node,
                 Action::GraphList(list) => self.graph_list = list,
                 Action::Page(page) => {
+                    self.subtitle_text.borrow_mut().clear();
                     if self.page == "writing" {
                         self.flush_writing(cx)?;
                     }
@@ -2501,6 +2510,7 @@ impl AppView {
                     }
                 }
                 Action::AudioBlind(enabled) => {
+                    self.subtitle_text.borrow_mut().clear();
                     ensure!(self.page == "listening", "请先进入音频学习");
                     ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
                     self.audio.blind.enabled = enabled;
@@ -3618,6 +3628,12 @@ impl AppView {
                             notice.detail = "正在停止当前处理，请稍候…".into();
                         }
                     }
+                }
+                Action::CopySelectedSubtitle => {
+                    let selected = self.subtitle_text.borrow().selection_text();
+                    ensure!(!selected.is_empty(), "请先拖选字幕文字");
+                    cx.write_to_clipboard(ClipboardItem::new_string(selected));
+                    self.report_status(FeedbackKind::Info, "已复制选中文字".into());
                 }
                 Action::SavedClips(saved) => self.show_saved_clips(saved, window, cx),
                 Action::Clip => {
@@ -5528,6 +5544,14 @@ impl AppView {
             .bg(rgb(0x090e0c))
             .track_focus(&self.focus)
             .key_context("VideoFullscreen")
+            .child(self.subtitle_copy_anchor(cx))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.subtitle_text.borrow_mut().block_click = false),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                this.subtitle_drag_update(event, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleVideoFullscreen, window, cx| {
                 this.handle(Action::VideoFullscreen, window, cx)
             }))
@@ -6197,6 +6221,16 @@ impl AppView {
             .when(!self.audio.blind.enabled, |v| {
                 v.child(
                     self.button(
+                        "audio-copy-selected",
+                        "复制选中",
+                        Action::CopySelectedSubtitle,
+                        cx,
+                    )
+                    .ghost()
+                    .disabled(!self.has_subtitle_selection()),
+                )
+                .child(
+                    self.button(
                         "audio-copy-all",
                         "复制全部",
                         Action::AudioCopySubtitle(self.audio.current_id.clone(), None),
@@ -6525,7 +6559,12 @@ impl AppView {
                                 })
                             })
                             .hover(|v| v.bg(cx.theme().accent))
-                            .child(word.text.clone())
+                            .child(this.subtitle_fragment(
+                                subtitle_text_ui::Surface::Audio,
+                                i,
+                                Some(j),
+                                cx,
+                            ))
                             .when(is_saved, |v| {
                                 v.on_mouse_down(
                                     MouseButton::Right,
@@ -6536,6 +6575,10 @@ impl AppView {
                                 )
                             })
                             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                if this.subtitle_dragged() {
+                                    cx.stop_propagation();
+                                    return;
+                                }
                                 this.handle(
                                     Action::Word(
                                         word.start,
@@ -6584,7 +6627,12 @@ impl AppView {
                                     div()
                                         .text_size(px((this.audio.font_size as f32 - 2.).max(12.)))
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(translation),
+                                        .child(this.subtitle_fragment(
+                                            subtitle_text_ui::Surface::Audio,
+                                            i,
+                                            None,
+                                            cx,
+                                        )),
                                 )
                             }),
                     )
@@ -7698,36 +7746,11 @@ impl AppView {
                                             .flex_col()
                                             .gap_1()
                                             .child(
-                                                if this
-                                                    .saved_at(false, cue.start, cue.end)
-                                                    .is_empty()
                                                 {
-                                                    div()
-                                                        .text_sm()
-                                                        .whitespace_normal()
-                                                        .child(cue.text.clone())
-                                                        .into_any_element()
-                                                } else {
-                                                    let (_, translation) = subtitles::languages(
-                                                        std::slice::from_ref(cue),
-                                                    );
-                                                    div()
-                                                        .flex()
-                                                        .flex_col()
-                                                        .gap_1()
-                                                        .child(this.marked_cue(
-                                                            false, i, cue, 14., false, cx,
-                                                        ))
-                                                        .when(!translation.is_empty(), |v| {
-                                                            v.child(
-                                                                div()
-                                                                    .text_sm()
-                                                                    .text_color(
-                                                                        cx.theme().muted_foreground,
-                                                                    )
-                                                                    .child(translation),
-                                                            )
-                                                        })
+                                                    let (_,translation)=subtitles::languages(std::slice::from_ref(cue));
+                                                    div().flex().flex_col().gap_1()
+                                                        .child(this.marked_cue(false,i,cue,14.,false,cx))
+                                                        .when(!translation.is_empty(),|v|v.child(div().text_sm().text_color(cx.theme().muted_foreground).child(this.subtitle_fragment(subtitle_text_ui::Surface::Video,i,None,cx))))
                                                         .into_any_element()
                                                 },
                                             )
@@ -7802,6 +7825,7 @@ impl AppView {
                                             ),
                                     )
                                     .on_click(cx.listener(move |this, _, window, cx| {
+                                        if this.subtitle_dragged(){cx.stop_propagation();return;}
                                         this.handle(Action::VideoPlayCue(i), window, cx)
                                     }))
                                     .into_any_element()
@@ -7815,6 +7839,7 @@ impl AppView {
                             .child(self.button("video-import-english", "导入英文字幕", Action::Pick("video-subtitle".into()),cx).ghost().disabled(self.media.path.is_none()||self.tasks.cancel.is_some()||self.tasks.video_job.is_some()))
                             .child(self.button("video-translate-zh", "英文生成中文", Action::VideoTranslate,cx).disabled(self.video.cues.is_empty()||self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.media.path.is_none()))
                             .child(div().flex_1())
+                            .child(self.button("video-copy-selected","复制选中",Action::CopySelectedSubtitle,cx).ghost().disabled(!self.has_subtitle_selection()))
                             .child(self.button("video-copy-all", "复制全部", Action::VideoCopySubtitle(None), cx).ghost().disabled(self.video.cues.is_empty()))
                             .child(self.button("video-transcribe-all", "全部P生成字幕", Action::VideoTranscribeAll,cx)
                                 .disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.video.series.is_none()||self.media.path.is_none()))
@@ -8513,6 +8538,7 @@ fn panel(cx: &App) -> Div {
 }
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.subtitle_text.borrow_mut().begin_frame();
         let (title, subtitle) = PAGES
             .iter()
             .find(|(key, _, _)| *key == self.page)
@@ -8724,6 +8750,11 @@ impl Render for AppView {
             .id("app")
             .track_focus(&self.focus)
             .key_context("Clarora")
+            .child(self.subtitle_copy_anchor(cx))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.subtitle_text.borrow_mut().block_click = false),
+            )
             .on_action(cx.listener(|this, _: &ToggleFloatingImport, window, cx| {
                 this.toggle_floating_import(window, cx);
             }))
@@ -8731,6 +8762,7 @@ impl Render for AppView {
                 this.handle(Action::CommandImport, window, cx);
             }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                this.subtitle_drag_update(event, cx);
                 if let Some((start, width)) = this.video.resize {
                     if event.dragging() {
                         let available = (f32::from(window.viewport_size().width)
@@ -8963,7 +8995,10 @@ impl Render for AppView {
                 if this.page == "writing" {
                     return;
                 }
-                if window.focused(cx) == Some(this.focus.clone()) {
+                let subtitle_focus = this.subtitle_text.borrow().focus.clone();
+                if window.focused(cx) == Some(this.focus.clone())
+                    || window.focused(cx) == Some(subtitle_focus)
+                {
                     if this.page == "listening"
                         && this.audio.blind.enabled
                         && !event.keystroke.modifiers.alt
@@ -9234,6 +9269,9 @@ fn main() -> Result<()> {
                 KeyBinding::new("ctrl-shift-left", PreviousVideoPart, None),
                 KeyBinding::new("cmd-shift-t", TranscribeVideo, None),
                 KeyBinding::new("ctrl-shift-t", TranscribeVideo, None),
+                KeyBinding::new("cmd-c", CopySubtitleSelection, Some("SubtitleText")),
+                KeyBinding::new("ctrl-c", CopySubtitleSelection, Some("SubtitleText")),
+                KeyBinding::new("escape", ClearSubtitleSelection, Some("SubtitleText")),
                 KeyBinding::new("cmd-o", OpenFile, None),
                 KeyBinding::new("ctrl-o", OpenFile, None),
                 KeyBinding::new("cmd-b", ToggleNavigation, None),

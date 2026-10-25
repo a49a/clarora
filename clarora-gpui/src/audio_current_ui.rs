@@ -8,6 +8,7 @@ impl AppView {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
+        let active = self.selected_focus_cue().or(active);
         let cue = active.and_then(|index| self.audio.cues.get(index));
         let (original, translation) = cue
             .map(|cue| subtitles::languages(std::slice::from_ref(cue)))
@@ -99,27 +100,18 @@ impl AppView {
                                     } else {
                                         cx.theme().muted_foreground
                                     })
-                                    .child(
-                                        if let Some((cue, index)) =
-                                            cue.zip(active).filter(|(cue, _)| {
-                                                self.audio.clip_mode
-                                                    || !self
-                                                        .saved_at(true, cue.start, cue.end)
-                                                        .is_empty()
-                                            })
-                                        {
-                                            self.marked_cue(
-                                                true,
-                                                index,
-                                                cue,
-                                                (font + 8.).clamp(24., 36.),
-                                                true,
-                                                cx,
-                                            )
-                                        } else {
-                                            div().child(original).into_any_element()
-                                        },
-                                    ),
+                                    .child(if let Some((cue, index)) = cue.zip(active) {
+                                        self.marked_cue(
+                                            true,
+                                            index,
+                                            cue,
+                                            (font + 8.).clamp(24., 36.),
+                                            true,
+                                            cx,
+                                        )
+                                    } else {
+                                        div().child(original).into_any_element()
+                                    }),
                             )
                             .when(!translation.is_empty(), |v| {
                                 v.child(
@@ -131,7 +123,12 @@ impl AppView {
                                         .text_center()
                                         .text_size(px((font + 2.).clamp(18., 24.)))
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(translation),
+                                        .child(self.subtitle_fragment(
+                                            subtitle_text_ui::Surface::Focus,
+                                            active.unwrap_or(0),
+                                            None,
+                                            cx,
+                                        )),
                                 )
                             }),
                     )

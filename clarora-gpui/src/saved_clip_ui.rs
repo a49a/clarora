@@ -26,6 +26,20 @@ impl AppView {
                 )
             })
             .unwrap_or_default();
+        self.subtitle_text.borrow_mut().documents(
+            clarora_gpui::subtitle_selection::Document::new(
+                self.audio.current_id.clone(),
+                &self.audio.cues,
+            ),
+            clarora_gpui::subtitle_selection::Document::new(
+                self.video
+                    .path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                &self.video.cues,
+            ),
+        );
     }
     pub(super) fn saved_at(&self, audio: bool, start: f64, end: f64) -> Vec<clip_marks::Saved> {
         (if audio {
@@ -173,11 +187,23 @@ impl AppView {
                         |v, e| v.child(clip_selection_ui::text_edge(e.end, false)),
                     )
                     .text_size(px(font))
-                    .child(word.text.clone())
+                    .child(self.subtitle_fragment(
+                        if audio {
+                            subtitle_text_ui::Surface::Focus
+                        } else {
+                            subtitle_text_ui::Surface::Video
+                        },
+                        index,
+                        Some(j),
+                        cx,
+                    ))
                     .when(audio, |v| {
                         v.cursor_pointer().on_click(cx.listener(
                             move |this, event: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
+                                if this.subtitle_dragged() {
+                                    return;
+                                }
                                 this.handle(
                                     Action::Word(
                                         word.start,
