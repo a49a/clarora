@@ -25,16 +25,57 @@ pub fn active(cues: &[Cue], time: f64) -> Option<usize> {
     cues.iter().rposition(|c| time >= c.start && time < c.end)
 }
 pub fn load(lib: &Library, video: &Path) -> Result<Vec<Cue>> {
-    let saved = lib.setting(&identity_key(video)?)?;
+    Ok(Snapshot::read(lib, video)?.cues)
+}
+
+fn cache_bytes(lib: &Library, saved: &str) -> Result<Option<Vec<u8>>> {
     if saved.is_empty() {
-        return Ok(vec![]);
+        return Ok(None);
     }
     let path = std::path::PathBuf::from(saved);
     ensure!(path.starts_with(lib.root.join("media")), "字幕缓存路径无效");
     if !path.is_file() {
-        return Ok(vec![]);
+        return Ok(None);
     }
-    Ok(subtitles::parse(&fs::read_to_string(path)?))
+    ensure!(
+        fs::metadata(&path)?.len() <= 16 * 1024 * 1024,
+        "字幕缓存超过16 MiB"
+    );
+    Ok(Some(fs::read(path)?))
+}
+
+struct Snapshot {
+    identity: String,
+    revision: String,
+    bytes: Option<Vec<u8>>,
+    cues: Vec<Cue>,
+}
+impl Snapshot {
+    fn read(lib: &Library, video: &Path) -> Result<Self> {
+        let identity = identity_key(video)?;
+        let revision = lib.setting(&identity)?;
+        let bytes = cache_bytes(lib, &revision)?;
+        let cues = bytes
+            .as_ref()
+            .map(|bytes| std::str::from_utf8(bytes).map(subtitles::parse))
+            .transpose()?
+            .unwrap_or_default();
+        Ok(Self {
+            identity,
+            revision,
+            bytes,
+            cues,
+        })
+    }
+    fn matches(&self, lib: &Library, video: &Path) -> Result<bool> {
+        Ok(identity_key(video)? == self.identity
+            && lib.setting(&self.identity)? == self.revision
+            && cache_bytes(lib, &self.revision)? == self.bytes)
+    }
+}
+
+pub fn has_chinese(cues: &[Cue]) -> bool {
+    cues.iter().any(|cue| cue.text.chars().any(|ch| matches!(ch, '\u{3400}'..='\u{9fff}' | '\u{f900}'..='\u{faff}' | '\u{20000}'..='\u{2fa1f}')))
 }
 pub fn save(lib: &Library, video: &Path, cues: &[Cue], cancel: &Cancel) -> Result<String> {
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
@@ -164,12 +205,51 @@ pub fn translate_with_progress(
     video: &Path,
     cues: &[Cue],
     cancel: &Cancel,
+    progress: impl FnMut(&str),
+) -> Result<(String, Vec<Cue>)> {
+    let snapshot = Snapshot::read(lib, video)?;
+    ensure!(
+        snapshot.cues.is_empty() || subtitles::srt(cues) == subtitles::srt(&snapshot.cues),
+        "英文字幕已改变，请刷新后重新翻译"
+    );
+    translate_snapshot(lib, video, cues, cancel, progress, snapshot)
+}
+
+/// Only translate an existing English cache. Any Chinese cue skips the entire P.
+/// The snapshot is captured before the language check, so a concurrent import
+/// cannot be mistaken for the source that this task actually translated.
+pub fn translate_cached_with_progress(
+    lib: &Library,
+    video: &Path,
+    cancel: &Cancel,
     mut progress: impl FnMut(&str),
+) -> Result<Option<(String, Vec<Cue>)>> {
+    ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+    let snapshot = Snapshot::read(lib, video)?;
+    ensure!(
+        !snapshot.cues.is_empty(),
+        "没有已保存的英文字幕，请先导入或生成英文字幕"
+    );
+    if has_chinese(&snapshot.cues) {
+        progress("已有中文字幕，跳过本P");
+        return Ok(None);
+    }
+    let cues = snapshot.cues.clone();
+    translate_snapshot(lib, video, &cues, cancel, progress, snapshot).map(Some)
+}
+
+fn translate_snapshot(
+    lib: &Library,
+    video: &Path,
+    cues: &[Cue],
+    cancel: &Cancel,
+    mut progress: impl FnMut(&str),
+    snapshot: Snapshot,
 ) -> Result<(String, Vec<Cue>)> {
     use rusqlite::OptionalExtension;
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
-    let identity = identity_key(video)?;
-    let revision = lib.setting(&identity)?;
+    let identity = &snapshot.identity;
+    let revision = &snapshot.revision;
     let source = english_source(cues)?;
     let mut translated = Vec::with_capacity(source.len());
     let mut offset = 0;
@@ -177,7 +257,7 @@ pub fn translate_with_progress(
     while offset < source.len() {
         ensure!(!cancel.load(Ordering::SeqCst), "已取消");
         ensure!(
-            identity_key(video)? == identity && lib.setting(&identity)? == revision,
+            snapshot.matches(lib, video)?,
             "视频或英文字幕已改变，请重新生成中文"
         );
         let mut end = offset;
@@ -205,8 +285,8 @@ pub fn translate_with_progress(
     }
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
     ensure!(
-        identity_key(video)? == identity,
-        "视频文件已改变，请重新生成中文"
+        snapshot.matches(lib, video)?,
+        "视频或英文字幕已改变，未覆盖较新的字幕"
     );
     progress("正在保存双语字幕");
     let path = lib.root.join("media").join(format!("video-{}.srt", id()));
@@ -217,12 +297,15 @@ pub fn translate_with_progress(
         let current = tx
             .query_row(
                 "SELECT value FROM app_settings WHERE key=?",
-                [&identity],
+                [identity],
                 |r| r.get::<_, String>(0),
             )
             .optional()?
             .unwrap_or_default();
-        ensure!(current == revision, "英文字幕已替换，未覆盖较新的字幕");
+        ensure!(
+            current == *revision && cache_bytes(lib, revision)? == snapshot.bytes,
+            "英文字幕已替换，未覆盖较新的字幕"
+        );
         ensure!(!cancel.load(Ordering::SeqCst), "已取消");
         tx.execute("INSERT INTO app_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",rusqlite::params![identity,path.to_string_lossy()])?;
         tx.commit()?;

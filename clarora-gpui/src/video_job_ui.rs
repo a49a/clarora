@@ -43,6 +43,43 @@ impl AppView {
         ));
         Ok(())
     }
+    pub(super) fn begin_background_translation_all(&mut self) -> Result<()> {
+        ensure!(
+            self.tasks.video_job.is_none(),
+            "已有后台视频字幕任务，可先取消或等待完成"
+        );
+        ensure!(self.tasks.cancel.is_none(), "请先完成当前前台任务");
+        ensure!(self.page == "video", "请先进入视频学习");
+        let path = self.video.path.as_ref().context("请先选择视频")?;
+        let source = self
+            .video
+            .collection
+            .items
+            .iter()
+            .find(|v| v.contains(path))
+            .context("请先导入视频")?;
+        let stored = source.series.as_ref().context("当前视频没有分P选集")?;
+        let series = self
+            .video
+            .series
+            .as_ref()
+            .filter(|s| s.base == stored.base)
+            .unwrap_or(stored)
+            .clone();
+        let title = format!("全部 {} P 翻译中文 · {}", series.parts.len(), source.title);
+        let plan = video_jobs::Plan::translate_all(source.id.clone(), series);
+        self.tasks.video_error.clear();
+        self.tasks.video_notice = Some(TaskNotice::new(
+            &title,
+            "已有中文字幕的P会跳过；缺少英文字幕的P会列入失败，可先生成英文后重试。",
+        ));
+        self.tasks.video_job = Some(video_jobs::Job::start(
+            self.lib.clone(),
+            plan,
+            self.tasks.downloads.clone(),
+        ));
+        Ok(())
+    }
     pub(super) fn poll_background_subtitles(&mut self) -> bool {
         let Some(job) = &self.tasks.video_job else {
             return false;
@@ -143,13 +180,23 @@ impl AppView {
                         } else {
                             TaskState::Succeeded
                         };
-                        n.detail = format!(
-                            "共 {} 项 · 已生成 {} · 已有字幕跳过 {} · 失败 {}。已完成字幕已保存，可再次生成以处理未完成的P。",
-                            report.total,
-                            report.generated,
-                            report.skipped,
-                            report.failed.len()
-                        );
+                        n.detail = if report.mode == video_jobs::Mode::Chinese {
+                            format!(
+                                "共 {} P · 已翻译 {} · 已有中文字幕跳过 {} · 失败 {}。已完成结果已保存；缺少英文字幕的P请先生成英文后重试。",
+                                report.total,
+                                report.translated,
+                                report.skipped,
+                                report.failed.len()
+                            )
+                        } else {
+                            format!(
+                                "共 {} 项 · 已生成 {} · 已有字幕跳过 {} · 失败 {}。已完成字幕已保存，可再次生成以处理未完成的P。",
+                                report.total,
+                                report.generated,
+                                report.skipped,
+                                report.failed.len()
+                            )
+                        };
                         for (label, error) in report.failed {
                             n.detail.push_str(&format!("\n{label}：{error}"));
                         }

@@ -1590,6 +1590,7 @@ impl AppView {
                 }
                 Action::VideoTranscribe => self.begin_background_subtitles(false)?,
                 Action::VideoTranscribeAll => self.begin_background_subtitles(true)?,
+                Action::VideoTranslateAll => self.begin_background_translation_all()?,
                 Action::CancelVideoSubtitles => {
                     if let Some(job) = &self.tasks.video_job {
                         job.cancel.store(true, Ordering::SeqCst);

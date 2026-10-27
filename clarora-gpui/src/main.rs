@@ -228,6 +228,7 @@ enum Action {
     Transcribe,
     VideoTranscribe,
     VideoTranscribeAll,
+    VideoTranslateAll,
     CancelVideoSubtitles,
     DismissVideoSubtitles,
     VideoAsk(video_qa::Scope),

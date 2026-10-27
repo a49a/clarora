@@ -788,6 +788,8 @@ impl AppView {
                             .child(div().flex_1())
                             .child(self.button("video-copy-selected","复制选中",Action::CopySelectedSubtitle,cx).ghost().disabled(!self.has_subtitle_selection()))
                             .child(self.button("video-copy-all", "复制全部", Action::VideoCopySubtitle(None), cx).ghost().disabled(self.video.cues.is_empty()))
+                            .child(self.button("video-translate-all", "全部P翻译中文", Action::VideoTranslateAll,cx)
+                                .disabled(self.video.series.is_none()||self.tasks.cancel.is_some()||self.tasks.video_job.is_some()))
                             .child(self.button("video-transcribe-all", "全部P生成字幕", Action::VideoTranscribeAll,cx)
                                 .disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.video.series.is_none()||self.media.path.is_none()))
                             .child(self.button("video-transcribe", if self.video.cues.is_empty() { "生成字幕" } else { "重新生成" }, Action::VideoTranscribe, cx)
@@ -889,6 +891,7 @@ impl AppView {
                             .pr_3();
                             study = study
                                 .child(div().px_3().py_2().flex().flex_col().gap_1()
+                                    .child(self.button("parts-translate-all", "全部P翻译中文",Action::VideoTranslateAll,cx).outline().disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.video.series.is_none()))
                                     .child(self.button("parts-transcribe-all", "全部P生成字幕",Action::VideoTranscribeAll,cx).primary().disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.media.path.is_none()))
                                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child("已有字幕跳过 · 未下载的P先下载 · 可切换播放，退出应用会停止任务")))
                                 .child(

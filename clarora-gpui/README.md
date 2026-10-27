@@ -258,12 +258,13 @@ TXT 支持 UTF-8（含 BOM）和带 BOM 的 UTF-16；其它编码请先转换。
 
 GPU 图片纹理按当前场景管理：视频换帧、离开视频／复习页、PDF 翻页和电子书插图更换时，从 GPUI 图集中释放旧纹理；暂停重绘复用当前图片。仅释放 Rust 图片引用不会清除 GPU 图集。
 
+视频页的字幕工具区和选集页均提供“全部P翻译中文”：只读取已有英文字幕缓存，按选集顺序在后台生成双语字幕。任一句已有中文就跳过整个P，不请求模型；缺少英文字幕的P列出失败原因并继续，可先生成英文后重试。已恢复的B站来源即使尚未下载视频也可翻译已有英文缓存，不会为翻译下载视频。失败、取消或期间新导入字幕时保留原结果。
 
 默认 E2E 收集真实窗口的 GPU 内存检查。在有图形会话的 macOS 上设置 `CLARORA_GUI_MEMORY_CHECK=1` 启用，也可运行 `CLARORA_GUI_MEMORY_CHECK=1 cargo run --locked --bin e2e -- /absolute/evidence --gpu-memory-only` 定向复验；macOS CI 默认启用。探针实际上传持续更换的图片，覆盖暂停、尺寸变化、隐藏和恢复，检查包含 GPU／压缩内存的 physical footprint，并保留 JSON 采样；超过内存上限会退出。未启用或非 macOS 环境明确标记跳过，不能用仅解码或 RSS 的检查代替。
 
 默认 E2E 在同一图形开关下收集至少 32 秒真实 libmpv／GPUI／Metal 视频稳定性检查，输出每两秒的 physical footprint、CPU、绘制数、真实帧数和阶段变化。原生窗口隐藏且不抢焦点，独立驱动真实绘制／纹理上传，避免窗口遮挡造成系统 display link 停止；这不等于前台画面呈现、真实声卡或系统睡眠验收。每个阶段等待播放器确认后完整停留，暂停先等待画面稳定；测试按完整循环结束，实际时长可能超过请求值。可用 `CLARORA_GUI_MEMORY_CHECK=1 cargo run --locked --bin e2e -- /absolute/evidence --runtime-stability-only 7200` 延长至至少两小时；内存越界或采样停顿会失败，保留 JSON／JSONL。运行需要 macOS 原生图形会话。
 
-默认 E2E 也收集后台资料和聊天草稿的真实 SQLite／文件／HTTP 回归。可分别用 `--data-loader-only`、`--chat-controller-only` 定向复验。调试构建在 macOS 图形开关启用时同时启动隐藏的真实应用，验证资料切换、盲听、InputState 草稿、会话重试以及关闭／全局退出保存，报告位于 `native-ui/`；可用 `--ui-controller-only` 单独运行，需先 `cargo build --bin clarora-gpui`。原生协调诊断仅编入调试版本，不操作用户正在运行的实例，也不代替真实键鼠及视觉验收。
+默认 E2E 也收集后台资料、聊天草稿及全部P翻译的真实 SQLite／文件／HTTP 回归。可分别用 `--data-loader-only`、`--chat-controller-only`、`--video-batch-translation-only` 定向复验。调试构建在 macOS 图形开关启用时同时启动隐藏的真实应用，验证资料切换、盲听、InputState 草稿、会话重试以及关闭／全局退出保存，报告位于 `native-ui/`；可用 `--ui-controller-only` 单独运行，需先 `cargo build --bin clarora-gpui`。原生协调诊断仅编入调试版本，不操作用户正在运行的实例，也不代替真实键鼠及视觉验收。
 
 收藏片段标记由默认 E2E 收集；可用 `--clip-marks-only /absolute/path/video.mp4` 定向复验真实 FFmpeg 导出、SQLite 原子保存／取消、跨句重叠与旧片段匹配、ZIP 恢复后的来源关联，输出 JSON、SQLite 和媒体文件证据。
 

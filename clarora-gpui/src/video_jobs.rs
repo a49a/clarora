@@ -17,6 +17,11 @@ use std::{
 };
 
 type Cell = Arc<Mutex<Option<PathBuf>>>;
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+pub enum Mode {
+    English,
+    Chinese,
+}
 #[derive(Clone, Default)]
 pub struct Downloads(Arc<Mutex<BTreeMap<(String, usize), Cell>>>);
 fn playable(path: &Path) -> bool {
@@ -116,6 +121,7 @@ pub struct Plan {
     pub series: Option<Series>,
     pub paths: Vec<(usize, String, Option<PathBuf>)>,
     pub skip_existing: bool,
+    pub mode: Mode,
 }
 impl Plan {
     pub fn all(source_id: String, series: Series) -> Self {
@@ -130,7 +136,13 @@ impl Plan {
             series: Some(series),
             paths,
             skip_existing: true,
+            mode: Mode::English,
         }
+    }
+    pub fn translate_all(source_id: String, series: Series) -> Self {
+        let mut plan = Self::all(source_id, series);
+        plan.mode = Mode::Chinese;
+        plan
     }
     pub fn current(source_id: String, path: PathBuf) -> Self {
         let label = path
@@ -143,13 +155,16 @@ impl Plan {
             series: None,
             paths: vec![(0, label, Some(path))],
             skip_existing: false,
+            mode: Mode::English,
         }
     }
 }
 #[derive(Debug, Serialize)]
 pub struct Report {
+    pub mode: Mode,
     pub total: usize,
     pub generated: usize,
+    pub translated: usize,
     pub skipped: usize,
     pub failed: Vec<(String, String)>,
     pub cancelled: bool,
@@ -170,6 +185,7 @@ pub enum Event {
     Finished(Report),
 }
 pub struct Job {
+    pub mode: Mode,
     pub done: Arc<AtomicBool>,
     pub source_id: String,
     pub cancel: Cancel,
@@ -186,6 +202,7 @@ impl Job {
         let cancel = process::cancel_token();
         let token = cancel.clone();
         let source_id = plan.source_id.clone();
+        let mode = plan.mode;
         let done = Arc::new(AtomicBool::new(false));
         let completion = done.clone();
         std::thread::spawn(move || {
@@ -197,8 +214,10 @@ impl Job {
             }
             let _finished = Finished(completion);
             let mut report = Report {
+                mode,
                 total: plan.paths.len(),
                 generated: 0,
+                translated: 0,
                 skipped: 0,
                 failed: vec![],
                 cancelled: false,
@@ -218,8 +237,35 @@ impl Job {
                         report.total
                     )));
                 };
-                progress("正在准备视频，未下载的分P会先下载");
+                progress(if mode == Mode::Chinese {
+                    "正在检查已有字幕；已有中文会跳过，不下载视频或重新识别"
+                } else {
+                    "正在准备视频，未下载的分P会先下载"
+                });
                 let result = (|| -> Result<bool> {
+                    if mode == Mode::Chinese {
+                        let path = translation_path(
+                            &lib,
+                            plan.series.as_ref(),
+                            *index,
+                            input.as_deref(),
+                            &downloads,
+                        )?;
+                        let translated = video_subtitles::translate_cached_with_progress(
+                            &lib, &path, &token, progress,
+                        )?;
+                        if let Some((subtitle, cues)) = translated {
+                            let _ = tx.send(Event::Ready {
+                                source_id: plan.source_id.clone(),
+                                path,
+                                subtitle,
+                                cues,
+                            });
+                            return Ok(true);
+                        }
+                        progress("已有中文字幕，跳过本P");
+                        return Ok(false);
+                    }
                     let path = if let Some(series) = &plan.series {
                         let p = downloads.obtain(&lib, series, *index, &token)?;
                         let _ = tx.send(Event::Downloaded {
@@ -250,6 +296,7 @@ impl Job {
                     Ok(true)
                 })();
                 match result {
+                    Ok(true) if mode == Mode::Chinese => report.translated += 1,
                     Ok(true) => report.generated += 1,
                     Ok(false) => report.skipped += 1,
                     Err(_) if token.load(Ordering::SeqCst) => break,
@@ -260,10 +307,47 @@ impl Job {
             let _ = tx.send(Event::Finished(report));
         });
         Self {
+            mode,
             source_id,
             cancel,
             events,
             done,
         }
     }
+}
+
+/// Translation needs subtitle identity, not playable media. Restored Bilibili
+/// cache slots remain addressable while the actual video file is absent.
+fn translation_path(
+    lib: &Library,
+    series: Option<&Series>,
+    index: usize,
+    input: Option<&Path>,
+    downloads: &Downloads,
+) -> Result<PathBuf> {
+    let mut candidates = vec![];
+    if let Some(input) = input {
+        candidates.push(input.to_path_buf());
+    }
+    if let Some(series) = series {
+        if let Some(path) = downloads.cached(series, index) {
+            candidates.push(path);
+        }
+        candidates.push(crate::bilibili::source_path(lib, &series.url(index)?)?);
+    }
+    candidates.dedup();
+    let mut english = None;
+    for path in candidates {
+        if !path.exists() && crate::bilibili::source_identity(&path).is_none() {
+            continue;
+        }
+        let cues = video_subtitles::load(lib, &path)?;
+        if video_subtitles::has_chinese(&cues) {
+            return Ok(path);
+        }
+        if !cues.is_empty() && english.is_none() {
+            english = Some(path);
+        }
+    }
+    english.context("没有已保存的英文字幕，请先为本P导入或生成英文字幕；未下载或重新识别")
 }

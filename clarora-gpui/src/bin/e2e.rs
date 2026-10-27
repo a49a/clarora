@@ -53,6 +53,8 @@ mod timer_chimes;
 mod transcript;
 #[path = "support/ui_controller.rs"]
 mod ui_controller;
+#[path = "support/video_batch_translation.rs"]
+mod video_batch_translation;
 #[path = "support/video_jobs.rs"]
 mod video_jobs;
 #[path = "support/video_library.rs"]
@@ -224,6 +226,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let lib = Library::open(root.join("source"))?;
     chat_controller::run(&lib, results)?;
     data_loader::run(&root, results)?;
+    video_batch_translation::run(&lib, results)?;
     ebook::run(&lib, results)?;
     transcript::run(&lib, results)?;
     chat_store::run(&lib, results)?;
@@ -908,6 +911,7 @@ fn main() -> Result<()> {
     }
     let mut results = vec![];
     let mode = match args.get(2).and_then(|arg| arg.to_str()) {
+        Some("--video-batch-translation-only") => "video-batch-translation-only",
         Some("--ui-controller-only") => "ui-controller-only",
         Some("--chat-controller-only") => "chat-controller-only",
         Some("--data-loader-only") => "data-loader-only",
@@ -931,7 +935,10 @@ fn main() -> Result<()> {
         Some("--timer-chimes-audible") => "timer-chimes-audible",
         _ => "full",
     };
-    let result = if mode == "ui-controller-only" {
+    let result = if mode == "video-batch-translation-only" {
+        Library::open(output.join("batch-translate-source"))
+            .and_then(|lib| video_batch_translation::run(&lib, &mut results))
+    } else if mode == "ui-controller-only" {
         ui_controller::run(&output, &mut results)
     } else if mode == "chat-controller-only" {
         Library::open(output.join("chat-controller-source"))
