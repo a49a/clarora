@@ -15,6 +15,8 @@ mod backup_library;
 mod bilibili_parts;
 #[path = "support/blind_listening.rs"]
 mod blind_listening;
+#[path = "support/chat_controller.rs"]
+mod chat_controller;
 #[path = "support/chat_store.rs"]
 mod chat_store;
 #[path = "support/clip_marks.rs"]
@@ -23,6 +25,8 @@ mod clip_marks;
 mod command_import;
 #[path = "support/credential_mode.rs"]
 mod credential_mode;
+#[path = "support/data_loader.rs"]
+mod data_loader;
 #[path = "support/ebook.rs"]
 mod ebook;
 #[path = "support/focus_timer.rs"]
@@ -39,12 +43,16 @@ mod playback_state;
 mod protocol;
 #[path = "support/review_queue.rs"]
 mod review_queue;
+#[path = "support/runtime_stability.rs"]
+mod runtime_stability;
 #[path = "support/subtitle_selection.rs"]
 mod subtitle_selection;
 #[path = "support/timer_chimes.rs"]
 mod timer_chimes;
 #[path = "support/transcript.rs"]
 mod transcript;
+#[path = "support/ui_controller.rs"]
+mod ui_controller;
 #[path = "support/video_jobs.rs"]
 mod video_jobs;
 #[path = "support/video_library.rs"]
@@ -211,7 +219,11 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     fs::create_dir_all(&root)?;
     focus_timer::run(&root, results)?;
     gpu_memory::run(&root, results)?;
+    runtime_stability::run(&root, results, 32)?;
+    ui_controller::run(&root, results)?;
     let lib = Library::open(root.join("source"))?;
+    chat_controller::run(&lib, results)?;
+    data_loader::run(&root, results)?;
     ebook::run(&lib, results)?;
     transcript::run(&lib, results)?;
     chat_store::run(&lib, results)?;
@@ -879,6 +891,15 @@ fn main() -> Result<()> {
     if args.get(2).and_then(|s| s.to_str()) == Some("--focus-timer-worker") {
         return focus_timer::worker(&output);
     }
+    if args.get(2).and_then(|s| s.to_str()) == Some("--runtime-stability-worker") {
+        return runtime_stability::worker(
+            &output,
+            args.get(3)
+                .and_then(|s| s.to_str())
+                .unwrap_or("32")
+                .parse()?,
+        );
+    }
     if args.get(2).and_then(|s| s.to_str()) == Some("--gpu-memory-worker") {
         return gpu_memory::worker(
             &output,
@@ -887,8 +908,12 @@ fn main() -> Result<()> {
     }
     let mut results = vec![];
     let mode = match args.get(2).and_then(|arg| arg.to_str()) {
+        Some("--ui-controller-only") => "ui-controller-only",
+        Some("--chat-controller-only") => "chat-controller-only",
+        Some("--data-loader-only") => "data-loader-only",
         Some("--focus-timer-only") => "focus-timer-only",
         Some("--gpu-memory-only") => "gpu-memory-only",
+        Some("--runtime-stability-only") => "runtime-stability-only",
         Some("--http-only") => "http-only",
         Some("--reliability-only") => "reliability-only",
         Some("--writing-only") => "writing-only",
@@ -906,8 +931,24 @@ fn main() -> Result<()> {
         Some("--timer-chimes-audible") => "timer-chimes-audible",
         _ => "full",
     };
-    let result = if mode == "focus-timer-only" {
+    let result = if mode == "ui-controller-only" {
+        ui_controller::run(&output, &mut results)
+    } else if mode == "chat-controller-only" {
+        Library::open(output.join("chat-controller-source"))
+            .and_then(|lib| chat_controller::run(&lib, &mut results))
+    } else if mode == "data-loader-only" {
+        data_loader::run(&output, &mut results)
+    } else if mode == "focus-timer-only" {
         focus_timer::run(&output, &mut results)
+    } else if mode == "runtime-stability-only" {
+        runtime_stability::run(
+            &output,
+            &mut results,
+            args.get(3)
+                .and_then(|s| s.to_str())
+                .unwrap_or("32")
+                .parse()?,
+        )
     } else if mode == "gpu-memory-only" {
         gpu_memory::run(&output, &mut results)
     } else if mode == "subtitle-selection-only" {

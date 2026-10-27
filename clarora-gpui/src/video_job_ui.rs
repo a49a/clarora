@@ -8,7 +8,7 @@ impl AppView {
         ensure!(self.tasks.cancel.is_none(), "请先完成当前前台任务");
         ensure!(self.page == "video", "请先进入视频学习");
         let path = self.video.path.clone().context("请先选择视频")?;
-        let videos = video_library::Collection::load(&self.lib)?;
+        let videos = &self.video.collection;
         let source = videos
             .items
             .iter()
@@ -129,6 +129,8 @@ impl AppView {
                         self.media
                             .player
                             .command(["sub-add".into(), subtitle, "select".into()]);
+                        self.refresh_saved_ranges();
+                        self.refresh();
                     }
                 }
                 video_jobs::Event::Finished(report) => {

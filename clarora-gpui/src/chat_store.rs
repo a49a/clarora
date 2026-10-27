@@ -105,7 +105,7 @@ pub struct State {
 }
 
 impl State {
-    fn loaded(&mut self, session: Option<Session>) {
+    pub(crate) fn loaded(&mut self, session: Option<Session>) {
         self.id.clear();
         self.history.clear();
         self.output.clear();

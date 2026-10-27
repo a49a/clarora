@@ -48,9 +48,13 @@ jobs:
         with:
           name: Clarora-GPUI-macos-E2E
           path: |
-            clarora-gpui/e2e-artifacts/e2e-report.json
-            clarora-gpui/e2e-artifacts/*.png
-            clarora-gpui/e2e-artifacts/waveform.json
+            clarora-gpui/e2e-artifacts/**/*.json
+            clarora-gpui/e2e-artifacts/**/*.jsonl
+            clarora-gpui/e2e-artifacts/**/curves.csv
+            clarora-gpui/e2e-artifacts/**/*.png
+            clarora-gpui/e2e-artifacts/**/stdout.log
+            clarora-gpui/e2e-artifacts/**/stderr.log
+            clarora-gpui/e2e-artifacts/**/data-loader.sqlite
           if-no-files-found: ignore
   windows:
     runs-on: windows-2022

@@ -193,6 +193,14 @@ impl AppView {
                     ),
                 )
             })
+            .when(self.chat.is_loading(), |v| {
+                v.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("正在读取材料会话…"),
+                )
+            })
             .child(self.field("question", "向当前材料提问"))
             .child(
                 div()
@@ -204,6 +212,9 @@ impl AppView {
                             .primary()
                             .disabled(
                                 self.tasks.cancel.is_some()
+                                    || self.chat.is_loading()
+                                    || (matches!(self.page.as_str(), "flashcard" | "discover")
+                                        && !self.cards_ready())
                                     || (self.page == "video" && self.video.material.is_none()),
                             ),
                     )
@@ -213,7 +224,12 @@ impl AppView {
                     )
                     .child(
                         self.button("save-answer", "存为问答卡", Action::SaveAnswer, cx)
-                            .disabled(self.tasks.cancel.is_some() || self.chat.history.is_empty()),
+                            .disabled(
+                                self.tasks.cancel.is_some()
+                                    || self.chat.is_loading()
+                                    || self.chat.context != self.chat_context_key(cx)
+                                    || self.chat.history.is_empty(),
+                            ),
                     ),
             )
             .child(history)
