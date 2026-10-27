@@ -41,6 +41,7 @@ jobs:
       - name: Run native workflow E2E
         env:
           PDFIUM_LIB_PATH: ${{ github.workspace }}/clarora-gpui/target/debug
+          CLARORA_GUI_MEMORY_CHECK: '1'
         run: cargo run --locked --bin e2e -- e2e-artifacts
       - uses: actions/upload-artifact@v7
         if: always()

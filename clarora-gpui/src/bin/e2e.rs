@@ -25,6 +25,8 @@ mod command_import;
 mod credential_mode;
 #[path = "support/ebook.rs"]
 mod ebook;
+#[path = "support/gpu_memory.rs"]
+mod gpu_memory;
 #[path = "support/kokoro.rs"]
 mod kokoro;
 #[path = "support/model_progress.rs"]
@@ -205,6 +207,7 @@ fn reliability(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
 fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = output.join(format!("run-{}", data::id()));
     fs::create_dir_all(&root)?;
+    gpu_memory::run(&root, results)?;
     let lib = Library::open(root.join("source"))?;
     ebook::run(&lib, results)?;
     transcript::run(&lib, results)?;
@@ -870,8 +873,15 @@ fn main() -> Result<()> {
         .context("用法：cargo run --bin e2e -- <证据目录>")?;
     fs::create_dir_all(&output)?;
     let output = output.canonicalize()?;
+    if args.get(2).and_then(|s| s.to_str()) == Some("--gpu-memory-worker") {
+        return gpu_memory::worker(
+            &output,
+            args.get(3).and_then(|s| s.to_str()) == Some("--unbounded"),
+        );
+    }
     let mut results = vec![];
     let mode = match args.get(2).and_then(|arg| arg.to_str()) {
+        Some("--gpu-memory-only") => "gpu-memory-only",
         Some("--http-only") => "http-only",
         Some("--reliability-only") => "reliability-only",
         Some("--writing-only") => "writing-only",
@@ -889,7 +899,9 @@ fn main() -> Result<()> {
         Some("--timer-chimes-audible") => "timer-chimes-audible",
         _ => "full",
     };
-    let result = if mode == "subtitle-selection-only" {
+    let result = if mode == "gpu-memory-only" {
+        gpu_memory::run(&output, &mut results)
+    } else if mode == "subtitle-selection-only" {
         let lib = Library::open(output.join(format!("subtitle-selection-{}", data::id())))?;
         subtitle_selection::run(&lib, &mut results)
     } else if mode == "timer-chimes-audible" {

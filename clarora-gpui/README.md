@@ -249,6 +249,10 @@ TXT 支持 UTF-8（含 BOM）和带 BOM 的 UTF-16；其它编码请先转换。
 
 ## 可复现验证
 
+GPU 图片纹理按当前场景管理：视频换帧、离开视频／复习页、PDF 翻页和电子书插图更换时，从 GPUI 图集中释放旧纹理；暂停重绘复用当前图片。仅释放 Rust 图片引用不会清除 GPU 图集。
+
+默认 E2E 收集真实窗口的 GPU 内存检查。在有图形会话的 macOS 上设置 `CLARORA_GUI_MEMORY_CHECK=1` 启用，也可运行 `CLARORA_GUI_MEMORY_CHECK=1 cargo run --locked --bin e2e -- /absolute/evidence --gpu-memory-only` 定向复验；macOS CI 默认启用。探针实际上传持续更换的图片，覆盖暂停、尺寸变化、隐藏和恢复，检查包含 GPU／压缩内存的 physical footprint，并保留 JSON 采样；超过内存上限会退出。未启用或非 macOS 环境明确标记跳过，不能用仅解码或 RSS 的检查代替。
+
 收藏片段标记由默认 E2E 收集；可用 `--clip-marks-only /absolute/path/video.mp4` 定向复验真实 FFmpeg 导出、SQLite 原子保存／取消、跨句重叠与旧片段匹配、ZIP 恢复后的来源关联，输出 JSON、SQLite 和媒体文件证据。
 
 整组音频字幕由默认 E2E 收集，可用 `--audio-batch-only` 定向复验。使用真实 SQLite、音频／字幕文件和本机 HTTP，覆盖语言跳过、部分中文补齐、英文自动生成、组快照、错误继续、取消、重试以及并发修改保护；保留 JSON 报告、请求记录和资料库。

@@ -347,6 +347,7 @@ struct AppView {
     recording: Option<Recorder>,
     recorded: Option<PathBuf>,
     timer_chimes: timer_chimes::Chimes,
+    rendered_images: clarora_gpui::render_images::RenderedImages,
     timer_end: Option<SystemTime>,
     timer_remaining: u64,
     timer_paused: bool,
@@ -373,6 +374,8 @@ struct AppView {
 }
 impl AppView {
     fn new(lib: Library, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        cx.on_release(|this: &mut Self, cx| this.rendered_images.clear(cx))
+            .detach();
         let mut inputs = BTreeMap::new();
         for (key, placeholder, multi, masked) in [
             ("search", "搜索内容", false, false),
@@ -440,6 +443,7 @@ impl AppView {
             video: app_state::VideoState::new(),
             audio: app_state::AudioState::new(),
             timer_chimes: timer_chimes::Chimes::new(lib.root.join("cache/timer-chimes")),
+            rendered_images: Default::default(),
             tts_voice: lib
                 .setting("tts_voice")
                 .ok()
@@ -8566,6 +8570,18 @@ fn panel(cx: &App) -> Div {
 }
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut images = Vec::new();
+        if self.video_frame_path().is_some() {
+            images.extend(self.media.snapshot.frame.clone());
+        }
+        if self.page == "pdf" {
+            if let Some(reading) = &self.ebook_reading {
+                images.extend(reading.images.values().cloned());
+            } else {
+                images.extend(self.pdf_image.clone());
+            }
+        }
+        self.rendered_images.retain(images, window, cx);
         self.subtitle_text.borrow_mut().begin_frame();
         let (title, subtitle) = PAGES
             .iter()

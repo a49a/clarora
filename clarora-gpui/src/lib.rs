@@ -47,3 +47,5 @@ pub mod clip_marks;
 pub mod timer_chimes;
 
 pub mod subtitle_selection;
+
+pub mod render_images;
