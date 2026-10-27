@@ -49,3 +49,5 @@ pub mod timer_chimes;
 pub mod subtitle_selection;
 
 pub mod render_images;
+
+pub mod focus_timer;

@@ -25,6 +25,8 @@ mod command_import;
 mod credential_mode;
 #[path = "support/ebook.rs"]
 mod ebook;
+#[path = "support/focus_timer.rs"]
+mod focus_timer;
 #[path = "support/gpu_memory.rs"]
 mod gpu_memory;
 #[path = "support/kokoro.rs"]
@@ -207,6 +209,7 @@ fn reliability(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
 fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = output.join(format!("run-{}", data::id()));
     fs::create_dir_all(&root)?;
+    focus_timer::run(&root, results)?;
     gpu_memory::run(&root, results)?;
     let lib = Library::open(root.join("source"))?;
     ebook::run(&lib, results)?;
@@ -873,6 +876,9 @@ fn main() -> Result<()> {
         .context("用法：cargo run --bin e2e -- <证据目录>")?;
     fs::create_dir_all(&output)?;
     let output = output.canonicalize()?;
+    if args.get(2).and_then(|s| s.to_str()) == Some("--focus-timer-worker") {
+        return focus_timer::worker(&output);
+    }
     if args.get(2).and_then(|s| s.to_str()) == Some("--gpu-memory-worker") {
         return gpu_memory::worker(
             &output,
@@ -881,6 +887,7 @@ fn main() -> Result<()> {
     }
     let mut results = vec![];
     let mode = match args.get(2).and_then(|arg| arg.to_str()) {
+        Some("--focus-timer-only") => "focus-timer-only",
         Some("--gpu-memory-only") => "gpu-memory-only",
         Some("--http-only") => "http-only",
         Some("--reliability-only") => "reliability-only",
@@ -899,7 +906,9 @@ fn main() -> Result<()> {
         Some("--timer-chimes-audible") => "timer-chimes-audible",
         _ => "full",
     };
-    let result = if mode == "gpu-memory-only" {
+    let result = if mode == "focus-timer-only" {
+        focus_timer::run(&output, &mut results)
+    } else if mode == "gpu-memory-only" {
         gpu_memory::run(&output, &mut results)
     } else if mode == "subtitle-selection-only" {
         let lib = Library::open(output.join(format!("subtitle-selection-{}", data::id())))?;

@@ -2,9 +2,9 @@ use super::*;
 
 impl AppView {
     pub(super) fn focus_timer_toggle_label(&self) -> &'static str {
-        if self.timer_end.is_some() {
+        if self.timer.is_running() {
             "暂停"
-        } else if self.timer_paused {
+        } else if self.timer.paused() {
             "继续"
         } else {
             "开始"
@@ -72,7 +72,7 @@ impl AppView {
             .flex_wrap()
             .gap_2()
             .child(design::icon("meditation", primary))
-            .child(div().text_sm().child(if self.timer_focus {
+            .child(div().text_sm().child(if self.timer.focus() {
                 "专注时间"
             } else {
                 "休息时间"
@@ -86,9 +86,9 @@ impl AppView {
                     .text_color(primary)
                     .child(clock(self.timer_remaining as f64)),
             )
-            .child(div().text_xs().child(if self.timer_end.is_some() {
+            .child(div().text_xs().child(if self.timer.is_running() {
                 "进行中"
-            } else if self.timer_paused {
+            } else if self.timer.paused() {
                 "已暂停"
             } else {
                 "待开始"

@@ -23,7 +23,7 @@ use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::{
     ai, audio_library, backup, bilibili, blind_listening, clip_marks, credentials,
     data::{Card, Library, Row, id, now, text},
-    documents, ebook,
+    documents, ebook, focus_timer,
     media::{Playback, Player},
     model_download::Progress as ModelProgress,
     process::{self, Cancel},
@@ -53,7 +53,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{atomic::Ordering, mpsc},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 use subtitle_follow_ui::centered_list;
 use task_ui::{TaskNotice, TaskState};
@@ -348,10 +348,9 @@ struct AppView {
     recorded: Option<PathBuf>,
     timer_chimes: timer_chimes::Chimes,
     rendered_images: clarora_gpui::render_images::RenderedImages,
-    timer_end: Option<SystemTime>,
+    timer: focus_timer::Timer,
     timer_remaining: u64,
-    timer_paused: bool,
-    timer_focus: bool,
+    timer_retry: Option<Instant>,
     pdf_path: Option<PathBuf>,
     pdf_image: Option<std::sync::Arc<RenderImage>>,
     pdf_page: u16,
@@ -433,6 +432,15 @@ impl AppView {
                 }),
             );
         }
+        let (timer, timer_warning, timer_completed) =
+            match focus_timer::Timer::load(&lib, focus_timer::now_ms()) {
+                Ok(loaded) => (loaded.timer, loaded.warning, loaded.completed),
+                Err(e) => (
+                    focus_timer::Timer::default(),
+                    Some(format!("无法读取专注计时：{e:#}")),
+                    None,
+                ),
+            };
         let mut this = Self {
             data: Default::default(),
             settings: app_state::SettingsState::new(&lib),
@@ -486,10 +494,9 @@ impl AppView {
             backups: vec![],
             recording: None,
             recorded: None,
-            timer_end: None,
-            timer_remaining: 1500,
-            timer_paused: false,
-            timer_focus: true,
+            timer_remaining: timer.remaining_seconds(focus_timer::now_ms()),
+            timer,
+            timer_retry: None,
             pdf_path: None,
             pdf_image: None,
             pdf_page: 0,
@@ -509,6 +516,12 @@ impl AppView {
             graph_node: "demo-1".into(),
             graph_list: 0,
         };
+        if let Some(warning) = timer_warning {
+            this.report_status(FeedbackKind::Error, warning);
+        }
+        if let Some(focused) = timer_completed {
+            this.focus_phase_completed(focused);
+        }
         // Video is enabled by the actual picture's measured layout, never by an audio preload.
         this.media.player.set_video_target(0, 0, false);
         this.media.preloader.set_video_target(0, 0, false);
@@ -1007,6 +1020,21 @@ impl AppView {
         }
         self.refresh_saved_ranges();
         self.refresh_view_data();
+    }
+    fn focus_phase_completed(&mut self, focused: bool) {
+        self.play_timer_chime(timer_chimes::Cue::End);
+        if focused && self.page == "stats" {
+            self.refresh_view_data();
+        }
+        self.report_status(
+            FeedbackKind::Info,
+            if focused {
+                "专注完成，休息一下"
+            } else {
+                "休息结束，可以开始下一轮"
+            }
+            .into(),
+        );
     }
     fn play_timer_chime(&mut self, cue: timer_chimes::Cue) {
         if let Err(error) = self.timer_chimes.play(cue) {
@@ -1698,40 +1726,25 @@ impl AppView {
         if let Some(error) = self.timer_chimes.take_error() {
             self.report_status(FeedbackKind::Error, format!("计时提示音播放失败：{error}"));
         }
-        if let Some(end) = self.timer_end {
-            if SystemTime::now() >= end {
-                self.play_timer_chime(timer_chimes::Cue::End);
-                self.timer_end = None;
-                if self.timer_focus {
-                    let _ = self.lib.stat("pomodoro_count", 1.);
-                    if self.page == "stats" {
-                        self.refresh_view_data();
-                    }
+        if self.timer_retry.is_none_or(|retry| Instant::now() >= retry) {
+            match self.timer.tick(&self.lib, focus_timer::now_ms(), true) {
+                Ok(Some(focused)) => {
+                    self.focus_phase_completed(focused);
+                    self.timer_retry = None;
+                    changed = true;
                 }
-                self.timer_focus = !self.timer_focus;
-                self.timer_remaining = if self.timer_focus { 1500 } else { 300 };
-                self.timer_end =
-                    Some(SystemTime::now() + Duration::from_secs(self.timer_remaining));
-                self.report_status(
-                    FeedbackKind::Info,
-                    if self.timer_focus {
-                        "休息结束，可以开始下一轮"
-                    } else {
-                        "专注完成，休息一下"
-                    }
-                    .into(),
-                );
-                changed = true;
-            } else if !self.timer_paused {
-                let remaining = end
-                    .duration_since(SystemTime::now())
-                    .unwrap_or_default()
-                    .as_secs();
-                if remaining != self.timer_remaining {
-                    self.timer_remaining = remaining;
+                Ok(None) => {}
+                Err(error) => {
+                    self.timer_retry = Some(Instant::now() + Duration::from_secs(3));
+                    self.report_status(FeedbackKind::Error, format!("专注计时保存失败：{error:#}"));
                     changed = true;
                 }
             }
+        }
+        let remaining = self.timer.remaining_seconds(focus_timer::now_ms());
+        if remaining != self.timer_remaining {
+            self.timer_remaining = remaining;
+            changed = true;
         }
         let previous_context = self.chat.context.clone();
         let previous_error = self.chat.error.clone();
@@ -4196,34 +4209,30 @@ impl AppView {
                     });
                 }
                 Action::Timer(seconds) => {
+                    self.timer
+                        .start(&self.lib, focus_timer::now_ms(), seconds)?;
+                    self.timer_remaining = self.timer.remaining_seconds(focus_timer::now_ms());
+                    self.timer_retry = None;
                     self.play_timer_chime(timer_chimes::Cue::Start);
-                    self.timer_remaining = seconds;
-                    self.timer_end = Some(SystemTime::now() + Duration::from_secs(seconds));
-                    self.timer_paused = false;
-                    self.timer_focus = true;
                 }
                 Action::TimerPause => {
-                    if let Some(end) = self.timer_end.take() {
-                        self.timer_remaining = end
-                            .duration_since(SystemTime::now())
-                            .unwrap_or_default()
-                            .as_secs();
-                        self.timer_paused = true;
-                    } else {
-                        if !self.timer_paused {
-                            self.play_timer_chime(timer_chimes::Cue::Start);
+                    match self.timer.toggle(&self.lib, focus_timer::now_ms())? {
+                        focus_timer::Toggle::Started => {
+                            self.play_timer_chime(timer_chimes::Cue::Start)
                         }
-                        self.timer_end =
-                            Some(SystemTime::now() + Duration::from_secs(self.timer_remaining));
-                        self.timer_paused = false;
+                        focus_timer::Toggle::Completed(focused) => {
+                            self.focus_phase_completed(focused)
+                        }
+                        focus_timer::Toggle::Paused | focus_timer::Toggle::Resumed => {}
                     }
+                    self.timer_remaining = self.timer.remaining_seconds(focus_timer::now_ms());
+                    self.timer_retry = None;
                 }
                 Action::TimerReset => {
+                    self.timer.reset(&self.lib)?;
                     self.timer_chimes.stop();
-                    self.timer_focus = true;
-                    self.timer_end = None;
-                    self.timer_remaining = 1500;
-                    self.timer_paused = false;
+                    self.timer_remaining = self.timer.remaining_seconds(focus_timer::now_ms());
+                    self.timer_retry = None;
                 }
                 Action::CredentialMode(enabled) => {
                     ensure!(
@@ -8508,7 +8517,7 @@ impl AppView {
                         .items_center()
                         .p_10()
                         .child(div().text_3xl().child(clock(self.timer_remaining as f64)))
-                        .child(if self.timer_focus {
+                        .child(if self.timer.focus() {
                             "专注时间"
                         } else {
                             "休息时间"
