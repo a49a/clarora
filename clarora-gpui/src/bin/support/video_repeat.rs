@@ -397,6 +397,105 @@ fn sequence(
     Ok(())
 }
 
+fn ordinary_navigation(
+    player: &Player,
+    video: &Path,
+    root: &Path,
+    traces: &mut Vec<Value>,
+    checks: &mut Vec<Value>,
+) -> Result<()> {
+    use clarora_gpui::{subtitles::Cue, video_repeat::adjacent};
+    let duration = ready(player, video, traces)?.duration;
+    let cues = vec![
+        Cue {
+            start: 0.3,
+            end: 0.65,
+            text: "First".into(),
+        },
+        Cue {
+            start: 0.8,
+            end: 0.8,
+            text: "Invalid".into(),
+        },
+        Cue {
+            start: 0.9,
+            end: 0.94,
+            text: "Short".into(),
+        },
+        Cue {
+            start: 2.55,
+            end: duration,
+            text: "Last".into(),
+        },
+        Cue {
+            start: duration + 1.,
+            end: duration + 2.,
+            text: "Outside".into(),
+        },
+    ];
+    let cases = [
+        (0.5, false, None),
+        (0.5, true, Some(2)),
+        (0.92, false, Some(0)),
+        (0.92, true, Some(3)),
+        (2.9, false, Some(2)),
+        (2.9, true, None),
+        (0.7, false, Some(0)),
+        (0.7, true, Some(2)),
+        (0.1, false, None),
+        (0.1, true, Some(0)),
+        (duration, false, Some(3)),
+        (duration, true, None),
+    ];
+    for (position, next, expected) in cases {
+        ensure!(
+            adjacent(&cues, position, next, duration) == expected,
+            "邻句索引错误：position={position}, next={next}"
+        );
+    }
+    ensure!(
+        adjacent(&[], 0.5, true, duration).is_none()
+            && adjacent(&cues, f64::NAN, true, duration).is_none()
+            && adjacent(&cues, -1., true, duration).is_none(),
+        "空/无效位置未拒绝"
+    );
+    checks.push(json!({"scenario":"普通邻句索引/当前句向左严格上一句/40ms短句/间隙/首尾/无效目标", "passed":true}));
+    for (position, next, target) in [(0.92, false, 0.3), (0.5, true, 0.9), (0.92, true, 2.55)] {
+        let index = adjacent(&cues, position, next, duration).context("缺少导航目标")?;
+        player.command([
+            "seek".into(),
+            cues[index].start.to_string(),
+            "absolute+exact".into(),
+        ]);
+        wait(
+            player,
+            "暂停时精确跳到邻句开头",
+            Duration::from_secs(4),
+            traces,
+            |s| s.paused && s.frame.is_some() && (s.position - target).abs() < 0.03,
+        )?;
+    }
+    save_frame(
+        &root.join("subtitle-navigation-frame.png"),
+        &player.snapshot(),
+    )?;
+    player.set("pause", "no");
+    player.command(["seek", "0.3", "absolute+exact"]);
+    wait(
+        player,
+        "播放中邻句定位保持播放",
+        Duration::from_secs(4),
+        traces,
+        |s| !s.paused && s.position >= 0.3 && s.position < 0.65,
+    )?;
+    checks.push(json!({"scenario":"真实libmpv邻句句首exact定位/暂停保持/播放保持", "passed":true}));
+    fs::write(
+        root.join("subtitle-navigation-cases.json"),
+        serde_json::to_vec_pretty(&json!({"passed":true,"cases":cases}))?,
+    )?;
+    Ok(())
+}
+
 pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     let root = lib.root.join("video-repeat");
     fs::create_dir_all(&root)?;
@@ -868,6 +967,8 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
         }
         checks
             .push(json!({"scenario":"无媒体/异媒体失败反馈与非法时间/遍数原子拒绝","passed":true}));
+        let navigation_player = Player::without_audio_device();
+        ordinary_navigation(&navigation_player, &video, &root, &mut traces, &mut checks)?;
         let sequence_player = Player::without_audio_device();
         sequence(&sequence_player, &video, &root, &mut traces, &mut checks)?;
         Ok(())

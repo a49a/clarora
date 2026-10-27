@@ -33,6 +33,32 @@ fn range(cue: &Cue, duration: f64) -> Option<(f64, f64)> {
         .then_some((cue.start, end))
 }
 
+/// Move relative to the current subtitle; in a gap, choose the nearest cue in
+/// the requested direction. No fixed time threshold may skip a short sentence.
+pub fn adjacent(cues: &[Cue], position: f64, next: bool, duration: f64) -> Option<usize> {
+    if !position.is_finite() || position < 0. {
+        return None;
+    }
+    let current = cues.iter().rposition(|cue| {
+        range(cue, duration).is_some_and(|(start, end)| position >= start && position < end)
+    });
+    if let Some(index) = current {
+        if next {
+            ((index + 1)..cues.len()).find(|&i| range(&cues[i], duration).is_some())
+        } else {
+            (0..index)
+                .rev()
+                .find(|&i| range(&cues[i], duration).is_some())
+        }
+    } else if next {
+        cues.iter()
+            .position(|cue| range(cue, duration).is_some_and(|(start, _)| start > position))
+    } else {
+        cues.iter()
+            .rposition(|cue| range(cue, duration).is_some_and(|(start, _)| start <= position))
+    }
+}
+
 impl Session {
     pub fn start(
         player: &Player,

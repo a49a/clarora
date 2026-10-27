@@ -3466,15 +3466,34 @@ impl AppView {
                         }
                         return Ok(());
                     }
+                    let path = self.video.path.as_ref().context("请先打开视频")?;
+                    ensure!(
+                        self.page == "video"
+                            && self.media.path.as_ref() == Some(path)
+                            && self.media.snapshot.path == path.to_string_lossy(),
+                        "视频正在切换，请稍候再切句"
+                    );
+                    let Some(index) = clarora_gpui::video_repeat::adjacent(
+                        &self.video.cues,
+                        self.media.snapshot.position,
+                        next,
+                        self.media.snapshot.duration,
+                    ) else {
+                        self.report_status(
+                            FeedbackKind::Info,
+                            if self.video.cues.is_empty() {
+                                "暂无字幕，请先生成或导入字幕"
+                            } else if next {
+                                "已经是最后一句"
+                            } else {
+                                "已经是第一句"
+                            }
+                            .into(),
+                        );
+                        return Ok(());
+                    };
+                    let target = self.video.cues[index].start;
                     self.clear_video_sentence_repeat();
-                    let pos = self.media.snapshot.position;
-                    let target = if next {
-                        self.video.cues.iter().find(|c| c.start > pos + 0.1)
-                    } else {
-                        self.video.cues.iter().rev().find(|c| c.start < pos - 0.5)
-                    }
-                    .context("没有更多字幕")?
-                    .start;
                     // Moving to another sentence exits the previous A/B loop.
                     if self.media.repeat == 2 {
                         self.media.repeat = 0;
@@ -5321,7 +5340,7 @@ impl AppView {
         }
     }
     fn video_horizontal_action(&self, next: bool) -> Action {
-        if self.page == "video" && self.video.sentence_repeat.is_some_and(|s| s.three) {
+        if self.page == "video" {
             Action::VideoSentence(next)
         } else {
             Action::Seek(if next { 10. } else { -10. })
@@ -5332,16 +5351,14 @@ impl AppView {
             session
                 .neighbor(&self.video.cues, next, self.media.snapshot.duration)
                 .is_some()
-        } else if next {
-            self.video
-                .cues
-                .iter()
-                .any(|c| c.start > self.media.snapshot.position + 0.1)
         } else {
-            self.video
-                .cues
-                .iter()
-                .any(|c| c.start < self.media.snapshot.position - 0.5)
+            clarora_gpui::video_repeat::adjacent(
+                &self.video.cues,
+                self.media.snapshot.position,
+                next,
+                self.media.snapshot.duration,
+            )
+            .is_some()
         }
     }
     fn video_repeat_cue(&self) -> Option<usize> {
@@ -5650,7 +5667,7 @@ impl AppView {
                 self.video.sentence_repeat.is_none(),
             ),
         ];
-        let rates = [0.6, 0.8, 1., 1.25, 1.5, 2.]
+        let rates = [0.6, 0.7, 0.8, 0.9, 1., 1.25, 1.5, 2.]
             .into_iter()
             .map(|r| {
                 (
@@ -6700,7 +6717,7 @@ impl AppView {
             .loop_a
             .zip(self.media.loop_b)
             .is_some_and(|(a, b)| b > a);
-        let rates = [0.6, 0.7, 0.8, 1., 1.2, 1.25, 1.5, 2.]
+        let rates = [0.6, 0.7, 0.8, 0.9, 1., 1.2, 1.25, 1.5, 2.]
             .into_iter()
             .map(|r| {
                 (
@@ -7019,7 +7036,7 @@ impl AppView {
                     .flex()
                     .gap_2()
                     .flex_wrap()
-                    .children([0.6, 0.8, 1., 1.25, 1.5, 2.].into_iter().map(|r| {
+                    .children([0.6, 0.8, 0.9, 1., 1.25, 1.5, 2.].into_iter().map(|r| {
                         self.transport_button(
                             format!("speed-{r}"),
                             format!("{r}×"),
