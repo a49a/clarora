@@ -122,22 +122,17 @@ impl AppView {
                             self.restore_listening();
                         } else if self.page == "video" {
                             if let Some(path) = self.video.path.clone() {
-                                self.open(path.clone());
+                                let position = self
+                                    .lib
+                                    .setting("last_video_position")
+                                    .ok()
+                                    .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+                                    .filter(|value| value["path"].as_str() == path.to_str())
+                                    .and_then(|value| value["position"].as_f64())
+                                    .filter(|position| position.is_finite() && *position >= 0.)
+                                    .unwrap_or(0.);
+                                self.open_at(path, position, true);
                                 self.video.tab = 3;
-                                self.media.player.set("pause", "yes");
-                                if let Ok(value) = serde_json::from_str::<Value>(
-                                    &self.lib.setting("last_video_position").unwrap_or_default(),
-                                ) {
-                                    if value["path"].as_str() == path.to_str() {
-                                        if let Some(time) = value["position"].as_f64() {
-                                            self.media.player.command([
-                                                "seek".into(),
-                                                time.to_string(),
-                                                "absolute+exact".into(),
-                                            ]);
-                                        }
-                                    }
-                                }
                             }
                         }
                     }

@@ -29,6 +29,8 @@ mod video_controller;
 mod video_job_ui;
 mod video_library_ui;
 mod video_player_ui;
+#[cfg(debug_assertions)]
+mod video_resume_probe;
 mod video_transcript_ui;
 mod writing_ui;
 use anyhow::{Context as _, Result, ensure};
@@ -877,10 +879,20 @@ impl AppView {
             );
         } else if self.page == "video" {
             if let Some(path) = &self.video.path {
-                let _ = self.lib.set_setting(
-                    "last_video_position",
-                    &json!({"path":path,"position":self.media.snapshot.position}).to_string(),
-                );
+                let playback = self.media.player.snapshot();
+                // A page switch can happen before the UI's next clock poll,
+                // or while the player still reports the previous audio/card.
+                if self.media.path.as_ref() == Some(path)
+                    && playback.path == path.to_string_lossy()
+                    && playback.duration > 0.
+                    && playback.position.is_finite()
+                    && playback.position >= 0.
+                {
+                    let _ = self.lib.set_setting(
+                        "last_video_position",
+                        &json!({"path":path,"position":playback.position}).to_string(),
+                    );
+                }
             }
         }
     }

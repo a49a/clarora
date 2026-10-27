@@ -10,7 +10,7 @@ use std::{
 };
 
 pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
-    let workflow = "原生AppView后台资料/聊天协调 → 快速切材料 → 失败重试 → 关闭与全局退出保存";
+    let workflow = "原生AppView资料/聊天/视频进度 → 快速切材料与栏目 → 关闭与全局退出保存";
     if !cfg!(debug_assertions)
         || !cfg!(target_os = "macos")
         || std::env::var("CLARORA_GUI_MEMORY_CHECK").as_deref() != Ok("1")
@@ -71,7 +71,17 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             name,
             report_path.display()
         );
-        checks.push(json!({"case":name,"passed":true,"report":report_path,"seconds":started.elapsed().as_secs_f64()}));
+        let video_report_path = out.join("video-resume-report.json");
+        let video_report: Value = serde_json::from_slice(&fs::read(&video_report_path)?)?;
+        ensure!(
+            video_report["passed"] == true
+                && video_report["cases"]
+                    .as_array()
+                    .is_some_and(|cases| cases.len() >= 8),
+            "视频切页进度验收未完成：{}",
+            video_report_path.display()
+        );
+        checks.push(json!({"case":name,"passed":true,"report":report_path,"video_resume_report":video_report_path,"seconds":started.elapsed().as_secs_f64()}));
     }
     results.push(json!({"workflow":workflow,"passed":true,"checks":checks}));
     Ok(())

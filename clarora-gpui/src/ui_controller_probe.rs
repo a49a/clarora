@@ -18,6 +18,7 @@ fn context(audio: &str) -> String {
 pub(super) fn prepare(out: &Path) -> Result<Library> {
     fs::create_dir_all(out)?;
     let lib = Library::open(out.join("library"))?;
+    video_resume_probe::prepare(&lib)?;
     lib.put(
         "listening_practices",
         json!({"id":GROUP_A,"name":"原生探针 A"}),
@@ -82,6 +83,7 @@ pub(super) struct Probe {
     global_quit: bool,
     fault_observed: Option<Instant>,
     highlights_revision: Option<u64>,
+    video_resume: video_resume_probe::Probe,
 }
 impl Probe {
     pub(super) fn new(out: &Path) -> Self {
@@ -95,6 +97,7 @@ impl Probe {
             global_quit: false,
             fault_observed: None,
             highlights_revision: None,
+            video_resume: video_resume_probe::Probe::new(out),
         }
     }
     pub(super) fn with_global_quit(mut self, enabled: bool) -> Self {
@@ -405,6 +408,20 @@ impl Probe {
                     "SQLite故障后backoff内Refresh/无再次点击自动恢复材料A草稿",
                     app,
                 )?;
+                self.advance();
+            }
+            14 => {
+                if !self.video_resume.step(app, window, cx)? {
+                    return Ok(());
+                }
+                self.note("真实视频切页进度/快速切换/同源片段恢复", app)?;
+                app.handle(Action::Audio(AUDIO_A.into()), window, cx);
+                self.advance();
+            }
+            15 => {
+                if !Self::chat_ready(app, cx) || app.chat.context != context(AUDIO_A) {
+                    return Ok(());
+                }
                 app.set("question", LAST_DRAFT, window, cx);
                 self.closing = true;
                 self.advance();
@@ -451,7 +468,7 @@ pub(super) fn close_verified(
     };
     let checked = (|| -> Result<()> {
         ensure!(
-            probe.closing && probe.stage == 14,
+            probe.closing && probe.stage == 16,
             "探针未完成所有检查即关闭"
         );
         ensure!(

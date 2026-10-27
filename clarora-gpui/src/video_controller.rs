@@ -37,6 +37,9 @@ impl AppView {
         );
     }
     pub(super) fn open(&mut self, path: PathBuf) -> bool {
+        self.open_at(path, 0., false)
+    }
+    pub(super) fn open_at(&mut self, path: PathBuf, position: f64, paused: bool) -> bool {
         self.clear_video_sentence_repeat();
         self.video.picture_click = None;
         let result = (|| -> Result<_> {
@@ -79,7 +82,7 @@ impl AppView {
             self.media.repeat = 0;
         }
         self.video.path = Some(path.clone());
-        self.media.player.open(&path);
+        self.media.player.open_range(&path, position, 0., paused);
         self.media.path = Some(path.clone());
         self.media.loop_a = None;
         self.media.loop_b = None;
