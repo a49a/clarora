@@ -44,7 +44,6 @@ impl AppView {
             self.chat_requested_context.clear();
         }
         let leaves_sentence = match &action {
-            Action::Page(page) => page != "video",
             Action::Pick(kind) => {
                 kind != "video" && !(kind == "video-subtitle" && self.video.pending_start.is_some())
             }
@@ -63,7 +62,8 @@ impl AppView {
             | Action::Transcribe => true,
             _ => false,
         };
-        if leaves_sentence
+        if self.page == "video"
+            && leaves_sentence
             && (self.video.sentence_repeat.is_some()
                 || self.video.repeat_three
                 || self.video.pending_start.is_some())
@@ -95,6 +95,11 @@ impl AppView {
                         self.audio.library.tool.clear();
                     }
                     self.save_media_position();
+                    if previous == "video" && page != "video" {
+                        // Suspend the old file's loop without changing the user's
+                        // mode choice. Other modules share this player.
+                        self.reset_video_sentence_request();
+                    }
                     if self.tasks.scope == TaskScope::Material {
                         if let Some(cancel) = &self.tasks.cancel {
                             cancel.store(true, Ordering::SeqCst);
@@ -187,6 +192,10 @@ impl AppView {
                         .find(|r| text(r, "id") == key)
                         .cloned()
                         .context("音频不存在")?;
+                    if self.page == "video" {
+                        self.save_media_position();
+                    }
+                    self.reset_video_sentence_request();
                     self.open_audio(&row);
                     self.page = "listening".into();
                     self.lib.set_setting("last_page", "listening")?;

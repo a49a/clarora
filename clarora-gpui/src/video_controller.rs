@@ -119,7 +119,7 @@ impl AppView {
                     .scroll_to_item(index, ScrollStrategy::Center);
             }
         }
-        if self.media.repeat >= 2 {
+        if self.media.repeat >= 2 || self.video.repeat_three {
             self.media.repeat = 0;
         }
         self.video.path = Some(path.clone());
@@ -141,7 +141,8 @@ impl AppView {
                 paused,
                 from_end,
                 seek_to: None,
-                selected_time: None,
+                selected_time: (!from_end && position.is_finite() && position >= 0.)
+                    .then_some(position),
             });
             if from_end {
                 self.report_status(
@@ -407,7 +408,7 @@ impl AppView {
         }
     }
     pub(super) fn poll_video_sentence_repeat(&mut self) -> bool {
-        if self.video.part_confirmation.is_some() {
+        if self.page != "video" || self.video.part_confirmation.is_some() {
             return false;
         }
         let Some(mut session) = self.video.sentence_repeat else {

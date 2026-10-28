@@ -108,7 +108,7 @@ impl Probe {
     }
     fn record(&mut self, app: &AppView, name: &str) -> Result<()> {
         let state = app.media.player.snapshot();
-        self.cases.push(json!({"case":name,"passed":true,"path":state.path,"position":state.position,"duration":state.duration,"paused":state.paused,"error":state.error,"page":app.page,"bookmark":app.lib.setting("last_video_position")?,"part_confirmation":app.video.part_confirmation.is_some(),"series_current":app.video.series.as_ref().and_then(|s| s.current),"triple_sentence":app.video.sentence_repeat.filter(|s| s.three).map(|s| s.index)}));
+        self.cases.push(json!({"case":name,"passed":true,"path":state.path,"position":state.position,"duration":state.duration,"paused":state.paused,"error":state.error,"page":app.page,"bookmark":app.lib.setting("last_video_position")?,"part_confirmation":app.video.part_confirmation.is_some(),"series_current":app.video.series.as_ref().and_then(|s| s.current),"triple_sentence":app.video.sentence_repeat.filter(|s| s.three).map(|s| s.index),"repeat_three":app.video.repeat_three,"pending_video_start":app.video.pending_start.as_ref().map(|p|json!({"path":p.path,"paused":p.paused,"from_end":p.from_end,"selected_time":p.selected_time}))}));
         self.report(None, None)
     }
     fn report(&self, passed: Option<bool>, error: Option<String>) -> Result<()> {
@@ -386,7 +386,14 @@ impl Probe {
                 ensure!(app.video.part_confirmation.is_some(), "忙碌结束后未可确认");
                 app.handle(Action::Page("settings".into()), window, cx);
                 ensure!(app.video.part_confirmation.is_none(), "切栏目保留旧确认");
+                ensure!(
+                    app.video.repeat_three
+                        && app.video.sentence_repeat.is_none()
+                        && app.video.pending_start.is_none(),
+                    "切栏目应保留三次选择并停止当前视频请求"
+                );
                 app.handle(Action::Page("video".into()), window, cx);
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
                 self.advance();
             }
             14 => {
@@ -1341,9 +1348,245 @@ impl Probe {
                 self.record(app, "视频未就绪时直接开启/字幕载入后只循环新视频句子")?;
                 app.handle(Action::Page("settings".into()), window, cx);
                 ensure!(
-                    !app.video.repeat_three && app.video.sentence_repeat.is_none(),
-                    "离开视频后延迟恢复仍在运行"
+                    app.video.repeat_three
+                        && app.video.sentence_repeat.is_none()
+                        && app.video.pending_start.is_none(),
+                    "离开视频没有保留三次偏好或留下运行请求"
                 );
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                app.handle(Action::Page("video".into()), window, cx);
+                ensure!(app.open(path.clone()), "页面保留夹具打开失败");
+                app.media.player.set("pause", "yes");
+                self.advance();
+            }
+            57 => {
+                if !Self::at(app, &path, 0.) || app.video.cues.len() != 3 {
+                    return Ok(false);
+                }
+                app.handle(Action::SeekTo(POSITION), window, cx);
+                self.advance();
+            }
+            58 => {
+                if !Self::at(app, &path, POSITION) {
+                    return Ok(false);
+                }
+                app.handle(Action::VideoSentenceRepeat(Some(1), true), window, cx);
+                app.media.player.set("pause", "yes");
+                self.advance();
+            }
+            59 => {
+                if !Self::paused_middle_repeat(app, &path) {
+                    return Ok(false);
+                }
+                app.handle(Action::Page("settings".into()), window, cx);
+                ensure!(
+                    app.video.repeat_three
+                        && app.video.sentence_repeat.is_none()
+                        && app.video.pending_start.is_none(),
+                    "三次模式离开到设置后被关闭或继续控制播放器"
+                );
+                app.handle(Action::Page("video".into()), window, cx);
+                self.advance();
+            }
+            60 => {
+                if !Self::paused_middle_repeat(app, &path) {
+                    return Ok(false);
+                }
+                self.record(app, "三次模式设置往返保留原字幕句/暂停/第一遍")?;
+                app.handle(Action::Page("meditation".into()), window, cx);
+                ensure!(app.video.repeat_three, "进入冥想清掉三次偏好");
+                app.handle(Action::Page("video".into()), window, cx);
+                self.advance();
+            }
+            61 => {
+                if !Self::paused_middle_repeat(app, &path) {
+                    return Ok(false);
+                }
+                self.record(app, "三次模式冥想快速往返仍恢复原句并暂停")?;
+                app.card_filter = "clip".into();
+                app.handle(Action::Page("flashcard".into()), window, cx);
+                self.advance();
+            }
+            62 => {
+                let state = app.media.player.snapshot();
+                if !app.cards_ready()
+                    || app
+                        .current_card()
+                        .is_none_or(|c| c.id != "resume-same-video-clip")
+                    || state.path != path.to_string_lossy()
+                    || state.position < 0.95
+                    || state.position > 2.2
+                    || state.sentence_repeat.is_some()
+                {
+                    return Ok(false);
+                }
+                ensure!(
+                    app.video.repeat_three
+                        && app.video.sentence_repeat.is_none()
+                        && app.video.pending_start.is_none(),
+                    "闪卡播放丢失视频偏好或被视频循环接管"
+                );
+                self.record(app, "三次偏好保留/同源片段闪卡按自身范围播放无旧循环")?;
+                app.handle(Action::Page("video".into()), window, cx);
+                self.advance();
+            }
+            63 => {
+                if !Self::paused_middle_repeat(app, &path) {
+                    return Ok(false);
+                }
+                self.record(app, "同源片段闪卡返回视频恢复原句三次而非片段起点")?;
+                app.handle(Action::Page("listening".into()), window, cx);
+                self.advance();
+            }
+            64 => {
+                let state = app.media.player.snapshot();
+                if app.audio.current_id.is_empty()
+                    || state.duration < 7.9
+                    || state.duration > 8.1
+                    || !state.paused
+                    || state.sentence_repeat.is_some()
+                    || app
+                        .media
+                        .path
+                        .as_ref()
+                        .is_none_or(|p| p.to_string_lossy() != state.path)
+                {
+                    return Ok(false);
+                }
+                app.handle(Action::SeekTo(4.25), window, cx);
+                app.handle(Action::Repeat, window, cx);
+                ensure!(
+                    app.video.repeat_three
+                        && app.video.sentence_repeat.is_none()
+                        && app.video.pending_start.is_none(),
+                    "音频SeekTo/Repeat改变了视频三次偏好或启动视频循环"
+                );
+                self.advance();
+            }
+            65 => {
+                let state = app.media.player.snapshot();
+                if (state.position - 4.25).abs() > 0.18 || !state.paused {
+                    return Ok(false);
+                }
+                ensure!(state.sentence_repeat.is_none(), "视频循环施加到了音频");
+                self.record(app, "音频定位与重复操作保持独立/不清视频三次偏好")?;
+                app.handle(Action::Page("video".into()), window, cx);
+                self.advance();
+            }
+            66 => {
+                if !Self::paused_middle_repeat(app, &path) {
+                    return Ok(false);
+                }
+                self.record(app, "音频返回视频仍恢复原句三次/保持暂停")?;
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                app.handle(Action::Page("meditation".into()), window, cx);
+                app.handle(Action::Page("video".into()), window, cx);
+                self.advance();
+            }
+            67 => {
+                let state = app.media.player.snapshot();
+                if !Self::at(app, &path, 4.) || !self.stable() {
+                    return Ok(false);
+                }
+                ensure!(
+                    !app.video.repeat_three
+                        && app.video.sentence_repeat.is_none()
+                        && app.video.pending_start.is_none()
+                        && state.sentence_repeat.is_none(),
+                    "明确停止后页面往返恢复了旧三次模式"
+                );
+                self.record(app, "明确停止三次后切页返回继续普通模式")?;
+                app.handle(Action::SeekTo(POSITION), window, cx);
+                let subtitle = video_subtitles::save(
+                    &app.lib,
+                    &path,
+                    &[
+                        Cue {
+                            start: 0.,
+                            end: 4.,
+                            text: "Before resume.".into(),
+                        },
+                        Cue {
+                            start: 4.,
+                            end: 8.,
+                            text: "Resume this sentence.".into(),
+                        },
+                        Cue {
+                            start: 8.,
+                            end: 12.,
+                            text: "After resume.".into(),
+                        },
+                    ],
+                    &process::cancel_token(),
+                )?;
+                fs::write(subtitle, "")?;
+                app.load_video_subtitles(&path);
+                self.advance();
+            }
+            68 => {
+                if !Self::at(app, &path, POSITION) || !self.stable() || !app.video.cues.is_empty() {
+                    return Ok(false);
+                }
+                app.handle(Action::VideoSentenceRepeat(None, true), window, cx);
+                ensure!(
+                    app.video.repeat_three && app.video.pending_start.is_some(),
+                    "无字幕未进入三次等待"
+                );
+                app.handle(Action::Page("settings".into()), window, cx);
+                ensure!(
+                    app.video.repeat_three && app.video.pending_start.is_none(),
+                    "无字幕离页未停止请求或丢失模式"
+                );
+                app.handle(Action::Page("video".into()), window, cx);
+                self.advance();
+            }
+            69 => {
+                if !Self::at(app, &path, POSITION) || !self.stable() || !app.video.cues.is_empty() {
+                    return Ok(false);
+                }
+                ensure!(
+                    app.video.repeat_three
+                        && app.video.sentence_repeat.is_none()
+                        && app
+                            .video
+                            .pending_start
+                            .as_ref()
+                            .is_some_and(|p| p.path == path && p.paused),
+                    "无字幕页面往返没有保留三次等待/暂停意图"
+                );
+                self.record(app, "无字幕等待跨页后仍保持三次/只为当前视频暂停等待")?;
+                video_subtitles::save(
+                    &app.lib,
+                    &path,
+                    &[
+                        Cue {
+                            start: 0.,
+                            end: 4.,
+                            text: "Before resume.".into(),
+                        },
+                        Cue {
+                            start: 4.,
+                            end: 8.,
+                            text: "Resume this sentence.".into(),
+                        },
+                        Cue {
+                            start: 8.,
+                            end: 12.,
+                            text: "After resume.".into(),
+                        },
+                    ],
+                    &process::cancel_token(),
+                )?;
+                app.load_video_subtitles(&path);
+                self.advance();
+            }
+            70 => {
+                if !Self::paused_middle_repeat(app, &path) {
+                    return Ok(false);
+                }
+                self.record(app, "无字幕跨页后迟到字幕恢复原位置三次且保持暂停")?;
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                app.handle(Action::Page("settings".into()), window, cx);
                 self.report(Some(true), None)?;
                 self.advance();
                 return Ok(true);
@@ -1351,6 +1594,29 @@ impl Probe {
             _ => return Ok(true),
         }
         Ok(false)
+    }
+    fn paused_middle_repeat(app: &AppView, path: &std::path::Path) -> bool {
+        let state = app.media.player.snapshot();
+        state.path == path.to_string_lossy()
+            && state.paused
+            && (state.position - 4.).abs() < 0.18
+            && app.video.repeat_three
+            && app.media.repeat == 0
+            && app.video.pending_start.is_none()
+            && app
+                .video
+                .sentence_repeat
+                .is_some_and(|s| s.three && s.index == 1 && s.range == (4., 8.))
+            && state.sentence_repeat.as_ref().is_some_and(|s| {
+                s.start == 4.
+                    && s.end == 8.
+                    && s.total_plays == Some(3)
+                    && s.current_play == 1
+                    && app
+                        .video
+                        .sentence_repeat
+                        .is_some_and(|session| session.request_id == s.request_id)
+            })
     }
     fn key(key: &str, is_held: bool) -> KeyDownEvent {
         KeyDownEvent {

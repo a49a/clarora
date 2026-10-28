@@ -930,9 +930,30 @@ impl AppView {
                     && playback.position.is_finite()
                     && playback.position >= 0.
                 {
+                    // A page return rebuilds triple repeat from play one. Save
+                    // the validated sentence start so loadfile's start cannot
+                    // later overwrite its seek with a mid-sentence bookmark.
+                    let position = self
+                        .video
+                        .sentence_repeat
+                        .filter(|session| {
+                            let (a, b) = session.range;
+                            session.three
+                                && a.is_finite()
+                                && b.is_finite()
+                                && a >= 0.
+                                && a < b
+                                && b <= playback.duration
+                                && self.video.cues.get(session.index).is_some_and(|cue| {
+                                    (cue.start - a).abs() < 0.001
+                                        && (cue.end.min(playback.duration) - b).abs() < 0.001
+                                })
+                        })
+                        .map(|session| session.range.0)
+                        .unwrap_or(playback.position);
                     let _ = self.lib.set_setting(
                         "last_video_position",
-                        &json!({"path":path,"position":playback.position}).to_string(),
+                        &json!({"path":path,"position":position}).to_string(),
                     );
                 }
             }
