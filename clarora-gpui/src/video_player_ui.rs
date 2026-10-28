@@ -261,6 +261,11 @@ impl AppView {
                 window.focus(&this.focus);
                 match event.click_count() {
                     1 => {
+                        if this.toggle_pending_video_start() {
+                            this.video.picture_click = Some(path);
+                            cx.notify();
+                            return;
+                        }
                         let paused = this.media.player.snapshot().paused;
                         this.clear_finished_video_sentence_repeat();
                         this.video.picture_click = Some(path);
@@ -271,7 +276,9 @@ impl AppView {
                     2 => {
                         if this.video.picture_click.take().as_ref() == Some(&path) {
                             // Undo the first click without relying on the 50 ms UI snapshot.
-                            this.media.player.command(["cycle", "pause"]);
+                            if !this.toggle_pending_video_start() {
+                                this.media.player.command(["cycle", "pause"]);
+                            }
                         }
                         this.handle(Action::VideoFullscreen, window, cx);
                     }
@@ -289,6 +296,11 @@ impl AppView {
             .bg(rgb(0x090e0c))
             .track_focus(&self.focus)
             .key_context("VideoFullscreen")
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.handle_video_arrow_key(event, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .child(self.subtitle_copy_anchor(cx))
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
                 if event.button == MouseButton::Left {
@@ -334,16 +346,18 @@ impl AppView {
                 this.handle(Action::VideoFullscreen, window, cx)
             }))
             .on_action(cx.listener(|this, _: &ExitVideoFullscreen, window, cx| {
-                this.handle(Action::VideoExitFullscreen, window, cx)
+                this.handle(
+                    if this.video.part_confirmation.is_some() {
+                        Action::VideoCancelPart
+                    } else {
+                        Action::VideoExitFullscreen
+                    },
+                    window,
+                    cx,
+                )
             }))
             .on_action(cx.listener(|this, _: &FullscreenPlayPause, window, cx| {
                 this.handle(Action::Play, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &FullscreenSeekBack, window, cx| {
-                this.handle(this.video_horizontal_action(false), window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &FullscreenSeekForward, window, cx| {
-                this.handle(this.video_horizontal_action(true), window, cx)
             }))
             .child(
                 div()
@@ -406,6 +420,10 @@ impl AppView {
             } else {
                 "本句：无限重复 ▾".into()
             }
+        } else if self.video.repeat_three {
+            "逐句三次：等待字幕 ▾".into()
+        } else if self.video.pending_start.is_some() {
+            "正在定位末句 ▾".into()
         } else {
             "本句重复 ▾".into()
         };
@@ -419,14 +437,16 @@ impl AppView {
             (
                 "每句重复三次 · 自动下一句".into(),
                 Action::VideoSentenceRepeat(None, true),
-                self.video.sentence_repeat.is_some_and(|s| s.three),
+                self.video.repeat_three,
                 current_cue.is_none(),
             ),
             (
                 "停止本句重复".into(),
                 Action::VideoStopSentenceRepeat,
                 false,
-                self.video.sentence_repeat.is_none(),
+                self.video.sentence_repeat.is_none()
+                    && !self.video.repeat_three
+                    && self.video.pending_start.is_none(),
             ),
         ];
         let rates = [0.6, 0.7, 0.8, 0.9, 1., 1.25, 1.5, 2.]
@@ -496,12 +516,12 @@ impl AppView {
                     .child(
                         self.player_icon(
                             "video-play",
-                            if self.media.snapshot.paused {
+                            if self.video_playback_paused() {
                                 "play"
                             } else {
                                 "pause"
                             },
-                            if self.media.snapshot.paused {
+                            if self.video_playback_paused() {
                                 "播放 · 空格"
                             } else {
                                 "暂停 · 空格"

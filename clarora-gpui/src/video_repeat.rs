@@ -59,6 +59,10 @@ pub fn adjacent(cues: &[Cue], position: f64, next: bool, duration: f64) -> Optio
     }
 }
 
+pub fn first(cues: &[Cue], duration: f64) -> Option<usize> {
+    cues.iter().position(|cue| range(cue, duration).is_some())
+}
+
 impl Session {
     pub fn start(
         player: &Player,

@@ -121,6 +121,7 @@ impl AppView {
             }
         }
         changed |= self.poll_tasks(window, cx);
+        changed |= self.poll_pending_video_start();
         changed |= self.poll_video_sentence_repeat();
         if let (Some(a), Some(b)) = (self.media.loop_a, self.media.loop_b) {
             if self.video.sentence_repeat.is_none()
@@ -171,7 +172,11 @@ impl AppView {
                 self.media.end_handled = false;
             }
         }
-        if self.page == "video" && self.media.repeat == 0 && self.video.sentence_repeat.is_none() {
+        if self.page == "video"
+            && self.media.repeat == 0
+            && self.video.sentence_repeat.is_none()
+            && !self.video.repeat_three
+        {
             if !self.media.snapshot.eof {
                 self.media.end_handled = false;
             }

@@ -17,7 +17,7 @@ impl AppView {
         videos.selected = Some(key.into());
         videos.save(&self.lib)?;
         series.save(&self.lib)?;
-        self.clear_video_sentence_repeat();
+        self.reset_video_sentence_request();
         self.media.player.command(["stop"]);
         self.media.path = None;
         self.video.path = None;

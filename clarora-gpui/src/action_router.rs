@@ -8,6 +8,13 @@ impl AppView {
         if window.has_active_dialog(cx) && !matches!(action, Action::VideoConfirmRemove) {
             return;
         }
+        if !matches!(action, Action::VideoArrow(..)) {
+            if matches!(action, Action::SelectPart(_) | Action::SelectPartAtEnd(_)) {
+                self.video.part_confirmation = None;
+            } else {
+                self.dismiss_video_part_confirmation();
+            }
+        }
         if matches!(
             &action,
             Action::Flip
@@ -38,6 +45,10 @@ impl AppView {
         }
         let leaves_sentence = match &action {
             Action::Page(page) => page != "video",
+            Action::Pick(kind) => {
+                kind != "video" && !(kind == "video-subtitle" && self.video.pending_start.is_some())
+            }
+            Action::VideoTranscribe => self.video.pending_start.is_none(),
             Action::Seek(_)
             | Action::SeekTo(_)
             | Action::VideoPlayCue(_)
@@ -48,15 +59,15 @@ impl AppView {
             | Action::Boundary(..)
             | Action::Subtitle(..)
             | Action::SubtitleImport(_)
-            | Action::Pick(_)
-            | Action::SelectPart(_)
-            | Action::VideoSelect(_)
             | Action::VideoRemove(_)
-            | Action::Transcribe
-            | Action::VideoTranscribe => true,
+            | Action::Transcribe => true,
             _ => false,
         };
-        if leaves_sentence && self.video.sentence_repeat.is_some() {
+        if leaves_sentence
+            && (self.video.sentence_repeat.is_some()
+                || self.video.repeat_three
+                || self.video.pending_start.is_some())
+        {
             self.clear_video_sentence_repeat();
         }
         let result = (|| -> Result<()> {
@@ -868,6 +879,9 @@ impl AppView {
                     self.report_status(FeedbackKind::Info, "句子卡已保存".into());
                 }
                 Action::Play => {
+                    if self.toggle_pending_video_start() {
+                        return Ok(());
+                    }
                     let paused = self.media.player.snapshot().paused;
                     self.clear_finished_video_sentence_repeat();
                     if self.page == "listening" {
@@ -1173,6 +1187,8 @@ impl AppView {
                     self.start_video_sentence_repeat(index, three)?;
                 }
                 Action::VideoStopSentenceRepeat => self.clear_video_sentence_repeat(),
+                Action::VideoArrow(next, held) => self.video_arrow(next, held, window, cx),
+                Action::VideoCancelPart => {}
                 Action::VideoPlayCue(index) => {
                     ensure!(
                         self.page == "video" && self.media.path.is_some(),
@@ -1193,6 +1209,16 @@ impl AppView {
                     self.media.player.set("pause", "no");
                 }
                 Action::VideoSentence(next) => {
+                    if self.video.pending_start.is_some() {
+                        self.poll_pending_video_start();
+                        if self.video.pending_start.is_some() {
+                            self.report_status(
+                                FeedbackKind::Info,
+                                "每句三次模式正在等待当前视频和字幕就绪".into(),
+                            );
+                            return Ok(());
+                        }
+                    }
                     if let Some(mut session) = self.video.sentence_repeat.filter(|s| s.three) {
                         let path = self.video.path.as_ref().context("请先打开视频")?;
                         ensure!(self.media.path.as_ref() == Some(path), "视频正在切换");
@@ -1358,6 +1384,7 @@ impl AppView {
                     );
                 }
                 Action::SelectPart(index) => self.start_part(index),
+                Action::SelectPartAtEnd(index) => self.start_part_from(index, true),
                 Action::AutoNextPart => {
                     let enabled = !self.video.auto_next_part;
                     self.lib
@@ -1386,7 +1413,9 @@ impl AppView {
                             let index = series.requested;
                             let path = downloads.obtain(&lib, &series, index, &cancel)?;
                             let new_file = false;
-                            Ok(Outcome::PartVideo(series, index, path, new_file, origin))
+                            Ok(Outcome::PartVideo(
+                                series, index, path, new_file, origin, false,
+                            ))
                         },
                     );
                 }
@@ -1717,7 +1746,7 @@ impl AppView {
                         videos.save(&self.lib)?;
                         self.save_media_position();
                         self.video.collection = videos;
-                        if !self.open(video.path) {
+                        if !self.open_at(video.path, 0., true) {
                             return Ok(());
                         }
                         self.media.player.command(["set", "pause", "yes"]);

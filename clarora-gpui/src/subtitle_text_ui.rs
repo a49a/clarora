@@ -322,6 +322,10 @@ impl AppView {
                 cx.stop_propagation();
             }))
             .on_action(cx.listener(|this, _: &ClearSubtitleSelection, window, cx| {
+                if this.video.part_confirmation.is_some() {
+                    this.handle(Action::VideoCancelPart, window, cx);
+                    return;
+                }
                 this.subtitle_text.borrow_mut().clear();
                 window.focus(&this.focus);
                 cx.notify();

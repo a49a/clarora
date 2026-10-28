@@ -230,7 +230,14 @@ impl AppView {
                                     self.video.tab = 1;
                                 }
                             }
-                            Ok(Outcome::PartVideo(mut series, index, path, new_file, origin)) => {
+                            Ok(Outcome::PartVideo(
+                                mut series,
+                                index,
+                                path,
+                                new_file,
+                                origin,
+                                from_end,
+                            )) => {
                                 if cancelled {
                                     if new_file {
                                         if let Some(parent) = path.parent().filter(|p| {
@@ -259,12 +266,23 @@ impl AppView {
                                         self.video.series = Some(series);
                                         // Opening media reloads subtitles; keep the panel the user is viewing.
                                         let panel = self.video.tab;
-                                        if self.open(path) {
+                                        if self.open_part_video(path, from_end) {
                                             self.video.tab = panel;
-                                            self.media.player.set("pause", "no");
+                                            if !self.video.repeat_three && !from_end {
+                                                self.media.player.set("pause", "no");
+                                            }
                                             self.report_status(
                                                 FeedbackKind::Info,
-                                                format!("正在播放 P{}", index + 1),
+                                                if from_end {
+                                                    format!("正在定位 P{} 的最后一句", index + 1)
+                                                } else if self.video.repeat_three {
+                                                    format!(
+                                                        "正在准备 P{} 的每句三次播放",
+                                                        index + 1
+                                                    )
+                                                } else {
+                                                    format!("正在播放 P{}", index + 1)
+                                                },
                                             );
                                         }
                                     } else {

@@ -1,8 +1,23 @@
 //! Video playback and sentence-repeat coordination.
 use super::*;
 
+#[derive(PartialEq, Eq)]
+pub(super) struct PartConfirmation {
+    next: bool,
+    path: PathBuf,
+    base: String,
+    current: usize,
+    target: usize,
+    number: u32,
+    title: String,
+}
+
 impl AppView {
     pub(super) fn start_part(&mut self, index: usize) {
+        self.start_part_from(index, false);
+    }
+    pub(super) fn start_part_from(&mut self, index: usize, from_end: bool) {
+        self.video.part_confirmation = None;
         if self.tasks.cancel.is_some() {
             self.report_status(FeedbackKind::Error, "请先完成或取消当前前台任务".into());
             return;
@@ -18,10 +33,21 @@ impl AppView {
             series.current = Some(index);
             self.video.series = Some(series);
             let panel = self.video.tab;
-            if self.open(path) {
+            if self.open_part_video(path, from_end) {
                 self.video.tab = panel;
-                self.media.player.set("pause", "no");
-                self.report_status(FeedbackKind::Info, format!("正在播放 P{}", index + 1));
+                if !self.video.repeat_three && !from_end {
+                    self.media.player.set("pause", "no");
+                }
+                self.report_status(
+                    FeedbackKind::Info,
+                    if from_end {
+                        format!("正在定位 P{} 的最后一句", index + 1)
+                    } else if self.video.repeat_three {
+                        format!("正在准备 P{} 的每句三次播放", index + 1)
+                    } else {
+                        format!("正在播放 P{}", index + 1)
+                    },
+                );
             }
             return;
         }
@@ -32,7 +58,9 @@ impl AppView {
             move |lib, cancel, _| {
                 let path = downloads.obtain(&lib, &series, index, &cancel)?;
                 // Completed files belong to the shared cache, even if this foreground request is cancelled.
-                Ok(Outcome::PartVideo(series, index, path, false, origin))
+                Ok(Outcome::PartVideo(
+                    series, index, path, false, origin, from_end,
+                ))
             },
         );
     }
@@ -40,7 +68,18 @@ impl AppView {
         self.open_at(path, 0., false)
     }
     pub(super) fn open_at(&mut self, path: PathBuf, position: f64, paused: bool) -> bool {
-        self.clear_video_sentence_repeat();
+        self.open_at_start(path, position, paused, false)
+    }
+    pub(super) fn open_part_video(&mut self, path: PathBuf, from_end: bool) -> bool {
+        self.open_at_start(path, 0., false, from_end)
+    }
+    fn open_at_start(
+        &mut self,
+        path: PathBuf,
+        position: f64,
+        paused: bool,
+        from_end: bool,
+    ) -> bool {
         self.video.picture_click = None;
         let result = (|| -> Result<_> {
             let mut videos = video_library::Collection::load(&self.lib)?;
@@ -58,6 +97,7 @@ impl AppView {
             }
         };
         let path = video.path;
+        self.reset_video_sentence_request();
         self.video.series = video.series;
         self.video.remove = None;
         if let Some(cancel) = self.audio.waveform_cancel.take() {
@@ -82,13 +122,32 @@ impl AppView {
             self.media.repeat = 0;
         }
         self.video.path = Some(path.clone());
-        self.media.player.open_range(&path, position, 0., paused);
+        self.media.player.open_range(
+            &path,
+            position,
+            0.,
+            paused || self.video.repeat_three || from_end,
+        );
         self.media.path = Some(path.clone());
         self.media.loop_a = None;
         self.media.loop_b = None;
         self.audio.cues.clear();
         self.audio.current_id.clear();
         self.load_video_subtitles(&path);
+        if self.video.repeat_three || from_end {
+            self.video.pending_start = Some(app_state::PendingVideoStart {
+                path: path.clone(),
+                paused,
+                from_end,
+                seek_to: None,
+            });
+            if from_end {
+                self.report_status(
+                    FeedbackKind::Info,
+                    "正在等待上一视频字幕，从最后一句开始播放".into(),
+                );
+            }
+        }
         if self.video.series.is_none() {
             let _ = self.lib.set_setting("bilibili_series", "");
         }
@@ -115,8 +174,37 @@ impl AppView {
             }
         }
     }
-    pub(super) fn load_video_subtitles(&mut self, _path: &std::path::Path) {
-        self.clear_video_sentence_repeat();
+    pub(super) fn load_video_subtitles(&mut self, path: &std::path::Path) {
+        let from_end = self
+            .video
+            .pending_start
+            .as_ref()
+            .is_some_and(|p| p.from_end);
+        let paused = self
+            .video
+            .pending_start
+            .as_ref()
+            .map(|p| p.paused)
+            .unwrap_or_else(|| self.media.player.snapshot().paused);
+        self.reset_video_sentence_request();
+        if (self.video.repeat_three || from_end) && self.media.path.as_deref() == Some(path) {
+            self.video.pending_start = Some(app_state::PendingVideoStart {
+                path: path.into(),
+                paused,
+                from_end,
+                seek_to: None,
+            });
+            self.media.player.set("pause", "yes");
+            self.report_status(
+                FeedbackKind::Info,
+                if from_end {
+                    "正在等待当前视频字幕，以定位最后一句"
+                } else {
+                    "已保留每句三次模式，等待当前视频字幕；无字幕时可生成或导入"
+                }
+                .into(),
+            );
+        }
         self.video.caption_source = VideoCaptionSource::Transcript;
         self.video.material = None;
         self.video.material_error.clear();
@@ -139,9 +227,102 @@ impl AppView {
         window.focus(&self.focus);
     }
     pub(super) fn clear_video_sentence_repeat(&mut self) {
+        self.reset_video_sentence_request();
+        self.video.repeat_three = false;
+    }
+    pub(super) fn reset_video_sentence_request(&mut self) {
+        self.video.part_confirmation = None;
+        self.video.pending_start = None;
         if self.video.sentence_repeat.take().is_some() {
             self.media.player.clear_sentence_repeat();
         }
+    }
+    pub(super) fn video_playback_paused(&self) -> bool {
+        self.video
+            .pending_start
+            .as_ref()
+            .map(|p| p.paused)
+            .unwrap_or_else(|| self.media.player.snapshot().paused)
+    }
+    pub(super) fn toggle_pending_video_start(&mut self) -> bool {
+        if self.page == "video" {
+            if let Some(pending) = &mut self.video.pending_start {
+                pending.paused = !pending.paused;
+                return true;
+            }
+        }
+        false
+    }
+    pub(super) fn poll_pending_video_start(&mut self) -> bool {
+        let Some(pending) = self.video.pending_start.as_ref() else {
+            return false;
+        };
+        if self.page != "video"
+            || self.video.path.as_ref() != Some(&pending.path)
+            || self.media.path.as_ref() != Some(&pending.path)
+        {
+            self.video.pending_start = None;
+            return true;
+        }
+        let state = self.media.player.snapshot();
+        if state.path != pending.path.to_string_lossy()
+            || state.duration <= 0.
+            || !state.error.is_empty()
+        {
+            return false;
+        }
+        if let Some(position) = pending.seek_to {
+            if (state.position - position).abs() <= 0.09 {
+                let paused = pending.paused;
+                self.video.pending_start = None;
+                self.media
+                    .player
+                    .set("pause", if paused { "yes" } else { "no" });
+                return true;
+            }
+            return false;
+        }
+        let index = if pending.from_end {
+            clarora_gpui::video_repeat::adjacent(
+                &self.video.cues,
+                state.duration,
+                false,
+                state.duration,
+            )
+        } else {
+            clarora_gpui::video_repeat::first(&self.video.cues, state.duration)
+        };
+        let Some(index) = index else {
+            return false;
+        };
+        let paused = pending.paused;
+        if !self.video.repeat_three {
+            let position = self.video.cues[index].start;
+            self.video.pending_start.as_mut().unwrap().seek_to = Some(position);
+            self.media.player.command([
+                "seek".into(),
+                position.to_string(),
+                "absolute+exact".into(),
+            ]);
+            self.video.active = Some(index);
+            if self.video.follow {
+                self.video.center.request(index);
+            }
+            return true;
+        }
+        self.video.pending_start = None;
+        match self.start_video_sentence_repeat(Some(index), true) {
+            Ok(()) => {
+                if paused {
+                    self.media.player.set("pause", "yes");
+                }
+            }
+            Err(error) => {
+                self.clear_video_sentence_repeat();
+                self.report_status(FeedbackKind::Error, format!("恢复每句三次失败：{error:#}"));
+            }
+        }
+        true
     }
     pub(super) fn follow_video_repeat(&mut self) {
         if let Some(session) = self.video.sentence_repeat {
@@ -156,6 +337,9 @@ impl AppView {
         }
     }
     pub(super) fn poll_video_sentence_repeat(&mut self) -> bool {
+        if self.video.part_confirmation.is_some() {
+            return false;
+        }
         let Some(mut session) = self.video.sentence_repeat else {
             return false;
         };
@@ -172,7 +356,7 @@ impl AppView {
                 } else {
                     self.report_status(
                         FeedbackKind::Info,
-                        "最后一句已播放三遍，已暂停；← 可切换上一句继续三次重复".into(),
+                        "最后一句已播放三遍，已暂停；← 切上一句，→ 确认下一 P".into(),
                     );
                 }
                 true
@@ -203,6 +387,256 @@ impl AppView {
         } else {
             Action::Seek(if next { 10. } else { -10. })
         }
+    }
+    /// Use raw key events in normal and fullscreen views so OS key repeat cannot
+    /// turn one held arrow into two confirmations. Inputs keep their own arrows.
+    pub(super) fn handle_video_arrow_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let modifiers = event.keystroke.modifiers;
+        if self.page != "video"
+            || modifiers.control
+            || modifiers.platform
+            || modifiers.alt
+            || modifiers.shift
+            || !window.focused(cx).is_some_and(|focus| {
+                focus == self.focus || focus == self.subtitle_text.borrow().focus
+            })
+        {
+            return false;
+        }
+        let action = match event.keystroke.key.as_str() {
+            "right" => Action::VideoArrow(true, event.is_held),
+            "left" => Action::VideoArrow(false, event.is_held),
+            "escape" if self.video.part_confirmation.is_some() => Action::VideoCancelPart,
+            _ => return false,
+        };
+        self.handle(action, window, cx);
+        true
+    }
+    pub(super) fn video_arrow(
+        &mut self,
+        next: bool,
+        held: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.video.pending_start.is_some() {
+            self.report_status(
+                FeedbackKind::Info,
+                "正在准备当前视频的字幕播放位置，请稍候".into(),
+            );
+            return;
+        }
+        if self
+            .video
+            .part_confirmation
+            .as_ref()
+            .is_some_and(|p| p.next != next)
+        {
+            self.video.part_confirmation = None;
+            self.handle(Action::VideoSentence(next), window, cx);
+            return;
+        }
+        let state = self.media.player.snapshot();
+        let first = clarora_gpui::video_repeat::first(&self.video.cues, state.duration);
+        let last = clarora_gpui::video_repeat::adjacent(
+            &self.video.cues,
+            state.duration,
+            false,
+            state.duration,
+        );
+        let current = self
+            .video
+            .sentence_repeat
+            .filter(|s| s.three)
+            .map(|s| s.index)
+            .or_else(|| video_subtitles::active(&self.video.cues, state.position))
+            .or_else(|| {
+                last.filter(|&i| state.position >= self.video.cues[i].end.min(state.duration))
+            })
+            .or_else(|| first.filter(|&i| state.position <= self.video.cues[i].start));
+        let boundary = if next { last } else { first };
+        if boundary.is_none() || current != boundary {
+            self.video.part_confirmation = None;
+            self.handle(Action::VideoSentence(next), window, cx);
+            return;
+        }
+        if held {
+            return;
+        }
+        let target = (|| {
+            let path = self.video.path.as_ref()?;
+            if self.page != "video"
+                || self.media.path.as_ref() != Some(path)
+                || state.path != path.to_string_lossy()
+            {
+                return None;
+            }
+            let series = self.video.series.as_ref()?;
+            let current = series.current?;
+            if series.parts.get(current)?.path.as_ref() != Some(path) {
+                return None;
+            }
+            let target = if next {
+                series.next_for(path)?
+            } else {
+                current.checked_sub(1)?
+            };
+            let part = series.parts.get(target)?;
+            Some(PartConfirmation {
+                next,
+                path: path.clone(),
+                base: series.base.clone(),
+                current: series.current?,
+                target,
+                number: part.number,
+                title: part.title.clone(),
+            })
+        })();
+        let Some(target) = target else {
+            self.video.part_confirmation = None;
+            self.report_status(
+                FeedbackKind::Info,
+                if next {
+                    "已经是最后一句，当前没有下一 P"
+                } else {
+                    "已经是第一句，当前没有上一 P"
+                }
+                .into(),
+            );
+            return;
+        };
+        if self.tasks.cancel.is_some() {
+            self.video.part_confirmation = None;
+            self.report_status(
+                FeedbackKind::Info,
+                "请先完成或取消当前任务，再切换视频".into(),
+            );
+            return;
+        }
+        if self.video.part_confirmation.as_ref() == Some(&target) {
+            self.video.part_confirmation = None;
+            self.handle(
+                if next {
+                    Action::SelectPart(target.target)
+                } else {
+                    Action::SelectPartAtEnd(target.target)
+                },
+                window,
+                cx,
+            );
+        } else {
+            self.media.player.set("pause", "yes");
+            self.video.part_confirmation = Some(target);
+        }
+    }
+    pub(super) fn dismiss_video_part_confirmation(&mut self) {
+        let Some(prompt) = self.video.part_confirmation.take() else {
+            return;
+        };
+        // A completed first cue must not auto-advance after cancelling its prompt.
+        if !prompt.next {
+            if let Some(session) = self.video.sentence_repeat.filter(|s| s.three) {
+                if self
+                    .media
+                    .player
+                    .snapshot()
+                    .sentence_repeat
+                    .as_ref()
+                    .is_some_and(|s| s.request_id == session.request_id && s.finished)
+                {
+                    if let Err(error) = self.start_video_sentence_repeat(Some(session.index), true)
+                    {
+                        self.report_status(FeedbackKind::Error, error.to_string());
+                    }
+                    self.media.player.set("pause", "yes");
+                }
+            }
+        }
+    }
+    pub(super) fn video_part_confirmation_view(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let target = self
+            .video
+            .part_confirmation
+            .as_ref()
+            .filter(|_| self.page == "video")?;
+        let width = (f32::from(window.viewport_size().width) - 32.).clamp(160., 460.);
+        let (boundary, direction, arrow, button) = if target.next {
+            ("最后一句", "下一", "→", "切换下一 P →")
+        } else {
+            ("第一句", "上一", "←", "← 切换上一 P")
+        };
+        Some(
+            div()
+                .id("video-part-confirmation")
+                .absolute()
+                .bottom_8()
+                .left(px((f32::from(window.viewport_size().width) - width) / 2.))
+                .w(px(width))
+                .p_5()
+                .rounded_xl()
+                .shadow_lg()
+                .bg(cx.theme().background)
+                .border_2()
+                .border_color(cx.theme().primary)
+                .flex()
+                .flex_col()
+                .gap_3()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("已经是{boundary}")),
+                )
+                .child(div().text_sm().child(format!(
+                    "{direction}视频：P{} · {}",
+                    target.number, target.title
+                )))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().primary)
+                        .child(if target.next {
+                            format!("再次按 {arrow} 从下一视频首句播放；按 Esc 取消")
+                        } else {
+                            format!("再次按 {arrow} 从上一视频末句播放；按 Esc 取消")
+                        }),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(
+                            self.button(
+                                "video-part-confirm",
+                                button,
+                                Action::VideoArrow(target.next, false),
+                                cx,
+                            )
+                            .primary(),
+                        )
+                        .child(
+                            self.button(
+                                "video-part-cancel",
+                                "取消 · Esc",
+                                Action::VideoCancelPart,
+                                cx,
+                            )
+                            .outline(),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
     pub(super) fn can_move_video_sentence(&self, next: bool) -> bool {
         if let Some(session) = self.video.sentence_repeat.filter(|s| s.three) {
@@ -251,6 +685,8 @@ impl AppView {
             three,
             playback.duration,
         )?);
+        self.video.repeat_three = three;
+        self.video.pending_start = None;
         self.media.repeat = 0;
         self.media.loop_a = None;
         self.media.loop_b = None;

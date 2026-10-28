@@ -66,6 +66,12 @@ impl AudioState {
     }
 }
 
+pub(super) struct PendingVideoStart {
+    pub(super) path: PathBuf,
+    pub(super) paused: bool,
+    pub(super) from_end: bool,
+    pub(super) seek_to: Option<f64>,
+}
 pub(super) struct VideoState {
     pub(super) path: Option<PathBuf>,
     pub(super) series: Option<bilibili::Series>,
@@ -88,6 +94,9 @@ pub(super) struct VideoState {
     pub(super) parts_scroll: UniformListScrollHandle,
     pub(super) active: Option<usize>,
     pub(super) sentence_repeat: Option<clarora_gpui::video_repeat::Session>,
+    pub(super) repeat_three: bool,
+    pub(super) pending_start: Option<PendingVideoStart>,
+    pub(super) part_confirmation: Option<video_controller::PartConfirmation>,
     pub(super) follow: bool,
     pub(super) fullscreen: bool,
     pub(super) fullscreen_owned: bool,
@@ -102,6 +111,7 @@ pub(super) struct VideoState {
 }
 impl VideoState {
     pub(super) fn set_cues(&mut self, cues: Vec<Cue>) {
+        self.part_confirmation = None;
         self.transcript = clarora_gpui::video_transcript::Transcript::from_cues(&cues);
         self.transcript_html = self.transcript.html.clone().into();
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
@@ -133,6 +143,9 @@ impl VideoState {
             parts_scroll: UniformListScrollHandle::new(),
             active: None,
             sentence_repeat: None,
+            repeat_three: false,
+            pending_start: None,
+            part_confirmation: None,
             follow: true,
             fullscreen: false,
             fullscreen_owned: false,

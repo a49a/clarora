@@ -106,8 +106,6 @@ actions!(
         ToggleVideoFullscreen,
         ExitVideoFullscreen,
         FullscreenPlayPause,
-        FullscreenSeekBack,
-        FullscreenSeekForward,
         ToggleVideoPrecision,
         MarkVideoA,
         MarkVideoB,
@@ -207,6 +205,8 @@ enum Action {
     VideoSentenceRepeat(Option<usize>, bool),
     VideoStopSentenceRepeat,
     VideoSentence(bool),
+    VideoArrow(bool, bool),
+    VideoCancelPart,
     VideoPlayCue(usize),
     VideoCopySubtitle(Option<usize>),
     LoopMode(usize),
@@ -216,6 +216,7 @@ enum Action {
     Download,
     ReadParts,
     SelectPart(usize),
+    SelectPartAtEnd(usize),
     AutoNextPart,
     Cancel,
     DismissTaskNotice,
@@ -301,7 +302,14 @@ enum Outcome {
     Message(String),
     Issue(String),
     Parts(bilibili::Series),
-    PartVideo(bilibili::Series, usize, PathBuf, bool, Option<PathBuf>),
+    PartVideo(
+        bilibili::Series,
+        usize,
+        PathBuf,
+        bool,
+        Option<PathBuf>,
+        bool,
+    ),
     Output(String),
     VideoTranslated(PathBuf, String, Vec<Cue>, Vec<Cue>),
     Pdf(PathBuf, i32, documents::PdfPage),
@@ -1553,6 +1561,7 @@ impl Render for AppView {
                 .children(assistant)
                 .children(selection)
                 .children(self.feedback_view(window, cx))
+                .children(self.video_part_confirmation_view(window, cx))
                 .into_any_element();
         }
         let navigation_progress = self.navigation_progress();
@@ -1989,6 +1998,10 @@ impl Render for AppView {
             .text_color(cx.theme().foreground)
             .text_size(px(14.))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.handle_video_arrow_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.modifiers.control
                     || (cfg!(target_os = "macos") && event.keystroke.modifiers.platform)
                 {
@@ -2214,6 +2227,7 @@ impl Render for AppView {
             .when_some(assistant, |view, assistant| view.child(assistant))
             .children(self.selection_offer(window, cx))
             .children(self.feedback_view(window, cx))
+            .children(self.video_part_confirmation_view(window, cx))
             .children(Root::render_dialog_layer(window, cx))
             .into_any_element()
     }
@@ -2286,8 +2300,6 @@ fn main() -> Result<()> {
             cx.bind_keys([
                 KeyBinding::new("f11", ToggleVideoFullscreen, None),
                 KeyBinding::new("space", FullscreenPlayPause, Some("VideoFullscreen")),
-                KeyBinding::new("left", FullscreenSeekBack, Some("VideoFullscreen")),
-                KeyBinding::new("right", FullscreenSeekForward, Some("VideoFullscreen")),
                 KeyBinding::new("escape", ExitVideoFullscreen, Some("VideoFullscreen")),
                 KeyBinding::new("cmd-,", OpenSettings, None),
                 KeyBinding::new("ctrl-,", OpenSettings, None),
