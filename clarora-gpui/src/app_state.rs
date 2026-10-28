@@ -71,6 +71,7 @@ pub(super) struct PendingVideoStart {
     pub(super) paused: bool,
     pub(super) from_end: bool,
     pub(super) seek_to: Option<f64>,
+    pub(super) selected_time: Option<f64>,
 }
 pub(super) struct VideoState {
     pub(super) path: Option<PathBuf>,
@@ -105,6 +106,7 @@ pub(super) struct VideoState {
     pub(super) precision: bool,
     pub(super) subtitle_size: u8,
     pub(super) seek_dragging: bool,
+    pub(super) seek_drag_target: Option<usize>,
     pub(super) volume_dragging: bool,
     pub(super) collection: video_library::Collection,
     pub(super) remove: Option<String>,
@@ -154,6 +156,7 @@ impl VideoState {
             precision: false,
             subtitle_size: 16,
             seek_dragging: false,
+            seek_drag_target: None,
             volume_dragging: false,
             collection: Default::default(),
             remove: None,

@@ -882,6 +882,237 @@ impl Probe {
                     "快速换片被旧末句定位覆盖"
                 );
                 self.record(app, "快速换片取消旧末句定位/普通切集仍从头播放")?;
+                ensure!(app.open(path.clone()), "音轨夹具打开失败");
+                app.media.player.set("pause", "yes");
+                self.advance();
+            }
+            33 => {
+                if !Self::at(app, &path, 0.) || app.video.cues.len() != 3 {
+                    return Ok(false);
+                }
+                app.handle(Action::VideoSentenceRepeat(Some(0), true), window, cx);
+                self.advance();
+            }
+            34 => {
+                let state = app.media.player.snapshot();
+                if state.paused
+                    || !state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|s| s.total_plays == Some(3))
+                {
+                    return Ok(false);
+                }
+                app.video.seek_dragging = true;
+                app.video.seek_drag_target = None;
+                app.handle(Action::VideoTimelineSeek(6.6), window, cx);
+                let request = app
+                    .video
+                    .sentence_repeat
+                    .context("音轨点击清掉三次")?
+                    .request_id;
+                ensure!(
+                    app.video.repeat_three
+                        && app
+                            .video
+                            .sentence_repeat
+                            .is_some_and(|s| s.index == 1 && s.range == (4., 8.)),
+                    "音轨点击没有选中所点句并保留模式"
+                );
+                for time in [6.7, 6.9, 7.1] {
+                    app.handle(Action::VideoTimelineSeek(time), window, cx);
+                }
+                ensure!(
+                    app.video.sentence_repeat.unwrap().request_id == request,
+                    "同句拖动反复重置循环"
+                );
+                app.video.seek_dragging = false;
+                app.video.seek_drag_target = None;
+                self.advance();
+            }
+            35 => {
+                let state = app.media.player.snapshot();
+                if state.paused
+                    || !state.sentence_repeat.as_ref().is_some_and(|s| {
+                        s.start == 4.
+                            && s.end == 8.
+                            && s.total_plays == Some(3)
+                            && s.current_play == 1
+                    })
+                {
+                    return Ok(false);
+                }
+                self.record(
+                    app,
+                    "播放中音轨定位保留三次/目标句第一遍/同句拖动不重复发请求",
+                )?;
+                app.handle(Action::Play, window, cx);
+                self.advance();
+            }
+            36 => {
+                if !app.media.player.snapshot().paused {
+                    return Ok(false);
+                }
+                app.handle(Action::VideoTimelineSeek(9.1), window, cx);
+                self.advance();
+            }
+            37 => {
+                let state = app.media.player.snapshot();
+                if !state.paused
+                    || !state.sentence_repeat.as_ref().is_some_and(|s| {
+                        s.start == 8.
+                            && s.end == 12.
+                            && s.total_plays == Some(3)
+                            && s.current_play == 1
+                    })
+                {
+                    return Ok(false);
+                }
+                ensure!(app.video.repeat_three, "暂停定位丢模式");
+                self.record(app, "暂停时音轨定位保留暂停及三次模式")?;
+                app.handle(Action::VideoTimelineSeek(0.), window, cx);
+                self.advance();
+            }
+            38 => {
+                let state = app.media.player.snapshot();
+                if !state.paused
+                    || !state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|s| s.start == 0. && s.end == 4.)
+                {
+                    return Ok(false);
+                }
+                self.record(app, "三次模式音轨起点选择首句")?;
+                app.handle(Action::VideoTimelineSeek(12.), window, cx);
+                self.advance();
+            }
+            39 => {
+                let state = app.media.player.snapshot();
+                if !state.paused
+                    || !state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|s| s.start == 8. && s.end == 12.)
+                {
+                    return Ok(false);
+                }
+                self.record(app, "三次模式音轨终点选择末句")?;
+                app.reset_video_sentence_request();
+                app.video.set_cues(vec![
+                    Cue {
+                        start: 0.,
+                        end: 1.,
+                        text: "First".into(),
+                    },
+                    Cue {
+                        start: 3.,
+                        end: 4.,
+                        text: "After gap".into(),
+                    },
+                    Cue {
+                        start: 7.,
+                        end: 8.,
+                        text: "Last valid".into(),
+                    },
+                    Cue {
+                        start: 13.,
+                        end: 14.,
+                        text: "Outside duration".into(),
+                    },
+                ]);
+                app.handle(Action::VideoTimelineSeek(2.), window, cx);
+                self.advance();
+            }
+            40 => {
+                let state = app.media.player.snapshot();
+                if !state.paused
+                    || !state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|s| s.start == 3. && s.end == 4. && s.total_plays == Some(3))
+                {
+                    return Ok(false);
+                }
+                self.record(app, "点击句间空白选择下一条有效字幕并保留三次")?;
+                app.handle(Action::VideoTimelineSeek(12.), window, cx);
+                self.advance();
+            }
+            41 => {
+                let state = app.media.player.snapshot();
+                if !state.paused
+                    || !state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|s| s.start == 7. && s.end == 8. && s.total_plays == Some(3))
+                {
+                    return Ok(false);
+                }
+                self.record(app, "音轨末尾定位跳过越界字幕")?;
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                app.handle(Action::VideoTimelineSeek(5.5), window, cx);
+                self.advance();
+            }
+            42 => {
+                if !Self::at(app, &path, 5.5) {
+                    return Ok(false);
+                }
+                ensure!(
+                    !app.video.repeat_three && app.video.sentence_repeat.is_none(),
+                    "普通音轨定位误启用三次"
+                );
+                self.record(app, "普通模式音轨仍精确定位到点击时间")?;
+                app.handle(Action::VideoSentenceRepeat(Some(0), true), window, cx);
+                app.reset_video_sentence_request();
+                app.video.set_cues(vec![]);
+                app.media.player.set("pause", "yes");
+                self.advance();
+            }
+            43 => {
+                if !app.media.player.snapshot().paused {
+                    return Ok(false);
+                }
+                app.handle(Action::VideoTimelineSeek(6.4), window, cx);
+                ensure!(
+                    app.video.repeat_three
+                        && app
+                            .video
+                            .pending_start
+                            .as_ref()
+                            .is_some_and(|p| p.selected_time == Some(6.4)),
+                    "未就绪音轨定位没有保留时间和模式"
+                );
+                self.record(app, "字幕未就绪时保留音轨选择时间与三次模式")?;
+                app.video.set_cues(vec![
+                    Cue {
+                        start: 1.,
+                        end: 2.,
+                        text: "First".into(),
+                    },
+                    Cue {
+                        start: 6.,
+                        end: 7.,
+                        text: "Selected later".into(),
+                    },
+                    Cue {
+                        start: 9.,
+                        end: 10.,
+                        text: "Last".into(),
+                    },
+                ]);
+                self.advance();
+            }
+            44 => {
+                let state = app.media.player.snapshot();
+                if !state.paused
+                    || !state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|s| s.start == 6. && s.end == 7. && s.total_plays == Some(3))
+                {
+                    return Ok(false);
+                }
+                self.record(app, "迟到字幕按音轨选点建立三次循环并保留暂停")?;
                 app.handle(Action::Page("settings".into()), window, cx);
                 ensure!(
                     !app.video.repeat_three && app.video.sentence_repeat.is_none(),

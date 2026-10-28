@@ -185,6 +185,7 @@ enum Action {
     Play,
     Seek(f64),
     SeekTo(f64),
+    VideoTimelineSeek(f64),
     Boundary(f64, bool),
     Word(f64, f64, String, bool),
     Score,

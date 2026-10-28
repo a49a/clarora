@@ -969,6 +969,13 @@ impl AppView {
                         }
                     }
                 }
+                Action::VideoTimelineSeek(time) => {
+                    if self.page == "video" && self.video.repeat_three {
+                        self.seek_video_timeline_three(time)?;
+                    } else {
+                        self.handle(Action::SeekTo(time), window, cx);
+                    }
+                }
                 Action::SeekTo(time) => {
                     if self.page == "listening" {
                         self.invalidate_blind();

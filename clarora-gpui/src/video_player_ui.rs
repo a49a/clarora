@@ -101,10 +101,19 @@ impl AppView {
                     let area = bounds.get();
                     if area.size.width > px(0.) && duration.is_finite() && duration > 0. {
                         this.video.seek_dragging = true;
+                        this.video.seek_drag_target = None;
                         let time = ((event.position.x - area.left()) / area.size.width)
                             .clamp(0., 1.) as f64
                             * duration;
-                        this.handle(Action::SeekTo(time), window, cx);
+                        this.handle(
+                            if this.page == "video" {
+                                Action::VideoTimelineSeek(time)
+                            } else {
+                                Action::SeekTo(time)
+                            },
+                            window,
+                            cx,
+                        );
                     }
                 }),
             )
@@ -120,17 +129,31 @@ impl AppView {
                         let time = ((event.position.x - area.left()) / area.size.width)
                             .clamp(0., 1.) as f64
                             * duration;
-                        this.handle(Action::SeekTo(time), window, cx);
+                        this.handle(
+                            if this.page == "video" {
+                                Action::VideoTimelineSeek(time)
+                            } else {
+                                Action::SeekTo(time)
+                            },
+                            window,
+                            cx,
+                        );
                     }
                 }),
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.video.seek_dragging = false),
+                cx.listener(|this, _, _, _| {
+                    this.video.seek_dragging = false;
+                    this.video.seek_drag_target = None;
+                }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.video.seek_dragging = false),
+                cx.listener(|this, _, _, _| {
+                    this.video.seek_dragging = false;
+                    this.video.seek_drag_target = None;
+                }),
             )
     }
     pub(super) fn video_frame_path(&self) -> Option<PathBuf> {

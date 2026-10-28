@@ -63,6 +63,20 @@ pub fn first(cues: &[Cue], duration: f64) -> Option<usize> {
     cues.iter().position(|cue| range(cue, duration).is_some())
 }
 
+/// Timeline selection snaps to its cue; a gap chooses the next valid cue,
+/// with the final valid cue used beyond the subtitle tail.
+pub fn at_or_next(cues: &[Cue], position: f64, duration: f64) -> Option<usize> {
+    if !position.is_finite() || position < 0. {
+        return None;
+    }
+    cues.iter()
+        .rposition(|cue| {
+            range(cue, duration).is_some_and(|(start, end)| position >= start && position < end)
+        })
+        .or_else(|| adjacent(cues, position, true, duration))
+        .or_else(|| adjacent(cues, position, false, duration))
+}
+
 impl Session {
     pub fn start(
         player: &Player,

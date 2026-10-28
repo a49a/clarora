@@ -81,6 +81,7 @@ impl AppView {
         from_end: bool,
     ) -> bool {
         self.video.picture_click = None;
+        self.video.seek_dragging = false;
         let result = (|| -> Result<_> {
             let mut videos = video_library::Collection::load(&self.lib)?;
             let ids = videos.add(&[path], self.video.series.as_ref())?;
@@ -140,6 +141,7 @@ impl AppView {
                 paused,
                 from_end,
                 seek_to: None,
+                selected_time: None,
             });
             if from_end {
                 self.report_status(
@@ -175,6 +177,11 @@ impl AppView {
         }
     }
     pub(super) fn load_video_subtitles(&mut self, path: &std::path::Path) {
+        let selected_time = self
+            .video
+            .pending_start
+            .as_ref()
+            .and_then(|p| p.selected_time);
         let from_end = self
             .video
             .pending_start
@@ -193,6 +200,7 @@ impl AppView {
                 paused,
                 from_end,
                 seek_to: None,
+                selected_time,
             });
             self.media.player.set("pause", "yes");
             self.report_status(
@@ -232,6 +240,7 @@ impl AppView {
     }
     pub(super) fn reset_video_sentence_request(&mut self) {
         self.video.part_confirmation = None;
+        self.video.seek_drag_target = None;
         self.video.pending_start = None;
         if self.video.sentence_repeat.take().is_some() {
             self.media.player.clear_sentence_repeat();
@@ -266,6 +275,7 @@ impl AppView {
         }
         let state = self.media.player.snapshot();
         if state.path != pending.path.to_string_lossy()
+            || !state.duration.is_finite()
             || state.duration <= 0.
             || !state.error.is_empty()
         {
@@ -282,7 +292,13 @@ impl AppView {
             }
             return false;
         }
-        let index = if pending.from_end {
+        let index = if let Some(time) = pending.selected_time {
+            clarora_gpui::video_repeat::at_or_next(
+                &self.video.cues,
+                time.clamp(0., state.duration),
+                state.duration,
+            )
+        } else if pending.from_end {
             clarora_gpui::video_repeat::adjacent(
                 &self.video.cues,
                 state.duration,
@@ -323,6 +339,60 @@ impl AppView {
             }
         }
         true
+    }
+    pub(super) fn seek_video_timeline_three(&mut self, time: f64) -> Result<()> {
+        ensure!(time.is_finite(), "播放位置无效");
+        let path = self.video.path.clone().context("请先打开视频")?;
+        ensure!(self.media.path.as_ref() == Some(&path), "视频正在切换");
+        let paused = self.video_playback_paused();
+        let state = self.media.player.snapshot();
+        let index = (state.path == path.to_string_lossy()
+            && state.duration.is_finite()
+            && state.duration > 0.
+            && state.error.is_empty())
+        .then(|| {
+            clarora_gpui::video_repeat::at_or_next(
+                &self.video.cues,
+                time.clamp(0., state.duration),
+                state.duration,
+            )
+        })
+        .flatten();
+        if let Some(index) = index {
+            if self.video.seek_dragging
+                && self.video.seek_drag_target == Some(index)
+                && self.video.sentence_repeat.is_some_and(|session| {
+                    session.three
+                        && session.index == index
+                        && !state
+                            .sentence_repeat
+                            .as_ref()
+                            .is_some_and(|r| r.request_id == session.request_id && r.finished)
+                })
+            {
+                return Ok(());
+            }
+            self.start_video_sentence_repeat(Some(index), true)?;
+            self.video.seek_drag_target = Some(index);
+            if paused {
+                self.media.player.set("pause", "yes");
+            }
+        } else {
+            self.reset_video_sentence_request();
+            self.video.pending_start = Some(app_state::PendingVideoStart {
+                path,
+                paused,
+                from_end: false,
+                seek_to: None,
+                selected_time: Some(time.max(0.)),
+            });
+            self.media.player.set("pause", "yes");
+            self.report_status(
+                FeedbackKind::Info,
+                "已保留三次模式和音轨选点，等待当前视频字幕".into(),
+            );
+        }
+        Ok(())
     }
     pub(super) fn follow_video_repeat(&mut self) {
         if let Some(session) = self.video.sentence_repeat {
