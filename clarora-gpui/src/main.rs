@@ -6,6 +6,8 @@ mod audio_controller;
 mod audio_current_ui;
 mod audio_player_ui;
 mod audio_subtitle_ui;
+#[cfg(debug_assertions)]
+mod backup_progress_probe;
 mod chat_controller_ui;
 mod clip_selection_ui;
 mod data_controller;
@@ -318,6 +320,8 @@ enum Outcome {
     Ocr(String),
     KeyPoints(String, Vec<ai::KeyPoint>),
     Backups(Vec<String>),
+    BackupCreated(String),
+    BackupFailed(String),
     Recording(PathBuf),
     TtsReady(Row),
     CommandImported(clarora_gpui::command_import::Report),
@@ -331,6 +335,7 @@ enum Event {
     ),
     Chunk(clarora_gpui::chat_store::Request, ai::ChatReply),
     ModelProgress(ModelProgress),
+    BackupProgress(backup::UploadProgress),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TaskScope {
@@ -347,6 +352,8 @@ struct AppView {
     lib: Library,
     #[cfg(debug_assertions)]
     probe: Option<ui_controller_probe::Probe>,
+    #[cfg(debug_assertions)]
+    backup_probe: Option<backup_progress_probe::Probe>,
     data: clarora_gpui::view_data::State,
     loads: data_controller::Loads,
     settings: app_state::SettingsState,
@@ -484,6 +491,8 @@ impl AppView {
         let mut this = Self {
             #[cfg(debug_assertions)]
             probe: None,
+            #[cfg(debug_assertions)]
+            backup_probe: None,
             data: Default::default(),
             loads: Default::default(),
             settings: app_state::SettingsState::new(&lib),
@@ -2285,6 +2294,23 @@ fn main() -> Result<()> {
             .join("Clarora-GPUI")
     };
     #[cfg(debug_assertions)]
+    let backup_probe_dir = args
+        .iter()
+        .position(|arg| arg == "--backup-progress-check")
+        .map(|i| {
+            args.get(i + 1)
+                .context("--backup-progress-check 缺少证据目录")
+                .map(PathBuf::from)
+        })
+        .transpose()?;
+    #[cfg(not(debug_assertions))]
+    ensure!(
+        !args.iter().any(|arg| arg == "--backup-progress-check"),
+        "后台备份原生验收仅支持调试构建"
+    );
+    #[cfg(not(debug_assertions))]
+    let backup_probe_dir: Option<PathBuf> = None;
+    #[cfg(debug_assertions)]
     let probe_dir = args
         .iter()
         .position(|arg| arg == "--ui-controller-check" || arg == "--ui-controller-quit-check")
@@ -2304,7 +2330,9 @@ fn main() -> Result<()> {
     #[cfg(not(debug_assertions))]
     let probe_dir: Option<PathBuf> = None;
     #[cfg(debug_assertions)]
-    let library = if let Some(out) = &probe_dir {
+    let library = if let Some(out) = &backup_probe_dir {
+        backup_progress_probe::prepare(out)?
+    } else if let Some(out) = &probe_dir {
         ui_controller_probe::prepare(out)?
     } else {
         Library::open(root)?
@@ -2440,8 +2468,8 @@ fn main() -> Result<()> {
             let main = cx
                 .open_window(
                     WindowOptions {
-                        show: probe_dir.is_none(),
-                        focus: probe_dir.is_none(),
+                        show: probe_dir.is_none() && backup_probe_dir.is_none(),
+                        focus: probe_dir.is_none() && backup_probe_dir.is_none(),
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
                         titlebar: Some(TitlebarOptions {
                             title: Some("Clarora".into()),
@@ -2459,6 +2487,10 @@ fn main() -> Result<()> {
                                     Some(ui_controller_probe::Probe::new(out).with_global_quit(
                                         args.iter().any(|arg| arg == "--ui-controller-quit-check"),
                                     ));
+                            }
+                            #[cfg(debug_assertions)]
+                            if let Some(out) = &backup_probe_dir {
+                                view.backup_probe = Some(backup_progress_probe::Probe::new(out));
                             }
                             view
                         });
@@ -2483,7 +2515,7 @@ fn main() -> Result<()> {
                 }
             })
             .detach();
-            if probe_dir.is_none() {
+            if probe_dir.is_none() && backup_probe_dir.is_none() {
                 cx.activate(true);
             }
         });

@@ -16,6 +16,10 @@ impl AppView {
         if self.poll_ui_probe(window, cx) {
             return;
         }
+        #[cfg(debug_assertions)]
+        if self.poll_backup_probe(window, cx) {
+            return;
+        }
         if let Some(rx) = &self.audio.waveform_rx {
             if let Ok(result) = rx.try_recv() {
                 match result {

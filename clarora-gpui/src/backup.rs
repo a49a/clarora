@@ -10,7 +10,8 @@ use std::{
     io::{Read, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::atomic::Ordering,
+    sync::{Arc, Mutex, atomic::Ordering},
+    task::{Context as TaskContext, Poll},
     time::{Duration, Instant},
 };
 
@@ -1506,9 +1507,174 @@ pub struct StorageConfig {
     pub path_style: bool,
     pub credential_id: String,
 }
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadStage {
+    Preparing,
+    Uploading,
+    Publishing,
+    Completed,
+}
+
+/// Attachment bytes handed to the HTTP transport, and files acknowledged by
+/// the service. Completion also requires a successful manifest response.
+#[derive(Clone, Debug, Serialize)]
+pub struct UploadProgress {
+    pub stage: UploadStage,
+    pub bytes_sent: u64,
+    pub bytes_total: u64,
+    pub files_done: usize,
+    pub files_total: usize,
+    pub current_name: String,
+}
+impl UploadProgress {
+    pub fn percent(&self) -> Option<f32> {
+        match self.stage {
+            UploadStage::Preparing => None,
+            UploadStage::Uploading if self.bytes_total == 0 => None,
+            UploadStage::Uploading => Some(
+                ((self.bytes_sent.min(self.bytes_total) as f64 / self.bytes_total as f64) * 100.)
+                    .min(99.) as f32,
+            ),
+            UploadStage::Publishing => Some(99.),
+            UploadStage::Completed => Some(100.),
+        }
+    }
+    pub fn label(&self) -> String {
+        match self.stage {
+            UploadStage::Preparing => "正在整理资料和附件…".into(),
+            UploadStage::Uploading => format!(
+                "正在上传附件 · 已完成 {}/{} 个\n已发送 {} / {}{}",
+                self.files_done,
+                self.files_total,
+                upload_size(self.bytes_sent),
+                upload_size(self.bytes_total),
+                if self.current_name.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", self.current_name)
+                }
+            ),
+            UploadStage::Publishing => "附件已上传，正在保存备份版本并等待云端确认…".into(),
+            UploadStage::Completed => format!("学习资料已备份 · {} 个附件", self.files_total),
+        }
+    }
+}
+fn upload_size(bytes: u64) -> String {
+    let (divisor, suffix) = if bytes >= 1024 * 1024 * 1024 {
+        (1024. * 1024. * 1024., "GiB")
+    } else if bytes >= 1024 * 1024 {
+        (1024. * 1024., "MiB")
+    } else if bytes >= 1024 {
+        (1024., "KiB")
+    } else {
+        return format!("{bytes} B");
+    };
+    format!("{:.1} {suffix}", bytes as f64 / divisor)
+}
+
+struct UploadReporter {
+    state: Mutex<(UploadProgress, Instant)>,
+    callback: Box<dyn Fn(UploadProgress) + Send + Sync>,
+}
+impl UploadReporter {
+    fn new(callback: impl Fn(UploadProgress) + Send + Sync + 'static) -> Self {
+        Self {
+            state: Mutex::new((
+                UploadProgress {
+                    stage: UploadStage::Preparing,
+                    bytes_sent: 0,
+                    bytes_total: 0,
+                    files_done: 0,
+                    files_total: 0,
+                    current_name: String::new(),
+                },
+                Instant::now(),
+            )),
+            callback: Box::new(callback),
+        }
+    }
+    fn update(&self, force: bool, update: impl FnOnce(&mut UploadProgress)) {
+        let progress = {
+            let mut state = self.state.lock().unwrap();
+            update(&mut state.0);
+            if force || state.1.elapsed() >= Duration::from_millis(100) {
+                state.1 = Instant::now();
+                Some(state.0.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(progress) = progress {
+            (self.callback)(progress);
+        }
+    }
+    fn sent(&self) -> u64 {
+        self.state.lock().unwrap().0.bytes_sent
+    }
+}
+
+struct UploadStream {
+    file: tokio::fs::File,
+    remaining: u64,
+    cancel: Cancel,
+    reporter: Arc<UploadReporter>,
+    first_chunk: bool,
+}
+impl futures_core::Stream for UploadStream {
+    type Item = std::io::Result<Vec<u8>>;
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        use tokio::io::AsyncRead;
+        let this = self.get_mut();
+        if this.cancel.load(Ordering::SeqCst) {
+            return Poll::Ready(Some(Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "已取消",
+            ))));
+        }
+        if this.remaining == 0 {
+            return Poll::Ready(None);
+        }
+        // The request body is driven by transport backpressure. Never buffer a
+        // whole attachment, and stop at its snapshotted Content-Length.
+        let mut chunk = vec![0; this.remaining.min(64 * 1024) as usize];
+        let mut buffer = tokio::io::ReadBuf::new(&mut chunk);
+        match std::pin::Pin::new(&mut this.file).poll_read(cx, &mut buffer) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(error)) => Poll::Ready(Some(Err(error))),
+            Poll::Ready(Ok(())) => {
+                let count = buffer.filled().len();
+                if count == 0 {
+                    return Poll::Ready(Some(Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "备份期间附件已改变，请重试",
+                    ))));
+                }
+                chunk.truncate(count);
+                this.remaining -= count as u64;
+                this.reporter.update(this.first_chunk, |progress| {
+                    progress.bytes_sent = progress
+                        .bytes_sent
+                        .saturating_add(count as u64)
+                        .min(progress.bytes_total);
+                });
+                this.first_chunk = false;
+                Poll::Ready(Some(Ok(chunk)))
+            }
+        }
+    }
+}
 enum Payload {
     Bytes(Vec<u8>),
-    File(PathBuf),
+    File {
+        path: PathBuf,
+        length: u64,
+        reporter: Arc<UploadReporter>,
+    },
 }
 pub struct Storage {
     config: StorageConfig,
@@ -1777,15 +1943,36 @@ impl Storage {
         if let Some(body) = body {
             request = match body {
                 Payload::Bytes(bytes) => request.body(bytes),
-                Payload::File(path) => {
+                Payload::File {
+                    path,
+                    length,
+                    reporter,
+                } => {
                     let file = tokio::fs::File::open(path).await?;
+                    ensure!(
+                        file.metadata().await?.len() == length,
+                        "备份期间附件已改变，请重试"
+                    );
                     request
-                        .header("content-length", file.metadata().await?.len())
-                        .body(file)
+                        .header("content-length", length)
+                        .body(reqwest::Body::wrap_stream(UploadStream {
+                            file,
+                            remaining: length,
+                            cancel: cancel.clone(),
+                            reporter,
+                            first_chunk: true,
+                        }))
                 }
             };
         }
-        let mut response = cancellable(cancel, async { Ok(request.send().await?) }).await?;
+        let mut response = cancellable(cancel, async {
+            let result = request.send().await;
+            if result.is_err() {
+                check_cancel(cancel)?;
+            }
+            Ok(result?)
+        })
+        .await?;
         if !response.status().is_success() {
             let status = response.status();
             let bytes = cancellable(cancel, async {
@@ -1923,15 +2110,45 @@ impl Storage {
             })
     }
     pub fn upload(&self, lib: &Library, cancel: &crate::process::Cancel) -> Result<String> {
+        self.upload_with_progress(lib, cancel, |_| {})
+    }
+    pub fn upload_with_progress(
+        &self,
+        lib: &Library,
+        cancel: &Cancel,
+        progress: impl Fn(UploadProgress) + Send + Sync + 'static,
+    ) -> Result<String> {
         check_cancel(cancel)?;
+        let reporter = Arc::new(UploadReporter::new(progress));
+        reporter.update(true, |_| {});
         let (mut manifest, files) = collect_cancellable(lib, cancel, true)?;
         let stamps = attachment_stamps(&files)?;
+        let bytes_total = files.values().try_fold(0_u64, |sum, path| {
+            sum.checked_add(stamps[path].0)
+                .context("备份附件总量超出支持范围")
+        })?;
+        reporter.update(true, |progress| {
+            progress.stage = UploadStage::Uploading;
+            progress.bytes_total = bytes_total;
+            progress.files_total = files.len();
+        });
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         let client = self.client()?;
         for (reference, path) in files {
             check_cancel(cancel)?;
+            let length = stamps[&path].0;
+            let expected_sent = reporter.sent() + length;
+            let name: String = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(80)
+                .collect();
+            reporter.update(true, |progress| progress.current_name = name);
             let key = format!(
                 "{}/media/{}/{}.{}",
                 self.config.prefix,
@@ -1944,14 +2161,31 @@ impl Storage {
                 "PUT",
                 &key,
                 &BTreeMap::new(),
-                Some(Payload::File(path)),
+                Some(Payload::File {
+                    path,
+                    length,
+                    reporter: reporter.clone(),
+                }),
                 cancel,
             ))?;
+            ensure!(
+                reporter.sent() == expected_sent,
+                "存储服务在附件发送完成前返回成功，请重试"
+            );
+            reporter.update(true, |progress| {
+                progress.files_done += 1;
+                progress.current_name.clear();
+            });
             manifest.files.insert(reference, key);
         }
         check_attachments(&stamps, cancel)?;
         let key = format!("{}/snapshots/{}.json", self.config.prefix, manifest.id);
         let bytes = serde_json::to_vec(&manifest)?;
+        check_cancel(cancel)?;
+        reporter.update(true, |progress| {
+            progress.stage = UploadStage::Publishing;
+            progress.current_name.clear();
+        });
         check_cancel(cancel)?;
         // Publishing the manifest is the remote commit. A lost response cannot prove rollback.
         runtime
@@ -1964,6 +2198,7 @@ impl Storage {
                 cancel,
             ))
             .context("备份清单发布结果未确认，请刷新云端列表核实；附件可能已上传")?;
+        reporter.update(true, |progress| progress.stage = UploadStage::Completed);
         Ok(key)
     }
     pub fn restore(

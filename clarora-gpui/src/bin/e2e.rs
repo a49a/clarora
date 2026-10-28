@@ -13,6 +13,10 @@ mod audio_library;
 mod backup_cancel;
 #[path = "support/backup_library.rs"]
 mod backup_library;
+#[path = "support/backup_progress.rs"]
+mod backup_progress;
+#[path = "support/backup_progress_native.rs"]
+mod backup_progress_native;
 #[path = "support/bilibili_parts.rs"]
 mod bilibili_parts;
 #[path = "support/blind_listening.rs"]
@@ -219,6 +223,8 @@ fn reliability(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     ai_completion::run(lib, results)?;
     backup_cancel::run(lib, results)?;
     storage_errors::run(lib, results)?;
+    backup_progress::run(lib, results)?;
+    backup_progress_native::run(&lib.root, results)?;
     Ok(())
 }
 fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
@@ -929,6 +935,8 @@ fn main() -> Result<()> {
         Some("--reliability-only") => "reliability-only",
         Some("--storage-config-only") => "storage-config-only",
         Some("--storage-errors-only") => "storage-errors-only",
+        Some("--backup-progress-only") => "backup-progress-only",
+        Some("--backup-background-only") => "backup-background-only",
         Some("--writing-only") => "writing-only",
         Some("--ebook-only") => "ebook-only",
         Some("--transcript-only") => "transcript-only",
@@ -1041,6 +1049,12 @@ fn main() -> Result<()> {
     } else if mode == "storage-errors-only" {
         let lib = Library::open(output.join(format!("storage-errors-{}", data::id())))?;
         storage_errors::run(&lib, &mut results)
+    } else if mode == "backup-progress-only" {
+        let lib = Library::open(output.join(format!("backup-progress-{}", data::id())))?;
+        backup_progress::run(&lib, &mut results)
+            .and_then(|()| backup_progress_native::run(&lib.root, &mut results))
+    } else if mode == "backup-background-only" {
+        backup_progress_native::run(&output, &mut results)
     } else if mode == "reliability-only" {
         let lib = Library::open(output.join(format!("reliability-{}", data::id())))?;
         reliability(&lib, &mut results)

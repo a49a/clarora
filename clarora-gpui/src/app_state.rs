@@ -210,6 +210,9 @@ pub(super) struct TasksState {
     pub(super) cancel: Option<Cancel>,
     pub(super) scope: TaskScope,
     pub(super) model_progress: Option<ModelProgress>,
+    pub(super) backup_progress: Option<backup::UploadProgress>,
+    #[cfg(debug_assertions)]
+    pub(super) backup_fixture: Option<std::net::SocketAddr>,
     pub(super) progress_label: String,
     pub(super) started: Option<Instant>,
     pub(super) progress_elapsed: u64,
@@ -228,6 +231,9 @@ impl TasksState {
             cancel: None,
             scope: TaskScope::Material,
             model_progress: None,
+            backup_progress: None,
+            #[cfg(debug_assertions)]
+            backup_fixture: None,
             progress_label: String::new(),
             started: None,
             progress_elapsed: 0,

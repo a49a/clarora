@@ -23,6 +23,8 @@ impl AppView {
             return;
         }
         self.tasks.notice = None;
+        self.tasks.model_progress = None;
+        self.tasks.backup_progress = None;
         self.tasks.scope = scope;
         self.tasks.started = Some(Instant::now());
         self.tasks.progress_elapsed = 0;
@@ -124,6 +126,24 @@ impl AppView {
                             self.tasks.model_progress = Some(progress);
                         }
                     }
+                    Event::BackupProgress(progress) => {
+                        if self.tasks.cancel.as_ref().is_some_and(|t| {
+                            !t.load(Ordering::SeqCst)
+                                || progress.stage == backup::UploadStage::Completed
+                        }) {
+                            let label = progress.label();
+                            self.report_status(FeedbackKind::Progress, label.clone());
+                            if let Some(notice) = self
+                                .tasks
+                                .notice
+                                .as_mut()
+                                .filter(|n| n.state == TaskState::Running)
+                            {
+                                notice.detail = label;
+                            }
+                            self.tasks.backup_progress = Some(progress);
+                        }
+                    }
                     Event::Chunk(request, chunk) => {
                         if !self.chat.accepts(&request) {
                             continue;
@@ -142,7 +162,9 @@ impl AppView {
                         let task_retry = self.tasks.retry.take();
                         let failed = result.is_err()
                             || matches!(&result, Ok(Outcome::Issue(_)))
+                            || matches!(&result, Ok(Outcome::BackupFailed(_)))
                             || matches!(&result, Ok(Outcome::AudioBatch(report)) if !report.failed.is_empty());
+                        let completed_backup = self.tasks.backup_progress.is_some();
                         let completed_chat = request.is_some();
                         let accepted = request.as_ref().is_none_or(|r| self.chat.finish_request(r));
                         let mut cancelled = self
@@ -403,8 +425,53 @@ impl AppView {
                                 self.report_status(FeedbackKind::Info, "PDF 已载入".into());
                             }
                             Ok(Outcome::Backups(v)) => {
+                                let message = if v.is_empty() {
+                                    "连接成功，当前资料库前缀下暂无备份。点击「备份本机资料」可创建备份。".into()
+                                } else {
+                                    format!(
+                                        "已读取 {} 个备份版本，可在「同步与备份」中查看",
+                                        v.len()
+                                    )
+                                };
                                 self.backups = v;
-                                self.report_status(FeedbackKind::Info, "已读取备份版本".into());
+                                self.report_status(FeedbackKind::Info, message);
+                            }
+                            Ok(Outcome::BackupCreated(key)) => {
+                                // A confirmed remote commit wins over a simultaneous cancel.
+                                cancelled = false;
+                                if !self.backups.contains(&key) {
+                                    self.backups.insert(0, key);
+                                }
+                                if let Some(progress) = &mut self.tasks.backup_progress {
+                                    progress.stage = backup::UploadStage::Completed;
+                                    progress.bytes_sent = progress.bytes_total;
+                                    progress.files_done = progress.files_total;
+                                    progress.current_name.clear();
+                                }
+                                let detail = self
+                                    .tasks
+                                    .backup_progress
+                                    .as_ref()
+                                    .map(backup::UploadProgress::label)
+                                    .unwrap_or_else(|| "云备份完成".into());
+                                self.report_status(FeedbackKind::Info, detail);
+                            }
+                            Ok(Outcome::BackupFailed(message)) => {
+                                // Preserve an uncertain manifest publication or HTTP error,
+                                // even if cancellation was requested at the same time.
+                                cancelled = message == "已取消";
+                                self.report_status(
+                                    if cancelled {
+                                        FeedbackKind::Info
+                                    } else {
+                                        FeedbackKind::Error
+                                    },
+                                    if cancelled {
+                                        "云备份已取消".into()
+                                    } else {
+                                        message
+                                    },
+                                );
                             }
                             Ok(Outcome::Recording(path)) => {
                                 self.recorded = Some(path);
@@ -480,10 +547,14 @@ impl AppView {
                         }
                         // Chat only updates its persisted conversation. Refreshing materials
                         // here would invalidate the revealed cue and switch its chat context.
-                        if !completed_chat {
+                        if !completed_chat && !completed_backup {
                             self.refresh();
                         }
-                        if let Err(error) = self.chat.refresh() {
+                        if let Err(error) = if completed_backup {
+                            Ok(())
+                        } else {
+                            self.chat.refresh()
+                        } {
                             self.report_status(
                                 FeedbackKind::Error,
                                 format!("刷新会话失败：{error:#}"),

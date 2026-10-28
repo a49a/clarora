@@ -80,7 +80,11 @@ impl AppView {
                 .children(self.tasks.notice.as_ref().map(|n| {
                     self.task_notice_card(
                         n,
-                        "subtitle",
+                        if self.tasks.backup_progress.is_some() {
+                            "cloud-backup"
+                        } else {
+                            "subtitle"
+                        },
                         Action::Cancel,
                         Action::DismissTaskNotice,
                         cx,
@@ -133,6 +137,8 @@ impl AppView {
                     "正在取消…"
                 } else if key == "background-video" {
                     "取消后台字幕"
+                } else if key == "cloud-backup" {
+                    "取消备份"
                 } else {
                     "取消任务"
                 },
@@ -202,6 +208,30 @@ impl AppView {
                             self.tasks.model_progress.as_ref().and_then(|p| p.percent()),
                             |v, p| {
                                 v.child(Progress::new().value(p).bg(cx.theme().primary).w_full())
+                            },
+                        )
+                    })
+                    .when(key == "cloud-backup", |v| {
+                        v.when_some(
+                            self.tasks
+                                .backup_progress
+                                .as_ref()
+                                .and_then(|p| p.percent()),
+                            |v, percent| {
+                                v.child(
+                                    div()
+                                        .id("cloud-backup-progress")
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(Progress::new().value(percent).bg(color).flex_1())
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(format!("{percent:.0}%")),
+                                        ),
+                                )
                             },
                         )
                     }),

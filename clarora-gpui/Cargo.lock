@@ -930,6 +930,7 @@ dependencies = [
  "chrono",
  "cpal",
  "dirs 6.0.0",
+ "futures-core",
  "gpui",
  "gpui-component",
  "hex",

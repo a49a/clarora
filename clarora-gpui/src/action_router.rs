@@ -1463,6 +1463,7 @@ impl AppView {
                 Action::DismissTaskNotice => {
                     if self.tasks.notice.as_ref().is_some_and(|n| !n.active()) {
                         self.tasks.notice = None;
+                        self.tasks.backup_progress = None;
                     }
                 }
                 Action::Cancel => {
@@ -2197,20 +2198,51 @@ impl AppView {
                         },
                     );
                 }
-                Action::CloudList => {
-                    self.begin("正在读取备份版本…", move |lib, cancel, _| {
+                Action::CloudList => self.begin_scoped(
+                    TaskScope::Application,
+                    "正在读取备份版本…",
+                    move |lib, cancel, _| {
                         Ok(Outcome::Backups(
                             backup::Storage::load(&lib)?.list_cancellable(&cancel)?,
                         ))
-                    })
-                }
+                    },
+                ),
                 Action::CloudBackup => {
-                    self.begin("正在上传资料与附件…", move |lib, cancel, _| {
-                        Ok(Outcome::Message(format!(
-                            "备份完成：{}",
-                            backup::Storage::load(&lib)?.upload(&lib, &cancel)?
-                        )))
-                    })
+                    ensure!(
+                        self.tasks.cancel.is_none(),
+                        "已有任务正在执行，请完成或取消后重试"
+                    );
+                    #[cfg(debug_assertions)]
+                    let fixture = self.tasks.backup_fixture;
+                    self.begin_scoped(
+                        TaskScope::Application,
+                        "正在整理云备份…",
+                        move |lib, cancel, tx| {
+                            #[cfg(debug_assertions)]
+                            let storage = fixture
+                                .map(backup::Storage::loopback_fixture)
+                                .unwrap_or_else(|| backup::Storage::load(&lib))?;
+                            #[cfg(not(debug_assertions))]
+                            let storage = backup::Storage::load(&lib)?;
+                            Ok(
+                                match storage.upload_with_progress(&lib, &cancel, move |progress| {
+                                    let _ = tx.send(Event::BackupProgress(progress));
+                                }) {
+                                    Ok(key) => Outcome::BackupCreated(key),
+                                    Err(error) => Outcome::BackupFailed(format!("{error:#}")),
+                                },
+                            )
+                        },
+                    );
+                    self.tasks.backup_progress = Some(backup::UploadProgress {
+                        stage: backup::UploadStage::Preparing,
+                        bytes_sent: 0,
+                        bytes_total: 0,
+                        files_done: 0,
+                        files_total: 0,
+                        current_name: String::new(),
+                    });
+                    self.tasks.notice = Some(TaskNotice::new("云备份", "正在整理资料和附件…"));
                 }
                 Action::CloudRestore(key) => {
                     self.begin("正在恢复并合并…", move |lib, cancel, _| {
