@@ -94,6 +94,7 @@ pub(super) struct Probe {
     cases: Vec<Value>,
     assistant_before_keyboard: Option<(bool, bool, bool, String)>,
     keyboard_position: f64,
+    timeline_request: u64,
 }
 impl Probe {
     pub(super) fn new(out: &Path) -> Self {
@@ -104,6 +105,7 @@ impl Probe {
             cases: vec![],
             assistant_before_keyboard: None,
             keyboard_position: 0.,
+            timeline_request: 0,
         }
     }
     fn advance(&mut self) {
@@ -901,7 +903,7 @@ impl Probe {
                 if !Self::at(app, &path, 0.) || app.video.cues.len() != 3 {
                     return Ok(false);
                 }
-                app.handle(Action::VideoSentenceRepeat(Some(0), true), window, cx);
+                app.handle(Action::VideoSentenceRepeat(Some(1), true), window, cx);
                 self.advance();
             }
             34 => {
@@ -910,12 +912,17 @@ impl Probe {
                     || !state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.total_plays == Some(3))
+                        .is_some_and(|s| s.start == 4. && s.end == 8. && s.total_plays == Some(3))
                 {
                     return Ok(false);
                 }
                 app.video.seek_dragging = true;
                 app.video.seek_drag_target = None;
+                self.timeline_request = app
+                    .video
+                    .sentence_repeat
+                    .context("当前句请求缺失")?
+                    .request_id;
                 app.handle(Action::VideoTimelineSeek(6.6), window, cx);
                 let request = app
                     .video
@@ -928,8 +935,9 @@ impl Probe {
                             .video
                             .sentence_repeat
                             .is_some_and(|s| s.index == 1 && s.range == (4., 8.)),
-                    "音轨点击没有选中所点句并保留模式"
+                    "句内音轨定位改变了当前句或模式"
                 );
+                ensure!(request == self.timeline_request, "句内定位重建了三次请求");
                 for time in [6.7, 6.9, 7.1] {
                     app.handle(Action::VideoTimelineSeek(time), window, cx);
                 }
@@ -944,8 +952,11 @@ impl Probe {
             35 => {
                 let state = app.media.player.snapshot();
                 if state.paused
+                    || state.position < 7.0
+                    || state.position > 7.6
                     || !state.sentence_repeat.as_ref().is_some_and(|s| {
-                        s.start == 4.
+                        s.request_id == self.timeline_request
+                            && s.start == 4.
                             && s.end == 8.
                             && s.total_plays == Some(3)
                             && s.current_play == 1
@@ -955,7 +966,7 @@ impl Probe {
                 }
                 self.record(
                     app,
-                    "播放中音轨定位保留三次/目标句第一遍/同句拖动不重复发请求",
+                    "播放中句内精确定位/连续拖动使用最后点/保留同一三次请求",
                 )?;
                 app.handle(Action::Play, window, cx);
                 self.advance();
@@ -970,9 +981,12 @@ impl Probe {
             37 => {
                 let state = app.media.player.snapshot();
                 if !state.paused
+                    || state.position < 7.9
+                    || state.position >= 8.
                     || !state.sentence_repeat.as_ref().is_some_and(|s| {
-                        s.start == 8.
-                            && s.end == 12.
+                        s.request_id == self.timeline_request
+                            && s.start == 4.
+                            && s.end == 8.
                             && s.total_plays == Some(3)
                             && s.current_play == 1
                     })
@@ -980,35 +994,36 @@ impl Probe {
                     return Ok(false);
                 }
                 ensure!(app.video.repeat_three, "暂停定位丢模式");
-                self.record(app, "暂停时音轨定位保留暂停及三次模式")?;
+                self.record(app, "暂停时点击后句吸附当前句尾/不切句不换请求")?;
                 app.handle(Action::VideoTimelineSeek(0.), window, cx);
                 self.advance();
             }
             38 => {
                 let state = app.media.player.snapshot();
                 if !state.paused
-                    || !state
-                        .sentence_repeat
-                        .as_ref()
-                        .is_some_and(|s| s.start == 0. && s.end == 4.)
+                    || (state.position - 4.).abs() > 0.18
+                    || !state.sentence_repeat.as_ref().is_some_and(|s| {
+                        s.request_id == self.timeline_request && s.start == 4. && s.end == 8.
+                    })
                 {
                     return Ok(false);
                 }
-                self.record(app, "三次模式音轨起点选择首句")?;
+                self.record(app, "三次模式点击当前句之前吸附本句句首")?;
                 app.handle(Action::VideoTimelineSeek(12.), window, cx);
                 self.advance();
             }
             39 => {
                 let state = app.media.player.snapshot();
                 if !state.paused
-                    || !state
-                        .sentence_repeat
-                        .as_ref()
-                        .is_some_and(|s| s.start == 8. && s.end == 12.)
+                    || state.position < 7.9
+                    || state.position >= 8.
+                    || !state.sentence_repeat.as_ref().is_some_and(|s| {
+                        s.request_id == self.timeline_request && s.start == 4. && s.end == 8.
+                    })
                 {
                     return Ok(false);
                 }
-                self.record(app, "三次模式音轨终点选择末句")?;
+                self.record(app, "三次模式点击全视频终点仍吸附当前句尾")?;
                 app.reset_video_sentence_request();
                 app.video.set_cues(vec![
                     Cue {
@@ -1032,35 +1047,65 @@ impl Probe {
                         text: "Outside duration".into(),
                     },
                 ]);
+                app.handle(Action::VideoSentenceRepeat(Some(1), true), window, cx);
+                self.timeline_request = app
+                    .video
+                    .sentence_repeat
+                    .context("稀疏字幕请求缺失")?
+                    .request_id;
+                app.media.player.set("pause", "yes");
                 app.handle(Action::VideoTimelineSeek(2.), window, cx);
                 self.advance();
             }
             40 => {
                 let state = app.media.player.snapshot();
                 if !state.paused
-                    || !state
-                        .sentence_repeat
-                        .as_ref()
-                        .is_some_and(|s| s.start == 3. && s.end == 4. && s.total_plays == Some(3))
+                    || (state.position - 3.).abs() > 0.18
+                    || !state.sentence_repeat.as_ref().is_some_and(|s| {
+                        s.request_id == self.timeline_request
+                            && s.start == 3.
+                            && s.end == 4.
+                            && s.total_plays == Some(3)
+                    })
                 {
                     return Ok(false);
                 }
-                self.record(app, "点击句间空白选择下一条有效字幕并保留三次")?;
+                self.record(app, "点击句间空白吸附当前句首/不改变当前句")?;
                 app.handle(Action::VideoTimelineSeek(12.), window, cx);
                 self.advance();
             }
             41 => {
                 let state = app.media.player.snapshot();
                 if !state.paused
-                    || !state
-                        .sentence_repeat
-                        .as_ref()
-                        .is_some_and(|s| s.start == 7. && s.end == 8. && s.total_plays == Some(3))
+                    || state.position < 3.9
+                    || state.position >= 4.
+                    || !state.sentence_repeat.as_ref().is_some_and(|s| {
+                        s.request_id == self.timeline_request
+                            && s.start == 3.
+                            && s.end == 4.
+                            && s.total_plays == Some(3)
+                    })
                 {
                     return Ok(false);
                 }
-                self.record(app, "音轨末尾定位跳过越界字幕")?;
+                self.record(app, "音轨末尾点击不切入后句或越界字幕/吸附当前句尾")?;
+                ensure!(
+                    app.handle_video_arrow_key(&Self::key("right", false), window, cx),
+                    "精确音轨定位后方向键未交给视频"
+                );
+                ensure!(
+                    app.video.repeat_three
+                        && app
+                            .video
+                            .sentence_repeat
+                            .is_some_and(|s| s.index == 2 && s.range == (7., 8.)),
+                    "音轨仅句内定位后方向键不能正常切换字幕句"
+                );
+                self.record(app, "音轨仅限当前句/方向键仍能切下一句并保留三次")?;
                 app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                // Keyboard sentence stepping starts playback. The following
+                // ordinary-seek case uses an explicitly paused fixture.
+                app.media.player.set("pause", "yes");
                 app.handle(Action::VideoTimelineSeek(5.5), window, cx);
                 self.advance();
             }
@@ -1077,23 +1122,26 @@ impl Probe {
                 app.reset_video_sentence_request();
                 app.video.set_cues(vec![]);
                 app.media.player.set("pause", "yes");
+                app.media.player.command([
+                    "seek".into(),
+                    POSITION.to_string(),
+                    "absolute+exact".into(),
+                ]);
                 self.advance();
             }
             43 => {
-                if !app.media.player.snapshot().paused {
+                if !Self::at(app, &path, POSITION) {
                     return Ok(false);
                 }
-                app.handle(Action::VideoTimelineSeek(6.4), window, cx);
+                app.handle(Action::VideoTimelineSeek(10.), window, cx);
                 ensure!(
                     app.video.repeat_three
-                        && app
-                            .video
-                            .pending_start
-                            .as_ref()
-                            .is_some_and(|p| p.selected_time == Some(6.4)),
-                    "未就绪音轨定位没有保留时间和模式"
+                        && app.video.pending_start.as_ref().is_some_and(|p| p
+                            .selected_time
+                            .is_some_and(|t| (t - POSITION).abs() < 0.18)),
+                    "未就绪音轨定位把点击点当成当前句锚点"
                 );
-                self.record(app, "字幕未就绪时保留音轨选择时间与三次模式")?;
+                self.record(app, "字幕未就绪时保留原位置作为当前句锚点/单独等待点击目标")?;
                 app.video.set_cues(vec![
                     Cue {
                         start: 1.,
@@ -1116,14 +1164,21 @@ impl Probe {
             44 => {
                 let state = app.media.player.snapshot();
                 if !state.paused
-                    || !state
-                        .sentence_repeat
-                        .as_ref()
-                        .is_some_and(|s| s.start == 6. && s.end == 7. && s.total_plays == Some(3))
+                    || state.position < 6.9
+                    || state.position >= 7.
+                    || !state.sentence_repeat.as_ref().is_some_and(|s| {
+                        s.start == 6.
+                            && s.end == 7.
+                            && s.total_plays == Some(3)
+                            && s.current_play == 1
+                            && app.video.sentence_repeat.is_some_and(|session| {
+                                session.index == 1 && session.request_id == s.request_id
+                            })
+                    })
                 {
                     return Ok(false);
                 }
-                self.record(app, "迟到字幕按音轨选点建立三次循环并保留暂停")?;
+                self.record(app, "迟到字幕仍选原句/将句外点击吸附本句尾并保留暂停")?;
                 app.handle(Action::VideoStopSentenceRepeat, window, cx);
                 app.video.set_cues(vec![
                     Cue {

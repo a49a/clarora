@@ -496,6 +496,280 @@ fn ordinary_navigation(
     Ok(())
 }
 
+fn precise_sentence_seek(
+    player: &Player,
+    video: &Path,
+    second: &Path,
+    traces: &mut Vec<Value>,
+    checks: &mut Vec<Value>,
+) -> Result<()> {
+    ready(player, video, traces)?;
+    let request = player.repeat_sentence(video, 0.3, 2.2, Some(3))?;
+    wait(
+        player,
+        "句内精确定位前进入第二遍",
+        Duration::from_secs(5),
+        traces,
+        |s| {
+            s.sentence_repeat
+                .as_ref()
+                .is_some_and(|r| r.request_id == request && r.current_play == 2 && !r.finished)
+        },
+    )?;
+    player.set("pause", "yes");
+    wait(
+        player,
+        "句内精确定位前暂停第二遍",
+        Duration::from_secs(2),
+        traces,
+        |s| {
+            s.paused
+                && s.sentence_repeat
+                    .as_ref()
+                    .is_some_and(|r| r.request_id == request && r.current_play == 2)
+        },
+    )?;
+    player.seek_sentence_repeat(video, request, 1.4)?;
+    wait(
+        player,
+        "第二遍暂停时从点击点精确定位",
+        Duration::from_secs(3),
+        traces,
+        |s| {
+            s.paused
+                && (s.position - 1.4).abs() < 0.03
+                && s.sentence_repeat.as_ref().is_some_and(|r| {
+                    r.request_id == request
+                        && r.start == 0.3
+                        && r.end == 2.2
+                        && r.current_play == 2
+                        && r.total_plays == Some(3)
+                        && !r.finished
+                })
+        },
+    )?;
+    checks.push(json!({"scenario":"三次第二遍句内精确定位保留请求/范围/暂停/遍数", "passed":true}));
+    for position in [1.1, 1.8, 1.25] {
+        player.seek_sentence_repeat(video, request, position)?;
+    }
+    wait(
+        player,
+        "连续定位最终点生效",
+        Duration::from_secs(3),
+        traces,
+        |s| {
+            s.paused
+                && (s.position - 1.25).abs() < 0.03
+                && s.sentence_repeat
+                    .as_ref()
+                    .is_some_and(|r| r.request_id == request && r.current_play == 2)
+        },
+    )?;
+    checks.push(json!({"scenario":"同句连续不同定位采用最后点击点且不重计", "passed":true}));
+    player.seek_sentence_repeat(video, request, -20.)?;
+    wait(
+        player,
+        "句前位置吸附当前句首",
+        Duration::from_secs(3),
+        traces,
+        |s| {
+            s.paused
+                && (s.position - 0.3).abs() < 0.03
+                && s.sentence_repeat
+                    .as_ref()
+                    .is_some_and(|r| r.request_id == request && r.current_play == 2)
+        },
+    )?;
+    player.seek_sentence_repeat(video, request, 100.)?;
+    let tail = clarora_gpui::media::sentence_seek_target(0.3, 2.2, 100.)?;
+    wait(
+        player,
+        "句后位置吸附当前句尾可播放位置",
+        Duration::from_secs(3),
+        traces,
+        |s| {
+            s.paused
+                && (s.position - tail).abs() < 0.015
+                && s.position < 2.2
+                && s.sentence_repeat
+                    .as_ref()
+                    .is_some_and(|r| r.request_id == request && r.current_play == 2 && r.end == 2.2)
+        },
+    )?;
+    observe_for(
+        player,
+        "暂停在句尾吸附点不结束循环",
+        Duration::from_millis(150),
+        traces,
+        |s| {
+            s.paused
+                && (s.position - tail).abs() < 0.015
+                && s.sentence_repeat
+                    .as_ref()
+                    .is_some_and(|r| r.request_id == request && r.current_play == 2 && !r.finished)
+        },
+    )?;
+    checks.push(json!({"scenario":"句外点击只吸附当前句首尾/不改句/不提前完成", "passed":true}));
+    for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        ensure!(
+            player
+                .seek_sentence_repeat(video, request, invalid)
+                .is_err(),
+            "非法精确定位未同步拒绝"
+        );
+    }
+    ensure!(
+        player
+            .seek_sentence_repeat(Path::new(""), request, 1.)
+            .is_err(),
+        "空媒体路径未同步拒绝"
+    );
+    player.seek_sentence_repeat(video, request + 100, 0.4)?;
+    player.seek_sentence_repeat(second, request, 0.4)?;
+    observe_for(
+        player,
+        "非法或迟到定位不改变有效循环",
+        Duration::from_millis(180),
+        traces,
+        |s| {
+            s.paused
+                && (s.position - tail).abs() < 0.015
+                && s.sentence_repeat
+                    .as_ref()
+                    .is_some_and(|r| r.request_id == request && r.current_play == 2 && !r.finished)
+        },
+    )?;
+    checks.push(json!({"scenario":"非法时间拒绝/旧request与异媒体seek安全忽略", "passed":true}));
+    player.set("pause", "no");
+    finished(
+        player,
+        "第二遍定位后自然只完成剩余第三遍",
+        request,
+        0.3,
+        2.2,
+        traces,
+    )?;
+    player.seek_sentence_repeat(video, request, 1.1)?;
+    observe_for(
+        player,
+        "完成请求的精确定位不重新播放",
+        Duration::from_millis(180),
+        traces,
+        |s| {
+            s.paused
+                && (s.position - 2.2).abs() < 0.09
+                && s.sentence_repeat
+                    .as_ref()
+                    .is_some_and(|r| r.request_id == request && r.current_play == 3 && r.finished)
+        },
+    )?;
+    checks.push(json!({"scenario":"定位后保持三遍总数/完成请求不因迟到seek复活", "passed":true}));
+    let immediate = player.repeat_sentence(video, 0.3, 2.2, Some(3))?;
+    player.seek_sentence_repeat(video, immediate, 1.3)?;
+    player.set("pause", "yes");
+    wait(
+        player,
+        "新循环请求紧随定位按消息顺序生效",
+        Duration::from_secs(3),
+        traces,
+        |s| {
+            s.paused
+                && (s.position - 1.3).abs() < 0.04
+                && s.sentence_repeat
+                    .as_ref()
+                    .is_some_and(|r| r.request_id == immediate && r.current_play == 1)
+        },
+    )?;
+    player.set("pause", "no");
+    player.seek_sentence_repeat(video, immediate, 1.1)?;
+    wait(
+        player,
+        "播放中精确定位保持继续播放",
+        Duration::from_secs(3),
+        traces,
+        |s| {
+            !s.paused
+                && s.position >= 1.1
+                && s.position < 1.4
+                && s.sentence_repeat
+                    .as_ref()
+                    .is_some_and(|r| r.request_id == immediate && r.current_play == 1)
+        },
+    )?;
+    let next = player.repeat_sentence(video, 0.9, 1.5, Some(3))?;
+    player.seek_sentence_repeat(video, immediate, 2.)?;
+    player.set("pause", "yes");
+    wait(
+        player,
+        "新句不受旧定位影响",
+        Duration::from_secs(3),
+        traces,
+        |s| {
+            s.paused
+                && (s.position - 0.9).abs() < 0.03
+                && s.sentence_repeat.as_ref().is_some_and(|r| {
+                    r.request_id == next && r.start == 0.9 && r.end == 1.5 && r.current_play == 1
+                })
+        },
+    )?;
+    checks.push(json!({"scenario":"新request立即定位及快速换句的旧消息隔离", "passed":true}));
+    player.clear_sentence_repeat();
+    player.seek_sentence_repeat(video, next, 1.4)?;
+    wait(
+        player,
+        "clear后迟到定位没有重建循环",
+        Duration::from_secs(2),
+        traces,
+        |s| s.paused && s.sentence_repeat.is_none(),
+    )?;
+    let cleared = player.snapshot().position;
+    observe_for(
+        player,
+        "clear后原位置保持",
+        Duration::from_millis(150),
+        traces,
+        |s| s.paused && (s.position - cleared).abs() < 0.03 && s.sentence_repeat.is_none(),
+    )?;
+    let short = player.repeat_sentence(video, 0.9, 0.94, Some(3))?;
+    player.set("pause", "yes");
+    player.seek_sentence_repeat(video, short, 20.)?;
+    let short_tail = clarora_gpui::media::sentence_seek_target(0.9, 0.94, 20.)?;
+    wait(
+        player,
+        "40ms短句的尾部夹取",
+        Duration::from_secs(3),
+        traces,
+        |s| {
+            s.paused
+                && (s.position - short_tail).abs() < 0.015
+                && s.position < 0.94
+                && s.sentence_repeat
+                    .as_ref()
+                    .is_some_and(|r| r.request_id == short && r.current_play == 1 && !r.finished)
+        },
+    )?;
+    player.set("pause", "no");
+    finished(player, "短句精确定位后准确三遍", short, 0.9, 0.94, traces)?;
+    checks.push(json!({"scenario":"停止后定位无效/40ms短句尾部安全及三遍完成", "passed":true}));
+    let before_switch = player.repeat_sentence(video, 0.3, 2.2, Some(3))?;
+    player.open_range(second, 0., 0., true);
+    player.seek_sentence_repeat(video, before_switch, 0.55)?;
+    wait(
+        player,
+        "换媒体后的迟到精确定位不串文件",
+        Duration::from_secs(4),
+        traces,
+        |s| {
+            s.paused
+                && s.path == second.to_string_lossy()
+                && s.position < 0.1
+                && s.sentence_repeat.is_none()
+        },
+    )?;
+    checks.push(json!({"scenario":"换媒体后的精确定位消息不控制新文件", "passed":true}));
+    Ok(())
+}
+
 pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     let root = lib.root.join("video-repeat");
     fs::create_dir_all(&root)?;
@@ -971,6 +1245,8 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
         ordinary_navigation(&navigation_player, &video, &root, &mut traces, &mut checks)?;
         let sequence_player = Player::without_audio_device();
         sequence(&sequence_player, &video, &root, &mut traces, &mut checks)?;
+        let precise_player = Player::without_audio_device();
+        precise_sentence_seek(&precise_player, &video, &second, &mut traces, &mut checks)?;
         Ok(())
     })();
     fs::write(

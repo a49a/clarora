@@ -177,6 +177,17 @@ struct RunningSentenceRepeat {
     initial_seek_seen: bool,
     armed: bool,
 }
+/// Keep a timeline seek inside one sentence. The open end is intentionally just
+/// before B, so a paused click at/after B cannot itself finish the sentence.
+pub fn sentence_seek_target(start: f64, end: f64, time: f64) -> Result<f64> {
+    ensure!(
+        start.is_finite() && end.is_finite() && time.is_finite(),
+        "字幕定位时间无效"
+    );
+    ensure!(start >= 0. && end > start, "字幕定位范围无效");
+    let margin = 0.001_f64.min((end - start) * 0.1);
+    Ok(time.clamp(start, (end - margin).max(start)))
+}
 #[derive(Clone, Default, Debug, serde::Serialize)]
 pub struct RenderStats {
     pub rendered_frames: u64,
@@ -297,6 +308,11 @@ enum Message {
     Set(String, String),
     Subtitles(bool),
     RepeatSentence(SentenceRepeat),
+    SeekSentenceRepeat {
+        path: String,
+        request_id: u64,
+        time: f64,
+    },
     ClearSentenceRepeat,
     Close,
 }
@@ -415,6 +431,19 @@ impl Player {
     }
     pub fn clear_sentence_repeat(&self) {
         let _ = self.tx.send(Message::ClearSentenceRepeat);
+    }
+    /// Seek an active finite sentence repeat without resetting its count or
+    /// pause state. Stale/finished requests and infinite mode are left untouched.
+    pub fn seek_sentence_repeat(&self, path: &Path, request_id: u64, time: f64) -> Result<()> {
+        ensure!(!path.as_os_str().is_empty(), "请先打开视频");
+        ensure!(time.is_finite(), "播放位置无效");
+        self.tx
+            .send(Message::SeekSentenceRepeat {
+                path: path.to_string_lossy().into_owned(),
+                request_id,
+                time,
+            })
+            .context("播放器已关闭")
     }
     pub fn open(&self, path: &Path) {
         self.open_range(path, 0., 0., false);
@@ -870,6 +899,67 @@ unsafe fn start_sentence_repeat(
         armed: false,
     })
 }
+unsafe fn seek_running_sentence_repeat(
+    api: &Api,
+    handle: Handle,
+    repeat: &mut RunningSentenceRepeat,
+    time: f64,
+) -> Result<()> {
+    let Some(total) = repeat.state.total_plays else {
+        return Ok(());
+    };
+    unsafe {
+        let target = sentence_seek_target(repeat.state.start, repeat.state.end, time)?;
+        let mut remaining = -1i64;
+        let mut paused = 1;
+        let mut eof = 0;
+        (api.property)(
+            handle,
+            c"remaining-ab-loops".as_ptr(),
+            4,
+            &mut remaining as *mut _ as _,
+        );
+        ensure!(
+            (api.property)(handle, c"pause".as_ptr(), 3, &mut paused as *mut _ as _) >= 0,
+            "无法读取当前播放状态"
+        );
+        (api.property)(handle, c"eof-reached".as_ptr(), 3, &mut eof as *mut _ as _);
+        // Completion can precede the worker's next event poll. Do not revive a
+        // completed request merely because its published flag has not caught up.
+        if remaining == 0 && eof != 0 && paused != 0 {
+            return Ok(());
+        }
+        let current_play = if remaining >= 0 {
+            total.saturating_sub(remaining as u32).max(1).min(total)
+        } else {
+            repeat.state.current_play
+        };
+        let position = CString::new(target.to_string())?;
+        let command = [
+            c"seek".as_ptr(),
+            position.as_ptr(),
+            c"absolute+exact".as_ptr(),
+            std::ptr::null(),
+        ];
+        ensure!(
+            (api.command)(handle, command.as_ptr()) >= 0,
+            "无法定位当前字幕句"
+        );
+        // Native seeks may rearm AB properties. Preserve only the iterations
+        // still owed by this request, rather than starting three plays again.
+        set_native(
+            api,
+            handle,
+            "ab-loop-count",
+            &(total - current_play).to_string(),
+        )?;
+        set_native(api, handle, "pause", if paused != 0 { "yes" } else { "no" })?;
+        repeat.state.current_play = current_play;
+        repeat.initial_seek_seen = false;
+        repeat.armed = false;
+    }
+    Ok(())
+}
 fn worker(
     rx: mpsc::Receiver<Message>,
     shared: Arc<Mutex<Playback>>,
@@ -1019,6 +1109,23 @@ fn worker(
                     if sentence_repeat.take().is_some() {
                         clear_native_sentence_repeat(&api, handle)?;
                         shared.lock().unwrap().sentence_repeat = None;
+                    }
+                }
+                Ok(Message::SeekSentenceRepeat {
+                    path,
+                    request_id,
+                    time,
+                }) => {
+                    if let Some(repeat) = sentence_repeat.as_mut().filter(|repeat| {
+                        !repeat.state.finished
+                            && repeat.state.request_id == request_id
+                            && repeat.state.path == path
+                            && native_path(&api, handle) == path
+                    }) {
+                        if let Err(error) = seek_running_sentence_repeat(&api, handle, repeat, time)
+                        {
+                            shared.lock().unwrap().error = error.to_string();
+                        }
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}

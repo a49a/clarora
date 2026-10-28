@@ -111,6 +111,26 @@ impl Session {
         }
     }
 
+    /// Move inside this request without changing its sentence or play count.
+    pub fn seek(
+        &self,
+        player: &Player,
+        path: &Path,
+        cues: &[Cue],
+        position: f64,
+        duration: f64,
+    ) -> Result<()> {
+        ensure!(
+            cues.get(self.index)
+                .and_then(|cue| range(cue, duration))
+                .is_some_and(|(a, b)| {
+                    (a - self.range.0).abs() < 0.001 && (b - self.range.1).abs() < 0.001
+                }),
+            "字幕时间轴已更新，请重新选择重复句"
+        );
+        player.seek_sentence_repeat(path, self.request_id, position)
+    }
+
     /// Relative to the selected subtitle, even while a new player request is pending.
     pub fn step(
         &mut self,

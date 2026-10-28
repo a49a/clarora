@@ -143,6 +143,7 @@ impl AppView {
                 seek_to: None,
                 selected_time: (!from_end && position.is_finite() && position >= 0.)
                     .then_some(position),
+                within_sentence_seek: None,
             });
             if from_end {
                 self.report_status(
@@ -183,6 +184,11 @@ impl AppView {
             .pending_start
             .as_ref()
             .and_then(|p| p.selected_time);
+        let within_sentence_seek = self
+            .video
+            .pending_start
+            .as_ref()
+            .and_then(|p| p.within_sentence_seek);
         let from_end = self
             .video
             .pending_start
@@ -202,6 +208,7 @@ impl AppView {
                 from_end,
                 seek_to: None,
                 selected_time,
+                within_sentence_seek,
             });
             self.media.player.set("pause", "yes");
             self.report_status(
@@ -313,6 +320,7 @@ impl AppView {
             return false;
         };
         let paused = pending.paused;
+        let within_sentence_seek = pending.within_sentence_seek;
         if !self.video.repeat_three {
             let position = self.video.cues[index].start;
             self.video.pending_start.as_mut().unwrap().seek_to = Some(position);
@@ -328,7 +336,20 @@ impl AppView {
             return true;
         }
         self.video.pending_start = None;
-        match self.start_video_sentence_repeat(Some(index), true) {
+        let started = (|| -> Result<()> {
+            self.start_video_sentence_repeat(Some(index), true)?;
+            if let Some(position) = within_sentence_seek {
+                self.video.sentence_repeat.context("尚未建立重复句")?.seek(
+                    &self.media.player,
+                    &PathBuf::from(&state.path),
+                    &self.video.cues,
+                    position,
+                    state.duration,
+                )?;
+            }
+            Ok(())
+        })();
+        match started {
             Ok(()) => {
                 if paused {
                     self.media.player.set("pause", "yes");
@@ -347,34 +368,71 @@ impl AppView {
         ensure!(self.media.path.as_ref() == Some(&path), "视频正在切换");
         let paused = self.video_playback_paused();
         let state = self.media.player.snapshot();
+        let session = self.video.sentence_repeat.filter(|session| session.three);
+        let pending = self.video.pending_start.as_ref();
+        let from_end = session.is_none() && pending.is_some_and(|pending| pending.from_end);
+        let anchor = session
+            .map(|session| session.range.0)
+            .or_else(|| pending.and_then(|pending| pending.selected_time))
+            .or_else(|| {
+                (state.path == path.to_string_lossy() && state.position.is_finite())
+                    .then_some(state.position.max(0.))
+            })
+            .unwrap_or(0.);
         let index = (state.path == path.to_string_lossy()
             && state.duration.is_finite()
             && state.duration > 0.
             && state.error.is_empty())
         .then(|| {
-            clarora_gpui::video_repeat::at_or_next(
-                &self.video.cues,
-                time.clamp(0., state.duration),
-                state.duration,
-            )
+            session.map(|session| session.index).or_else(|| {
+                if from_end {
+                    clarora_gpui::video_repeat::adjacent(
+                        &self.video.cues,
+                        state.duration,
+                        false,
+                        state.duration,
+                    )
+                } else {
+                    clarora_gpui::video_repeat::at_or_next(
+                        &self.video.cues,
+                        anchor.clamp(0., state.duration),
+                        state.duration,
+                    )
+                }
+            })
         })
         .flatten();
         if let Some(index) = index {
-            if self.video.seek_dragging
-                && self.video.seek_drag_target == Some(index)
-                && self.video.sentence_repeat.is_some_and(|session| {
-                    session.three
-                        && session.index == index
-                        && !state
-                            .sentence_repeat
-                            .as_ref()
-                            .is_some_and(|r| r.request_id == session.request_id && r.finished)
+            if session.is_none()
+                || session.is_some_and(|session| {
+                    state.sentence_repeat.as_ref().is_some_and(|repeat| {
+                        repeat.request_id == session.request_id && repeat.finished
+                    })
                 })
+            {
+                self.start_video_sentence_repeat(Some(index), true)?;
+            }
+            let session = self.video.sentence_repeat.context("尚未建立重复句")?;
+            let target =
+                clarora_gpui::media::sentence_seek_target(session.range.0, session.range.1, time)?;
+            if self.video.seek_dragging
+                && self
+                    .video
+                    .seek_drag_target
+                    .is_some_and(|(request, previous)| {
+                        request == session.request_id && (previous - target).abs() < 0.000_001
+                    })
             {
                 return Ok(());
             }
-            self.start_video_sentence_repeat(Some(index), true)?;
-            self.video.seek_drag_target = Some(index);
+            session.seek(
+                &self.media.player,
+                &path,
+                &self.video.cues,
+                target,
+                state.duration,
+            )?;
+            self.video.seek_drag_target = Some((session.request_id, target));
             if paused {
                 self.media.player.set("pause", "yes");
             }
@@ -383,14 +441,15 @@ impl AppView {
             self.video.pending_start = Some(app_state::PendingVideoStart {
                 path,
                 paused,
-                from_end: false,
+                from_end,
                 seek_to: None,
-                selected_time: Some(time.max(0.)),
+                selected_time: (!from_end).then_some(anchor),
+                within_sentence_seek: Some(time),
             });
             self.media.player.set("pause", "yes");
             self.report_status(
                 FeedbackKind::Info,
-                "已保留三次模式和音轨选点，等待当前视频字幕".into(),
+                "已保留当前句和音轨选点，等待字幕后在本句内定位".into(),
             );
         }
         Ok(())
@@ -766,6 +825,7 @@ impl AppView {
                 from_end,
                 seek_to: None,
                 selected_time,
+                within_sentence_seek: None,
             });
             self.media.repeat = 0;
             self.media.loop_a = None;
