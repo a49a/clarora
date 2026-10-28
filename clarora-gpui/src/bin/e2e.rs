@@ -47,6 +47,8 @@ mod protocol;
 mod review_queue;
 #[path = "support/runtime_stability.rs"]
 mod runtime_stability;
+#[path = "support/storage_errors.rs"]
+mod storage_errors;
 #[path = "support/subtitle_selection.rs"]
 mod subtitle_selection;
 #[path = "support/timer_chimes.rs"]
@@ -216,6 +218,7 @@ fn reliability(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     review_queue::run(lib, results)?;
     ai_completion::run(lib, results)?;
     backup_cancel::run(lib, results)?;
+    storage_errors::run(lib, results)?;
     Ok(())
 }
 fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
@@ -925,6 +928,7 @@ fn main() -> Result<()> {
         Some("--http-only") => "http-only",
         Some("--reliability-only") => "reliability-only",
         Some("--storage-config-only") => "storage-config-only",
+        Some("--storage-errors-only") => "storage-errors-only",
         Some("--writing-only") => "writing-only",
         Some("--ebook-only") => "ebook-only",
         Some("--transcript-only") => "transcript-only",
@@ -1034,6 +1038,9 @@ fn main() -> Result<()> {
     } else if mode == "storage-config-only" {
         let lib = Library::open(output.join(format!("storage-config-{}", data::id())))?;
         backup_cancel::config_messages(&lib, &mut results)
+    } else if mode == "storage-errors-only" {
+        let lib = Library::open(output.join(format!("storage-errors-{}", data::id())))?;
+        storage_errors::run(&lib, &mut results)
     } else if mode == "reliability-only" {
         let lib = Library::open(output.join(format!("reliability-{}", data::id())))?;
         reliability(&lib, &mut results)

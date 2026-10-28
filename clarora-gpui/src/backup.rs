@@ -32,6 +32,112 @@ async fn cancellable<T>(cancel: &Cancel, work: impl Future<Output = Result<T>>) 
         _ = interrupted(cancel) => anyhow::bail!("已取消"),
     }
 }
+
+// Error bodies can include request signatures, object names and other private
+// details. Only retain the short service error identifier, never its Message.
+fn storage_error_code(bytes: &[u8]) -> Option<String> {
+    use quick_xml::events::Event;
+    let xml = std::str::from_utf8(bytes).ok()?;
+    if xml.contains("<!DOCTYPE") || xml.contains("<!ENTITY") {
+        return None;
+    }
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut depth = 0_usize;
+    let mut root_seen = false;
+    let mut code = None;
+    loop {
+        match reader.read_event().ok()? {
+            Event::Start(tag) => {
+                if depth == 0 {
+                    if root_seen || tag.local_name().as_ref() != b"Error" {
+                        return None;
+                    }
+                    root_seen = true;
+                }
+                if depth == 1 && tag.local_name().as_ref() == b"Code" {
+                    if code.is_some() {
+                        return None;
+                    }
+                    let value = reader.read_text(tag.name()).ok()?;
+                    if value.is_empty()
+                        || value.len() > 64
+                        || !value
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                    {
+                        return None;
+                    }
+                    code = Some(value.into_owned());
+                } else {
+                    depth += 1;
+                    if depth > 32 {
+                        return None;
+                    }
+                }
+            }
+            Event::End(_) => depth = depth.checked_sub(1)?,
+            Event::Empty(tag) => {
+                if depth == 0 || (depth == 1 && tag.local_name().as_ref() == b"Code") {
+                    return None;
+                }
+            }
+            Event::Text(text) if depth == 0 => {
+                let bytes: &[u8] = text.as_ref();
+                if !bytes.iter().all(u8::is_ascii_whitespace) {
+                    return None;
+                }
+            }
+            Event::DocType(_) | Event::CData(_) | Event::GeneralRef(_) if depth == 0 => {
+                return None;
+            }
+            Event::Eof => return (root_seen && depth == 0).then_some(code).flatten(),
+            _ => {}
+        }
+    }
+}
+
+fn storage_error_message(status: reqwest::StatusCode, code: Option<&str>) -> String {
+    let hint = match code {
+        Some("AccessDenied" | "AllAccessDisabled") => {
+            "访问被拒绝。请确认密钥所属账户、Bucket，以及该桶的对象读写权限。"
+        }
+        Some("SignatureDoesNotMatch") => {
+            "签名校验失败。请核对 Secret Access Key 是否与 Access Key ID 配对，以及 Endpoint 和 Region 是否正确；复制时不要带入空格或换行。"
+        }
+        Some("InvalidAccessKeyId" | "InvalidAccessKeyID") => {
+            "Access Key ID 无效。请确认密钥未被撤销，并使用对象存储的 S3 访问密钥。"
+        }
+        Some("ExpiredToken" | "TokenRefreshRequired") => {
+            "临时凭证已过期。请更新访问密钥及 Session Token；使用长期密钥时无需填写 Session Token。"
+        }
+        Some("InvalidToken") => {
+            "Session Token 无效。请核对临时凭证；使用长期密钥时请清空 Session Token 后保存。"
+        }
+        Some("RequestTimeTooSkewed" | "RequestExpired" | "ExpiredRequest") => {
+            "请求时间校验失败。请检查本机日期、时间和时区，并开启系统自动校时后重试。"
+        }
+        Some("AuthorizationHeaderMalformed") => {
+            "请求认证信息不符合存储服务要求。请核对 Endpoint 和 Region；Cloudflare R2 的 Region 使用 auto。"
+        }
+        Some("NotEntitled") => {
+            "账户尚未启用当前存储功能。使用 Cloudflare R2 时，请确认账户已启用 R2 服务。"
+        }
+        Some("ObjectLockedByBucketPolicy") => {
+            "对象受桶的对象锁定规则保护，暂时无法修改。请检查该桶的保留规则。"
+        }
+        Some("NoSuchBucket") => "找不到 Bucket。请核对桶名，以及 Endpoint 是否属于该桶所在账户。",
+        Some("SlowDown" | "Throttling") => "请求过于频繁，请稍后重试。",
+        _ if status == reqwest::StatusCode::FORBIDDEN => {
+            "服务端拒绝了请求，暂不能确定是密钥或权限问题。请保留此错误码继续排查具体原因。"
+        }
+        _ if status.is_server_error() => "存储服务暂时不可用，请稍后重试。",
+        _ => "请核对存储服务配置，或稍后重试。",
+    };
+    format!(
+        "对象存储请求失败：HTTP {status}{}。{hint}",
+        code.map(|value| format!("（{value}）")).unwrap_or_default()
+    )
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub version: u32,
@@ -1679,12 +1785,36 @@ impl Storage {
                 }
             };
         }
-        let response = cancellable(cancel, async { Ok(request.send().await?) }).await?;
-        ensure!(
-            response.status().is_success(),
-            "对象存储请求失败：HTTP {}",
-            response.status()
-        );
+        let mut response = cancellable(cancel, async { Ok(request.send().await?) }).await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let bytes = cancellable(cancel, async {
+                Ok(tokio::time::timeout(Duration::from_secs(3), async {
+                    const LIMIT: usize = 16 * 1024;
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = response.chunk().await? {
+                        let count = chunk.len().min(LIMIT - bytes.len());
+                        bytes.extend_from_slice(&chunk[..count]);
+                        if bytes.len() == LIMIT {
+                            break;
+                        }
+                    }
+                    Ok::<_, reqwest::Error>(bytes)
+                })
+                .await??)
+            })
+            .await;
+            check_cancel(cancel)?;
+            let code = bytes
+                .ok()
+                .and_then(|bytes| storage_error_code(&bytes))
+                .filter(|code| {
+                    [&c.access_key_id, &self.secret, &self.token]
+                        .iter()
+                        .all(|value| value.is_empty() || !code.contains(value.as_str()))
+                });
+            anyhow::bail!(storage_error_message(status, code.as_deref()));
+        }
         Ok(response)
     }
     async fn request(
