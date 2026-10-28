@@ -1388,6 +1388,7 @@ impl AppView {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let view = cx.entity().downgrade();
+        let focus = self.focus.clone();
         // The menu is transient; the checked value is rebuilt from current playback state.
         Button::new(key)
             .label(label)
@@ -1411,6 +1412,7 @@ impl AppView {
                     }),
             )
             .dropdown_menu_with_anchor(Corner::BottomRight, move |mut menu, _, _| {
+                menu = menu.action_context(focus.clone());
                 for (label, action, checked, disabled) in options.clone() {
                     let view = view.clone();
                     menu = menu.item(
@@ -1418,8 +1420,18 @@ impl AppView {
                             .checked(checked)
                             .disabled(disabled)
                             .on_click(move |_, window, cx| {
-                                let _ = view
-                                    .update(cx, |this, cx| this.handle(action.clone(), window, cx));
+                                let view = view.clone();
+                                let action = action.clone();
+                                let handle = window.window_handle();
+                                // Dismiss restores the menu's action context.
+                                // Run afterward so actions opening an input or
+                                // dialog retain their newly assigned focus.
+                                cx.defer(move |cx| {
+                                    let _ = handle.update(cx, move |_, window, cx| {
+                                        let _ = view
+                                            .update(cx, |this, cx| this.handle(action, window, cx));
+                                    });
+                                });
                             }),
                     );
                 }

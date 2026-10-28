@@ -380,7 +380,11 @@ impl AppView {
                 )
             }))
             .on_action(cx.listener(|this, _: &FullscreenPlayPause, window, cx| {
-                this.handle(Action::Play, window, cx)
+                if window.focused(cx).is_some_and(|focus| {
+                    focus == this.focus || focus == this.subtitle_text.borrow().focus
+                }) {
+                    this.handle(Action::Play, window, cx)
+                }
             }))
             .child(
                 div()

@@ -8,6 +8,30 @@ impl AppView {
         if window.has_active_dialog(cx) && !matches!(action, Action::VideoConfirmRemove) {
             return;
         }
+        let restore_video_focus = self.page == "video"
+            && matches!(
+                &action,
+                Action::Play
+                    | Action::Seek(_)
+                    | Action::SeekTo(_)
+                    | Action::VideoTimelineSeek(_)
+                    | Action::VideoPlayCue(_)
+                    | Action::VideoSentenceRepeat(..)
+                    | Action::VideoStopSentenceRepeat
+                    | Action::VideoRepeatCue
+                    | Action::VideoSentence(_)
+                    | Action::LoopMode(_)
+                    | Action::Repeat
+                    | Action::Rate(_)
+                    | Action::Volume(_)
+                    | Action::Mute
+                    | Action::Mark(_)
+                    | Action::Boundary(..)
+                    | Action::VideoClearLoop
+                    | Action::VideoPrecision
+                    | Action::VideoCaptions
+                    | Action::VideoSubtitleSize(_)
+            );
         if !matches!(action, Action::VideoArrow(..)) {
             if matches!(action, Action::SelectPart(_) | Action::SelectPartAtEnd(_)) {
                 self.video.part_confirmation = None;
@@ -1008,6 +1032,7 @@ impl AppView {
                 Action::Assistant => {
                     if self.assistant_open {
                         self.assistant_open = false;
+                        window.focus(&self.focus);
                         self.lib.set_setting("assistant_open", "false")?;
                     } else {
                         self.open_assistant(window, cx);
@@ -2427,6 +2452,11 @@ impl AppView {
         }
         if updates_settings {
             self.refresh_view_data();
+        }
+        if restore_video_focus && !self.subtitle_text.borrow().focus.is_focused(window) {
+            // Buttons deliberately keep the old focus on mouse-down. Explicit
+            // video controls hand it back without disturbing subtitle copying.
+            window.focus(&self.focus);
         }
         if refresh_chat {
             if let Err(error) = self.chat.refresh() {

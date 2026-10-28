@@ -92,6 +92,8 @@ pub(super) struct Probe {
     stage: usize,
     entered: Instant,
     cases: Vec<Value>,
+    assistant_before_keyboard: Option<(bool, bool, bool, String)>,
+    keyboard_position: f64,
 }
 impl Probe {
     pub(super) fn new(out: &Path) -> Self {
@@ -100,6 +102,8 @@ impl Probe {
             stage: 0,
             entered: Instant::now(),
             cases: vec![],
+            assistant_before_keyboard: None,
+            keyboard_position: 0.,
         }
     }
     fn advance(&mut self) {
@@ -1586,6 +1590,209 @@ impl Probe {
                 }
                 self.record(app, "无字幕跨页后迟到字幕恢复原位置三次且保持暂停")?;
                 app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                self.assistant_before_keyboard = Some((
+                    app.assistant.enabled,
+                    app.assistant_open,
+                    app.assistant.legacy,
+                    app.value("question", cx),
+                ));
+                app.open_assistant(window, cx);
+                self.advance();
+            }
+            71 => {
+                if app.chat.is_loading() || app.chat.context != clarora_gpui::assistant::CONTEXT {
+                    return Ok(false);
+                }
+                app.set("question", "KeyboardProbe", window, cx);
+                app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
+                Self::dispatch_keys(window, cx, &["right", "left", "space"]);
+                self.advance();
+            }
+            72 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                ensure!(Self::at(app, &path, 4.), "输入框按键改变了视频播放");
+                ensure!(
+                    app.value("question", cx).contains(' '),
+                    "空格没有进入真实输入框"
+                );
+                self.record(app, "真实键盘路由/问题输入框左右与空格不控制视频")?;
+                app.inputs["question"].update(cx, |state, cx| {
+                    state.replace_and_mark_text_in_range(None, "中文", None, window, cx);
+                    ensure!(
+                        state.marked_text_range(window, cx).is_some(),
+                        "未建立IME组合文字"
+                    );
+                    Ok::<_, anyhow::Error>(())
+                })?;
+                Self::dispatch_keys(window, cx, &["right", "left", "space"]);
+                self.advance();
+            }
+            73 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                ensure!(Self::at(app, &path, 4.), "IME输入按键穿透到视频");
+                self.record(app, "真实InputState组合文字期间方向键与空格不控制视频")?;
+                app.inputs["question"].update(cx, |state, cx| state.unmark_text(window, cx));
+                app.handle(Action::Assistant, window, cx);
+                Self::dispatch_keys(window, cx, &["right"]);
+                self.advance();
+            }
+            74 => {
+                if !Self::at(app, &path, 8.) {
+                    return Ok(false);
+                }
+                ensure!(!app.assistant_open, "助手未关闭");
+                self.record(app, "收起聚焦问题框的助手后无需点视频/真实右键切句")?;
+                Self::dispatch_keys(window, cx, &["left"]);
+                self.advance();
+            }
+            75 => {
+                if !Self::at(app, &path, 4.) {
+                    return Ok(false);
+                }
+                self.record(app, "助手关闭后真实左键仍能切回上一句")?;
+                Self::dispatch_keys(window, cx, &["space"]);
+                self.advance();
+            }
+            76 => {
+                if app.media.player.snapshot().paused {
+                    return Ok(false);
+                }
+                Self::dispatch_keys(window, cx, &["space"]);
+                self.advance();
+            }
+            77 => {
+                if !app.media.player.snapshot().paused {
+                    return Ok(false);
+                }
+                self.record(app, "助手关闭后真实空格可播放并再次暂停")?;
+                app.open_assistant(window, cx);
+                app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
+                app.handle(Action::SeekTo(POSITION), window, cx);
+                self.advance();
+            }
+            78 => {
+                if !Self::at(app, &path, POSITION) {
+                    return Ok(false);
+                }
+                Self::dispatch_keys(window, cx, &["right"]);
+                self.advance();
+            }
+            79 => {
+                if !Self::at(app, &path, 8.) {
+                    return Ok(false);
+                }
+                self.record(app, "问题框聚焦后点击视频定位动作/真实键盘恢复切句")?;
+                app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
+                app.handle(Action::VideoSentenceRepeat(Some(1), true), window, cx);
+                self.advance();
+            }
+            80 => {
+                let state = app.media.player.snapshot();
+                if state.paused
+                    || !app
+                        .video
+                        .sentence_repeat
+                        .is_some_and(|s| s.three && s.index == 1)
+                {
+                    return Ok(false);
+                }
+                Self::dispatch_keys(window, cx, &["right"]);
+                self.advance();
+            }
+            81 => {
+                if !app
+                    .video
+                    .sentence_repeat
+                    .is_some_and(|s| s.three && s.index == 2)
+                {
+                    return Ok(false);
+                }
+                self.record(app, "问题框聚焦后点击逐句三次动作/真实右键切句保留模式")?;
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
+                app.handle(Action::VideoPlayCue(1), window, cx);
+                self.advance();
+            }
+            82 => {
+                if app.media.player.snapshot().paused {
+                    return Ok(false);
+                }
+                Self::dispatch_keys(window, cx, &["space"]);
+                self.advance();
+            }
+            83 => {
+                if !app.media.player.snapshot().paused {
+                    return Ok(false);
+                }
+                self.record(app, "问题框聚焦后点击字幕播放动作/真实空格可暂停")?;
+                app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
+                app.handle(Action::Play, window, cx);
+                self.advance();
+            }
+            84 => {
+                if app.media.player.snapshot().paused {
+                    return Ok(false);
+                }
+                Self::dispatch_keys(window, cx, &["space"]);
+                self.advance();
+            }
+            85 => {
+                let state = app.media.player.snapshot();
+                if !state.paused {
+                    return Ok(false);
+                }
+                self.record(app, "问题框聚焦后点击播放动作/真实空格继续控制视频")?;
+                self.keyboard_position = state.position;
+                window.open_dialog(cx, |dialog, _, _| dialog.title("键盘焦点回归"));
+                Self::dispatch_keys(window, cx, &["right", "space"]);
+                self.advance();
+            }
+            86 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let state = app.media.player.snapshot();
+                ensure!(window.has_active_dialog(cx), "原生对话框夹具未打开");
+                ensure!(
+                    state.paused && (state.position - self.keyboard_position).abs() < 0.08,
+                    "对话框键盘穿透控制视频"
+                );
+                self.record(app, "真实窗口对话框期间方向键与空格不穿透播放")?;
+                window.close_dialog(cx);
+                Self::dispatch_keys(window, cx, &["left"]);
+                self.advance();
+            }
+            87 => {
+                if !Self::at(app, &path, 0.) {
+                    return Ok(false);
+                }
+                self.record(app, "关闭对话框后真实键盘恢复视频导航")?;
+                app.video.fullscreen = true;
+                app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
+                app.handle(Action::Assistant, window, cx);
+                Self::dispatch_keys(window, cx, &["right"]);
+                self.advance();
+            }
+            88 => {
+                if !Self::at(app, &path, 4.) {
+                    return Ok(false);
+                }
+                ensure!(!app.assistant_open, "全屏助手没有收起");
+                self.record(app, "全屏渲染分支收起助手后真实方向键恢复")?;
+                app.video.fullscreen = false;
+                if let Some((enabled, open, legacy, question)) =
+                    self.assistant_before_keyboard.take()
+                {
+                    app.assistant.enabled = enabled;
+                    app.assistant_open = open;
+                    app.assistant.legacy = legacy;
+                    app.set("question", question, window, cx);
+                    app.chat_requested_context.clear();
+                }
                 app.handle(Action::Page("settings".into()), window, cx);
                 self.report(Some(true), None)?;
                 self.advance();
@@ -1623,5 +1830,20 @@ impl Probe {
             keystroke: Keystroke::parse(key).expect("probe key"),
             is_held,
         }
+    }
+    fn dispatch_keys(window: &Window, cx: &mut Context<AppView>, keys: &[&str]) {
+        let handle = window.window_handle();
+        let keys = keys
+            .iter()
+            .map(|key| Keystroke::parse(key).expect("probe key"))
+            .collect::<Vec<_>>();
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, move |_, window, cx| {
+                window.draw(cx).clear();
+                for key in keys {
+                    window.dispatch_keystroke(key, cx);
+                }
+            });
+        });
     }
 }
