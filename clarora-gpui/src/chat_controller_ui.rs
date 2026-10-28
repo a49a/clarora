@@ -12,6 +12,9 @@ pub(super) struct Closing {
 
 impl AppView {
     pub(super) fn chat_context_key(&self, cx: &App) -> String {
+        if self.assistant.enabled && !self.assistant.legacy {
+            return clarora_gpui::assistant::CONTEXT.into();
+        }
         use sha2::{Digest, Sha256};
         let material = match self.page.as_str() {
             "flashcard" | "discover" => self
@@ -88,7 +91,8 @@ impl AppView {
         }
     }
     pub(super) fn sync_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.page == "video"
+        if !self.assistant.enabled
+            && self.page == "video"
             && (self.assistant_open || self.video.tab == 2)
             && self.video.material.is_none()
             && self.video.material_error.is_empty()
@@ -106,6 +110,33 @@ impl AppView {
         }
         for error in update.errors {
             self.report_status(FeedbackKind::Error, error);
+        }
+        if self.assistant.enabled
+            && !self.chat.running
+            && self.assistant.error.is_empty()
+            && !self.chat.is_loading()
+        {
+            if let Some((question, references)) = &self.assistant.pending {
+                let sent = self.chat.history.iter().rev().find(|m| m["role"] == "user");
+                if sent.is_some_and(|m| {
+                    m["content"].as_str() == Some(question)
+                        && clarora_gpui::assistant::references(m) == *references
+                }) {
+                    if self.value("question", cx) == *question {
+                        self.set("question", String::new(), window, cx);
+                    }
+                    if self.assistant.references == *references {
+                        self.assistant.references.clear();
+                        if let Err(error) = self.persist_assistant_references() {
+                            self.report_status(
+                                FeedbackKind::Error,
+                                format!("引用草稿保存失败：{error:#}"),
+                            );
+                        }
+                    }
+                    self.assistant.pending = None;
+                }
+            }
         }
         update.changed
     }

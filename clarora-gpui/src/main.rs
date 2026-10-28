@@ -79,6 +79,7 @@ actions!(
         ClearSubtitleSelection,
         OpenFile,
         ToggleAssistant,
+        QuoteSelectedText,
         ToggleFloatingImport,
         ImportAudioCommand,
         ToggleNavigation,
@@ -222,6 +223,16 @@ enum Action {
     RetryFeedback,
     Clip,
     Chat,
+    AssistantQuote(clarora_gpui::assistant::Reference),
+    AssistantCurrent,
+    AssistantRemove(usize),
+    AssistantReferenceDetails,
+    AssistantTurnReference(usize),
+    AssistantSessions,
+    AssistantWide,
+    AssistantLegacy,
+    AssistantCopy(String),
+    AssistantPrompt(String),
     SaveAnswer,
     ChatSession(String),
     ToggleReasoning,
@@ -331,6 +342,7 @@ struct AppView {
     loads: data_controller::Loads,
     settings: app_state::SettingsState,
     chat: clarora_gpui::chat_controller::Controller,
+    assistant: assistant_ui::State,
     chat_requested_context: String,
     chat_closing: Option<chat_controller_ui::Closing>,
     tasks: app_state::TasksState,
@@ -410,7 +422,7 @@ impl AppView {
                 false,
                 false,
             ),
-            ("question", "向 AI 提问", true, false),
+            ("question", "输入问题，Enter 换行…", true, false),
             ("reference", "朗读参考原文", true, false),
             (
                 "tts_text",
@@ -467,6 +479,7 @@ impl AppView {
             loads: Default::default(),
             settings: app_state::SettingsState::new(&lib),
             chat: clarora_gpui::chat_controller::Controller::new(lib.clone()),
+            assistant: Default::default(),
             chat_requested_context: String::new(),
             chat_closing: None,
             tasks: app_state::TasksState::new(),
@@ -669,6 +682,26 @@ impl AppView {
             cx.defer_in(window, |this, window, cx| {
                 this.toggle_floating_import(window, cx)
             });
+        }
+        match this
+            .lib
+            .setting("assistant_reference_draft")
+            .and_then(|raw| {
+                if raw.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let references: Vec<clarora_gpui::assistant::Reference> =
+                    serde_json::from_str(&raw)?;
+                clarora_gpui::assistant::validate(&references)?;
+                Ok(references)
+            }) {
+            Ok(references) => this.assistant.references = references,
+            Err(error) => this.assistant.error = format!("未恢复引用草稿：{error:#}"),
+        }
+        if this.lib.setting("assistant_open").ok().as_deref() == Some("true") {
+            this.assistant.enabled = true;
+            this.assistant_open = true;
+            this.sync_chat(window, cx);
         }
         let ai_result = ai::load_config(&this.lib);
         match ai_result {
@@ -1511,10 +1544,14 @@ impl Render for AppView {
             }
         }
         if self.video.fullscreen && self.page == "video" {
+            let assistant = self.assistant_open.then(|| self.assistant_view(window, cx));
+            let selection = self.selection_offer(window, cx);
             return div()
                 .relative()
                 .size_full()
                 .child(self.fullscreen_video(cx))
+                .children(assistant)
+                .children(selection)
                 .children(self.feedback_view(window, cx))
                 .into_any_element();
         }
@@ -1527,7 +1564,7 @@ impl Render for AppView {
             }
         }
         let content = self.content(window, cx);
-        let assistant = if self.assistant_open && self.page != "video" {
+        let assistant = if self.assistant_open {
             Some(self.assistant_view(window, cx))
         } else {
             None
@@ -1701,9 +1738,26 @@ impl Render for AppView {
             );
         div()
             .id("app")
+            .relative()
             .track_focus(&self.focus)
             .key_context("Clarora")
             .child(self.subtitle_copy_anchor(cx))
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
+                if event.button == MouseButton::Left {
+                    this.assistant.press = Some(event.position);
+                    this.assistant.dragging = false;
+                }
+            }))
+            .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                if event.button == MouseButton::Left && this.assistant.dragging {
+                    this.offer_assistant_selection(event.position, window, cx);
+                } else if event.button == MouseButton::Left {
+                    this.assistant.offer = None;
+                    cx.notify();
+                }
+                this.assistant.press = None;
+                this.assistant.dragging = false;
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.subtitle_text.borrow_mut().block_click = false),
@@ -1716,6 +1770,14 @@ impl Render for AppView {
             }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 this.subtitle_drag_update(event, cx);
+                if event.dragging()
+                    && this
+                        .assistant
+                        .press
+                        .is_some_and(|p| (event.position - p).magnitude() >= 4.)
+                {
+                    this.assistant.dragging = true;
+                }
                 if let Some((start, width)) = this.video.resize {
                     if event.dragging() {
                         let available = (f32::from(window.viewport_size().width)
@@ -1855,6 +1917,9 @@ impl Render for AppView {
             .on_action(cx.listener(|this, _: &ToggleAssistant, window, cx| {
                 this.handle(Action::Assistant, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &QuoteSelectedText, window, cx| {
+                this.offer_assistant_selection(point(px(360.), px(180.)), window, cx);
+            }))
             .on_action(cx.listener(|this, _: &PdfZoomIn, window, cx| {
                 if this.page == "pdf" {
                     this.handle(Action::PdfZoom(200), window, cx);
@@ -1865,9 +1930,12 @@ impl Render for AppView {
                     this.handle(Action::PdfZoom(-200), window, cx);
                 }
             }))
-            .on_action(
-                cx.listener(|this, _: &AskAi, window, cx| this.handle(Action::Chat, window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &AskAi, window, cx| {
+                if !this.assistant.enabled {
+                    this.open_assistant(window, cx);
+                }
+                this.handle(Action::Chat, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleBlindListening, window, cx| {
                 this.handle(Action::AudioBlind(!this.audio.blind.enabled), window, cx);
             }))
@@ -1884,11 +1952,7 @@ impl Render for AppView {
                 this.handle(Action::AudioBlind(false), window, cx);
             }))
             .on_action(cx.listener(|this, _: &NewChat, window, cx| {
-                if this.page == "video" {
-                    this.handle(Action::VideoPanel(2), window, cx);
-                } else {
-                    this.assistant_open = true;
-                }
+                this.open_assistant(window, cx);
                 this.handle(Action::ChatSession(String::new()), window, cx);
             }))
             .on_action(cx.listener(|this, _: &Forward, window, cx| {
@@ -2148,6 +2212,7 @@ impl Render for AppView {
                     ),
             )
             .when_some(assistant, |view, assistant| view.child(assistant))
+            .children(self.selection_offer(window, cx))
             .children(self.feedback_view(window, cx))
             .children(Root::render_dialog_layer(window, cx))
             .into_any_element()
@@ -2247,6 +2312,8 @@ fn main() -> Result<()> {
                 KeyBinding::new("ctrl-b", ToggleNavigation, None),
                 KeyBinding::new("cmd-j", ToggleAssistant, None),
                 KeyBinding::new("ctrl-j", ToggleAssistant, None),
+                KeyBinding::new("cmd-shift-l", QuoteSelectedText, None),
+                KeyBinding::new("ctrl-shift-l", QuoteSelectedText, None),
                 KeyBinding::new("cmd-shift-i", ToggleFloatingImport, None),
                 KeyBinding::new("ctrl-shift-i", ToggleFloatingImport, None),
                 KeyBinding::new("cmd-shift-enter", ImportAudioCommand, None),

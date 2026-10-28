@@ -66,6 +66,9 @@ impl State {
     pub fn selection_text(&self) -> String {
         self.selection.text()
     }
+    pub fn selection_from_press(&self, press: Option<Point<Pixels>>) -> bool {
+        self.selection.has_selection() && press.is_some_and(|p| p == self.press)
+    }
     pub fn begin_frame(&mut self) {
         self.layouts.clear();
     }

@@ -10,6 +10,7 @@ const GROUP_A: &str = "probe-group-a";
 const GROUP_B: &str = "probe-group-b";
 const DRAFT_A: &str = "A 的问题草稿 — material A";
 const DRAFT_B: &str = "B 的问题草稿 — material B";
+const SELECTED_TEXT: &str = "Fresh examples help us learn.\n原生选区 🌱";
 const LAST_DRAFT: &str = "关闭前最后输入 — 不等待 debounce";
 fn context(audio: &str) -> String {
     hex::encode(Sha256::digest(format!("listening:{audio}").as_bytes()))
@@ -83,9 +84,33 @@ pub(super) struct Probe {
     global_quit: bool,
     fault_observed: Option<Instant>,
     highlights_revision: Option<u64>,
+    clipboard_before: Option<ClipboardItem>,
     video_resume: video_resume_probe::Probe,
 }
 impl Probe {
+    fn clipboard_matches(before: &Option<ClipboardItem>, after: Option<ClipboardItem>) -> bool {
+        // GPUI has no clear-clipboard API: restoring an absent clipboard writes
+        // an empty string. Preserve exact equality whenever an item existed.
+        if before.is_none() {
+            after.as_ref().is_none_or(|item| {
+                item.text().as_deref() == Some("")
+                    && item
+                        .entries()
+                        .iter()
+                        .all(|e| matches!(e, ClipboardEntry::String(_)))
+            })
+        } else {
+            *before == after
+        }
+    }
+    fn draw_after_update(window: &Window, cx: &mut Context<AppView>) {
+        let handle = window.window_handle();
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                window.draw(cx).clear();
+            });
+        });
+    }
     pub(super) fn new(out: &Path) -> Self {
         Self {
             out: out.to_path_buf(),
@@ -97,6 +122,7 @@ impl Probe {
             global_quit: false,
             fault_observed: None,
             highlights_revision: None,
+            clipboard_before: None,
             video_resume: video_resume_probe::Probe::new(out),
         }
     }
@@ -422,6 +448,186 @@ impl Probe {
                 if !Self::chat_ready(app, cx) || app.chat.context != context(AUDIO_A) {
                     return Ok(());
                 }
+                app.open_assistant(window, cx);
+                self.advance();
+            }
+            16 => {
+                if !Self::chat_ready(app, cx)
+                    || app.chat.context != clarora_gpui::assistant::CONTEXT
+                {
+                    return Ok(());
+                }
+                app.add_assistant_reference(
+                    clarora_gpui::assistant::Reference {
+                        text: "The bread is baked fresh every morning.".into(),
+                    },
+                    window,
+                    cx,
+                )?;
+                app.set("question", "解释 fresh 的用法", window, cx);
+                app.handle(Action::Chat, window, cx);
+                ensure!(app.chat.running, "全局问答没有启动");
+                app.handle(Action::Page("pdf".into()), window, cx);
+                ensure!(
+                    app.tasks
+                        .cancel
+                        .as_ref()
+                        .is_some_and(|cancel| !cancel.load(Ordering::SeqCst)),
+                    "切页取消了全局问答"
+                );
+                self.note("全局问答真实发送/切页保留请求和选区", app)?;
+                self.advance();
+            }
+            17 => {
+                if !Self::chat_ready(app, cx) || app.chat.running || app.assistant.error.is_empty()
+                {
+                    return Ok(());
+                }
+                ensure!(
+                    app.chat.context == clarora_gpui::assistant::CONTEXT
+                        && app.value("question", cx) == "解释 fresh 的用法",
+                    "切页丢失全局草稿"
+                );
+                ensure!(
+                    app.assistant
+                        .pending
+                        .as_ref()
+                        .is_some_and(|(question, refs)| question == "解释 fresh 的用法"
+                            && refs.len() == 1
+                            && refs[0].text.ends_with("fresh every morning.")),
+                    "失败后本次问题和引用不可见"
+                );
+                ensure!(app.chat.history.is_empty(), "失败问答被存为成功");
+                app.handle(Action::Page("video".into()), window, cx);
+                self.note("请求失败可见且不伪造历史/选区快照跨模块保留", app)?;
+                self.advance();
+            }
+            18 => {
+                if !Self::chat_ready(app, cx) {
+                    return Ok(());
+                }
+                ensure!(
+                    app.chat.context == clarora_gpui::assistant::CONTEXT
+                        && app.assistant.references.len() == 1,
+                    "视频切页替换了全局会话或引用"
+                );
+                // Same entry point as mouse-up / selection shortcut, outside paint.
+                app.offer_assistant_selection(point(px(400.), px(160.)), window, cx);
+                app.handle(Action::ChatSession(String::new()), window, cx);
+                self.advance();
+            }
+            19 => {
+                if !Self::chat_ready(app, cx) || !app.chat.id.is_empty() {
+                    return Ok(());
+                }
+                ensure!(
+                    app.assistant.references.is_empty()
+                        && app.value("question", cx).is_empty()
+                        && app.assistant.pending.is_none(),
+                    "新对话未清理旧问题或引用"
+                );
+                self.note("全局新对话清理/旧材料会话仍可恢复", app)?;
+                app.handle(Action::Page("speaking".into()), window, cx);
+                app.set("reference", SELECTED_TEXT, window, cx);
+                app.inputs["reference"].update(cx, |state, cx| state.focus(window, cx));
+                Self::draw_after_update(window, cx);
+                self.advance();
+            }
+            20 => {
+                if self.stage_started.elapsed() < Duration::from_millis(200) {
+                    return Ok(());
+                }
+                window.dispatch_action(Box::new(gpui_component::input::SelectAll), cx);
+                Self::draw_after_update(window, cx);
+                self.advance();
+            }
+            21 => {
+                if self.stage_started.elapsed() < Duration::from_millis(100) {
+                    return Ok(());
+                }
+                let selection = app.inputs["reference"]
+                    .update(cx, |state, cx| state.selected_text_range(false, window, cx));
+                ensure!(
+                    selection.as_ref().is_some_and(|s| !s.range.is_empty()),
+                    "原生 SelectAll 未建立选择：{selection:?}"
+                );
+                self.clipboard_before = cx.read_from_clipboard();
+                app.offer_assistant_selection(point(px(450.), px(240.)), window, cx);
+                self.advance();
+            }
+            22 => {
+                if self.stage_started.elapsed() < Duration::from_millis(200) {
+                    return Ok(());
+                }
+                let (reference, _) = app
+                    .assistant
+                    .offer
+                    .clone()
+                    .context("原生文字选区未产生问 AI 入口")?;
+                ensure!(
+                    reference.text == SELECTED_TEXT,
+                    "原生选区文字不准确：{}",
+                    reference.text
+                );
+                ensure!(
+                    Self::clipboard_matches(&self.clipboard_before, cx.read_from_clipboard()),
+                    "选区交接未恢复剪贴板"
+                );
+                app.handle(Action::AssistantQuote(reference), window, cx);
+                ensure!(
+                    app.assistant
+                        .references
+                        .last()
+                        .is_some_and(|r| r.text == SELECTED_TEXT),
+                    "原生选区未固定到引用区"
+                );
+                self.note(
+                    "非绘制回调选区交接/UTF-8实际InputState复制/固定引用/剪贴板还原",
+                    app,
+                )?;
+                app.set("question", "No selection here.", window, cx);
+                app.assistant.offer = None;
+                app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
+                self.advance();
+            }
+            23 => {
+                if self.stage_started.elapsed() < Duration::from_millis(100) {
+                    return Ok(());
+                }
+                self.clipboard_before = cx.read_from_clipboard();
+                app.offer_assistant_selection(point(px(450.), px(240.)), window, cx);
+                self.advance();
+            }
+            24 => {
+                if self.stage_started.elapsed() < Duration::from_millis(200) {
+                    return Ok(());
+                }
+                ensure!(app.assistant.offer.is_none(), "未选中文字仍使用了旧引用");
+                ensure!(
+                    Self::clipboard_matches(&self.clipboard_before, cx.read_from_clipboard()),
+                    "空选区修改剪贴板"
+                );
+                self.note("空选区安全返回/不误引旧剪贴板", app)?;
+                app.offer_assistant_selection(point(px(450.), px(240.)), window, cx);
+                app.handle(Action::Page("settings".into()), window, cx);
+                self.advance();
+            }
+            25 => {
+                if self.stage_started.elapsed() < Duration::from_millis(200) {
+                    return Ok(());
+                }
+                ensure!(app.assistant.offer.is_none(), "切页后出现旧选区入口");
+                self.note("选区延迟回调在切页后安全失效", app)?;
+                app.assistant.enabled = false;
+                app.assistant_open = false;
+                app.handle(Action::Page("listening".into()), window, cx);
+                app.handle(Action::Audio(AUDIO_A.into()), window, cx);
+                self.advance();
+            }
+            26 => {
+                if !Self::chat_ready(app, cx) || app.chat.context != context(AUDIO_A) {
+                    return Ok(());
+                }
                 app.set("question", LAST_DRAFT, window, cx);
                 self.closing = true;
                 self.advance();
@@ -468,7 +674,7 @@ pub(super) fn close_verified(
     };
     let checked = (|| -> Result<()> {
         ensure!(
-            probe.closing && probe.stage == 16,
+            probe.closing && probe.stage == 27,
             "探针未完成所有检查即关闭"
         );
         ensure!(

@@ -1,5 +1,6 @@
 pub mod ai;
 mod ai_chat;
+pub mod assistant;
 pub mod audio_tools;
 pub mod backup;
 pub mod chat_store;

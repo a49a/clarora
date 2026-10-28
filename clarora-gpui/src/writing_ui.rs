@@ -447,12 +447,15 @@ impl WritingView {
                             review.model
                         )),
                 )
-                .child(TextView::markdown(
-                    SharedString::from(format!("writing-feedback-{}", review.id)),
-                    review.feedback.clone(),
-                    window,
-                    cx,
-                ))
+                .child(
+                    TextView::markdown(
+                        SharedString::from(format!("writing-feedback-{}", review.id)),
+                        review.feedback.clone(),
+                        window,
+                        cx,
+                    )
+                    .selectable(true),
+                )
                 .child(
                     card(cx)
                         .bg(cx.theme().muted)

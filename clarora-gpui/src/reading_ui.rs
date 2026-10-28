@@ -236,6 +236,29 @@ impl AppView {
             } else if self.pdf_path.is_none() {
                 view=view.child(panel(cx).child("导入 PDF、EPUB 或 TXT 开始阅读。EPUB 支持目录、文字重排和常见插图；暂不支持加密书籍与 MOBI/AZW3。"));
             }
+            if !self.document_text.trim().is_empty() {
+                view = view.child(
+                    panel(cx)
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("本页文字 · 可选取后问 AI"),
+                        )
+                        .child(
+                            TextView::html(
+                                "pdf-selectable-text",
+                                format!(
+                                    "<p>{}</p>",
+                                    escaped(&self.document_text).replace('\n', "<br/>")
+                                ),
+                                window,
+                                cx,
+                            )
+                            .selectable(true),
+                        ),
+                );
+            }
             for (i, (title, page)) in self.pdf_bookmarks.iter().enumerate() {
                 view = view.child(
                     self.button(

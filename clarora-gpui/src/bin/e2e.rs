@@ -3,6 +3,8 @@
 mod ai_completion;
 #[path = "support/asr_pauses.rs"]
 mod asr_pauses;
+#[path = "support/assistant.rs"]
+mod assistant;
 #[path = "support/audio_batch.rs"]
 mod audio_batch;
 #[path = "support/audio_library.rs"]
@@ -224,6 +226,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     runtime_stability::run(&root, results, 32)?;
     ui_controller::run(&root, results)?;
     let lib = Library::open(root.join("source"))?;
+    assistant::run(&lib, results)?;
     chat_controller::run(&lib, results)?;
     data_loader::run(&root, results)?;
     video_batch_translation::run(&lib, results)?;
@@ -913,6 +916,7 @@ fn main() -> Result<()> {
     let mode = match args.get(2).and_then(|arg| arg.to_str()) {
         Some("--video-batch-translation-only") => "video-batch-translation-only",
         Some("--ui-controller-only") => "ui-controller-only",
+        Some("--assistant-only") => "assistant-only",
         Some("--chat-controller-only") => "chat-controller-only",
         Some("--data-loader-only") => "data-loader-only",
         Some("--focus-timer-only") => "focus-timer-only",
@@ -938,6 +942,9 @@ fn main() -> Result<()> {
     let result = if mode == "video-batch-translation-only" {
         Library::open(output.join("batch-translate-source"))
             .and_then(|lib| video_batch_translation::run(&lib, &mut results))
+    } else if mode == "assistant-only" {
+        Library::open(output.join("assistant-source"))
+            .and_then(|lib| assistant::run(&lib, &mut results))
     } else if mode == "ui-controller-only" {
         ui_controller::run(&output, &mut results)
     } else if mode == "chat-controller-only" {

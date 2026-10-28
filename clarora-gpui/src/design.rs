@@ -102,6 +102,19 @@ fn paths(name: &str) -> Option<&'static str> {
         "muted" => "<path d='m11 4-5 4H3v8h3l5 4Zm5 5 6 6m0-6-6 6'/>",
         "arrow" => "<path d='M4 12h16m-6-6 6 6-6 6'/>",
         "check" => "<path d='m5 12 4 4L19 6'/>",
+        "history" => "<path d='M3 11a9 9 0 1 1 2.6 7M3 4v7h7m2-5v6l4 2'/>",
+        "plus" => "<path d='M12 5v14M5 12h14'/>",
+        "assistant-close" => {
+            "<rect x='3' y='4' width='18' height='16' rx='2'/><path d='M15 4v16m-8-12 4 4-4 4'/>"
+        }
+        "close" => "<path d='m6 6 12 12M6 18 18 6'/>",
+        "copy" => {
+            "<rect x='8' y='8' width='12' height='13' rx='2'/><path d='M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3'/>"
+        }
+        "bookmark" => "<path d='M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16l-6-4Z'/>",
+        "send" => "<path d='M12 20V4m-6 6 6-6 6 6'/>",
+        "chevron-up" => "<path d='m6 15 6-6 6 6'/>",
+        "chevron-down" => "<path d='m6 9 6 6 6-6'/>",
         "sun" => {
             "<circle cx='12' cy='12' r='4'/><path d='M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1'/>"
         }

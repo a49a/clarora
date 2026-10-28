@@ -290,12 +290,45 @@ impl AppView {
             .track_focus(&self.focus)
             .key_context("VideoFullscreen")
             .child(self.subtitle_copy_anchor(cx))
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
+                if event.button == MouseButton::Left {
+                    this.assistant.press = Some(event.position);
+                    this.assistant.dragging = false;
+                }
+            }))
+            .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                if event.button == MouseButton::Left && this.assistant.dragging {
+                    this.offer_assistant_selection(event.position, window, cx);
+                } else if event.button == MouseButton::Left {
+                    this.assistant.offer = None;
+                    cx.notify();
+                }
+                this.assistant.press = None;
+                this.assistant.dragging = false;
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.subtitle_text.borrow_mut().block_click = false),
             )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                this.subtitle_drag_update(event, cx)
+                this.subtitle_drag_update(event, cx);
+                if event.dragging()
+                    && this
+                        .assistant
+                        .press
+                        .is_some_and(|p| (event.position - p).magnitude() >= 4.)
+                {
+                    this.assistant.dragging = true;
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleAssistant, window, cx| {
+                this.handle(Action::Assistant, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &AskAi, window, cx| this.handle(Action::Chat, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &QuoteSelectedText, window, cx| {
+                this.offer_assistant_selection(point(px(400.), px(120.)), window, cx)
             }))
             .on_action(cx.listener(|this, _: &ToggleVideoFullscreen, window, cx| {
                 this.handle(Action::VideoFullscreen, window, cx)
@@ -331,6 +364,12 @@ impl AppView {
                                 .unwrap_or_default(),
                         ),
                     )
+                    .child(self.transport_button(
+                        "fullscreen-assistant",
+                        "✦ 学习助手",
+                        Action::Assistant,
+                        cx,
+                    ))
                     .child(self.transport_button(
                         "exit-video-fullscreen",
                         "退出全屏 · Esc",

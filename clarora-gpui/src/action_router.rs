@@ -975,22 +975,61 @@ impl AppView {
                     self.navigation_open = open;
                     self.navigation_motion = Some((Instant::now(), from));
                 }
-                Action::Assistant if self.page == "video" => {
-                    self.handle(
-                        Action::VideoPanel(if self.video.tab == 2 { 0 } else { 2 }),
-                        window,
-                        cx,
-                    );
-                }
                 Action::Assistant => {
-                    self.assistant_open = !self.assistant_open;
                     if self.assistant_open {
-                        if self.page == "video" && self.video.material.is_none() {
-                            let _ = self.prepare_video_material(video_qa::Scope::All);
-                        }
-                        self.sync_chat(window, cx);
+                        self.assistant_open = false;
+                        self.lib.set_setting("assistant_open", "false")?;
+                    } else {
+                        self.open_assistant(window, cx);
                         self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
                     }
+                }
+                Action::AssistantQuote(reference) => {
+                    self.add_assistant_reference(reference, window, cx)?;
+                }
+                Action::AssistantCurrent => {
+                    if self.page == "video" {
+                        self.prepare_video_material(video_qa::Scope::Current)?;
+                    }
+                    let reference = clarora_gpui::assistant::Reference {
+                        text: clarora_gpui::assistant::plain_reference(&self.reference(cx)),
+                    };
+                    self.add_assistant_reference(reference, window, cx)?;
+                }
+                Action::AssistantRemove(index) => {
+                    if index < self.assistant.references.len() {
+                        self.assistant.references.remove(index);
+                        self.persist_assistant_references()?;
+                    }
+                }
+                Action::AssistantReferenceDetails => {
+                    self.assistant.expanded = !self.assistant.expanded
+                }
+                Action::AssistantTurnReference(index) => {
+                    self.assistant.expanded_turn = if self.assistant.expanded_turn == Some(index) {
+                        None
+                    } else {
+                        Some(index)
+                    };
+                }
+                Action::AssistantSessions => {
+                    self.assistant.sessions_open = !self.assistant.sessions_open
+                }
+                Action::AssistantWide => self.assistant.wide = !self.assistant.wide,
+                Action::AssistantLegacy => {
+                    ensure!(!self.chat.running, "请先停止当前回答");
+                    self.assistant.legacy = !self.assistant.legacy;
+                    self.assistant.pending = None;
+                    self.assistant.error.clear();
+                    self.chat_requested_context.clear();
+                    self.sync_chat(window, cx);
+                }
+                Action::AssistantCopy(answer) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(answer));
+                }
+                Action::AssistantPrompt(question) => {
+                    self.set("question", question, window, cx);
+                    self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
                 }
                 Action::Score => {
                     let path = self.recorded.clone().context("请先录音或选择录音文件")?;
@@ -1412,6 +1451,14 @@ impl AppView {
                     ensure!(!self.chat.is_loading(), "正在读取材料会话，请稍候");
                     let draft = self.value("question", cx);
                     self.chat.select(&session, &draft)?;
+                    self.assistant.pending = None;
+                    self.assistant.error.clear();
+                    self.assistant.expanded_turn = None;
+                    self.assistant.sessions_open = false;
+                    if session.is_empty() {
+                        self.assistant.references.clear();
+                        self.persist_assistant_references()?;
+                    }
                     self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
                 }
                 Action::PdfOpen(path) => {
@@ -1453,7 +1500,8 @@ impl AppView {
                 }
                 Action::Chat => {
                     ensure!(
-                        !matches!(self.page.as_str(), "flashcard" | "discover")
+                        self.assistant.enabled
+                            || !matches!(self.page.as_str(), "flashcard" | "discover")
                             || self.cards_ready(),
                         "正在读取学习卡片，请稍候"
                     );
@@ -1473,8 +1521,19 @@ impl AppView {
                     let session_id = self.chat.id.clone();
                     let context = self.chat.context.clone();
                     let question = self.value("question", cx);
-                    let passage = self.reference(cx);
-                    let video_material = if self.page == "video" {
+                    let references = self.assistant.references.clone();
+                    clarora_gpui::assistant::validate(&references)?;
+                    let global = self.assistant.enabled;
+                    let passage = if global {
+                        references
+                            .iter()
+                            .map(|r| r.text.clone())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else {
+                        clarora_gpui::assistant::plain_reference(&self.reference(cx))
+                    };
+                    let video_material = if !global && self.page == "video" {
                         Some(self.video.material.clone().context(
                             if self.video.material_error.is_empty() {
                                 "请先生成字幕并选择提问范围".to_string()
@@ -1489,15 +1548,21 @@ impl AppView {
                     ensure!(!question.trim().is_empty(), "请输入问题");
                     self.chat.output.clear();
                     self.chat.reasoning.clear();
+                    if global {
+                        self.assistant.pending = Some((question.clone(), references.clone()));
+                        self.assistant.error.clear();
+                        self.assistant.scroll.scroll_to_bottom();
+                    }
                     let request = self.chat.begin_request();
-                    self.begin("AI 正在回答…", move |lib, cancel, tx| {
+                    self.begin_scoped(if global {TaskScope::Application}else{TaskScope::Material},"AI 正在回答…", move |lib, cancel, tx| {
                         let mut notify=|chunk|{let _=tx.send(Event::Chunk(request.clone(), chunk));};
-                        let reply=if let Some(material)=video_material {
+                        let video_material=video_material.map(|mut material|{material.text=clarora_gpui::assistant::plain_reference(&material.text);material});
+                        let reply=if global {clarora_gpui::assistant::ask(&lib,&question,&references,&history,&cancel,&mut notify)?}else if let Some(material)=video_material {
                             video_qa::ask(&lib,&question,&material,&history,&cancel,&mut notify)?
                         }else{ai::chat_stream(&lib,&question,&passage,&history,&cancel,&mut notify)?};
                         ensure!(!cancel.load(Ordering::SeqCst), "已取消");
                         let mut next = history;
-                        next.push(json!({"role":"user","content":question,"reference":passage}));
+                        next.push(if global {clarora_gpui::assistant::user_turn(&question,&references)}else{json!({"role":"user","content":question,"reference":passage})});
                         next.push(json!({"role":"assistant","content":reply.answer,"reasoning_content":reply.reasoning}));
                         if next.len() > 60 {
                             next.drain(..next.len() - 60);
@@ -1539,7 +1604,19 @@ impl AppView {
                         .find(|m| m["role"] == "user")
                         .and_then(|m| m["reference"].as_str())
                         .map(str::to_owned)
-                        .unwrap_or_else(|| self.reference(cx));
+                        .unwrap_or_else(|| {
+                            self.chat
+                                .history
+                                .iter()
+                                .rev()
+                                .find(|m| m["role"] == "user")
+                                .map(clarora_gpui::assistant::references)
+                                .unwrap_or_default()
+                                .iter()
+                                .map(|r| r.text.clone())
+                                .collect::<Vec<_>>()
+                                .join("\n\n")
+                        });
                     self.lib.put("ai_cards",json!({"id":id(),"question":question,"answer":answer,"context_text":reference,"created_at":now()}))?;
                     self.report_status(FeedbackKind::Info, "已存为 AI 问答卡".into());
                 }
@@ -1575,8 +1652,11 @@ impl AppView {
                     if scope != video_qa::Scope::All {
                         self.media.player.set("pause", "yes");
                     }
-                    self.video.tab = 2;
-                    self.sync_chat(window, cx);
+                    let material = self.video.material.as_ref().context("请先选取字幕")?;
+                    let reference = clarora_gpui::assistant::Reference {
+                        text: clarora_gpui::assistant::plain_reference(&material.text),
+                    };
+                    self.add_assistant_reference(reference, window, cx)?;
                     self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
                     self.report_status(
                         FeedbackKind::Info,
@@ -1750,10 +1830,8 @@ impl AppView {
                     ensure!(tab < 4, "无效学习面板");
                     self.video.tab = tab;
                     if tab == 2 {
-                        if self.video.material.is_none() {
-                            let _ = self.prepare_video_material(video_qa::Scope::All);
-                        }
-                        self.sync_chat(window, cx);
+                        self.video.tab = 0;
+                        self.open_assistant(window, cx);
                         self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
                     } else {
                         window.focus(&self.focus);

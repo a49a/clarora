@@ -205,18 +205,19 @@ impl AppView {
                                     .py_4()
                                     .text_size(px(if card.kind == "word" { 36. } else { 23. }))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(TextView::markdown(
-                                        "card-front",
-                                        card.front.clone(),
-                                        window,
-                                        cx,
-                                    )),
+                                    .child(
+                                        TextView::markdown(
+                                            "card-front",
+                                            card.front.clone(),
+                                            window,
+                                            cx,
+                                        )
+                                        .selectable(true),
+                                    ),
                             )
-                            .child(
-                                div()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(TextView::markdown("card-back", back, window, cx)),
-                            )
+                            .child(div().text_color(cx.theme().muted_foreground).child(
+                                TextView::markdown("card-back", back, window, cx).selectable(true),
+                            ))
                             .child(
                                 div()
                                     .mt_4()
@@ -611,7 +612,6 @@ impl AppView {
                             ),
                             (0, format!("字幕 · {}", self.video.cues.len())),
                             (1, format!("选集 · {count}")),
-                            (2, "AI 提问".into()),
                         ]
                         .into_iter()
                         .map(|(tab, label)| {
@@ -973,7 +973,7 @@ impl AppView {
                                 ));
                         }
                     }
-                    _ => study = study.child(self.assistant_view(window, cx)),
+                    _ => {}
                 }
                 let divider = div()
                     .id("video-panel-resize")
@@ -1143,12 +1143,10 @@ impl AppView {
                     );
                 }
                 if !self.output.is_empty() {
-                    content = content.child(TextView::markdown(
-                        "speaking-output",
-                        self.output.clone(),
-                        window,
-                        cx,
-                    ));
+                    content = content.child(
+                        TextView::markdown("speaking-output", self.output.clone(), window, cx)
+                            .selectable(true),
+                    );
                 }
                 for (i, record) in self.data.speaking.iter().enumerate() {
                     content = content.child(
@@ -1158,8 +1156,19 @@ impl AppView {
                                 i + 1,
                                 record["accuracy"].as_f64().unwrap_or(0.) * 100.
                             ))
-                            .child(record["reference"].as_str().unwrap_or("").to_string())
-                            .child(record["transcript"].as_str().unwrap_or("").to_string()),
+                            .child(
+                                TextView::markdown(
+                                    SharedString::from(format!("speaking-record-{i}")),
+                                    format!(
+                                        "{}\n\n{}",
+                                        record["reference"].as_str().unwrap_or(""),
+                                        record["transcript"].as_str().unwrap_or("")
+                                    ),
+                                    window,
+                                    cx,
+                                )
+                                .selectable(true),
+                            ),
                     );
                 }
             }
@@ -1183,18 +1192,24 @@ impl AppView {
                     .disabled(self.tasks.cancel.is_some()),
                 );
                 if !self.output.is_empty() {
-                    content = content.child(TextView::markdown(
-                        "ocr-output",
-                        self.output.clone(),
-                        window,
-                        cx,
-                    ));
+                    content = content.child(
+                        TextView::markdown("ocr-output", self.output.clone(), window, cx)
+                            .selectable(true),
+                    );
                 }
-                for record in &self.data.ocr {
+                for (i, record) in self.data.ocr.iter().enumerate() {
                     content = content.child(
                         panel(cx)
                             .child(record["name"].as_str().unwrap_or("图片").to_string())
-                            .child(record["text"].as_str().unwrap_or("").to_string()),
+                            .child(
+                                TextView::markdown(
+                                    SharedString::from(format!("ocr-record-{i}")),
+                                    record["text"].as_str().unwrap_or("").to_string(),
+                                    window,
+                                    cx,
+                                )
+                                .selectable(true),
+                            ),
                     );
                 }
             }
@@ -1226,23 +1241,24 @@ impl AppView {
                 let query = self.value("search", cx).to_lowercase();
                 let selected = nodes.iter().find(|n| n["id"] == self.graph_node);
                 if let Some(node) = selected {
-                    let mut detail = panel(cx).child(
-                        div()
-                            .text_3xl()
-                            .child(node["label"].as_str().unwrap_or("").to_string()),
-                    );
+                    let mut body = format!("## {}\n\n", node["label"].as_str().unwrap_or(""));
                     for key in ["pron", "category", "kaofa", "etymology", "mnemonic"] {
                         if let Some(text) = node[key].as_str().filter(|s| !s.is_empty()) {
-                            detail = detail.child(text.to_string());
+                            body.push_str(text);
+                            body.push_str("\n\n");
                         }
                     }
                     for sense in node["senses"].as_array().into_iter().flatten() {
-                        detail = detail.child(format!(
-                            "{}  {}",
+                        body.push_str(&format!(
+                            "{}  {}\n\n",
                             sense["en"].as_str().unwrap_or(""),
                             sense["zh"].as_str().unwrap_or("")
                         ));
                     }
+                    let detail = panel(cx).child(
+                        TextView::markdown("graph-node-material", body, window, cx)
+                            .selectable(true),
+                    );
                     let mut related = div().flex().gap_2().flex_wrap();
                     for (i, edge) in graph["links"].as_array().into_iter().flatten().enumerate() {
                         let other = if edge["source"] == self.graph_node {
@@ -1284,19 +1300,31 @@ impl AppView {
                     ));
                 }
                 content = content.child(nodes_view);
-                for row in self
+                let words = self
                     .data
                     .words
                     .iter()
                     .filter(|r| text(r, "word").to_lowercase().contains(&query))
                     .take(300)
-                {
+                    .map(|row| format!("{} — {}", text(row, "word"), text(row, "meaning")))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !words.is_empty() {
                     content = content.child(
-                        div()
-                            .flex()
-                            .gap_4()
-                            .child(text(row, "word"))
-                            .child(text(row, "meaning")),
+                        TextView::html(
+                            "word-list-material",
+                            format!(
+                                "<p>{}</p>",
+                                words
+                                    .replace('&', "&amp;")
+                                    .replace('<', "&lt;")
+                                    .replace('>', "&gt;")
+                                    .replace('\n', "<br/>")
+                            ),
+                            window,
+                            cx,
+                        )
+                        .selectable(true),
                     );
                 }
             }

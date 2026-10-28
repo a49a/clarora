@@ -166,6 +166,18 @@ impl AppView {
                             changed = true;
                             continue;
                         }
+                        if completed_chat && self.assistant.enabled {
+                            if cancelled || result.is_err() {
+                                self.assistant.failed_output = self.chat.output.clone();
+                            }
+                            self.assistant.error = if cancelled {
+                                "已停止回答。问题和引用已保留，可再次发送。".into()
+                            } else if let Err(error) = &result {
+                                format!("回答未完成：{error:#}。问题和引用已保留。")
+                            } else {
+                                String::new()
+                            };
+                        }
                         match result {
                             Ok(Outcome::AudioBatch(report)) => {
                                 cancelled = report.cancelled;
