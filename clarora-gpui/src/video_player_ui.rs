@@ -444,11 +444,11 @@ impl AppView {
                 "本句：无限重复 ▾".into()
             }
         } else if self.video.repeat_three {
-            "逐句三次：等待字幕 ▾".into()
+            "逐句三次：等待就绪 ▾".into()
         } else if self.video.pending_start.is_some() {
             "正在定位末句 ▾".into()
         } else {
-            "本句重复 ▾".into()
+            "重复模式 ▾".into()
         };
         let sentence_options = vec![
             (
@@ -461,7 +461,7 @@ impl AppView {
                 "每句重复三次 · 自动下一句".into(),
                 Action::VideoSentenceRepeat(None, true),
                 self.video.repeat_three,
-                current_cue.is_none(),
+                self.video.path.is_none(),
             ),
             (
                 "停止本句重复".into(),

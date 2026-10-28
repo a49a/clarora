@@ -1113,6 +1113,232 @@ impl Probe {
                     return Ok(false);
                 }
                 self.record(app, "迟到字幕按音轨选点建立三次循环并保留暂停")?;
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                app.video.set_cues(vec![
+                    Cue {
+                        start: 1.,
+                        end: 2.,
+                        text: "First after silence".into(),
+                    },
+                    Cue {
+                        start: 4.,
+                        end: 5.,
+                        text: "After a gap".into(),
+                    },
+                    Cue {
+                        start: 8.,
+                        end: 9.,
+                        text: "Last valid".into(),
+                    },
+                    Cue {
+                        start: 13.,
+                        end: 14.,
+                        text: "Outside video".into(),
+                    },
+                ]);
+                app.handle(Action::SeekTo(0.), window, cx);
+                self.advance();
+            }
+            45 => {
+                if !Self::at(app, &path, 0.) || app.video_repeat_cue().is_some() {
+                    return Ok(false);
+                }
+                app.handle(Action::VideoSentenceRepeat(None, true), window, cx);
+                ensure!(
+                    app.video.repeat_three
+                        && app.video.sentence_repeat.is_some_and(|s| s.index == 0),
+                    "未选句时无法从首条字幕开启三次模式"
+                );
+                self.advance();
+            }
+            46 => {
+                let state = app.media.player.snapshot();
+                if state.paused
+                    || !state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|s| s.start == 1. && s.end == 2. && s.total_plays == Some(3))
+                {
+                    return Ok(false);
+                }
+                self.record(app, "首句前无需选中字幕即可开启三次播放")?;
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                app.media.player.set("pause", "yes");
+                app.handle(Action::SeekTo(4.4), window, cx);
+                self.advance();
+            }
+            47 => {
+                if !Self::at(app, &path, 4.4) {
+                    return Ok(false);
+                }
+                app.video.active = None;
+                app.handle(Action::VideoSentenceRepeat(None, true), window, cx);
+                ensure!(
+                    app.video.sentence_repeat.is_some_and(|s| s.index == 1),
+                    "未按真实时钟选择当前句"
+                );
+                self.advance();
+            }
+            48 => {
+                let state = app.media.player.snapshot();
+                if state.paused
+                    || !state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|s| s.start == 4. && s.end == 5. && s.total_plays == Some(3))
+                {
+                    return Ok(false);
+                }
+                self.record(app, "未点选字幕时从当前播放句开启三次")?;
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                app.media.player.set("pause", "yes");
+                app.handle(Action::SeekTo(2.5), window, cx);
+                self.advance();
+            }
+            49 => {
+                if !Self::at(app, &path, 2.5) || app.video_repeat_cue().is_some() {
+                    return Ok(false);
+                }
+                app.handle(Action::VideoSentenceRepeat(None, true), window, cx);
+                self.advance();
+            }
+            50 => {
+                let state = app.media.player.snapshot();
+                if state.paused
+                    || !state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|s| s.start == 4. && s.end == 5. && s.total_plays == Some(3))
+                {
+                    return Ok(false);
+                }
+                self.record(app, "句间空白无需选句即可从下一有效句开启三次")?;
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                app.media.player.set("pause", "yes");
+                app.handle(Action::SeekTo(11.5), window, cx);
+                self.advance();
+            }
+            51 => {
+                if !Self::at(app, &path, 11.5) {
+                    return Ok(false);
+                }
+                app.handle(Action::VideoSentenceRepeat(None, true), window, cx);
+                self.advance();
+            }
+            52 => {
+                let state = app.media.player.snapshot();
+                if state.paused
+                    || !state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|s| s.start == 8. && s.end == 9. && s.total_plays == Some(3))
+                {
+                    return Ok(false);
+                }
+                self.record(app, "字幕末尾直接开启三次取最后有效句并跳过越界字幕")?;
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                app.video.set_cues(vec![]);
+                app.media.player.set("pause", "yes");
+                app.handle(Action::SeekTo(6.4), window, cx);
+                self.advance();
+            }
+            53 => {
+                if !Self::at(app, &path, 6.4) {
+                    return Ok(false);
+                }
+                app.handle(Action::VideoSentenceRepeat(None, true), window, cx);
+                ensure!(
+                    app.video.repeat_three
+                        && app.video.sentence_repeat.is_none()
+                        && app.video.pending_start.as_ref().is_some_and(|p| {
+                            p.path == path
+                                && p.selected_time.is_some_and(|t| (t - 6.4).abs() < 0.18)
+                                && !p.paused
+                        }),
+                    "无字幕开启没有保留模式和当前播放位置"
+                );
+                self.record(app, "无字幕可先开启三次模式并等待字幕/不启动ASR")?;
+                ensure!(app.tasks.cancel.is_none(), "选择模式误触发后台任务");
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                app.video.set_cues(vec![Cue {
+                    start: 6.,
+                    end: 7.,
+                    text: "Late after stop".into(),
+                }]);
+                self.advance();
+            }
+            54 => {
+                if !self.stable() || !app.media.player.snapshot().paused {
+                    return Ok(false);
+                }
+                ensure!(
+                    !app.video.repeat_three
+                        && app.video.pending_start.is_none()
+                        && app.video.sentence_repeat.is_none(),
+                    "停止后迟到字幕重新启用了三次"
+                );
+                self.record(app, "等待字幕期间可停止且迟到字幕不重启")?;
+                app.video.set_cues(vec![]);
+                app.handle(Action::VideoSentenceRepeat(None, true), window, cx);
+                app.video.set_cues(vec![
+                    Cue {
+                        start: 1.,
+                        end: 2.,
+                        text: "First".into(),
+                    },
+                    Cue {
+                        start: 6.,
+                        end: 7.,
+                        text: "Current when enabled".into(),
+                    },
+                    Cue {
+                        start: 9.,
+                        end: 10.,
+                        text: "Last".into(),
+                    },
+                ]);
+                self.advance();
+            }
+            55 => {
+                let state = app.media.player.snapshot();
+                if state.paused
+                    || !state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|s| s.start == 6. && s.end == 7. && s.total_plays == Some(3))
+                {
+                    return Ok(false);
+                }
+                self.record(app, "迟到字幕按开启时的位置自动开始三次")?;
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                ensure!(app.open(other_video(&app.lib)), "未就绪视频夹具打开失败");
+                app.handle(Action::VideoSentenceRepeat(None, true), window, cx);
+                ensure!(
+                    app.video.repeat_three
+                        && app
+                            .video
+                            .pending_start
+                            .as_ref()
+                            .is_some_and(|p| p.path == other_video(&app.lib)),
+                    "媒体未就绪时不能直接开启三次"
+                );
+                self.advance();
+            }
+            56 => {
+                let state = app.media.player.snapshot();
+                if state.path != other_video(&app.lib).to_string_lossy()
+                    || !app
+                        .video
+                        .sentence_repeat
+                        .is_some_and(|s| s.three && s.range.1 < 2.)
+                    || !state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|s| s.total_plays == Some(3))
+                {
+                    return Ok(false);
+                }
+                self.record(app, "视频未就绪时直接开启/字幕载入后只循环新视频句子")?;
                 app.handle(Action::Page("settings".into()), window, cx);
                 ensure!(
                     !app.video.repeat_three && app.video.sentence_repeat.is_none(),

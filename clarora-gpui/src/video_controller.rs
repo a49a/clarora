@@ -736,11 +736,53 @@ impl AppView {
         three: bool,
     ) -> Result<()> {
         ensure!(self.page == "video", "请先进入视频学习");
-        let path = self.video.path.as_ref().context("请先打开视频")?;
+        let path = self.video.path.clone().context("请先打开视频")?;
         let playback = self.media.player.snapshot();
         ensure!(
-            self.media.path.as_ref() == Some(path)
-                && playback.path == path.to_string_lossy()
+            self.media.path.as_ref() == Some(&path),
+            "视频正在切换，请稍候再重复本句"
+        );
+        if three && index.is_none() {
+            // The mode menu is independent of a selected/active subtitle. Bind
+            // its intent to this file and let the existing readiness path pick
+            // the current cue, the next cue in a gap, or the last valid cue.
+            let position =
+                if playback.path == path.to_string_lossy() && playback.position.is_finite() {
+                    playback.position.max(0.)
+                } else {
+                    0.
+                };
+            let pending = self.video.pending_start.as_ref().filter(|p| p.path == path);
+            let from_end = pending.is_some_and(|p| p.from_end);
+            let selected_time = pending
+                .and_then(|p| p.selected_time)
+                .or_else(|| (!from_end).then_some(position));
+            self.reset_video_sentence_request();
+            self.video.repeat_three = true;
+            self.video.pending_start = Some(app_state::PendingVideoStart {
+                path,
+                paused: false,
+                from_end,
+                seek_to: None,
+                selected_time,
+            });
+            self.media.repeat = 0;
+            self.media.loop_a = None;
+            self.media.loop_b = None;
+            self.media.end_handled = true;
+            self.media.player.set("pause", "yes");
+            self.poll_pending_video_start();
+            if self.video.pending_start.is_some() {
+                self.report_status(
+                    FeedbackKind::Info,
+                    "已开启每句三次，等待当前视频和字幕就绪；可生成或导入字幕".into(),
+                );
+            }
+            return Ok(());
+        }
+        ensure!(
+            playback.path == path.to_string_lossy()
+                && playback.duration.is_finite()
                 && playback.duration > 0.,
             "视频正在切换，请稍候再重复本句"
         );
@@ -749,7 +791,7 @@ impl AppView {
             .context("当前没有带时间轴的字幕，请先选择一句字幕")?;
         self.video.sentence_repeat = Some(clarora_gpui::video_repeat::Session::start(
             &self.media.player,
-            path,
+            &path,
             &self.video.cues,
             index,
             three,
