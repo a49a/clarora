@@ -295,7 +295,57 @@ fn unchanged(lib: &Library, before: &Value) -> Result<()> {
     );
     Ok(())
 }
+pub fn config_messages(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
+    let lib = Library::open(parent.root.join("storage-config-messages"))?;
+    let mut evidence = vec![];
+    for (name, raw) in [
+        ("not configured", ""),
+        ("whitespace", " \n "),
+        ("malformed", "{\"private\":\"CONFIG_PRIVATE_SENTINEL\""),
+        ("incomplete", "{}"),
+    ] {
+        lib.set_setting("storage_config", raw)?;
+        let error = match Storage::load(&lib) {
+            Ok(_) => anyhow::bail!("{name}: invalid config was accepted"),
+            Err(error) => format!("{error:#}"),
+        };
+        ensure!(
+            error.contains("云备份") && error.contains("同步与备份") && error.contains("保存"),
+            "提示没有明确配置位置或修复步骤：{error}"
+        );
+        ensure!(
+            !error.contains("EOF")
+                && !error.contains("line 1")
+                && !error.contains("CONFIG_PRIVATE_SENTINEL"),
+            "界面提示泄漏解析细节／配置"
+        );
+        ensure!(lib.setting("storage_config")? == raw, "失败时覆盖了配置");
+        evidence.push(json!({"case":name,"passed":true,"message":error}));
+    }
+    Storage::save(
+        &lib,
+        backup::StorageConfig {
+            provider: "s3".into(),
+            endpoint: "https://fixture.invalid".into(),
+            region: "us-east-1".into(),
+            bucket: "fixture-bucket".into(),
+            access_key_id: "fixture-access".into(),
+            prefix: "clarora".into(),
+            path_style: true,
+            ..Default::default()
+        },
+        "fixture-secret",
+        "",
+    )?;
+    Storage::load(&Library::open(lib.root.clone())?)?;
+    evidence.push(json!({"case":"save and reopen valid configuration","passed":true}));
+    let report = lib.root.join("config-messages.json");
+    fs::write(&report, serde_json::to_vec_pretty(&evidence)?)?;
+    results.push(json!({"workflow":"云备份配置：未配置／空白／损坏／缺字段中文提示与原配置保护／有效配置重开","passed":true,"cases":evidence.len(),"evidence":report}));
+    Ok(())
+}
 pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
+    config_messages(lib, results)?;
     let root = lib.root.join("backup-cancel");
     fs::create_dir_all(&root)?;
     let source = source(&root.join("source"), true)?;

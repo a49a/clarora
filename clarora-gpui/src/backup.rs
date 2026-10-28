@@ -1437,8 +1437,29 @@ fn encode_path(value: &str) -> String {
 }
 impl Storage {
     pub fn load(lib: &Library) -> Result<Self> {
-        let c: StorageConfig =
-            serde_json::from_str(&lib.setting("storage_config")?).context("请先配置对象存储")?;
+        let raw = lib.setting("storage_config")?;
+        ensure!(
+            !raw.trim().is_empty(),
+            "尚未设置云备份。请在「设置 → 同步与备份」填写存储服务信息和访问密钥，然后点击「保存存储配置」。"
+        );
+        let c: StorageConfig = serde_json::from_str(&raw).map_err(|_| {
+            anyhow::anyhow!(
+                "云备份设置无法读取。请在「设置 → 同步与备份」重新填写，并点击「保存存储配置」。"
+            )
+        })?;
+        ensure!(
+            [
+                &c.provider,
+                &c.endpoint,
+                &c.region,
+                &c.bucket,
+                &c.access_key_id,
+                &c.prefix
+            ]
+            .iter()
+            .all(|value| !value.trim().is_empty()),
+            "云备份设置尚未填完整。请在「设置 → 同步与备份」补全存储服务信息和访问密钥，然后点击「保存存储配置」。"
+        );
         let secret = crate::credentials::get(lib, &format!("storage-{}", c.credential_id))?;
         let token = crate::credentials::get_optional(lib, &format!("token-{}", c.credential_id))?;
         let s = Self {

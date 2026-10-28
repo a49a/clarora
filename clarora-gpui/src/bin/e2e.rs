@@ -924,6 +924,7 @@ fn main() -> Result<()> {
         Some("--runtime-stability-only") => "runtime-stability-only",
         Some("--http-only") => "http-only",
         Some("--reliability-only") => "reliability-only",
+        Some("--storage-config-only") => "storage-config-only",
         Some("--writing-only") => "writing-only",
         Some("--ebook-only") => "ebook-only",
         Some("--transcript-only") => "transcript-only",
@@ -1030,6 +1031,9 @@ fn main() -> Result<()> {
     } else if mode == "writing-only" {
         let lib = Library::open(output.join(format!("writing-{}", data::id())))?;
         writing::run(&lib, &mut results)
+    } else if mode == "storage-config-only" {
+        let lib = Library::open(output.join(format!("storage-config-{}", data::id())))?;
+        backup_cancel::config_messages(&lib, &mut results)
     } else if mode == "reliability-only" {
         let lib = Library::open(output.join(format!("reliability-{}", data::id())))?;
         reliability(&lib, &mut results)

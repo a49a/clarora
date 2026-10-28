@@ -261,6 +261,8 @@ impl AppView {
             panel(cx)
                 .child(div().text_lg().child("同步与备份"))
                 .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                    .child("使用云备份需要先填写你自己的存储服务信息。仅在本机保存备份时，直接点击「导出本机备份 ZIP」即可，无需配置以下项目。"))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground)
                     .child("云备份中的 bilibili 原视频仅保存来源链接，恢复后按需下载；字幕、学习记录和本地视频文件继续备份。本机 ZIP 保留可用视频原文件。"))
                 .child(self.field("provider", "存储类型 s3 / oss"))
                 .child(self.field("endpoint", "Endpoint"))
