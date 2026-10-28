@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Generate the Clarora Android and macOS launcher icon sets.
 
-Design matches the app's aurora-dark theme (and the macOS app icon):
-vertical gradient background #0D1512 → #1D2F26 with an "C" monogram in
-#52E0A2 → #34D399.
+Design matches the app's aurora-dark theme with a mint C monogram.
+Run with --platform macos to update only the desktop SVG and PNG assets.
 
 Outputs (under clarora-app/android/app/src/main/res):
 - mipmap-*/ic_launcher.png          legacy square icon, rounded corners
@@ -14,6 +13,7 @@ Outputs (under clarora-app/android/app/src/main/res):
 from __future__ import annotations
 
 from pathlib import Path
+import argparse
 import json
 
 from PIL import Image, ImageDraw, ImageFont
@@ -35,6 +35,29 @@ SIZES = {  # density → launcher icon size (48dp grid)
 # Adaptive foreground uses a 108dp canvas; the glyph must stay in the
 # central ~66dp safe zone so launcher masks never clip it.
 FOREGROUND_SCALE = 4  # render 4× then downsample for crisp edges
+
+# macOS does not mask custom icons: the artwork needs its own rounded tile
+# and transparent margin. Share vector geometry with the SVG design source,
+# rather than depending on whichever system font happens to be installed.
+MAC_TILE = (100, 100, 924, 924)
+MAC_RADIUS = 184
+MAC_BG_TOP = (25, 56, 45)
+MAC_BG_BOTTOM = (13, 35, 28)
+MAC_C_TOP = (113, 232, 181)
+MAC_C_BOTTOM = (55, 210, 151)
+MAC_C_PATH = [
+    ("M", (790, 280)),
+    ("L", (690, 360)),
+    ("C", (645, 305, 597, 282, 535, 282)),
+    ("C", (407, 282, 330, 372, 330, 512)),
+    ("C", (330, 652, 407, 742, 535, 742)),
+    ("C", (597, 742, 645, 719, 690, 664)),
+    ("L", (790, 744)),
+    ("C", (722, 831, 641, 874, 531, 874)),
+    ("C", (328, 874, 197, 735, 197, 512)),
+    ("C", (197, 289, 328, 150, 531, 150)),
+    ("C", (641, 150, 722, 193, 790, 280)),
+]
 
 FONT_CANDIDATES = [
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
@@ -66,7 +89,7 @@ def vertical_gradient(size: tuple[int, int], top: tuple, bottom: tuple) -> Image
 
 
 def draw_monogram(canvas: Image.Image, box: tuple[int, int, int, int]) -> None:
-    """Draw the R glyph with a vertical #52E0A2→#34D399 gradient inside box."""
+    """Draw the C glyph with a vertical #52E0A2→#34D399 gradient inside box."""
     left, top, right, bottom = box
     width, height = right - left, bottom - top
     # Start from a large render then fit the glyph bbox precisely.
@@ -108,7 +131,76 @@ def make_foreground(size: int) -> Image.Image:
     return image.resize((size, size), Image.LANCZOS)
 
 
-def main() -> None:
+def macos_monogram() -> list[tuple[str, tuple[float, ...]]]:
+    # Slight optical offset balances the open side of C within the tile.
+    return [(command, tuple((value - 512) * 0.74 + (530 if i % 2 == 0 else 512)
+                            for i, value in enumerate(points)))
+            for command, points in MAC_C_PATH]
+
+
+def make_macos_icon() -> Image.Image:
+    scale = FOREGROUND_SCALE
+    canvas = 1024 * scale
+    image = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    tile = tuple(value * scale for value in MAC_TILE)
+    mask = Image.new("L", image.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(tile, radius=MAC_RADIUS * scale, fill=255)
+    background = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    side = tile[2] - tile[0]
+    background.paste(vertical_gradient((side, side), MAC_BG_TOP, MAC_BG_BOTTOM), tile[:2])
+    image.paste(background, (0, 0), mask)
+
+    # A quiet rim gives the dark tile definition against a dark Dock.
+    rim = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    ImageDraw.Draw(rim).rounded_rectangle(
+        tuple(value * scale for value in (101, 101, 923, 923)),
+        radius=(MAC_RADIUS - 1) * scale, outline=(134, 182, 157, 56), width=2 * scale)
+    image = Image.alpha_composite(image, rim)
+
+    outline = ImageDraw.Outline()
+    for command, points in macos_monogram():
+        getattr(outline, {"M": "move", "L": "line", "C": "curve"}[command])(
+            *(value * scale for value in points))
+    outline.close()
+    glyph = Image.new("L", image.size, 0)
+    ImageDraw.Draw(glyph).shape(outline, fill=255)
+    top, bottom = round((150 - 512) * 0.74 + 512), round((874 - 512) * 0.74 + 512)
+    accent = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    accent.paste(vertical_gradient((canvas, (bottom - top) * scale), MAC_C_TOP, MAC_C_BOTTOM), (0, top * scale))
+    image.paste(accent, (0, 0), glyph)
+    return image
+
+
+def write_macos_icons() -> None:
+    macos = Path(__file__).resolve().parent.parent / "clarora-app/macos/Clarora-macOS"
+    color = lambda rgb: "#" + "".join(f"{value:02X}" for value in rgb)
+    path = " ".join(command + " ".join(f"{value:g}" for value in points)
+                    for command, points in macos_monogram()) + " Z"
+    (macos / "app-icon.svg").write_text(f'''<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Generated by tool/make_clarora_android_icons.py (macos platform). -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="{color(MAC_BG_TOP)}"/><stop offset="1" stop-color="{color(MAC_BG_BOTTOM)}"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="{color(MAC_C_TOP)}"/><stop offset="1" stop-color="{color(MAC_C_BOTTOM)}"/>
+    </linearGradient>
+  </defs>
+  <!-- Transparent margin and rounded artwork are part of the icon itself. -->
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#bg)"/>
+  <rect x="101" y="101" width="822" height="822" rx="183" stroke="#86B69D" stroke-opacity="0.22" stroke-width="2"/>
+  <path d="{path}" fill="url(#accent)"/>
+</svg>
+''', encoding="utf-8")
+    app_icons = macos / "Assets.xcassets/AppIcon.appiconset"
+    master = make_macos_icon()
+    for item in json.loads((app_icons / "Contents.json").read_text())["images"]:
+        size = int(item["size"].split("x")[0]) * int(item["scale"].rstrip("x"))
+        master.resize((size, size), Image.LANCZOS).save(app_icons / item["filename"])
+    print("macOS rounded Clarora SVG + icons written")
+
+
+def write_android_icons() -> None:
     for density, size in SIZES.items():
         directory = RES / f"mipmap-{density}"
         directory.mkdir(parents=True, exist_ok=True)
@@ -140,15 +232,15 @@ def main() -> None:
     )
     print("adaptive icon xml + gradient background written")
 
-    # Keep the desktop launcher assets on the same Clarora monogram.
-    app_icons = Path(__file__).resolve().parent.parent / "clarora-app/macos/Clarora-macOS/Assets.xcassets/AppIcon.appiconset"
-    for item in json.loads((app_icons / "Contents.json").read_text())["images"]:
-        size = int(item["size"].split("x")[0]) * int(item["scale"].rstrip("x"))
-        icon = vertical_gradient((size * 4, size * 4), BG_TOP, BG_BOTTOM).convert("RGBA")
-        inset = int(icon.width * 0.16)
-        draw_monogram(icon, (inset, inset, icon.width - inset, icon.height - inset))
-        icon.resize((size, size), Image.LANCZOS).save(app_icons / item["filename"])
-    print("macOS Clarora icons written")
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--platform", choices=("all", "android", "macos"), default="all")
+    args = parser.parse_args()
+    if args.platform in ("all", "android"):
+        write_android_icons()
+    if args.platform in ("all", "macos"):
+        write_macos_icons()
 
 
 if __name__ == "__main__":
