@@ -440,35 +440,46 @@ impl AppView {
                     .as_ref()
                     .filter(|state| state.request_id == session.request_id)
                 {
-                    Some(state) if state.finished => "逐句三次：已完成 ▾".into(),
-                    Some(state) => format!("逐句三次：{}/3 ▾", state.current_play),
-                    None => "逐句三次：准备中 ▾".into(),
+                    Some(state) if state.finished => "每句三遍 · 本句完成 ▾".into(),
+                    Some(state) => format!("每句三遍 · 第 {} 遍 ▾", state.current_play),
+                    None => "每句三遍 · 准备中 ▾".into(),
                 }
             } else {
-                "本句：无限重复 ▾".into()
+                "单句循环 ▾".into()
             }
         } else if self.video.repeat_three {
-            "逐句三次：等待就绪 ▾".into()
-        } else if self.video.pending_start.is_some() {
-            "正在定位末句 ▾".into()
+            if self.video.cues.is_empty() {
+                "每句三遍 · 等待字幕 ▾".into()
+            } else {
+                "每句三遍 · 准备中 ▾".into()
+            }
         } else {
-            "重复模式 ▾".into()
+            let mode = match self.media.repeat {
+                1 => "单集循环",
+                2 => "A–B 循环",
+                _ => "正常播放",
+            };
+            if self.video.pending_start.is_some() {
+                format!("{mode} · 定位中 ▾")
+            } else {
+                format!("{mode} ▾")
+            }
         };
         let sentence_options = vec![
             (
-                "本句无限重复".into(),
+                "单句循环 · 重播当前句".into(),
                 Action::VideoSentenceRepeat(None, false),
                 self.video.sentence_repeat.is_some_and(|s| !s.three),
                 current_cue.is_none(),
             ),
             (
-                "每句重复三次 · 自动下一句".into(),
+                "每句三遍 · 自动下一句".into(),
                 Action::VideoSentenceRepeat(None, true),
                 self.video.repeat_three,
                 self.video.path.is_none(),
             ),
             (
-                "停止本句重复".into(),
+                "退出单句练习".into(),
                 Action::VideoStopSentenceRepeat,
                 false,
                 self.video.sentence_repeat.is_none()

@@ -216,7 +216,7 @@ impl AppView {
                 if from_end {
                     "正在等待当前视频字幕，以定位最后一句"
                 } else {
-                    "已保留每句三次模式，等待当前视频字幕；无字幕时可生成或导入"
+                    "已保留每句三遍，等待当前视频字幕；无字幕时可生成或导入"
                 }
                 .into(),
             );
@@ -462,7 +462,7 @@ impl AppView {
             }
             self.report_status(
                 FeedbackKind::Info,
-                "每句播放三遍后自动下一句；← / → 切句并从第一遍开始".into(),
+                "每句三遍，播完自动下一句；← / → 切句后从第一遍开始".into(),
             );
         }
     }
@@ -869,7 +869,7 @@ impl AppView {
         } else {
             self.report_status(
                 FeedbackKind::Info,
-                "正在无限重复本句，可从本句重复菜单停止".into(),
+                "已开启单句循环；点击「单句循环」菜单可退出".into(),
             );
         }
         Ok(())

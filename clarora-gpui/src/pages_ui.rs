@@ -715,7 +715,7 @@ impl AppView {
                                                             format!(
                                                                 "video-cue-repeat-infinite-{i}"
                                                             ),
-                                                            "无限重复",
+                                                            "单句循环",
                                                             Action::VideoSentenceRepeat(
                                                                 Some(i),
                                                                 false,
@@ -731,7 +731,7 @@ impl AppView {
                                                     .child(
                                                         this.button(
                                                             format!("video-cue-repeat-three-{i}"),
-                                                            "重复三次",
+                                                            "每句三遍",
                                                             Action::VideoSentenceRepeat(
                                                                 Some(i),
                                                                 true,
