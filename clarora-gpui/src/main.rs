@@ -15,6 +15,9 @@ mod data_controller;
 mod design;
 mod feedback_ui;
 mod floating_ui;
+#[cfg(debug_assertions)]
+mod focus_mode_probe;
+mod focus_mode_ui;
 mod focus_ui;
 mod library_ui;
 mod pages_ui;
@@ -269,6 +272,10 @@ enum Action {
     Timer(u64),
     TimerPause,
     TimerReset,
+    FocusStart(u64),
+    FocusResume,
+    FocusEmergency,
+    FocusKeep,
     SaveAi,
     CredentialMode(bool),
     ImportLegacyCredentials,
@@ -413,6 +420,9 @@ struct AppView {
     timer: focus_timer::Timer,
     timer_remaining: u64,
     timer_retry: Option<Instant>,
+    focus_mode: focus_mode_ui::Mode,
+    #[cfg(debug_assertions)]
+    focus_mode_probe: Option<focus_mode_probe::Probe>,
     pdf_path: Option<PathBuf>,
     pdf_image: Option<std::sync::Arc<RenderImage>>,
     pdf_page: u16,
@@ -569,6 +579,9 @@ impl AppView {
             timer_remaining: timer.remaining_seconds(focus_timer::now_ms()),
             timer,
             timer_retry: None,
+            focus_mode: focus_mode_ui::Mode::default(),
+            #[cfg(debug_assertions)]
+            focus_mode_probe: None,
             pdf_path: None,
             pdf_image: None,
             pdf_page: 0,
@@ -2392,7 +2405,27 @@ fn main() -> Result<()> {
     #[cfg(not(debug_assertions))]
     let probe_dir: Option<PathBuf> = None;
     #[cfg(debug_assertions)]
-    let library = if let Some(out) = &subtitle_probe_dir {
+    let focus_probe_dir = args
+        .iter()
+        .position(|a| a == "--focus-mode-check")
+        .map(|i| {
+            args.get(i + 1)
+                .context("--focus-mode-check 缺少证据目录")
+                .map(PathBuf::from)
+        })
+        .transpose()?;
+    #[cfg(not(debug_assertions))]
+    ensure!(
+        !args.iter().any(|a| a == "--focus-mode-check"),
+        "专注原生验收仅支持调试构建"
+    );
+    #[cfg(not(debug_assertions))]
+    let focus_probe_dir: Option<PathBuf> = None;
+    #[cfg(debug_assertions)]
+    let library = if let Some(out) = &focus_probe_dir {
+        fs::create_dir_all(out)?;
+        Library::open(out.join("library"))?
+    } else if let Some(out) = &subtitle_probe_dir {
         subtitle_workbench_probe::prepare(out)?
     } else if let Some(out) = &backup_probe_dir {
         backup_progress_probe::prepare(out)?
@@ -2534,10 +2567,12 @@ fn main() -> Result<()> {
                     WindowOptions {
                         show: probe_dir.is_none()
                             && backup_probe_dir.is_none()
-                            && subtitle_probe_dir.is_none(),
+                            && subtitle_probe_dir.is_none()
+                            && focus_probe_dir.is_none(),
                         focus: probe_dir.is_none()
                             && backup_probe_dir.is_none()
-                            && subtitle_probe_dir.is_none(),
+                            && subtitle_probe_dir.is_none()
+                            && focus_probe_dir.is_none(),
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
                         titlebar: Some(TitlebarOptions {
                             title: Some("Clarora".into()),
@@ -2565,6 +2600,10 @@ fn main() -> Result<()> {
                                 view.subtitle_probe =
                                     Some(subtitle_workbench_probe::Probe::new(out));
                             }
+                            #[cfg(debug_assertions)]
+                            if let Some(out) = &focus_probe_dir {
+                                view.focus_mode_probe = Some(focus_mode_probe::Probe::new(out));
+                            }
                             view
                         });
                         quit_view = Some(view.downgrade());
@@ -2588,7 +2627,11 @@ fn main() -> Result<()> {
                 }
             })
             .detach();
-            if probe_dir.is_none() && backup_probe_dir.is_none() && subtitle_probe_dir.is_none() {
+            if probe_dir.is_none()
+                && backup_probe_dir.is_none()
+                && subtitle_probe_dir.is_none()
+                && focus_probe_dir.is_none()
+            {
                 cx.activate(true);
             }
         });

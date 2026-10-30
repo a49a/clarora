@@ -170,6 +170,40 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         );
     }
     cases.push(json!({"case":"损坏/未知版本保留原值并提示/显式重置修复","passed":true}));
+    let strict_lib = Library::open(root.join("strict-timer"))?;
+    let mut strict = Timer::default();
+    strict.start_strict(&strict_lib, t, 60)?;
+    let restored = Timer::load(&strict_lib, t + 10_000)?.timer;
+    ensure!(
+        restored.strict() && restored.deadline_ms() == Some(t + 60_000),
+        "strict session deadline did not survive reopen"
+    );
+    strict.toggle(&strict_lib, t + 10_000)?;
+    ensure!(
+        !strict.strict() && strict.paused(),
+        "emergency pause retained strict mode"
+    );
+    strict.start_strict(&strict_lib, t, 1)?;
+    ensure!(
+        strict.tick(&strict_lib, t + 1001, true)? == Some(true) && !strict.strict(),
+        "deadline did not clear strict mode for break"
+    );
+    let completed = count(&strict_lib)?;
+    ensure!(
+        Timer::load(&strict_lib, t + 2000)?.completed.is_none() && count(&strict_lib)? == completed,
+        "strict completion counted twice"
+    );
+    strict_lib.db()?.execute_batch("CREATE TRIGGER fail_strict BEFORE UPDATE ON app_settings WHEN NEW.key='focus_timer_v1' BEGIN SELECT RAISE(ABORT,'injected strict save failure'); END;")?;
+    ensure!(
+        strict.start_strict(&strict_lib, t, 30).is_err() && !strict.strict(),
+        "failed strict start changed in-memory state"
+    );
+    strict_lib
+        .db()?
+        .execute_batch("DROP TRIGGER fail_strict;")?;
+    cases.push(
+        json!({"case":"电脑专注标志/截止重开/应急暂停/结束解除/保存失败原子保护","passed":true}),
+    );
     let evidence = root.join("focus-recovery.json");
     fs::write(
         &evidence,

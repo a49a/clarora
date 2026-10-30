@@ -9,6 +9,7 @@ impl AppView {
             self.media.player.set_video_target(0, 0, false);
         }
         let chat_changed = self.poll_chat(window, cx);
+        let focus_changed = self.poll_focus_mode(window, cx);
         self.poll_auto_cloud_sync(window, cx);
         if self.poll_close(window, cx) {
             return;
@@ -23,6 +24,10 @@ impl AppView {
         }
         #[cfg(debug_assertions)]
         if self.poll_subtitle_probe(window, cx) {
+            return;
+        }
+        #[cfg(debug_assertions)]
+        if self.poll_focus_probe(window, cx) {
             return;
         }
         if let Some(rx) = &self.audio.waveform_rx {
@@ -104,7 +109,9 @@ impl AppView {
                 blind_changed = true;
             }
         }
-        let mut changed = self.poll_background_subtitles()
+        let subtitle_changed = self.poll_background_subtitles();
+        let mut changed = focus_changed
+            || subtitle_changed
             || blind_changed
             || playback_changed
             || data_changed

@@ -17,6 +17,8 @@ pub fn now_ms() -> u64 {
 #[derive(Clone, Serialize, Deserialize)]
 struct State {
     version: u8,
+    #[serde(default)]
+    strict: bool,
     focus: bool,
     paused: bool,
     duration_ms: u64,
@@ -27,6 +29,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             version: 1,
+            strict: false,
             focus: true,
             paused: false,
             duration_ms: 1_500_000,
@@ -42,7 +45,8 @@ impl State {
                 && (1..=3_600_000).contains(&self.duration_ms)
                 && (1..=self.duration_ms).contains(&self.remaining_ms)
                 && !(self.paused && self.deadline_ms.is_some())
-                && self.deadline_ms != Some(0),
+                && self.deadline_ms != Some(0)
+                && (!self.strict || self.focus && self.deadline_ms.is_some() && !self.paused),
             "专注计时记录格式无效或版本不支持"
         );
         Ok(())
@@ -120,6 +124,12 @@ impl Timer {
     pub fn is_running(&self) -> bool {
         self.state.deadline_ms.is_some()
     }
+    pub fn strict(&self) -> bool {
+        self.state.strict
+    }
+    pub fn deadline_ms(&self) -> Option<u64> {
+        self.state.deadline_ms
+    }
     fn remaining_ms(&self, now: u64) -> u64 {
         self.state
             .deadline_ms
@@ -130,6 +140,12 @@ impl Timer {
         self.remaining_ms(now).div_ceil(1000)
     }
     pub fn start(&mut self, lib: &Library, now: u64, seconds: u64) -> Result<()> {
+        self.start_mode(lib, now, seconds, false)
+    }
+    pub fn start_strict(&mut self, lib: &Library, now: u64, seconds: u64) -> Result<()> {
+        self.start_mode(lib, now, seconds, true)
+    }
+    fn start_mode(&mut self, lib: &Library, now: u64, seconds: u64, strict: bool) -> Result<()> {
         ensure!((1..=3600).contains(&seconds), "专注时长必须为1至3600秒");
         let duration_ms = seconds * 1000;
         let deadline_ms = now
@@ -139,6 +155,7 @@ impl Timer {
             lib,
             State {
                 version: 1,
+                strict,
                 focus: true,
                 paused: false,
                 duration_ms,
@@ -156,6 +173,7 @@ impl Timer {
             return Ok(Toggle::Completed(focus));
         }
         let mut next = self.state.clone();
+        next.strict = false;
         let event = if self.is_running() {
             next.remaining_ms = self.remaining_ms(now);
             next.deadline_ms = None;
@@ -194,6 +212,7 @@ impl Timer {
         };
         let next = State {
             version: 1,
+            strict: false,
             focus: !focus,
             paused: !auto_next,
             duration_ms,

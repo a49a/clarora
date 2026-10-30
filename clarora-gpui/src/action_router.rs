@@ -3,6 +3,23 @@ use super::*;
 
 impl AppView {
     pub(super) fn handle(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        if self.focus_mode.active()
+            && matches!(
+                &action,
+                Action::Timer(_)
+                    | Action::TimerPause
+                    | Action::TimerReset
+                    | Action::FocusStart(_)
+                    | Action::FocusResume
+            )
+        {
+            self.report_status(
+                FeedbackKind::Info,
+                "电脑专注期间不能暂停、重置或改变时长；如需提前结束，请使用顶部「紧急结束」".into(),
+            );
+            cx.notify();
+            return;
+        }
         self.video.picture_click = None;
         // Modal confirmation owns interaction until it is confirmed or dismissed.
         if window.has_active_dialog(cx) && !matches!(action, Action::VideoConfirmRemove) {
@@ -2108,6 +2125,12 @@ impl AppView {
                     self.timer_remaining = self.timer.remaining_seconds(focus_timer::now_ms());
                     self.timer_retry = None;
                     self.play_timer_chime(timer_chimes::Cue::Start);
+                }
+                Action::FocusStart(seconds) => self.start_focus_mode(Some(seconds), window, cx)?,
+                Action::FocusResume => self.start_focus_mode(None, window, cx)?,
+                Action::FocusEmergency => self.emergency_focus_end(window, cx)?,
+                Action::FocusKeep => {
+                    self.focus_mode.escape = None;
                 }
                 Action::TimerPause => {
                     match self.timer.toggle(&self.lib, focus_timer::now_ms())? {

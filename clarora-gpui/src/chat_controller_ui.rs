@@ -141,6 +141,14 @@ impl AppView {
         update.changed
     }
     pub(super) fn prepare_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.focus_mode.active() {
+            self.report_status(
+                FeedbackKind::Info,
+                "电脑专注尚未结束。需要提前离开时，请点击顶部「紧急结束」".into(),
+            );
+            cx.notify();
+            return false;
+        }
         if self.chat_closing.is_some() {
             return false;
         }

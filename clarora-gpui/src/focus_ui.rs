@@ -33,6 +33,7 @@ impl AppView {
         let duration = Button::new("global-focus-duration")
             .label("专注时长")
             .small()
+            .disabled(self.focus_mode.active())
             .ghost()
             .custom(button_style())
             .tooltip("选择时长，开始新一轮专注")
@@ -94,6 +95,7 @@ impl AppView {
                 "待开始"
             }))
             .child(div().flex_1())
+            .child(self.focus_mode_button(cx))
             .child(
                 self.button(
                     "global-focus-toggle",
@@ -101,11 +103,13 @@ impl AppView {
                     Action::TimerPause,
                     cx,
                 )
+                .disabled(self.focus_mode.active())
                 .custom(button_style()),
             )
             .child(duration)
             .child(
                 self.button("global-focus-reset", "重置", Action::TimerReset, cx)
+                    .disabled(self.focus_mode.active())
                     .ghost()
                     .custom(button_style())
                     .tooltip("回到 25 分钟，等待开始"),

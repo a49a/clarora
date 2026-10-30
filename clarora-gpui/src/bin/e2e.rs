@@ -39,6 +39,8 @@ mod credential_mode;
 mod data_loader;
 #[path = "support/ebook.rs"]
 mod ebook;
+#[path = "support/focus_mode_native.rs"]
+mod focus_mode_native;
 #[path = "support/focus_timer.rs"]
 mod focus_timer;
 #[path = "support/gpu_memory.rs"]
@@ -238,6 +240,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = output.join(format!("run-{}", data::id()));
     fs::create_dir_all(&root)?;
     focus_timer::run(&root, results)?;
+    focus_mode_native::run(&root, results)?;
     gpu_memory::run(&root, results)?;
     runtime_stability::run(&root, results, 32)?;
     ui_controller::run(&root, results)?;
@@ -938,6 +941,7 @@ fn main() -> Result<()> {
         Some("--chat-controller-only") => "chat-controller-only",
         Some("--data-loader-only") => "data-loader-only",
         Some("--focus-timer-only") => "focus-timer-only",
+        Some("--focus-mode-only") => "focus-mode-only",
         Some("--gpu-memory-only") => "gpu-memory-only",
         Some("--runtime-stability-only") => "runtime-stability-only",
         Some("--http-only") => "http-only",
@@ -1065,6 +1069,9 @@ fn main() -> Result<()> {
     } else if mode == "storage-errors-only" {
         let lib = Library::open(output.join(format!("storage-errors-{}", data::id())))?;
         storage_errors::run(&lib, &mut results)
+    } else if mode == "focus-mode-only" {
+        focus_timer::run(&output, &mut results)
+            .and_then(|()| focus_mode_native::run(&output, &mut results))
     } else if matches!(mode, "cloud-v3-only" | "cloud-storage-only") {
         let lib = Library::open(output.join(format!("cloud-v3-{}", data::id())))?;
         cloud_v3::run(&lib, &mut results)
