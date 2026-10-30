@@ -1848,6 +1848,188 @@ impl Probe {
                     app.set("question", question, window, cx);
                     app.chat_requested_context.clear();
                 }
+                app.handle(Action::Rate(1.), window, cx);
+                app.handle(Action::VideoSentenceRepeat(Some(0), true), window, cx);
+                app.media.player.set("pause", "yes");
+                self.advance();
+            }
+            89 => {
+                let state = app.media.player.snapshot();
+                let Some(session) = app.video.sentence_repeat else {
+                    return Ok(false);
+                };
+                if !Self::at(app, &path, 0.)
+                    || !state.sentence_repeat.as_ref().is_some_and(|repeat| {
+                        repeat.request_id == session.request_id && repeat.total_plays == Some(3)
+                    })
+                {
+                    return Ok(false);
+                }
+                self.timeline_request = session.request_id;
+                app.handle(Action::VideoPlayCue(1), window, cx);
+                ensure!(
+                    app.video.repeat_three
+                        && app.video.sentence_repeat.is_some_and(|s| {
+                            s.three && s.index == 1 && s.request_id != self.timeline_request
+                        }),
+                    "点击字幕正文清除了三次模式或未切换到目标句"
+                );
+                self.advance();
+            }
+            90 => {
+                if !Self::clicked_cue_playing(app, &path, 1, true) {
+                    return Ok(false);
+                }
+                self.record(app, "暂停三次模式点击字幕/目标句首从第一遍播放且保留模式")?;
+                app.handle(Action::VideoPlayCue(2), window, cx);
+                app.handle(Action::VideoPlayCue(0), window, cx);
+                app.handle(Action::VideoPlayCue(1), window, cx);
+                app.media.player.set("pause", "yes");
+                self.advance();
+            }
+            91 => {
+                let state = app.media.player.snapshot();
+                let Some(session) = app.video.sentence_repeat else {
+                    return Ok(false);
+                };
+                if !Self::at(app, &path, 4.)
+                    || !state.sentence_repeat.as_ref().is_some_and(|repeat| {
+                        repeat.request_id == session.request_id
+                            && repeat.total_plays == Some(3)
+                            && repeat.current_play == 1
+                    })
+                {
+                    return Ok(false);
+                }
+                ensure!(
+                    app.video.repeat_three && session.three && session.index == 1,
+                    "连续点击字幕后没有保留最终目标句的三次模式"
+                );
+                self.record(app, "三次模式快速连续点击/最终句生效且旧完成事件不拉回")?;
+                app.handle(Action::VideoPlayCue(usize::MAX), window, cx);
+                ensure!(
+                    app.video.repeat_three
+                        && app.video.sentence_repeat.is_some_and(|s| {
+                            s.index == 1 && s.request_id == session.request_id
+                        }),
+                    "无效字幕行清除了有效三次模式或替换了原请求"
+                );
+                self.record(app, "无效字幕点击保留当前模式和请求")?;
+                self.timeline_request = session.request_id;
+                app.handle(Action::VideoPlayCue(1), window, cx);
+                self.advance();
+            }
+            92 => {
+                if !Self::clicked_cue_playing(app, &path, 1, true) {
+                    return Ok(false);
+                }
+                ensure!(
+                    app.video.sentence_repeat.unwrap().request_id != self.timeline_request,
+                    "点击同一句没有从第一遍重新建立重复"
+                );
+                self.record(app, "点击当前字幕句从句首和第一遍重新开始三次")?;
+                app.handle(Action::Rate(8.), window, cx);
+                self.advance();
+            }
+            93 => {
+                let state = app.media.player.snapshot();
+                let Some(session) = app
+                    .video
+                    .sentence_repeat
+                    .filter(|s| s.three && s.index == 2)
+                else {
+                    return Ok(false);
+                };
+                if !state.sentence_repeat.as_ref().is_some_and(|repeat| {
+                    repeat.request_id == session.request_id && repeat.total_plays == Some(3)
+                }) {
+                    return Ok(false);
+                }
+                ensure!(app.video.repeat_three, "点击字幕后的自然下一句丢失三次模式");
+                self.record(app, "点击字幕后真实完成三遍/自动下一句继续三遍")?;
+                app.handle(Action::Rate(1.), window, cx);
+                app.handle(Action::VideoSentenceRepeat(Some(0), false), window, cx);
+                app.media.player.set("pause", "yes");
+                self.advance();
+            }
+            94 => {
+                let state = app.media.player.snapshot();
+                let Some(session) = app
+                    .video
+                    .sentence_repeat
+                    .filter(|s| !s.three && s.index == 0)
+                else {
+                    return Ok(false);
+                };
+                if !Self::at(app, &path, 0.)
+                    || !state.sentence_repeat.as_ref().is_some_and(|repeat| {
+                        repeat.request_id == session.request_id && repeat.total_plays.is_none()
+                    })
+                {
+                    return Ok(false);
+                }
+                app.handle(Action::VideoPlayCue(1), window, cx);
+                ensure!(
+                    !app.video.repeat_three
+                        && app
+                            .video
+                            .sentence_repeat
+                            .is_some_and(|s| !s.three && s.index == 1),
+                    "点击字幕正文清除了无限重复模式"
+                );
+                self.advance();
+            }
+            95 => {
+                if !Self::clicked_cue_playing(app, &path, 1, false) {
+                    return Ok(false);
+                }
+                self.record(app, "无限重复时点击字幕/继续无限重复目标句")?;
+                app.handle(Action::Rate(8.), window, cx);
+                app.handle(Action::VideoSentenceRepeat(Some(2), true), window, cx);
+                self.advance();
+            }
+            96 => {
+                let state = app.media.player.snapshot();
+                let Some(session) = app
+                    .video
+                    .sentence_repeat
+                    .filter(|s| s.three && s.index == 2)
+                else {
+                    return Ok(false);
+                };
+                if !state.paused
+                    || !state.sentence_repeat.as_ref().is_some_and(|repeat| {
+                        repeat.request_id == session.request_id && repeat.finished
+                    })
+                {
+                    return Ok(false);
+                }
+                app.handle(Action::Rate(1.), window, cx);
+                app.handle(Action::VideoPlayCue(0), window, cx);
+                ensure!(app.video.repeat_three, "末句完成后点击字幕退出了三次模式");
+                self.advance();
+            }
+            97 => {
+                if !Self::clicked_cue_playing(app, &path, 0, true) {
+                    return Ok(false);
+                }
+                self.record(app, "末句完成三次后点击首句/保留模式并重新播放三遍")?;
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                app.handle(Action::VideoPlayCue(2), window, cx);
+                self.advance();
+            }
+            98 => {
+                let state = app.media.player.snapshot();
+                if state.paused || state.position < 7.95 || state.position > 9. {
+                    return Ok(false);
+                }
+                ensure!(
+                    !app.video.repeat_three
+                        && app.video.sentence_repeat.is_none()
+                        && state.sentence_repeat.is_none(),
+                    "普通模式点击字幕错误启用了句子重复"
+                );
+                self.record(app, "普通模式点击字幕仍从目标句正常播放")?;
                 app.handle(Action::Page("settings".into()), window, cx);
                 self.report(Some(true), None)?;
                 self.advance();
@@ -1856,6 +2038,28 @@ impl Probe {
             _ => return Ok(true),
         }
         Ok(false)
+    }
+    fn clicked_cue_playing(app: &AppView, path: &Path, index: usize, three: bool) -> bool {
+        let state = app.media.player.snapshot();
+        let Some(session) = app.video.sentence_repeat else {
+            return false;
+        };
+        state.path == path.to_string_lossy()
+            && !state.paused
+            && state.error.is_empty()
+            && app.video.repeat_three == three
+            && session.three == three
+            && session.index == index
+            && state.position >= session.range.0 - 0.05
+            && state.position < session.range.0 + 1.
+            && state.sentence_repeat.as_ref().is_some_and(|repeat| {
+                repeat.request_id == session.request_id
+                    && repeat.total_plays == if three { Some(3) } else { None }
+                    && repeat.current_play == 1
+                    && !repeat.finished
+                    && (repeat.start - session.range.0).abs() < 0.001
+                    && (repeat.end - session.range.1).abs() < 0.001
+            })
     }
     fn paused_middle_repeat(app: &AppView, path: &std::path::Path) -> bool {
         let state = app.media.player.snapshot();

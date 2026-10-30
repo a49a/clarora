@@ -74,7 +74,6 @@ impl AppView {
             Action::VideoTranscribe => self.video.pending_start.is_none(),
             Action::Seek(_)
             | Action::SeekTo(_)
-            | Action::VideoPlayCue(_)
             | Action::VideoClearLoop
             | Action::LoopMode(_)
             | Action::Repeat
@@ -1238,6 +1237,13 @@ impl AppView {
                     let cue = self.video.cues.get(index).context("字幕行不存在")?;
                     let start = cue.start;
                     ensure!(start.is_finite() && start >= 0., "字幕时间无效");
+                    if self.video.repeat_three || self.video.sentence_repeat.is_some() {
+                        // A subtitle click chooses a new sentence in the current
+                        // repeat mode, restarting its play count from the beginning.
+                        self.start_video_sentence_repeat(Some(index), self.video.repeat_three)?;
+                        return Ok(());
+                    }
+                    self.reset_video_sentence_request();
                     // A previous sentence loop must not pull playback back to its B point.
                     if self.media.repeat == 2 {
                         self.media.repeat = 0;
