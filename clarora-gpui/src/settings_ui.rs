@@ -292,12 +292,27 @@ impl AppView {
                         ),
                 ),
         );
-        for (i, key) in self.backups.iter().enumerate() {
+        content = content.child(panel(cx).child(self.cloud_sync_settings(cx)));
+        for (i, version) in self.cloud.versions.iter().enumerate() {
+            let created = chrono::DateTime::parse_from_rfc3339(&version.created_at)
+                .map(|d| {
+                    d.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_else(|_| "未知时间".into());
             content = content.child(
                 self.button(
                     format!("restore-{i}"),
-                    format!("合并：{key}"),
-                    Action::CloudRestore(key.clone()),
+                    format!(
+                        "恢复合并 · {created} · {}",
+                        if version.format_version == 3 {
+                            "增量备份"
+                        } else {
+                            "旧版备份"
+                        }
+                    ),
+                    Action::CloudRestore(version.key.clone()),
                     cx,
                 )
                 .disabled(self.tasks.cancel.is_some()),

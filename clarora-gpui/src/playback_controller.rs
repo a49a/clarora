@@ -9,6 +9,7 @@ impl AppView {
             self.media.player.set_video_target(0, 0, false);
         }
         let chat_changed = self.poll_chat(window, cx);
+        self.poll_auto_cloud_sync(window, cx);
         if self.poll_close(window, cx) {
             return;
         }

@@ -10,6 +10,7 @@ mod audio_subtitle_ui;
 mod backup_progress_probe;
 mod chat_controller_ui;
 mod clip_selection_ui;
+mod cloud_ui;
 mod data_controller;
 mod design;
 mod feedback_ui;
@@ -277,6 +278,11 @@ enum Action {
     CloudList,
     CloudBackup,
     CloudRestore(String),
+    CloudSync,
+    CloudAutoSync,
+    CloudRetention(u8, usize),
+    CloudCleanupPreview,
+    CloudCleanup,
     PdfPage(i32),
     PdfZoom(i32),
     DocumentCopy,
@@ -322,9 +328,12 @@ enum Outcome {
     Ebook(ebook::Reading),
     Ocr(String),
     KeyPoints(String, Vec<ai::KeyPoint>),
-    Backups(Vec<String>),
-    BackupCreated(String),
+    BackupCreated(String, u32),
     BackupFailed(String),
+    CloudVersions(Vec<backup::BackupVersion>),
+    CloudCleanupPlan(backup::CleanupPlan),
+    CloudCleaned(backup::CleanupResult, Vec<backup::BackupVersion>),
+    CloudSynced(backup::SyncResult, video_library::Collection),
     Recording(PathBuf),
     TtsReady(Row),
     CommandImported(clarora_gpui::command_import::Report),
@@ -362,6 +371,7 @@ struct AppView {
     data: clarora_gpui::view_data::State,
     loads: data_controller::Loads,
     settings: app_state::SettingsState,
+    cloud: cloud_ui::State,
     chat: clarora_gpui::chat_controller::Controller,
     assistant: assistant_ui::State,
     chat_requested_context: String,
@@ -503,6 +513,7 @@ impl AppView {
             data: Default::default(),
             loads: Default::default(),
             settings: app_state::SettingsState::new(&lib),
+            cloud: cloud_ui::State::new(&lib),
             chat: clarora_gpui::chat_controller::Controller::new(lib.clone()),
             assistant: Default::default(),
             chat_requested_context: String::new(),

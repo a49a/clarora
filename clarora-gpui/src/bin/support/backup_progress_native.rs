@@ -10,7 +10,8 @@ use std::{
 };
 
 pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
-    let workflow = "原生后台云备份：真实页面切换保留任务/全局进度/确认前不满100%/跨页取消/错误终态";
+    let workflow =
+        "原生后台云备份与同步：跨模块进度/确认前不满100%/取消与失败/草稿保留/同步开关及保留策略";
     if !cfg!(debug_assertions)
         || !cfg!(target_os = "macos")
         || std::env::var("CLARORA_GUI_MEMORY_CHECK").as_deref() != Ok("1")
@@ -65,7 +66,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         report["cases"]
             .as_array()
-            .is_some_and(|cases| cases.len() >= 9),
+            .is_some_and(|cases| cases.len() >= 13),
         "后台备份原生验收未覆盖全部步骤"
     );
     results.push(json!({"workflow":workflow,"passed":true,"report":report_path,"seconds":started.elapsed().as_secs_f64()}));

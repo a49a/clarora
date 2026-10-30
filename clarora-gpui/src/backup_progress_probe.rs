@@ -32,6 +32,7 @@ struct Control {
     bytes_received: AtomicU64,
     manifests_accepted: AtomicU64,
     requests: Mutex<Vec<Value>>,
+    objects: Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
     error: Mutex<Option<String>>,
 }
 struct Fixture {
@@ -73,17 +74,18 @@ impl Fixture {
         })
     }
     fn serve(stream: &mut TcpStream, control: &Control) -> Result<()> {
+        stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(Duration::from_millis(100)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-        let mut input = Vec::new();
-        let mut chunk = [0_u8; 32 * 1024];
+        stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+        let mut input = vec![];
+        let mut chunk = [0u8; 32768];
         let split = loop {
             match stream.read(&mut chunk) {
                 Ok(0) => return Ok(()),
-                Ok(count) => input.extend_from_slice(&chunk[..count]),
-                Err(error)
+                Ok(n) => input.extend_from_slice(&chunk[..n]),
+                Err(e)
                     if matches!(
-                        error.kind(),
+                        e.kind(),
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                     ) =>
                 {
@@ -92,78 +94,82 @@ impl Fixture {
                     }
                     continue;
                 }
-                Err(error) => return Err(error.into()),
+                Err(e) => return Err(e.into()),
             }
-            if let Some(index) = input.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                break index + 4;
+            if let Some(i) = input.windows(4).position(|s| s == b"\r\n\r\n") {
+                break i + 4;
             }
-            ensure!(
-                input.len() < 64 * 1024,
-                "native fixture header exceeded bound"
-            );
+            ensure!(input.len() < 65536, "native fixture header too large");
         };
-        let headers = std::str::from_utf8(&input[..split])?;
-        let line = headers
+        let header = std::str::from_utf8(&input[..split])?;
+        let mut line = header
             .lines()
             .next()
-            .context("native fixture request line")?;
+            .context("request line")?
+            .split_whitespace();
+        let method = line.next().context("method")?.to_string();
+        let target = line.next().context("target")?;
+        let url = url::Url::parse(&format!("http://fixture{target}"))?;
+        let key = url
+            .path()
+            .strip_prefix("/fixture-bucket/")
+            .context("bucket")?
+            .to_string();
         ensure!(
-            line.starts_with("PUT /fixture-bucket/"),
-            "native fixture expected signed PUT"
+            header.contains("Credential=fixture-access/"),
+            "fixture signature missing"
         );
-        ensure!(
-            headers.contains("Credential=fixture-access/"),
-            "native fixture missing fake signature"
-        );
-        let manifest = line.contains("/snapshots/");
-        let length = headers
+        let headers = header
             .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<u64>().ok())
-                    .flatten()
-            })
-            .context("native fixture missing content length")?;
-        let mut received = (input.len() - split) as u64;
-        drop(input);
-        if !manifest {
-            control.bytes_received.fetch_add(received, Ordering::SeqCst);
+            .skip(1)
+            .filter_map(|s| s.split_once(':'))
+            .map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_string()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let length = headers
+            .get("content-length")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+        ensure!(length <= 64 * 1024 * 1024, "fixture request too large");
+        let attachment = method == "PUT" && (key.contains("/objects/") || key.contains("/media/"));
+        let manifest = method == "PUT" && (key.contains("/snapshots/") || key.contains("/sync/"));
+        let mut body = input[split..].to_vec();
+        if attachment {
+            control
+                .bytes_received
+                .fetch_add(body.len() as u64, Ordering::SeqCst);
         }
-        while received < length && !control.stop.load(Ordering::SeqCst) {
-            let needed = (length - received).min(chunk.len() as u64) as usize;
-            match stream.read(&mut chunk[..needed]) {
+        while body.len() < length && !control.stop.load(Ordering::SeqCst) {
+            let count = (length - body.len()).min(chunk.len());
+            match stream.read(&mut chunk[..count]) {
                 Ok(0) => break,
-                Ok(count) => {
-                    received += count as u64;
-                    if !manifest {
-                        control
-                            .bytes_received
-                            .fetch_add(count as u64, Ordering::SeqCst);
+                Ok(n) => {
+                    body.extend_from_slice(&chunk[..n]);
+                    if attachment {
+                        control.bytes_received.fetch_add(n as u64, Ordering::SeqCst);
                         thread::sleep(Duration::from_millis(4));
                     }
                 }
-                Err(error)
+                Err(e)
                     if matches!(
-                        error.kind(),
+                        e.kind(),
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                     ) =>
                 {
                     continue;
                 }
-                Err(error)
+                Err(e)
                     if matches!(
-                        error.kind(),
+                        e.kind(),
                         std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
                     ) =>
                 {
                     break;
                 }
-                Err(error) => return Err(error.into()),
+                Err(e) => return Err(e.into()),
             }
         }
-        control.requests.lock().unwrap().push(json!({"method":"PUT","manifest":manifest,"bytes_received":received,"declared_bytes":length,"complete":received==length}));
-        if received != length || control.stop.load(Ordering::SeqCst) {
+        control.requests.lock().unwrap().push(json!({"method":method,"key":key,"manifest":manifest,"bytes_received":body.len(),"declared_bytes":length,"complete":body.len()==length}));
+        if body.len() != length || control.stop.load(Ordering::SeqCst) {
             return Ok(());
         }
         if manifest {
@@ -178,24 +184,66 @@ impl Fixture {
                 return Ok(());
             }
         }
-        let rejected = manifest && control.reject_manifest.load(Ordering::SeqCst);
-        let (status, body) = if rejected {
+        let mut store = control.objects.lock().unwrap();
+        let old = store.get(&key);
+        let etag = old.map(|b| format!("\"{}\"", backup::cloud::checksum(b)));
+        let precondition = headers.get("if-none-match").is_some_and(|s| s == "*") && old.is_some()
+            || headers
+                .get("if-match")
+                .is_some_and(|s| Some(s) != etag.as_ref());
+        let (status, output, extra) = if precondition {
+            ("412 Precondition Failed", vec![], String::new())
+        } else if manifest && control.reject_manifest.load(Ordering::SeqCst) {
             (
                 "403 Forbidden",
-                "<Error><Code>AccessDenied</Code><Message>native-private-marker</Message></Error>",
+                b"<Error><Code>AccessDenied</Code><Message>native-private-marker</Message></Error>"
+                    .to_vec(),
+                String::new(),
+            )
+        } else if method == "PUT" {
+            let etag = backup::cloud::checksum(&body);
+            store.insert(key, body);
+            if manifest {
+                control.manifests_accepted.fetch_add(1, Ordering::SeqCst);
+            }
+            ("200 OK", vec![], format!("ETag: \"{etag}\"\r\n"))
+        } else if method == "DELETE" {
+            store.remove(&key);
+            ("204 No Content", vec![], String::new())
+        } else if url.query_pairs().any(|(k, _)| k == "list-type") {
+            let prefix = url
+                .query_pairs()
+                .find(|(k, _)| k == "prefix")
+                .map(|(_, v)| v.into_owned())
+                .unwrap_or_default();
+            let items=store.iter().filter(|(k,_)|k.starts_with(&prefix)).map(|(k,v)|format!("<Contents><Key>{k}</Key><Size>{}</Size><LastModified>{}</LastModified></Contents>",v.len(),chrono::Utc::now().to_rfc3339())).collect::<String>();
+            (
+                "200 OK",
+                format!(
+                    "<ListBucketResult>{items}<IsTruncated>false</IsTruncated></ListBucketResult>"
+                )
+                .into_bytes(),
+                String::new(),
+            )
+        } else if let Some(bytes) = old {
+            let sha = backup::cloud::checksum(bytes);
+            (
+                "200 OK",
+                bytes.clone(),
+                format!("ETag: \"{sha}\"\r\nx-amz-meta-sha256: {sha}\r\n"),
             )
         } else {
-            ("200 OK", "")
+            ("404 Not Found", vec![], String::new())
         };
         write!(
             stream,
-            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n",
+            output.len()
         )?;
-        stream.flush()?;
-        if manifest && !rejected {
-            control.manifests_accepted.fetch_add(1, Ordering::SeqCst);
+        if method != "HEAD" {
+            stream.write_all(&output)?;
         }
+        stream.flush()?;
         Ok(())
     }
     fn reset(&self, reject: bool) {
@@ -275,11 +323,12 @@ impl Probe {
         json!({"page":app.page,"audio":app.audio.current_id,"video":app.video.path,"chat_context":app.chat.context,"chat_session":app.chat.id,"draft":app.value("question",cx),"data_revision":app.data.revision})
     }
     fn running(&mut self, app: &AppView, cx: &Context<AppView>) -> Result<()> {
-        let cancel = app
-            .tasks
-            .cancel
-            .as_ref()
-            .context("cloud backup stopped during page navigation")?;
+        let cancel = app.tasks.cancel.as_ref().with_context(|| {
+            format!(
+                "cloud operation stopped during page navigation: {}",
+                app.status
+            )
+        })?;
         ensure!(
             !cancel.load(Ordering::SeqCst),
             "page navigation cancelled cloud backup"
@@ -299,9 +348,13 @@ impl Probe {
             "cloud backup banner missing on current page"
         );
         ensure!(
-            app.tasks.notice.as_ref().is_some_and(
-                |notice| notice.title == "云备份" && notice.state == TaskState::Running
-            ),
+            app.tasks
+                .notice
+                .as_ref()
+                .is_some_and(
+                    |notice| ["云备份", "云端同步"].contains(&notice.title.as_str())
+                        && notice.state == TaskState::Running
+                ),
             "cloud backup notice stopped or disappeared"
         );
         if let Some(progress) = &app.tasks.backup_progress {
@@ -327,6 +380,12 @@ impl Probe {
             .as_ref()
             .context("native HTTP fixture missing")?;
         fixture.reset(reject);
+        // Each run edits the isolated source so cancellation still has a real
+        // in-flight chunk even after a prior successful deduplicated backup.
+        let path = app.lib.root.join("media/native-backup-fixture.bin");
+        let mut file = fs::OpenOptions::new().write(true).open(path)?;
+        file.write_all(id().as_bytes())?;
+        file.sync_all()?;
         app.tasks.backup_fixture = Some(fixture.address);
         app.handle(Action::CloudBackup, window, cx);
         self.active_token = app.tasks.cancel.clone();
@@ -612,6 +671,109 @@ impl Probe {
                 );
                 self.note(
                     "HTTP failure remains visible and incomplete outside settings",
+                    app,
+                    cx,
+                )?;
+                self.fixture.as_ref().unwrap().reset(false);
+                app.handle(Action::CloudSync, window, cx);
+                self.active_token = app.tasks.cancel.clone();
+                ensure!(
+                    self.active_token.is_some(),
+                    "real CloudSync action did not start"
+                );
+                self.note(
+                    "actual CloudSync starts application-scoped signed S3 operation",
+                    app,
+                    cx,
+                )?;
+                self.advance();
+            }
+            11 => {
+                self.running(app, cx)?;
+                if !self
+                    .fixture
+                    .as_ref()
+                    .unwrap()
+                    .control
+                    .manifest_waiting
+                    .load(Ordering::SeqCst)
+                    || !app
+                        .tasks
+                        .backup_progress
+                        .as_ref()
+                        .is_some_and(|p| p.stage == backup::UploadStage::Publishing)
+                {
+                    return Ok(false);
+                }
+                if app.page != "writing" {
+                    app.handle(Action::Page("writing".into()), window, cx);
+                    Self::request_draw(window, cx);
+                    return Ok(false);
+                }
+                if app.chat.is_loading() {
+                    return Ok(false);
+                }
+                app.set("question", "同步跨页后仍保留的问题草稿", window, cx);
+                app.chat.observe_draft("同步跨页后仍保留的问题草稿");
+                self.running(app, cx)?;
+                self.note(
+                    "sync keeps global progress across modules before server confirmation",
+                    app,
+                    cx,
+                )?;
+                self.fixture
+                    .as_ref()
+                    .unwrap()
+                    .control
+                    .release_manifest
+                    .store(true, Ordering::SeqCst);
+                self.advance();
+            }
+            12 => {
+                if app.tasks.cancel.is_some() {
+                    return Ok(false);
+                }
+                ensure!(
+                    app.tasks
+                        .notice
+                        .as_ref()
+                        .is_some_and(|n| n.state == TaskState::Succeeded),
+                    "CloudSync did not complete successfully: {}",
+                    app.status
+                );
+                ensure!(
+                    app.cloud.status.contains("同步完成")
+                        && app
+                            .tasks
+                            .backup_progress
+                            .as_ref()
+                            .is_some_and(|p| p.stage == backup::UploadStage::Completed),
+                    "sync result or completed progress missing"
+                );
+                ensure!(
+                    app.value("question", cx) == "同步跨页后仍保留的问题草稿",
+                    "sync refreshed away active question draft"
+                );
+                self.note(
+                    "successful guarded sync is visible outside settings and preserves draft",
+                    app,
+                    cx,
+                )?;
+                app.handle(Action::CloudRetention(0, 5), window, cx);
+                ensure!(
+                    app.cloud.retention.keep_last == 5
+                        && app.lib.setting("cloud_retention_v3")?.contains("5"),
+                    "retention choice did not persist"
+                );
+                app.handle(Action::CloudAutoSync, window, cx);
+                ensure!(
+                    app.cloud.automatic && app.lib.setting("cloud_auto_sync_v3")? == "true",
+                    "automatic sync opt-in did not persist"
+                );
+                app.handle(Action::CloudAutoSync, window, cx);
+                ensure!(!app.cloud.automatic, "automatic sync opt-out failed");
+                self.note(
+                    "retention and explicit automatic-sync opt-in persist through real actions",
                     app,
                     cx,
                 )?;

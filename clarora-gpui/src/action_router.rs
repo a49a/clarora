@@ -2188,6 +2188,9 @@ impl AppView {
                     });
                 }
                 Action::SaveStorage => {
+                    self.cloud.plan = None;
+                    self.cloud.versions.clear();
+                    self.cloud.status.clear();
                     let config = backup::StorageConfig {
                         provider: self.value("provider", cx),
                         endpoint: self.value("endpoint", cx),
@@ -2239,8 +2242,8 @@ impl AppView {
                     TaskScope::Application,
                     "正在读取备份版本…",
                     move |lib, cancel, _| {
-                        Ok(Outcome::Backups(
-                            backup::Storage::load(&lib)?.list_cancellable(&cancel)?,
+                        Ok(Outcome::CloudVersions(
+                            backup::Storage::load(&lib)?.versions(&cancel)?,
                         ))
                     },
                 ),
@@ -2261,14 +2264,21 @@ impl AppView {
                                 .unwrap_or_else(|| backup::Storage::load(&lib))?;
                             #[cfg(not(debug_assertions))]
                             let storage = backup::Storage::load(&lib)?;
-                            Ok(
-                                match storage.upload_with_progress(&lib, &cancel, move |progress| {
-                                    let _ = tx.send(Event::BackupProgress(progress));
-                                }) {
-                                    Ok(key) => Outcome::BackupCreated(key),
-                                    Err(error) => Outcome::BackupFailed(format!("{error:#}")),
-                                },
-                            )
+                            let incremental = storage.incremental_supported();
+                            let progress = move |progress| {
+                                let _ = tx.send(Event::BackupProgress(progress));
+                            };
+                            let result = if incremental {
+                                storage.upload_incremental(&lib, &cancel, progress)
+                            } else {
+                                storage.upload_with_progress(&lib, &cancel, progress)
+                            };
+                            Ok(match result {
+                                Ok(key) => {
+                                    Outcome::BackupCreated(key, if incremental { 3 } else { 2 })
+                                }
+                                Err(error) => Outcome::BackupFailed(format!("{error:#}")),
+                            })
                         },
                     );
                     self.tasks.backup_progress = Some(backup::UploadProgress {
@@ -2282,13 +2292,87 @@ impl AppView {
                     });
                     self.tasks.notice = Some(TaskNotice::new("云备份", "正在整理资料和附件…"));
                 }
-                Action::CloudRestore(key) => {
-                    self.begin("正在恢复并合并…", move |lib, cancel, _| {
-                        let count = backup::Storage::load(&lib)?.restore(&lib, &key, &cancel)?;
+                Action::CloudRestore(key) => self.begin_scoped(
+                    TaskScope::Application,
+                    "正在校验并恢复备份…",
+                    move |lib, cancel, _| {
+                        let count =
+                            backup::Storage::load(&lib)?.restore_checked(&lib, &key, &cancel)?;
                         let videos = video_library::Collection::load(&lib)
                             .context("资料已恢复，但重新载入视频库失败，请刷新")?;
                         Ok(Outcome::LibraryRestored(count, videos))
-                    })
+                    },
+                ),
+                Action::CloudSync => self.cloud_sync(window, cx)?,
+                Action::CloudAutoSync => {
+                    self.cloud.automatic = !self.cloud.automatic;
+                    self.lib.set_setting(
+                        "cloud_auto_sync_v3",
+                        if self.cloud.automatic {
+                            "true"
+                        } else {
+                            "false"
+                        },
+                    )?;
+                    if self.cloud.automatic {
+                        self.cloud.last_attempt = Instant::now() - Duration::from_secs(300);
+                    }
+                    self.report_status(
+                        FeedbackKind::Info,
+                        if self.cloud.automatic {
+                            "自动同步已开启：每5分钟在页面空闲时检查"
+                        } else {
+                            "自动同步已关闭，仍可手动同步"
+                        }
+                        .into(),
+                    );
+                }
+                Action::CloudRetention(which, value) => {
+                    match which {
+                        0 => {
+                            ensure!((1..=10000).contains(&value), "保留份数无效");
+                            self.cloud.retention.keep_last = value;
+                        }
+                        1 => {
+                            ensure!(value <= 36500, "保留天数无效");
+                            self.cloud.retention.keep_days = value as u64;
+                        }
+                        2 => {
+                            ensure!((1..=36500).contains(&value), "孤立对象宽限无效");
+                            self.cloud.retention.orphan_days = value as u64;
+                        }
+                        _ => anyhow::bail!("保留策略无效"),
+                    }
+                    self.lib.set_setting(
+                        "cloud_retention_v3",
+                        &serde_json::to_string(&self.cloud.retention)?,
+                    )?;
+                    self.cloud.plan = None;
+                }
+                Action::CloudCleanupPreview => {
+                    let policy = self.cloud.retention.clone();
+                    self.begin_scoped(
+                        TaskScope::Application,
+                        "正在检查可清理版本和附件…",
+                        move |lib, cancel, _| {
+                            Ok(Outcome::CloudCleanupPlan(
+                                backup::Storage::load(&lib)?.preview_cleanup(policy, &cancel)?,
+                            ))
+                        },
+                    );
+                }
+                Action::CloudCleanup => {
+                    let plan = self.cloud.plan.clone().context("请先预览可清理内容")?;
+                    self.begin_scoped(
+                        TaskScope::Application,
+                        "正在按预览清理云端对象…",
+                        move |lib, cancel, _| {
+                            let storage = backup::Storage::load(&lib)?;
+                            let result = storage.cleanup(&plan, &cancel)?;
+                            Ok(Outcome::CloudCleaned(result, storage.versions(&cancel)?))
+                        },
+                    );
+                    self.cloud.plan = None;
                 }
                 Action::DocumentCopy => {
                     cx.write_to_clipboard(ClipboardItem::new_string(self.document_text.clone()));

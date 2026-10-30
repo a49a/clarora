@@ -165,6 +165,7 @@ impl AppView {
                             || matches!(&result, Ok(Outcome::BackupFailed(_)))
                             || matches!(&result, Ok(Outcome::AudioBatch(report)) if !report.failed.is_empty());
                         let completed_backup = self.tasks.backup_progress.is_some();
+                        let completed_sync = matches!(&result, Ok(Outcome::CloudSynced(..)));
                         let completed_chat = request.is_some();
                         let accepted = request.as_ref().is_none_or(|r| self.chat.finish_request(r));
                         let mut cancelled = self
@@ -424,19 +425,57 @@ impl AppView {
                                 );
                                 self.report_status(FeedbackKind::Info, "PDF 已载入".into());
                             }
-                            Ok(Outcome::Backups(v)) => {
-                                let message = if v.is_empty() {
-                                    "连接成功，当前资料库前缀下暂无备份。点击「备份本机资料」可创建备份。".into()
-                                } else {
-                                    format!(
-                                        "已读取 {} 个备份版本，可在「同步与备份」中查看",
-                                        v.len()
-                                    )
-                                };
-                                self.backups = v;
-                                self.report_status(FeedbackKind::Info, message);
+                            Ok(Outcome::CloudVersions(v)) => {
+                                self.backups = v.iter().map(|x| x.key.clone()).collect();
+                                self.cloud.versions = v;
+                                self.report_status(
+                                    FeedbackKind::Info,
+                                    format!("已读取 {} 个云备份版本", self.cloud.versions.len()),
+                                );
                             }
-                            Ok(Outcome::BackupCreated(key)) => {
+                            Ok(Outcome::CloudCleanupPlan(plan)) => {
+                                self.report_status(
+                                    FeedbackKind::Info,
+                                    format!(
+                                        "清理预览：{} 个旧版本、{} 个未引用对象；确认后才会删除",
+                                        plan.snapshots.len(),
+                                        plan.objects.len()
+                                    ),
+                                );
+                                self.cloud.plan = Some(plan);
+                            }
+                            Ok(Outcome::CloudCleaned(report, versions)) => {
+                                self.backups = versions.iter().map(|v| v.key.clone()).collect();
+                                self.cloud.versions = versions;
+                                self.cloud.plan = None;
+                                self.report_status(
+                                    FeedbackKind::Info,
+                                    format!(
+                                        "清理完成：{} 个版本、{} 个对象，释放约 {:.1} MiB",
+                                        report.snapshots_deleted,
+                                        report.objects_deleted,
+                                        report.bytes_freed as f64 / 1048576.
+                                    ),
+                                );
+                            }
+                            Ok(Outcome::CloudSynced(report, videos)) => {
+                                cancelled = false;
+                                self.video.collection = videos;
+                                self.cloud.plan = None;
+                                self.cloud.status = report.summary.clone();
+                                self.refresh_view_data();
+                                self.report_status(FeedbackKind::Info, report.summary);
+                            }
+                            Ok(Outcome::BackupCreated(key, format_version)) => {
+                                self.cloud.versions.insert(
+                                    0,
+                                    backup::BackupVersion {
+                                        key: key.clone(),
+                                        created_at: chrono::Utc::now().to_rfc3339(),
+                                        format_version,
+                                    },
+                                );
+                                self.cloud.plan = None;
                                 // A confirmed remote commit wins over a simultaneous cancel.
                                 cancelled = false;
                                 if !self.backups.contains(&key) {
@@ -550,7 +589,7 @@ impl AppView {
                         if !completed_chat && !completed_backup {
                             self.refresh();
                         }
-                        if let Err(error) = if completed_backup {
+                        if let Err(error) = if completed_backup && !completed_sync {
                             Ok(())
                         } else {
                             self.chat.refresh()
