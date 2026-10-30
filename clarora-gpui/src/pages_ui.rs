@@ -573,15 +573,6 @@ impl AppView {
                                     cx,
                                 ),
                             )
-                            .child(
-                                self.button(
-                                    "video-english-transcript",
-                                    "英文文稿",
-                                    Action::VideoTranscript,
-                                    cx,
-                                )
-                                .selected(self.video.transcript_open),
-                            )
                             .child(self.button(
                                 "video-more",
                                 if self.video.tools_open {
@@ -781,22 +772,22 @@ impl AppView {
                         .flex_1()
                         .min_h_0()
                         .w_full();
-                        study = study.child(div().px_3().py_2().flex().items_center().gap_1().flex_wrap()
-                            .child(self.button("video-follow", if self.video.follow { "跟随 ✓" } else { "跟随" }, Action::VideoFollow, cx).ghost())
-                            .child(self.button("video-import-english", "导入英文字幕", Action::Pick("video-subtitle".into()),cx).ghost().disabled(self.media.path.is_none()||self.tasks.cancel.is_some()||self.tasks.video_job.is_some()))
-                            .child(self.button("video-translate-zh", "英文生成中文", Action::VideoTranslate,cx).disabled(self.video.cues.is_empty()||self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.media.path.is_none()))
-                            .child(div().flex_1())
-                            .child(self.button("video-copy-selected","复制选中",Action::CopySelectedSubtitle,cx).ghost().disabled(!self.has_subtitle_selection()))
-                            .child(self.button("video-copy-all", "复制全部", Action::VideoCopySubtitle(None), cx).ghost().disabled(self.video.cues.is_empty()))
-                            .child(self.button("video-translate-all", "全部P翻译中文", Action::VideoTranslateAll,cx)
-                                .disabled(self.video.series.is_none()||self.tasks.cancel.is_some()||self.tasks.video_job.is_some()))
-                            .child(self.button("video-transcribe-all", "全部P生成字幕", Action::VideoTranscribeAll,cx)
-                                .disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.video.series.is_none()||self.media.path.is_none()))
-                            .child(self.button("video-transcribe", if self.video.cues.is_empty() { "生成字幕" } else { "重新生成" }, Action::VideoTranscribe, cx)
-                                .disabled(self.tasks.cancel.is_some() || self.tasks.video_job.is_some() || self.media.path.is_none())))
-                            .when(self.video.cues.is_empty(), |v| v.child(div().p_5().text_sm().text_color(cx.theme().muted_foreground)
-                                .child("生成或导入字幕后，点击句子即可播放。复制与 AI 提问位于每句下方。")))
-                            .when(!self.video.cues.is_empty(), |v| v.child(transcript));
+                        study = study.child(self.video_subtitle_toolbar(cx));
+                        if self.video.transcript_open {
+                            study = study.child(self.video_transcript_view(window, cx));
+                        } else if self.video.cues.is_empty() {
+                            study = study.child(
+                                div()
+                                    .p_5()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        "先生成或导入英文字幕，再逐句播放、复制全文或向 AI 提问。",
+                                    ),
+                            );
+                        } else {
+                            study = study.child(transcript);
+                        }
                     }
                     1 => {
                         if let Some(series) = &self.video.series {
@@ -1014,9 +1005,6 @@ impl AppView {
                         .when(!stacked, |v| v.child(divider))
                         .child(study),
                 );
-                if self.video.transcript_open {
-                    content = content.child(self.video_transcript_view(window, cx));
-                }
                 if self.video.tools_open || self.media.path.is_none() {
                     content = content.child(
                         div()

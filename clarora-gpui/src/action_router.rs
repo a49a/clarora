@@ -1916,10 +1916,17 @@ impl AppView {
                         }
                     }
                 }
-                Action::VideoTranscript => {
-                    self.video.transcript_open = !self.video.transcript_open;
+                Action::VideoTranscriptMode(show) => {
+                    ensure!(self.page == "video", "请先进入视频学习");
+                    if self.video.transcript_open != show {
+                        self.subtitle_text.borrow_mut().clear();
+                    }
+                    self.video.transcript_open = show;
+                    self.video.tab = 0;
+                    self.focus.focus(window);
                 }
                 Action::VideoCopyTranscript => {
+                    ensure!(self.page == "video", "请先进入视频学习");
                     ensure!(
                         !self.video.transcript.text.is_empty(),
                         "没有可复制的英文文稿"
@@ -1929,7 +1936,31 @@ impl AppView {
                     ));
                     self.report_status(
                         FeedbackKind::Info,
-                        "已复制整篇英文文稿（不含时间戳与中文翻译）".into(),
+                        format!(
+                            "已复制英文全文 · {} 句，约 {} 词",
+                            self.video.transcript.cue_count, self.video.transcript.word_count
+                        ),
+                    );
+                    self.focus.focus(window);
+                }
+                Action::VideoAskTranscript => {
+                    ensure!(self.page == "video", "请先进入视频学习");
+                    ensure!(
+                        !self.video.transcript.text.is_empty(),
+                        "暂无英文全文，请先生成或导入英文字幕"
+                    );
+                    // Use the exact cached English copy text. VideoAsk(All)
+                    // includes bilingual cues, timestamps and legacy wrappers.
+                    self.add_assistant_reference(
+                        clarora_gpui::assistant::Reference {
+                            text: self.video.transcript.text.clone(),
+                        },
+                        window,
+                        cx,
+                    )?;
+                    self.report_status(
+                        FeedbackKind::Info,
+                        "已添加英文全文引用；请在助手中检查引用并输入问题后发送".into(),
                     );
                 }
                 Action::AudioCopySubtitle(audio_id, cue) => {

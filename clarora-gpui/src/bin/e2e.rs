@@ -55,6 +55,8 @@ mod runtime_stability;
 mod storage_errors;
 #[path = "support/subtitle_selection.rs"]
 mod subtitle_selection;
+#[path = "support/subtitle_workbench_native.rs"]
+mod subtitle_workbench_native;
 #[path = "support/timer_chimes.rs"]
 mod timer_chimes;
 #[path = "support/transcript.rs"]
@@ -234,6 +236,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     gpu_memory::run(&root, results)?;
     runtime_stability::run(&root, results, 32)?;
     ui_controller::run(&root, results)?;
+    subtitle_workbench_native::run(&root, results)?;
     let lib = Library::open(root.join("source"))?;
     assistant::run(&lib, results)?;
     chat_controller::run(&lib, results)?;
@@ -925,6 +928,7 @@ fn main() -> Result<()> {
     let mode = match args.get(2).and_then(|arg| arg.to_str()) {
         Some("--video-batch-translation-only") => "video-batch-translation-only",
         Some("--ui-controller-only") => "ui-controller-only",
+        Some("--subtitle-workbench-only") => "subtitle-workbench-only",
         Some("--assistant-only") => "assistant-only",
         Some("--chat-controller-only") => "chat-controller-only",
         Some("--data-loader-only") => "data-loader-only",
@@ -960,6 +964,11 @@ fn main() -> Result<()> {
             .and_then(|lib| assistant::run(&lib, &mut results))
     } else if mode == "ui-controller-only" {
         ui_controller::run(&output, &mut results)
+    } else if mode == "subtitle-workbench-only" {
+        Library::open(output.join("subtitle-workbench-source")).and_then(|lib| {
+            transcript::run(&lib, &mut results)?;
+            subtitle_workbench_native::run(&output, &mut results)
+        })
     } else if mode == "chat-controller-only" {
         Library::open(output.join("chat-controller-source"))
             .and_then(|lib| chat_controller::run(&lib, &mut results))

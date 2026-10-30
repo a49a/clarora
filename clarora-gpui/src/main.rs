@@ -23,6 +23,8 @@ mod saved_clip_ui;
 mod settings_ui;
 mod subtitle_follow_ui;
 mod subtitle_text_ui;
+#[cfg(debug_assertions)]
+mod subtitle_workbench_probe;
 mod task_controller;
 mod task_ui;
 #[cfg(debug_assertions)]
@@ -252,8 +254,9 @@ enum Action {
     VideoFollow,
     VideoPanel(usize),
     VideoTools,
-    VideoTranscript,
+    VideoTranscriptMode(bool),
     VideoCopyTranscript,
+    VideoAskTranscript,
     VideoSelect(String),
     VideoEpisodes(String),
     VideoRemove(String),
@@ -354,6 +357,8 @@ struct AppView {
     probe: Option<ui_controller_probe::Probe>,
     #[cfg(debug_assertions)]
     backup_probe: Option<backup_progress_probe::Probe>,
+    #[cfg(debug_assertions)]
+    subtitle_probe: Option<subtitle_workbench_probe::Probe>,
     data: clarora_gpui::view_data::State,
     loads: data_controller::Loads,
     settings: app_state::SettingsState,
@@ -493,6 +498,8 @@ impl AppView {
             probe: None,
             #[cfg(debug_assertions)]
             backup_probe: None,
+            #[cfg(debug_assertions)]
+            subtitle_probe: None,
             data: Default::default(),
             loads: Default::default(),
             settings: app_state::SettingsState::new(&lib),
@@ -1396,30 +1403,57 @@ impl AppView {
         options: Vec<(String, Action, bool, bool)>,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        self.menu_control(key, label, options, false, cx)
+    }
+    fn surface_menu(
+        &self,
+        key: &'static str,
+        label: String,
+        options: Vec<(String, Action, bool, bool)>,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        self.menu_control(key, label, options, true, cx)
+    }
+    fn menu_control(
+        &self,
+        key: &'static str,
+        label: String,
+        options: Vec<(String, Action, bool, bool)>,
+        surface: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let view = cx.entity().downgrade();
         let focus = self.focus.clone();
+        let theme_colors = surface || self.page == "listening" || self.page == "library";
+        let variant = ButtonCustomVariant::new(cx)
+            .foreground(if theme_colors {
+                cx.theme().foreground
+            } else {
+                rgb(0xe8f0eb).into()
+            })
+            .hover(if theme_colors {
+                cx.theme().accent
+            } else {
+                rgb(0x303c38).into()
+            })
+            .active(if theme_colors {
+                cx.theme().accent
+            } else {
+                rgb(0x41554b).into()
+            });
+        let variant = if surface {
+            variant
+                .color(cx.theme().background)
+                .border(cx.theme().border)
+        } else {
+            variant
+        };
         // The menu is transient; the checked value is rebuilt from current playback state.
         Button::new(key)
             .label(label)
             .small()
-            .custom(
-                ButtonCustomVariant::new(cx)
-                    .foreground(if self.page == "listening" || self.page == "library" {
-                        cx.theme().foreground
-                    } else {
-                        rgb(0xe8f0eb).into()
-                    })
-                    .hover(if self.page == "listening" || self.page == "library" {
-                        cx.theme().accent
-                    } else {
-                        rgb(0x303c38).into()
-                    })
-                    .active(if self.page == "listening" || self.page == "library" {
-                        cx.theme().accent
-                    } else {
-                        rgb(0x41554b).into()
-                    }),
-            )
+            .when(surface, |button| button.h(px(32.)).px_3())
+            .custom(variant)
             .dropdown_menu_with_anchor(Corner::BottomRight, move |mut menu, _, _| {
                 menu = menu.action_context(focus.clone());
                 for (label, action, checked, disabled) in options.clone() {
@@ -1935,7 +1969,7 @@ impl Render for AppView {
                 this.handle(Action::VideoAsk(video_qa::Scope::Current), window, cx);
             }))
             .on_action(cx.listener(|this, _: &AskVideoAll, window, cx| {
-                this.handle(Action::VideoAsk(video_qa::Scope::All), window, cx);
+                this.handle(Action::VideoAskTranscript, window, cx);
             }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.handle(Action::Page("settings".into()), window, cx);
@@ -2294,6 +2328,23 @@ fn main() -> Result<()> {
             .join("Clarora-GPUI")
     };
     #[cfg(debug_assertions)]
+    let subtitle_probe_dir = args
+        .iter()
+        .position(|arg| arg == "--subtitle-workbench-check")
+        .map(|i| {
+            args.get(i + 1)
+                .context("--subtitle-workbench-check 缺少证据目录")
+                .map(PathBuf::from)
+        })
+        .transpose()?;
+    #[cfg(not(debug_assertions))]
+    ensure!(
+        !args.iter().any(|arg| arg == "--subtitle-workbench-check"),
+        "字幕工作台原生验收仅支持调试构建"
+    );
+    #[cfg(not(debug_assertions))]
+    let subtitle_probe_dir: Option<PathBuf> = None;
+    #[cfg(debug_assertions)]
     let backup_probe_dir = args
         .iter()
         .position(|arg| arg == "--backup-progress-check")
@@ -2330,7 +2381,9 @@ fn main() -> Result<()> {
     #[cfg(not(debug_assertions))]
     let probe_dir: Option<PathBuf> = None;
     #[cfg(debug_assertions)]
-    let library = if let Some(out) = &backup_probe_dir {
+    let library = if let Some(out) = &subtitle_probe_dir {
+        subtitle_workbench_probe::prepare(out)?
+    } else if let Some(out) = &backup_probe_dir {
         backup_progress_probe::prepare(out)?
     } else if let Some(out) = &probe_dir {
         ui_controller_probe::prepare(out)?
@@ -2457,7 +2510,7 @@ fn main() -> Result<()> {
                         MenuItem::action("显示或隐藏导入悬浮窗", ToggleFloatingImport),
                         MenuItem::action("命令导入音频", ImportAudioCommand),
                         MenuItem::action("向当前视频字幕提问", AskVideoCurrent),
-                        MenuItem::action("向整段视频字幕提问", AskVideoAll),
+                        MenuItem::action("向当前视频的英文全文提问", AskVideoAll),
                         MenuItem::action("新会话", NewChat),
                         MenuItem::action("发送问题", AskAi),
                     ],
@@ -2468,8 +2521,12 @@ fn main() -> Result<()> {
             let main = cx
                 .open_window(
                     WindowOptions {
-                        show: probe_dir.is_none() && backup_probe_dir.is_none(),
-                        focus: probe_dir.is_none() && backup_probe_dir.is_none(),
+                        show: probe_dir.is_none()
+                            && backup_probe_dir.is_none()
+                            && subtitle_probe_dir.is_none(),
+                        focus: probe_dir.is_none()
+                            && backup_probe_dir.is_none()
+                            && subtitle_probe_dir.is_none(),
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
                         titlebar: Some(TitlebarOptions {
                             title: Some("Clarora".into()),
@@ -2491,6 +2548,11 @@ fn main() -> Result<()> {
                             #[cfg(debug_assertions)]
                             if let Some(out) = &backup_probe_dir {
                                 view.backup_probe = Some(backup_progress_probe::Probe::new(out));
+                            }
+                            #[cfg(debug_assertions)]
+                            if let Some(out) = &subtitle_probe_dir {
+                                view.subtitle_probe =
+                                    Some(subtitle_workbench_probe::Probe::new(out));
                             }
                             view
                         });
@@ -2515,7 +2577,7 @@ fn main() -> Result<()> {
                 }
             })
             .detach();
-            if probe_dir.is_none() && backup_probe_dir.is_none() {
+            if probe_dir.is_none() && backup_probe_dir.is_none() && subtitle_probe_dir.is_none() {
                 cx.activate(true);
             }
         });

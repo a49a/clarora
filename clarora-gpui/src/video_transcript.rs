@@ -5,6 +5,9 @@ use crate::subtitles::Cue;
 pub struct Transcript {
     pub text: String,
     pub html: String,
+    pub cue_count: usize,
+    pub word_count: usize,
+    pub character_count: usize,
 }
 
 fn chinese(ch: char) -> bool {
@@ -13,7 +16,7 @@ fn chinese(ch: char) -> bool {
 
 impl Transcript {
     pub fn from_cues(cues: &[Cue]) -> Self {
-        let text = cues
+        let paragraphs = cues
             .iter()
             .filter_map(|cue| {
                 let paragraph = cue
@@ -33,8 +36,12 @@ impl Transcript {
                     .join(" ");
                 (!paragraph.is_empty()).then_some(paragraph)
             })
-            .collect::<Vec<_>>()
-            .join("\n\n");
+            .collect::<Vec<_>>();
+        let cue_count = paragraphs.len();
+        let text = paragraphs.join("\n\n");
+        drop(paragraphs);
+        let word_count = text.split_whitespace().count();
+        let character_count = text.chars().count();
         let html = if text.is_empty() {
             String::new()
         } else {
@@ -46,6 +53,12 @@ impl Transcript {
                     .replace("\n\n", "</p><p>")
             )
         };
-        Self { text, html }
+        Self {
+            text,
+            html,
+            cue_count,
+            word_count,
+            character_count,
+        }
     }
 }
