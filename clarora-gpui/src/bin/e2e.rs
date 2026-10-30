@@ -27,6 +27,10 @@ mod chat_controller;
 mod chat_store;
 #[path = "support/clip_marks.rs"]
 mod clip_marks;
+#[path = "support/cloud_fixture.rs"]
+mod cloud_fixture;
+#[path = "support/cloud_v3.rs"]
+mod cloud_v3;
 #[path = "support/command_import.rs"]
 mod command_import;
 #[path = "support/credential_mode.rs"]
@@ -227,6 +231,7 @@ fn reliability(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     storage_errors::run(lib, results)?;
     backup_progress::run(lib, results)?;
     backup_progress_native::run(&lib.root, results)?;
+    cloud_v3::run(lib, results)?;
     Ok(())
 }
 fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
@@ -940,6 +945,8 @@ fn main() -> Result<()> {
         Some("--storage-config-only") => "storage-config-only",
         Some("--storage-errors-only") => "storage-errors-only",
         Some("--backup-progress-only") => "backup-progress-only",
+        Some("--cloud-v3-only") => "cloud-v3-only",
+        Some("--cloud-storage-only") => "cloud-storage-only",
         Some("--backup-background-only") => "backup-background-only",
         Some("--writing-only") => "writing-only",
         Some("--ebook-only") => "ebook-only",
@@ -1058,6 +1065,9 @@ fn main() -> Result<()> {
     } else if mode == "storage-errors-only" {
         let lib = Library::open(output.join(format!("storage-errors-{}", data::id())))?;
         storage_errors::run(&lib, &mut results)
+    } else if matches!(mode, "cloud-v3-only" | "cloud-storage-only") {
+        let lib = Library::open(output.join(format!("cloud-v3-{}", data::id())))?;
+        cloud_v3::run(&lib, &mut results)
     } else if mode == "backup-progress-only" {
         let lib = Library::open(output.join(format!("backup-progress-{}", data::id())))?;
         backup_progress::run(&lib, &mut results)

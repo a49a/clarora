@@ -2275,6 +2275,7 @@ impl AppView {
                         stage: backup::UploadStage::Preparing,
                         bytes_sent: 0,
                         bytes_total: 0,
+                        bytes_reused: 0,
                         files_done: 0,
                         files_total: 0,
                         current_name: String::new(),

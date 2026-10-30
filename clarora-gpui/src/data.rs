@@ -120,6 +120,7 @@ impl Library {
         };
         let db = this.db()?;
         db.execute_batch(include_str!("schema.sql"))?;
+        crate::backup::sync::install_tracking(&db)?;
         for dir in ["media", "pdf", "models", "downloads", "recordings"] {
             fs::create_dir_all(this.root.join(dir))?;
         }

@@ -15,6 +15,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub mod cloud;
+pub mod sync;
+pub use cloud::{BackupVersion, CleanupPlan, CleanupResult, Retention};
+pub use sync::SyncResult;
+
 fn check_cancel(cancel: &Cancel) -> Result<()> {
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
     Ok(())
@@ -1524,6 +1529,7 @@ pub struct UploadProgress {
     pub stage: UploadStage,
     pub bytes_sent: u64,
     pub bytes_total: u64,
+    pub bytes_reused: u64,
     pub files_done: usize,
     pub files_total: usize,
     pub current_name: String,
@@ -1543,21 +1549,28 @@ impl UploadProgress {
     }
     pub fn label(&self) -> String {
         match self.stage {
-            UploadStage::Preparing => "正在整理资料和附件…".into(),
+            UploadStage::Preparing if !self.current_name.is_empty() => self.current_name.clone(),
+            UploadStage::Preparing => "正在整理资料并计算内容校验…".into(),
             UploadStage::Uploading => format!(
-                "正在上传附件 · 已完成 {}/{} 个\n已发送 {} / {}{}",
+                "正在处理附件 · 已完成 {}/{} 个\n本轮上传 {} / {} · 复用 {}{}",
                 self.files_done,
                 self.files_total,
                 upload_size(self.bytes_sent),
                 upload_size(self.bytes_total),
+                upload_size(self.bytes_reused),
                 if self.current_name.is_empty() {
                     String::new()
                 } else {
                     format!(" · {}", self.current_name)
                 }
             ),
-            UploadStage::Publishing => "附件已上传，正在保存备份版本并等待云端确认…".into(),
-            UploadStage::Completed => format!("学习资料已备份 · {} 个附件", self.files_total),
+            UploadStage::Publishing => "附件已处理，正在提交云端版本并等待确认…".into(),
+            UploadStage::Completed => format!(
+                "已完成 · {} 个附件 · 上传 {} · 复用 {}",
+                self.files_total,
+                upload_size(self.bytes_sent),
+                upload_size(self.bytes_reused)
+            ),
         }
     }
 }
@@ -1586,6 +1599,7 @@ impl UploadReporter {
                     stage: UploadStage::Preparing,
                     bytes_sent: 0,
                     bytes_total: 0,
+                    bytes_reused: 0,
                     files_done: 0,
                     files_total: 0,
                     current_name: String::new(),
@@ -1621,6 +1635,7 @@ struct UploadStream {
     cancel: Cancel,
     reporter: Arc<UploadReporter>,
     first_chunk: bool,
+    verification: Option<(sha2::Sha256, String)>,
 }
 impl futures_core::Stream for UploadStream {
     type Item = std::io::Result<Vec<u8>>;
@@ -1655,6 +1670,18 @@ impl futures_core::Stream for UploadStream {
                     ))));
                 }
                 chunk.truncate(count);
+                if let Some((hasher, expected)) = &mut this.verification {
+                    use sha2::Digest;
+                    hasher.update(&chunk);
+                    if this.remaining == count as u64
+                        && hex::encode(hasher.clone().finalize()) != *expected
+                    {
+                        return Poll::Ready(Some(Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "备份期间附件内容已改变，请重试",
+                        ))));
+                    }
+                }
                 this.remaining -= count as u64;
                 this.reporter.update(this.first_chunk, |progress| {
                     progress.bytes_sent = progress
@@ -1673,6 +1700,13 @@ enum Payload {
     File {
         path: PathBuf,
         length: u64,
+        reporter: Arc<UploadReporter>,
+    },
+    FileRange {
+        path: PathBuf,
+        offset: u64,
+        length: u64,
+        sha256: String,
         reporter: Arc<UploadReporter>,
     },
 }
@@ -1708,6 +1742,9 @@ fn encode_path(value: &str) -> String {
     value.split('/').map(encode).collect::<Vec<_>>().join("/")
 }
 impl Storage {
+    pub fn incremental_supported(&self) -> bool {
+        self.config.provider == "s3"
+    }
     pub fn load(lib: &Library) -> Result<Self> {
         let raw = lib.setting("storage_config")?;
         ensure!(
@@ -1825,6 +1862,29 @@ impl Storage {
         body: Option<Payload>,
         cancel: &Cancel,
     ) -> Result<reqwest::Response> {
+        self.response_with_headers(
+            client,
+            method,
+            key,
+            query,
+            body,
+            &BTreeMap::new(),
+            false,
+            cancel,
+        )
+        .await
+    }
+    async fn response_with_headers(
+        &self,
+        client: &reqwest::Client,
+        method: &str,
+        key: &str,
+        query: &BTreeMap<String, String>,
+        body: Option<Payload>,
+        extra: &BTreeMap<String, String>,
+        raw_status: bool,
+        cancel: &Cancel,
+    ) -> Result<reqwest::Response> {
         check_cancel(cancel)?;
         let c = &self.config;
         let oss = c.provider == "oss";
@@ -1873,6 +1933,7 @@ impl Storage {
         if body.is_some() {
             headers.insert("content-type".into(), "application/octet-stream".into());
         }
+        headers.extend(extra.clone());
         let mut canonical_headers = headers.clone();
         if !oss {
             canonical_headers.insert("host".into(), request_host.clone());
@@ -1961,6 +2022,34 @@ impl Storage {
                             cancel: cancel.clone(),
                             reporter,
                             first_chunk: true,
+                            verification: None,
+                        }))
+                }
+                Payload::FileRange {
+                    path,
+                    offset,
+                    length,
+                    sha256,
+                    reporter,
+                } => {
+                    use sha2::Digest;
+                    use tokio::io::AsyncSeekExt;
+                    let mut file = tokio::fs::File::open(path).await?;
+                    ensure!(
+                        file.metadata().await?.len()
+                            >= offset.checked_add(length).context("附件范围无效")?,
+                        "备份期间附件已改变，请重试"
+                    );
+                    file.seek(std::io::SeekFrom::Start(offset)).await?;
+                    request
+                        .header("content-length", length)
+                        .body(reqwest::Body::wrap_stream(UploadStream {
+                            file,
+                            remaining: length,
+                            cancel: cancel.clone(),
+                            reporter,
+                            first_chunk: true,
+                            verification: Some((sha2::Sha256::new(), sha256)),
                         }))
                 }
             };
@@ -1973,7 +2062,7 @@ impl Storage {
             Ok(result?)
         })
         .await?;
-        if !response.status().is_success() {
+        if !raw_status && !response.status().is_success() {
             let status = response.status();
             let bytes = cancellable(cancel, async {
                 Ok(tokio::time::timeout(Duration::from_secs(3), async {
@@ -2207,6 +2296,9 @@ impl Storage {
         key: &str,
         cancel: &crate::process::Cancel,
     ) -> Result<usize> {
+        if key.starts_with(&format!("{}/v3/snapshots/", self.config.prefix)) {
+            return self.restore_incremental(lib, key, cancel);
+        }
         check_cancel(cancel)?;
         ensure!(
             key.starts_with(&format!("{}/snapshots/", self.config.prefix)),
