@@ -13,6 +13,67 @@ use std::{
     sync::{Mutex, OnceLock, atomic::Ordering},
     time::Duration,
 };
+/// Supported local ASR models. UI availability and process routing share these IDs.
+pub struct LocalModel {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub details: &'static str,
+    pub language: &'static str,
+}
+pub const LOCAL_MODELS: &[LocalModel] = &[
+    LocalModel {
+        id: "tiny.en",
+        name: "OpenAI Whisper Tiny.en",
+        details: "仅英语 · 39M 参数 · 约 75 MiB · 最小的英语版本",
+        language: "en",
+    },
+    LocalModel {
+        id: "base.en",
+        name: "OpenAI Whisper Base.en",
+        details: "仅英语 · 74M 参数 · 约 142 MiB · 默认表单模型",
+        language: "en",
+    },
+    LocalModel {
+        id: "small.en",
+        name: "OpenAI Whisper Small.en",
+        details: "仅英语 · 244M 参数 · 约 466 MiB · 更大的英语版本",
+        language: "en",
+    },
+    LocalModel {
+        id: "medium.en",
+        name: "OpenAI Whisper Medium.en",
+        details: "仅英语 · 769M 参数 · 约 1.5 GiB · 占用和耗时更高，可对比识别效果",
+        language: "en",
+    },
+    LocalModel {
+        id: "large-v3-turbo",
+        name: "OpenAI Whisper Large-v3-turbo",
+        details: "多语言（含英语）· 809M 参数 · 约 1.5 GiB · Large-v3 的加速版本",
+        language: "auto",
+    },
+    LocalModel {
+        id: "base",
+        name: "OpenAI Whisper Base · 多语言",
+        details: "含中文、英语、日语等 · 74M 参数 · 约 142 MiB",
+        language: "auto",
+    },
+    LocalModel {
+        id: "small",
+        name: "OpenAI Whisper Small · 多语言",
+        details: "含中文、英语、日语等 · 244M 参数 · 约 466 MiB",
+        language: "auto",
+    },
+    LocalModel {
+        id: "sense-voice",
+        name: "FunAudioLLM SenseVoiceSmall · 2024-07-17",
+        details: "普通话、英语、日语、韩语、粤语 · INT8 ONNX 模型 + tokens.txt",
+        language: "auto",
+    },
+];
+pub fn local_model(id: &str) -> Option<&'static LocalModel> {
+    LOCAL_MODELS.iter().find(|model| model.id == id)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialSource {
@@ -274,18 +335,7 @@ pub fn transcribe(lib: &Library, path: &Path, cancel: &Cancel) -> Result<Vec<Cue
         );
         return Ok(cues);
     }
-    ensure!(
-        [
-            "tiny.en",
-            "base.en",
-            "small.en",
-            "base",
-            "small",
-            "sense-voice"
-        ]
-        .contains(&c.local_model.as_str()),
-        "请选择已下载的 Whisper 模型"
-    );
+    let selected_model = local_model(&c.local_model).context("请选择已支持的本地转写模型")?;
     let model = if c.local_model == "sense-voice" {
         lib.root.join("models/sense-voice/model.int8.onnx")
     } else {
@@ -321,10 +371,8 @@ pub fn transcribe(lib: &Library, path: &Path, cancel: &Cancel) -> Result<Vec<Cue
                     .join("models/sense-voice/tokens.txt")
                     .to_string_lossy()
                     .into_owned()
-            } else if c.local_model.ends_with(".en") {
-                "en".into()
             } else {
-                "auto".into()
+                selected_model.language.into()
             };
             let output = run(
                 &tool("clarora-asr")?,
@@ -379,11 +427,7 @@ pub fn transcribe(lib: &Library, path: &Path, cancel: &Cancel) -> Result<Vec<Cue
                 "-f".into(),
                 wav.to_string_lossy().into(),
                 "-l".into(),
-                if c.local_model.ends_with(".en") {
-                    "en".into()
-                } else {
-                    "auto".into()
-                },
+                selected_model.language.into(),
                 "-osrt".into(),
                 "-of".into(),
                 stem.to_string_lossy().into(),
@@ -484,18 +528,23 @@ pub fn download_model(
     cancel: &Cancel,
     mut notify: impl FnMut(crate::model_download::Progress),
 ) -> Result<()> {
-    ensure!(
-        [
-            "tiny.en",
-            "base.en",
-            "small.en",
-            "base",
-            "small",
-            "sense-voice"
-        ]
-        .contains(&model),
-        "模型无效"
-    );
+    let files = local_model_files(model)?;
+    let directory = if model == "sense-voice" {
+        lib.root.join("models/sense-voice")
+    } else {
+        lib.root.join("models")
+    };
+    crate::model_download::download(
+        model,
+        &directory,
+        &files,
+        &["https://huggingface.co", "https://hf-mirror.com"],
+        cancel,
+        &mut notify,
+    )
+}
+pub fn local_model_files(model: &str) -> Result<Vec<crate::model_download::FileSpec>> {
+    ensure!(local_model(model).is_some(), "模型无效");
     let files = if model == "sense-voice" {
         vec![
             (
@@ -509,11 +558,6 @@ pub fn download_model(
         ]
     } else {
         vec![(format!("ggml-{model}.bin"), "ggerganov/whisper.cpp")]
-    };
-    let directory = if model == "sense-voice" {
-        lib.root.join("models/sense-voice")
-    } else {
-        lib.root.join("models")
     };
     let files = files
         .into_iter()
@@ -530,14 +574,7 @@ pub fn download_model(
             }
         })
         .collect::<Vec<_>>();
-    crate::model_download::download(
-        model,
-        &directory,
-        &files,
-        &["https://huggingface.co", "https://hf-mirror.com"],
-        cancel,
-        &mut notify,
-    )
+    Ok(files)
 }
 pub fn save_record(lib: &Library, kind: &str, payload: Value) -> Result<String> {
     let key = id();

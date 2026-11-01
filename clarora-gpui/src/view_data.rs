@@ -79,30 +79,24 @@ impl State {
                 .map(|r| text(r, "audio_uri"))
                 .filter(|uri| audio_exists(uri))
                 .collect();
-            let asr_models = [
-                "tiny.en",
-                "base.en",
-                "small.en",
-                "base",
-                "small",
-                "sense-voice",
-            ]
-            .into_iter()
-            .filter(|model| {
-                if *model == "sense-voice" {
-                    lib.root
-                        .join("models/sense-voice/model.int8.onnx")
-                        .is_file()
-                        && lib.root.join("models/sense-voice/tokens.txt").is_file()
-                } else {
-                    lib.root
-                        .join("models")
-                        .join(format!("ggml-{model}.bin"))
-                        .is_file()
-                }
-            })
-            .map(str::to_string)
-            .collect();
+            let asr_models = ai::LOCAL_MODELS
+                .iter()
+                .map(|model| model.id)
+                .filter(|model| {
+                    if *model == "sense-voice" {
+                        lib.root
+                            .join("models/sense-voice/model.int8.onnx")
+                            .is_file()
+                            && lib.root.join("models/sense-voice/tokens.txt").is_file()
+                    } else {
+                        lib.root
+                            .join("models")
+                            .join(format!("ggml-{model}.bin"))
+                            .is_file()
+                    }
+                })
+                .map(str::to_string)
+                .collect();
             Ok(Self {
                 speaking,
                 ocr,

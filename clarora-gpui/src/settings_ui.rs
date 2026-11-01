@@ -121,38 +121,8 @@ impl AppView {
                     .child(self.button("cancel-model", "取消下载", Action::Cancel, cx)),
             );
         }
-        for (model, name, details) in [
-            (
-                "tiny.en",
-                "OpenAI Whisper Tiny.en",
-                "仅英语 · 39M 参数 · 约 75 MiB · 最小的英语版本",
-            ),
-            (
-                "base.en",
-                "OpenAI Whisper Base.en",
-                "仅英语 · 74M 参数 · 约 142 MiB · 默认表单模型",
-            ),
-            (
-                "small.en",
-                "OpenAI Whisper Small.en",
-                "仅英语 · 244M 参数 · 约 466 MiB · 更大的英语版本",
-            ),
-            (
-                "base",
-                "OpenAI Whisper Base · 多语言",
-                "含中文、英语、日语等 · 74M 参数 · 约 142 MiB",
-            ),
-            (
-                "small",
-                "OpenAI Whisper Small · 多语言",
-                "含中文、英语、日语等 · 244M 参数 · 约 466 MiB",
-            ),
-            (
-                "sense-voice",
-                "FunAudioLLM SenseVoiceSmall · 2024-07-17",
-                "普通话、英语、日语、韩语、粤语 · INT8 ONNX 模型 + tokens.txt",
-            ),
-        ] {
+        for spec in ai::LOCAL_MODELS {
+            let (model, name, details) = (spec.id, spec.name, spec.details);
             let present = self.data.asr_models.contains(model);
             let selected = draft_local && draft_model == model;
             let active = active_model == Some(model);

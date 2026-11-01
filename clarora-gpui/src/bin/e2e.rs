@@ -1,6 +1,8 @@
 //! End-to-end library workflows using real SQLite, ZIP, filesystem, processes and HTTP.
 #[path = "support/ai_completion.rs"]
 mod ai_completion;
+#[path = "support/asr_models.rs"]
+mod asr_models;
 #[path = "support/asr_pauses.rs"]
 mod asr_pauses;
 #[path = "support/assistant.rs"]
@@ -239,6 +241,7 @@ fn reliability(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
 fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = output.join(format!("run-{}", data::id()));
     fs::create_dir_all(&root)?;
+    asr_models::run(&Library::open(root.join("asr-model-fixtures"))?, results)?;
     focus_timer::run(&root, results)?;
     focus_mode_native::run(&root, results)?;
     gpu_memory::run(&root, results)?;
@@ -908,12 +911,24 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
 }
 fn main() -> Result<()> {
     let args = std::env::args_os().collect::<Vec<_>>();
+    if std::env::var_os("CLARORA_ASR_ROUTE_LOG").is_some()
+        && args
+            .first()
+            .and_then(|a| Path::new(a).file_stem())
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| ["clarora-asr", "whisper-cli"].contains(&s))
+    {
+        return asr_models::helper();
+    }
     let output = args
         .get(1)
         .map(PathBuf::from)
         .context("用法：cargo run --bin e2e -- <证据目录>")?;
     fs::create_dir_all(&output)?;
     let output = output.canonicalize()?;
+    if args.get(2).and_then(|s| s.to_str()) == Some("--asr-models-worker") {
+        return asr_models::worker(&output);
+    }
     if args.get(2).and_then(|s| s.to_str()) == Some("--focus-timer-worker") {
         return focus_timer::worker(&output);
     }
@@ -945,6 +960,7 @@ fn main() -> Result<()> {
         Some("--gpu-memory-only") => "gpu-memory-only",
         Some("--runtime-stability-only") => "runtime-stability-only",
         Some("--http-only") => "http-only",
+        Some("--asr-models-only") => "asr-models-only",
         Some("--reliability-only") => "reliability-only",
         Some("--storage-config-only") => "storage-config-only",
         Some("--storage-errors-only") => "storage-errors-only",
@@ -1069,6 +1085,8 @@ fn main() -> Result<()> {
     } else if mode == "storage-errors-only" {
         let lib = Library::open(output.join(format!("storage-errors-{}", data::id())))?;
         storage_errors::run(&lib, &mut results)
+    } else if mode == "asr-models-only" {
+        asr_models::run(&Library::open(output.join("library"))?, &mut results)
     } else if mode == "focus-mode-only" {
         focus_timer::run(&output, &mut results)
             .and_then(|()| focus_mode_native::run(&output, &mut results))

@@ -168,6 +168,8 @@ macOS CMake 构建会将对应 sherpa-onnx C API / ONNX Runtime 动态库复制�
 | `tiny.en` | OpenAI Whisper Tiny.en | 仅英语 | 39M / 约 75 MiB | `models/ggml-tiny.en.bin` |
 | `base.en` | OpenAI Whisper Base.en | 仅英语 | 74M / 约 142 MiB | `models/ggml-base.en.bin` |
 | `small.en` | OpenAI Whisper Small.en | 仅英语 | 244M / 约 466 MiB | `models/ggml-small.en.bin` |
+| `medium.en` | OpenAI Whisper Medium.en | 仅英语 | 769M / 约 1.5 GiB | `models/ggml-medium.en.bin` |
+| `large-v3-turbo` | OpenAI Whisper Large-v3-turbo | 多语言，含英语／中文 | 809M / 约 1.5 GiB | `models/ggml-large-v3-turbo.bin` |
 | `base` | OpenAI Whisper Base 多语言版 | 含中文、英语、日语等 | 74M / 约 142 MiB | `models/ggml-base.bin` |
 | `small` | OpenAI Whisper Small 多语言版 | 含中文、英语、日语等 | 244M / 约 466 MiB | `models/ggml-small.bin` |
 | `sense-voice` | FunAudioLLM SenseVoiceSmall，sherpa-onnx 2024-07-17 导出版 | 普通话、英语、日语、韩语、粤语 | INT8 ONNX，体积以实际文件为准 | `models/sense-voice/model.int8.onnx` 和 `tokens.txt` |
@@ -176,9 +178,11 @@ macOS CMake 构建会将对应 sherpa-onnx C API / ONNX Runtime 动态库复制�
 
 Whisper 使用 [whisper.cpp 的 GGML 权重](https://huggingface.co/ggerganov/whisper.cpp/tree/main)，不是 PyTorch 权重；语言和参数说明见 [OpenAI Whisper](https://github.com/openai/whisper)，文件体积见 [whisper.cpp](https://github.com/ggml-org/whisper.cpp)。SenseVoice 固定下载 [2024-07-17 模型仓库](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tree/main) 的 INT8 模型和词表；说明见 [sherpa-onnx 预训练模型](https://k2-fsa.github.io/sherpa/onnx/sense-voice/pretrained.html)。它不是后续的粤语微调版。下载先访问 Hugging Face，失败时尝试 hf-mirror.com。
 
+`medium.en` 固定以英语转写，`large-v3-turbo` 使用自动语言识别；原生辅助程序和 `whisper-cli` 回退共用同一模型与语言配置。两者都是 GGML 权重，下载量各约 1.5 GiB；当前辅助程序使用 CPU，下载体积不等于运行内存，也不保证比 small.en 更快。切换模型后，对已生成的字幕点击“重新生成”才会使用新模型。
+
 设置页依次点击“下载模型”→“选用”→“保存 AI 与学习设置”。下载时显示当前文件的百分比、已下载/总 MiB、平均速度、来源和文件序号；来源未提供总大小时只显示已下载大小。SenseVoice 分别显示模型与词表的进度，百分比指当前文件。换源重试会重置该文件进度，切换页面后下载继续，底部持续显示进度；返回设置可查看完整面板（`Cmd/Ctrl+,` 打开设置）。只有主动取消或退出客户端才中止；取消可中断网络等待，只有校验并落盘后才报告完成。选用只将模型 ID 和 `local` 引擎填入表单，保存后才生效。“文件已下载”只检查文件存在，SenseVoice 必须同时有模型和词表；不表示推理运行库已安装或模型质量已验收。
 
-两种模型都需要 FFmpeg 处理音轨。Whisper 使用 `clarora-asr`；未发现该辅助程序时回退到 `whisper-cli`。SenseVoice 必须使用带 sherpa-onnx 运行库的 `clarora-asr`，不能通过 `whisper-cli` 运行。当前原生辅助程序按 CPU 路径接入；下载模型不会自动安装这些工具。**已实际验证的是 macOS 的 Whisper tiny.en；其余五个模型只完成接入，尚未逐个实测，Windows 也未实机验证。**
+两种模型都需要 FFmpeg 处理音轨。Whisper 使用 `clarora-asr`；未发现该辅助程序时回退到 `whisper-cli`。SenseVoice 必须使用带 sherpa-onnx 运行库的 `clarora-asr`，不能通过 `whisper-cli` 运行。当前原生辅助程序按 CPU 路径接入；下载模型不会自动安装这些工具。**已实际验证完整权重推理的是 macOS 的 Whisper tiny.en；其它模型（含 medium.en 和 large-v3-turbo）已接入，但未逐个验证完整权重推理与识别质量，Windows 也未实机验证。**
 
 原生转写辅助程序使用本仓库已有公开 C++ ASR 适配器，不依赖 React Native 运行时：
 
@@ -323,6 +327,8 @@ PDFIUM_LIB_PATH=/absolute/path/containing/pdfium cargo run --manifest-path claro
 电子书由默认 E2E 收集，也可用 `--ebook-only` 定向复验真实 EPUB 2/3 ZIP、目录锚点、UTF-8/UTF-16、图像解码、导入去重、SQLite 进度重开、取消／坏包和本机 HTTP AI 请求。`--ebook-only /absolute/path/book.epub` 可额外检查指定真实书籍，报告保存标题、目录、首／中／末页及图片检查结果，不读取用户默认学习资料。
 
 本句重复场景由默认 E2E 收集，也可用 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence --video-repeat-only` 定向复验。使用真实 FFmpeg/libmpv 检查无限循环、每句三遍后自动下一句、快速左右切句保留三次、首尾边界、短句、重选、暂停继续、手动跳转和换片，保留逐步播放快照和解码帧。
+
+默认 E2E 收集两个新模型的本机 HTTP 下载路径／进度、文件落盘后的界面可用状态、SQLite 保存重开、原生与 `whisper-cli` 参数路由、缺失文件和预取消保护；可用 `--asr-models-only` 定向复验，保留请求、JSON 与隔离资料库。该路由验收使用明确标记的测试权重及辅助进程，不能作为真实大模型推理或识别效果的证据。
 
 默认 E2E 同时收集复习类型与限额、AI 完成校验、云备份取消三组回归场景。只复验这三组可执行 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence --reliability-only`；同样生成 `e2e-report.json`，子目录保留队列、HTTP、取消耗时和 SQLite 前后状态证据。
 
