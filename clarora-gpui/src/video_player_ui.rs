@@ -405,6 +405,7 @@ impl AppView {
                                 .unwrap_or_default(),
                         ),
                     )
+                    .child(self.computer_focus_control(cx))
                     .child(self.transport_button(
                         "fullscreen-assistant",
                         "✦ 学习助手",

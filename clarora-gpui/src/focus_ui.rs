@@ -2,13 +2,47 @@ use super::*;
 
 impl AppView {
     pub(super) fn focus_timer_toggle_label(&self) -> &'static str {
-        if self.timer.is_running() {
+        if self.timer.awaiting_focus() {
+            "开始下一轮专注"
+        } else if self.timer.is_running() {
             "暂停"
         } else if self.timer.paused() {
             "继续"
         } else {
             "开始"
         }
+    }
+
+    pub(super) fn computer_focus_control(&self, cx: &Context<Self>) -> AnyElement {
+        if !self.focus_mode.active() {
+            return self.focus_mode_button(cx);
+        }
+        let primary: Hsla = if self.video.fullscreen {
+            rgb(0x7dd8b5).into()
+        } else {
+            cx.theme().primary
+        };
+        div()
+            .id("computer-focus-control")
+            .flex()
+            .items_center()
+            .flex_wrap()
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::BOLD)
+                    .px_3()
+                    .py_1()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(primary.opacity(0.4))
+                    .bg(primary.opacity(0.12))
+                    .text_color(primary)
+                    .child("电脑专注中"),
+            )
+            .child(self.focus_mode_button(cx))
+            .into_any_element()
     }
 
     pub(super) fn focus_timer_bar(&self, cx: &Context<Self>) -> AnyElement {
@@ -50,6 +84,23 @@ impl AppView {
                 }
                 menu
             });
+        let toggle = self
+            .button(
+                "global-focus-toggle",
+                self.focus_timer_toggle_label(),
+                Action::TimerPause,
+                cx,
+            )
+            .disabled(self.focus_mode.active());
+        let toggle = if self.timer.awaiting_focus() {
+            toggle
+                .primary()
+                .h(px(32.))
+                .px_3()
+                .font_weight(FontWeight::SEMIBOLD)
+        } else {
+            toggle.custom(button_style())
+        };
         div()
             .id("global-focus-timer")
             .flex_shrink_0()
@@ -73,7 +124,9 @@ impl AppView {
             .flex_wrap()
             .gap_2()
             .child(design::icon("meditation", primary))
-            .child(div().text_sm().child(if self.timer.focus() {
+            .child(div().text_sm().child(if self.timer.awaiting_focus() {
+                "下一轮专注"
+            } else if self.timer.focus() {
                 "专注时间"
             } else {
                 "休息时间"
@@ -87,7 +140,9 @@ impl AppView {
                     .text_color(primary)
                     .child(clock(self.timer_remaining as f64)),
             )
-            .child(div().text_xs().child(if self.timer.is_running() {
+            .child(div().text_xs().child(if self.timer.awaiting_focus() {
+                "休息已结束，等待开始"
+            } else if self.timer.is_running() {
                 "进行中"
             } else if self.timer.paused() {
                 "已暂停"
@@ -95,17 +150,7 @@ impl AppView {
                 "待开始"
             }))
             .child(div().flex_1())
-            .child(self.focus_mode_button(cx))
-            .child(
-                self.button(
-                    "global-focus-toggle",
-                    self.focus_timer_toggle_label(),
-                    Action::TimerPause,
-                    cx,
-                )
-                .disabled(self.focus_mode.active())
-                .custom(button_style()),
-            )
+            .child(toggle)
             .child(duration)
             .child(
                 self.button("global-focus-reset", "重置", Action::TimerReset, cx)

@@ -123,6 +123,80 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     cases.push(
         json!({"case":"实际SQLite统计写失败/事务回滚/重试只统计一次/在线自动休息","passed":true}),
     );
+    let confirm_lib = Library::open(root.join("break-confirmation"))?;
+    let mut confirm = Timer::load(&confirm_lib, t)?.timer;
+    confirm.start(&confirm_lib, t, 1)?;
+    ensure!(
+        confirm.tick(&confirm_lib, t + 1000, true)? == Some(true)
+            && confirm.is_running()
+            && !confirm.focus(),
+        "专注结束未自动进入休息"
+    );
+    ensure!(
+        confirm.tick(&confirm_lib, t + 301_000, true)? == Some(false)
+            && confirm.focus()
+            && confirm.paused()
+            && !confirm.is_running()
+            && confirm.remaining_seconds(t + 301_000) == 1500,
+        "休息结束自动开始专注，未等待用户确认"
+    );
+    let waiting = confirm_lib.setting(KEY)?;
+    ensure!(
+        serde_json::from_str::<Value>(&waiting)?["awaiting_focus"] == true,
+        "未持久化等待确认状态"
+    );
+    confirm = Timer::load(&confirm_lib, t + 86_400_000)?.timer;
+    ensure!(
+        !confirm.is_running()
+            && confirm.remaining_seconds(t + 86_400_000) == 1500
+            && confirm.tick(&confirm_lib, t + 172_800_000, true)?.is_none()
+            && count(&confirm_lib)? == 1.,
+        "等待期间或重开后偷偷计时／累计"
+    );
+    confirm_lib.db()?.execute_batch("CREATE TRIGGER reject_confirm BEFORE UPDATE ON app_settings WHEN NEW.key='focus_timer_v1' BEGIN SELECT RAISE(ABORT,'confirm fixture failure'); END;")?;
+    ensure!(
+        confirm.toggle(&confirm_lib, t + 172_800_000).is_err()
+            && !confirm.is_running()
+            && confirm_lib.setting(KEY)? == waiting,
+        "确认保存失败丢失等待状态"
+    );
+    confirm_lib
+        .db()?
+        .execute_batch("DROP TRIGGER reject_confirm;")?;
+    ensure!(
+        confirm.toggle(&confirm_lib, t + 172_800_000)? == Toggle::Started
+            && confirm.is_running()
+            && confirm.focus()
+            && confirm.deadline_ms() == Some(t + 172_800_000 + 1_500_000)
+            && count(&confirm_lib)? == 1.,
+        "明确确认没有开始完整新一轮"
+    );
+    ensure!(
+        Timer::load(&confirm_lib, t + 172_801_000)?
+            .timer
+            .remaining_seconds(t + 172_801_000)
+            == 1499,
+        "确认后的新截止时间未保留"
+    );
+    let old = json!({"version":1,"strict":false,"focus":true,"paused":true,"duration_ms":1500000,"remaining_ms":700000,"deadline_ms":null});
+    confirm_lib.set_setting(KEY, &old.to_string())?;
+    let legacy = Timer::load(&confirm_lib, t)?;
+    ensure!(
+        legacy.warning.is_none()
+            && legacy.timer.paused()
+            && legacy.timer.remaining_seconds(t) == 700,
+        "旧版暂停记录不兼容"
+    );
+    let mut invalid = old;
+    invalid["awaiting_focus"] = json!(true);
+    invalid["deadline_ms"] = json!(t + 5000);
+    invalid["paused"] = json!(false);
+    confirm_lib.set_setting(KEY, &invalid.to_string())?;
+    ensure!(
+        Timer::load(&confirm_lib, t)?.warning.is_some(),
+        "非法确认状态被接受"
+    );
+    cases.push(json!({"case":"在线休息结束等待确认/跨重开不计时/保存失败保护/点击才开始/旧记录兼容","passed":true}));
     let retry_root = root.join("startup-write-failure");
     let retry_lib = Library::open(retry_root)?;
     let mut running = Timer::load(&retry_lib, t)?.timer;

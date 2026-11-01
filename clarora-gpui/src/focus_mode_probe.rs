@@ -1,12 +1,59 @@
 //! Inactive hidden native self-check. Never activates a kiosk on the user's desktop.
 use super::*;
 use focus_mode_ui::native;
+use std::sync::{Arc, Mutex};
+static LABEL_COLORS: std::sync::OnceLock<Mutex<Vec<Value>>> = std::sync::OnceLock::new();
+fn label_colors() -> Vec<Value> {
+    LABEL_COLORS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .clone()
+}
+pub(super) fn label_color_probe(background: Hsla) -> Option<AnyElement> {
+    if !std::env::args().any(|arg| arg == "--focus-mode-check")
+        || std::env::var("CLARORA_FOCUS_DIAGNOSTIC_INACTIVE").as_deref() != Ok("1")
+    {
+        return None;
+    }
+    Some(canvas(|_, _, _| (), move |_, _, window, cx| {
+        let foreground: Rgba = window.text_style().color.into();
+        let background: Rgba = background.into();
+        let luminance = |c: Rgba| {
+            let linear = |v: f32| { let v = v as f64; if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) } };
+            0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b)
+        };
+        let a = luminance(foreground);
+        let b = luminance(background);
+        let row = json!({"theme":format!("{:?}",cx.theme().mode),"foreground":[foreground.r,foreground.g,foreground.b,foreground.a],"background":[background.r,background.g,background.b,background.a],"contrast":(a.max(b)+0.05)/(a.min(b)+0.05)});
+        let mut values = LABEL_COLORS.get_or_init(Default::default).lock().unwrap();
+        if !values.contains(&row) { values.push(row); }
+    }).absolute().size_full().into_any_element())
+}
+type LayoutResult = Arc<Mutex<Option<std::result::Result<Vec<Value>, String>>>>;
+struct FocusLayoutView {
+    app: Entity<AppView>,
+    result: LayoutResult,
+}
+impl Render for FocusLayoutView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.result.lock().unwrap().is_none() {
+            let value = self
+                .app
+                .update(cx, |app, cx| Probe::measure_bars(app, window, cx));
+            *self.result.lock().unwrap() = Some(value.map_err(|error| format!("{error:#}")));
+        }
+        div().size_full().child(self.app.clone())
+    }
+}
 pub(super) struct Probe {
     out: PathBuf,
     stage: usize,
     started: Instant,
     cases: Vec<Value>,
     baseline: usize,
+    layouts: LayoutResult,
+    original_theme: Option<ThemeMode>,
 }
 impl Probe {
     pub fn new(out: &Path) -> Self {
@@ -16,6 +63,8 @@ impl Probe {
             started: Instant::now(),
             cases: vec![],
             baseline: 0,
+            layouts: Arc::new(Mutex::new(None)),
+            original_theme: None,
         }
     }
     fn note(&mut self, name: &str, app: &AppView) -> Result<()> {
@@ -48,7 +97,53 @@ impl Probe {
                     app.lib.root.join("cache/timer-chimes"),
                 );
                 ensure!(!native::is_active(), "diagnostic must remain inactive");
+                self.original_theme = Some(cx.theme().mode);
+                Theme::change(ThemeMode::Light, None, cx);
+                design::apply(cx);
                 self.baseline = native::options();
+                let now = focus_timer::now_ms();
+                app.lib.set_setting(focus_timer::KEY, &json!({"version":1,"strict":false,"focus":false,"paused":false,"duration_ms":300000,"remaining_ms":300000,"deadline_ms":now-1}).to_string())?;
+                app.timer = focus_timer::Timer::load(&app.lib, now)?.timer;
+                app.timer_remaining = app.timer.remaining_seconds(now);
+                ensure!(
+                    app.focus_timer_toggle_label() == "开始下一轮专注" && !app.timer.is_running(),
+                    "waiting confirmation is not explicit in the timer UI"
+                );
+                let handle = w.window_handle();
+                let app = cx.entity();
+                let result = self.layouts.clone();
+                cx.defer(move |cx| {
+                    let _ = handle.update(cx, move |_, w, cx| {
+                        w.replace_root(cx, |w, cx| {
+                            let view = cx.new(|_| FocusLayoutView { app, result });
+                            Root::new(view, w, cx)
+                        });
+                        w.draw(cx).clear();
+                    });
+                });
+                self.stage = 9;
+            }
+            9 => {
+                let layout = self.layouts.lock().unwrap().clone();
+                let Some(layout) = layout else {
+                    return Ok(false);
+                };
+                layout.map_err(anyhow::Error::msg)?;
+                self.note("header focus control and waiting-confirmation timer lay out in light/dark, normal/fullscreen and narrow/wide widths", app)?;
+                app.handle(Action::TimerPause, w, cx);
+                ensure!(
+                    app.timer.is_running()
+                        && app.timer.focus()
+                        && app.timer_remaining == 1500
+                        && app.focus_timer_toggle_label() == "暂停",
+                    "actual confirmation action did not begin a full new focus round"
+                );
+                self.note("rest completion waits for actual AppView confirmation before starting the next focus", app)?;
+                app.handle(Action::TimerReset, w, cx);
+                ensure!(
+                    !app.timer.is_running() && app.focus_timer_toggle_label() == "开始",
+                    "reset did not clear waiting state"
+                );
                 app.media.player = Player::without_audio_device();
                 video_resume_probe::prepare(&app.lib)?;
                 app.handle(Action::Page("video".into()), w, cx);
@@ -238,11 +333,81 @@ impl Probe {
                     "failed start restores native options and never leaves half-active session",
                     app,
                 )?;
+                Theme::change(ThemeMode::Dark, None, cx);
+                design::apply(cx);
+                Self::keys(w, cx, &[]);
+                self.stage = 13;
+            }
+            13 => {
+                let colors = label_colors();
+                ensure!(
+                    ["Light", "Dark"]
+                        .iter()
+                        .all(|mode| colors.iter().any(|r| r["theme"] == *mode)),
+                    "missing painted label color evidence: {colors:?}"
+                );
+                ensure!(
+                    colors
+                        .iter()
+                        .all(|r| r["contrast"].as_f64().is_some_and(|c| c >= 4.5)),
+                    "painted focus label has insufficient contrast: {colors:?}"
+                );
+                self.note("actual painted focus label contrast is at least 4.5:1 in light and dark themes", app)?;
+                if let Some(mode) = self.original_theme {
+                    Theme::change(mode, None, cx);
+                    design::apply(cx);
+                }
                 return Ok(true);
             }
             _ => {}
         }
         Ok(false)
+    }
+    fn measure_bars(
+        app: &mut AppView,
+        window: &mut Window,
+        cx: &mut Context<AppView>,
+    ) -> Result<Vec<Value>> {
+        let original = cx.theme().mode;
+        let fullscreen = app.video.fullscreen;
+        let result = (|| {
+            let mut rows = vec![];
+            for mode in [ThemeMode::Light, ThemeMode::Dark] {
+                Theme::change(mode, None, cx);
+                design::apply(cx);
+                for full in [false, true] {
+                    app.video.fullscreen = full;
+                    for width in [420., 760., 1240.] {
+                        for (name, mut bar) in [
+                            ("computer-focus", app.computer_focus_control(cx)),
+                            ("timer-confirmation", app.focus_timer_bar(cx)),
+                        ] {
+                            let measured = bar.layout_as_root(
+                                size(
+                                    AvailableSpace::Definite(px(width)),
+                                    AvailableSpace::MaxContent,
+                                ),
+                                window,
+                                cx,
+                            );
+                            let height = f32::from(measured.height);
+                            ensure!(
+                                f32::from(measured.width) <= width + 1.
+                                    && height >= 30.
+                                    && height <= 160.,
+                                "focus bar overflow: {name}, {mode:?}, fullscreen={full}, width={width}, measured={measured:?}"
+                            );
+                            rows.push(json!({"bar":name,"theme":format!("{mode:?}"),"fullscreen":full,"available_width":width,"width":f32::from(measured.width),"height":height}));
+                        }
+                    }
+                }
+            }
+            Ok(rows)
+        })();
+        app.video.fullscreen = fullscreen;
+        Theme::change(original, None, cx);
+        design::apply(cx);
+        result
     }
     fn at_sentence(app: &AppView, index: usize) -> bool {
         let state = app.media.player.snapshot();
@@ -276,7 +441,7 @@ impl Probe {
         fs::write(
             self.out.join("focus-mode-report.json"),
             serde_json::to_vec_pretty(
-                &json!({"passed":passed,"error":error,"cases":self.cases,"inactive_hidden_window":true,"real_appkit_options":true,"actual_appview_actions":true,"physical_shortcuts_fullscreen_multimonitor_verified":false}),
+                &json!({"passed":passed,"error":error,"cases":self.cases,"top_bar_layouts":self.layouts.lock().unwrap().clone(),"focus_label_colors":label_colors(),"inactive_hidden_window":true,"real_appkit_options":true,"actual_appview_actions":true,"physical_shortcuts_fullscreen_multimonitor_verified":false}),
             )?,
         )?;
         Ok(())

@@ -230,12 +230,7 @@ impl AppView {
     }
     pub(super) fn focus_mode_button(&self, cx: &Context<Self>) -> AnyElement {
         if self.focus_mode.active() {
-            let mut row = div().flex().items_center().gap_2().child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("电脑专注中"),
-            );
+            let mut row = div().flex().items_center().flex_wrap().gap_2();
             if let Some(remaining) = self.focus_mode.escape_remaining() {
                 row = row
                     .child(
@@ -267,10 +262,29 @@ impl AppView {
         let view = cx.entity().downgrade();
         let fallback_focus = self.focus.clone();
         let resumable = self.timer.strict() && self.timer.is_running();
+        let label = div()
+            .flex_none()
+            .line_height(relative(1.))
+            .font_weight(FontWeight::BOLD)
+            .text_color(cx.theme().primary_foreground)
+            .child(if resumable {
+                "继续电脑专注"
+            } else {
+                "开启电脑专注"
+            });
+        #[cfg(debug_assertions)]
+        let label = label.children(focus_mode_probe::label_color_probe(cx.theme().primary));
         Button::new("focus-computer")
-            .label(if resumable { "继续电脑专注" } else { "电脑专注" })
-            .outline()
-            .small()
+            .child(label)
+            .h(px(40.))
+            .px_4()
+            .custom(ButtonCustomVariant::new(cx)
+                .color(cx.theme().primary)
+                .foreground(cx.theme().primary_foreground)
+                .border(cx.theme().primary)
+                .hover(cx.theme().primary_hover)
+                .active(cx.theme().primary_active)
+                .shadow(true))
             .disabled(!cfg!(target_os = "macos"))
             .tooltip("选择时长后全屏专注，限制切换其他应用；App 内学习操作正常。计时结束自动解除。系统强制退出保留用于异常恢复。")
             .dropdown_menu_with_anchor(Corner::BottomRight, move |mut menu, window, cx| {

@@ -939,7 +939,7 @@ impl AppView {
             if focused {
                 "专注完成，休息一下"
             } else {
-                "休息结束，可以开始下一轮"
+                "休息已结束，点击「开始下一轮专注」后再计时"
             }
             .into(),
         );
@@ -2215,6 +2215,8 @@ impl Render for AppView {
                             .flex()
                             .justify_between()
                             .items_center()
+                            .flex_wrap()
+                            .gap_4()
                             .child(
                                 div()
                                     .flex()
@@ -2286,8 +2288,10 @@ impl Render for AppView {
                             .child(
                                 div()
                                     .flex()
-                                    .gap_2()
+                                    .gap_4()
                                     .items_center()
+                                    .flex_wrap()
+                                    .child(self.computer_focus_control(cx))
                                     .child(
                                         self.button(
                                             "floating-import-toggle",

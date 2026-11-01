@@ -1442,7 +1442,9 @@ impl AppView {
                         .items_center()
                         .p_10()
                         .child(div().text_3xl().child(clock(self.timer_remaining as f64)))
-                        .child(if self.timer.focus() {
+                        .child(if self.timer.awaiting_focus() {
+                            "休息已结束，准备好后开始下一轮"
+                        } else if self.timer.focus() {
                             "专注时间"
                         } else {
                             "休息时间"

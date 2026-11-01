@@ -19,6 +19,8 @@ struct State {
     version: u8,
     #[serde(default)]
     strict: bool,
+    #[serde(default)]
+    awaiting_focus: bool,
     focus: bool,
     paused: bool,
     duration_ms: u64,
@@ -30,6 +32,7 @@ impl Default for State {
         Self {
             version: 1,
             strict: false,
+            awaiting_focus: false,
             focus: true,
             paused: false,
             duration_ms: 1_500_000,
@@ -46,7 +49,12 @@ impl State {
                 && (1..=self.duration_ms).contains(&self.remaining_ms)
                 && !(self.paused && self.deadline_ms.is_some())
                 && self.deadline_ms != Some(0)
-                && (!self.strict || self.focus && self.deadline_ms.is_some() && !self.paused),
+                && (!self.strict || self.focus && self.deadline_ms.is_some() && !self.paused)
+                && (!self.awaiting_focus
+                    || self.focus
+                        && self.paused
+                        && self.deadline_ms.is_none()
+                        && self.remaining_ms == self.duration_ms),
             "专注计时记录格式无效或版本不支持"
         );
         Ok(())
@@ -127,6 +135,9 @@ impl Timer {
     pub fn strict(&self) -> bool {
         self.state.strict
     }
+    pub fn awaiting_focus(&self) -> bool {
+        self.state.awaiting_focus
+    }
     pub fn deadline_ms(&self) -> Option<u64> {
         self.state.deadline_ms
     }
@@ -156,6 +167,7 @@ impl Timer {
             State {
                 version: 1,
                 strict,
+                awaiting_focus: false,
                 focus: true,
                 paused: false,
                 duration_ms,
@@ -180,7 +192,7 @@ impl Timer {
             next.paused = true;
             Toggle::Paused
         } else {
-            let event = if next.paused {
+            let event = if next.paused && !next.awaiting_focus {
                 Toggle::Resumed
             } else {
                 Toggle::Started
@@ -190,6 +202,7 @@ impl Timer {
                     .ok_or_else(|| anyhow::anyhow!("计时时间超出范围"))?,
             );
             next.paused = false;
+            next.awaiting_focus = false;
             event
         };
         self.commit(lib, next, None)?;
@@ -199,8 +212,9 @@ impl Timer {
         let Some(end) = self.state.deadline_ms.filter(|&end| now >= end) else {
             return Ok(None);
         };
-        let auto_next = auto_next && !self.recovery_pending;
         let focus = self.state.focus;
+        // A break may start automatically; the next focus always needs a click.
+        let auto_next = auto_next && focus && !self.recovery_pending;
         let duration_ms = if focus { 300_000 } else { 1_500_000 };
         let deadline_ms = if auto_next {
             Some(
@@ -213,6 +227,7 @@ impl Timer {
         let next = State {
             version: 1,
             strict: false,
+            awaiting_focus: !focus,
             focus: !focus,
             paused: !auto_next,
             duration_ms,
