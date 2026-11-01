@@ -80,6 +80,11 @@ impl AppView {
                 return Err(error);
             }
         }
+        if self.page == "video" {
+            // Starting/resuming focus is an explicit return to video learning.
+            // Window activation/fullscreen do not change GPUI's input focus.
+            window.focus(&self.focus);
+        }
         self.timer_remaining = self.timer.remaining_seconds(now);
         self.play_timer_chime(timer_chimes::Cue::Start);
         self.report_status(
@@ -260,14 +265,44 @@ impl AppView {
             return row.into_any_element();
         }
         let view = cx.entity().downgrade();
+        let fallback_focus = self.focus.clone();
         let resumable = self.timer.strict() && self.timer.is_running();
-        Button::new("focus-computer").label(if resumable{"继续电脑专注"}else{"电脑专注"}).outline().small()
-            .disabled(!cfg!(target_os="macos"))
+        Button::new("focus-computer")
+            .label(if resumable { "继续电脑专注" } else { "电脑专注" })
+            .outline()
+            .small()
+            .disabled(!cfg!(target_os = "macos"))
             .tooltip("选择时长后全屏专注，限制切换其他应用；App 内学习操作正常。计时结束自动解除。系统强制退出保留用于异常恢复。")
-            .dropdown_menu_with_anchor(Corner::BottomRight,move |mut menu,_,_|{
-                if resumable { let weak=view.clone();menu=menu.item(PopupMenuItem::new("继续上次专注（沿用剩余时间）").on_click(move|_,w,cx|{let _=weak.update(cx,|v,cx|v.handle(Action::FocusResume,w,cx));})); }
-                for minutes in [5,15,25,45,60] { let weak=view.clone();menu=menu.item(PopupMenuItem::new(format!("专注 {minutes} 分钟 · 屏蔽其他应用")).on_click(move|_,w,cx|{let _=weak.update(cx,|v,cx|v.handle(Action::FocusStart(minutes*60),w,cx));})); } menu
-            }).into_any_element()
+            .dropdown_menu_with_anchor(Corner::BottomRight, move |mut menu, window, cx| {
+                // The builder runs before the menu takes focus. Cancel restores
+                // the original editor; a successful start restores video focus.
+                menu = menu.action_context(window.focused(cx).unwrap_or_else(|| fallback_focus.clone()));
+                let mut choices = vec![];
+                if resumable {
+                    choices.push(("继续上次专注（沿用剩余时间）".to_string(), Action::FocusResume));
+                }
+                choices.extend([5, 15, 25, 45, 60].map(|minutes| (
+                    format!("专注 {minutes} 分钟 · 屏蔽其他应用"),
+                    Action::FocusStart(minutes * 60),
+                )));
+                for (label, action) in choices {
+                    let view = view.clone();
+                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                        let view = view.clone();
+                        let action = action.clone();
+                        let handle = window.window_handle();
+                        // Let menu dismissal return focus before starting the
+                        // fullscreen transition and assigning the learning focus.
+                        cx.defer(move |cx| {
+                            let _ = handle.update(cx, move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| this.handle(action, window, cx));
+                            });
+                        });
+                    }));
+                }
+                menu
+            })
+            .into_any_element()
     }
 }
 struct Cover {

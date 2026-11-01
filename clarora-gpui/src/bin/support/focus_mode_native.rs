@@ -39,7 +39,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             ensure!(status.success(), "native focus process failed");
             break;
         }
-        if began.elapsed() > Duration::from_secs(30) {
+        if began.elapsed() > Duration::from_secs(45) {
             let _ = child.kill();
             let _ = child.wait();
             anyhow::bail!("native focus timeout");

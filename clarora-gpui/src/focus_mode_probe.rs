@@ -33,8 +33,14 @@ impl Probe {
         cx: &mut Context<AppView>,
     ) -> Result<bool> {
         ensure!(
-            self.started.elapsed() < Duration::from_secs(20),
-            "focus diagnostic timed out"
+            self.started.elapsed() < Duration::from_secs(30),
+            "focus diagnostic timed out at stage {} (position={}, paused={}, sentence={:?}, video_focus={}, status={})",
+            self.stage,
+            app.media.player.snapshot().position,
+            app.media.player.snapshot().paused,
+            app.video.sentence_repeat.map(|s| s.index),
+            w.focused(cx) == Some(app.focus.clone()),
+            app.status
         );
         match self.stage {
             0 => {
@@ -43,6 +49,112 @@ impl Probe {
                 );
                 ensure!(!native::is_active(), "diagnostic must remain inactive");
                 self.baseline = native::options();
+                app.media.player = Player::without_audio_device();
+                video_resume_probe::prepare(&app.lib)?;
+                app.handle(Action::Page("video".into()), w, cx);
+                ensure!(
+                    app.open_at(app.lib.root.join("media/resume-video.mp4"), 0., true),
+                    "video fixture failed to open"
+                );
+                self.stage = 3;
+            }
+            3 => {
+                app.media.player.set_video_target(320, 180, true);
+                let state = app.media.player.snapshot();
+                if state.duration < 11.9 || state.frame.is_none() || app.video.cues.len() != 3 {
+                    return Ok(false);
+                }
+                app.handle(Action::VideoSentenceRepeat(Some(0), true), w, cx);
+                app.media.player.set("pause", "yes");
+                self.stage = 8;
+            }
+            8 => {
+                if !app.media.player.snapshot().paused || !Self::at_sentence(app, 0) {
+                    return Ok(false);
+                }
+                if !app.assistant_open {
+                    app.handle(Action::Assistant, w, cx);
+                }
+                app.inputs["question"].update(cx, |state, cx| state.focus(w, cx));
+                app.handle(Action::FocusStart(60), w, cx);
+                ensure!(
+                    app.focus_mode.active() && w.focused(cx) == Some(app.focus.clone()),
+                    "FocusStart left video keyboard focus in the old input/menu"
+                );
+                Self::keys(w, cx, &["right"]);
+                self.stage = 4;
+            }
+            4 => {
+                if !Self::at_sentence(app, 1) {
+                    return Ok(false);
+                }
+                self.note("FocusStart → actual right key changes sentence and keeps three repeats without a video click", app)?;
+                Self::keys(w, cx, &["space"]);
+                self.stage = 5;
+            }
+            5 => {
+                if !app.media.player.snapshot().paused {
+                    return Ok(false);
+                }
+                self.note(
+                    "actual space key pauses video after computer focus starts",
+                    app,
+                )?;
+                app.inputs["question"].update(cx, |state, cx| state.focus(w, cx));
+                Self::keys(w, cx, &["right", "space"]);
+                self.stage = 6;
+            }
+            6 => {
+                if !app.media.player.snapshot().paused {
+                    return Ok(false);
+                }
+                let question_focus = app.inputs["question"].read(cx).focus_handle(cx);
+                ensure!(
+                    w.focused(cx) == Some(question_focus.clone())
+                        && app.video.sentence_repeat.is_some_and(|s| s.index == 1),
+                    "focus mode intercepted editor arrows/space"
+                );
+                app.poll_focus_mode(w, cx);
+                ensure!(
+                    w.focused(cx) == Some(question_focus),
+                    "poll stole editor focus"
+                );
+                self.note("question input keeps actual arrows/space and focus polling does not steal focus", app)?;
+                app.stop_focus_mode(w, cx);
+                app.handle(Action::FocusResume, w, cx);
+                ensure!(
+                    app.focus_mode.active() && w.focused(cx) == Some(app.focus.clone()),
+                    "FocusResume did not restore video keyboard focus"
+                );
+                Self::keys(w, cx, &["left"]);
+                self.stage = 7;
+            }
+            7 => {
+                if !Self::at_sentence(app, 0) {
+                    return Ok(false);
+                }
+                self.note(
+                    "FocusResume → actual left key works without clicking the video",
+                    app,
+                )?;
+                app.stop_focus_mode(w, cx);
+                app.handle(Action::VideoStopSentenceRepeat, w, cx);
+                app.handle(Action::Page("writing".into()), w, cx);
+                app.inputs["question"].update(cx, |state, cx| state.focus(w, cx));
+                let input = w.focused(cx);
+                app.handle(Action::FocusStart(60), w, cx);
+                ensure!(
+                    app.focus_mode.active() && w.focused(cx) == input,
+                    "starting focus on a non-video page stole editor focus"
+                );
+                self.note(
+                    "starting computer focus outside video preserves editor focus",
+                    app,
+                )?;
+                app.stop_focus_mode(w, cx);
+                self.stage = 10;
+            }
+            10 => {
                 app.handle(Action::FocusStart(60), w, cx);
                 ensure!(
                     app.focus_mode.active()
@@ -81,9 +193,9 @@ impl Probe {
                 app.handle(Action::FocusEmergency, w, cx);
                 ensure!(app.focus_mode.active(), "emergency countdown bypassed");
                 self.note("emergency exit requires deliberate countdown", app)?;
-                self.stage = 1;
+                self.stage = 11;
             }
-            1 => {
+            11 => {
                 if app.focus_mode.escape_remaining() != Some(0) {
                     return Ok(false);
                 }
@@ -101,9 +213,9 @@ impl Probe {
                 )?;
                 app.handle(Action::FocusStart(1), w, cx);
                 ensure!(app.focus_mode.active(), "second session failed");
-                self.stage = 2;
+                self.stage = 12;
             }
-            2 => {
+            12 => {
                 if app.focus_mode.active() {
                     return Ok(false);
                 }
@@ -131,6 +243,34 @@ impl Probe {
             _ => {}
         }
         Ok(false)
+    }
+    fn at_sentence(app: &AppView, index: usize) -> bool {
+        let state = app.media.player.snapshot();
+        app.video.repeat_three
+            && app.video.sentence_repeat.is_some_and(|s| {
+                s.index == index
+                    && state.position >= s.range.0 - 0.05
+                    && state.position < s.range.0 + 1.
+                    && state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|r| r.request_id == s.request_id)
+            })
+    }
+    fn keys(window: &Window, cx: &mut Context<AppView>, keys: &[&str]) {
+        let handle = window.window_handle();
+        let keys = keys
+            .iter()
+            .map(|key| Keystroke::parse(key).expect("probe key"))
+            .collect::<Vec<_>>();
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, move |_, w, cx| {
+                w.draw(cx).clear();
+                for key in keys {
+                    w.dispatch_keystroke(key, cx);
+                }
+            });
+        });
     }
     fn report(&self, passed: bool, error: Option<String>) -> Result<()> {
         fs::write(
