@@ -3,6 +3,13 @@ use super::*;
 
 impl AppView {
     pub(super) fn open_audio(&mut self, row: &Row) {
+        let replacement = self
+            .audio
+            .library
+            .merges
+            .replacement(&text(row, "id"), &self.audio.audios)
+            .cloned();
+        let row = replacement.as_ref().unwrap_or(row);
         self.audio.library.cancel_rename();
         self.invalidate_blind();
         self.audio.blind_settle_until = Some(Instant::now() + Duration::from_millis(250));

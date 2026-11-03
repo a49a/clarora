@@ -11,6 +11,8 @@ mod assistant;
 mod audio_batch;
 #[path = "support/audio_library.rs"]
 mod audio_library;
+#[path = "support/audio_merge.rs"]
+mod audio_merge;
 #[path = "support/backup_cancel.rs"]
 mod backup_cancel;
 #[path = "support/backup_library.rs"]
@@ -470,6 +472,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     fs::copy(video.with_extension("srt"), second.with_extension("srt"))?;
     lib.import_audio(&group, &second)?;
     let selected = lib.list("listening_audios")?;
+    audio_merge::run(&root, results)?;
     audio_tools::merge(&lib, &selected, &group, &cancel)?;
     let joined = lib
         .list("listening_audios")?
@@ -980,6 +983,7 @@ fn main() -> Result<()> {
         Some("--backup-library-only") => "backup-library-only",
         Some("--video-render-only") => "video-render-only",
         Some("--command-import-only") => "command-import-only",
+        Some("--audio-merge-only") => "audio-merge-only",
         Some("--audio-batch-only") => "audio-batch-only",
         Some("--clip-marks-only") => "clip-marks-only",
         Some("--subtitle-selection-only") => "subtitle-selection-only",
@@ -1034,6 +1038,9 @@ fn main() -> Result<()> {
             &PathBuf::from(args.get(3).context("缺少媒体夹具")?),
             &mut results,
         )
+    } else if mode == "audio-merge-only" {
+        audio_merge::run(&output, &mut results)
+            .and_then(|()| model_navigation_native::run(&output, &mut results))
     } else if mode == "audio-batch-only" {
         let lib = Library::open(output.join(format!("audio-batch-{}", data::id())))?;
         audio_batch::run(&lib, &mut results)

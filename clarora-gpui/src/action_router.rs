@@ -267,10 +267,11 @@ impl AppView {
                     self.audio.practice_id = key;
                     if let Some(row) = self
                         .audio
-                        .audios
-                        .iter()
-                        .find(|r| text(r, "practice_id") == self.audio.practice_id)
-                        .cloned()
+                        .library
+                        .merges
+                        .learning(&self.audio.audios, &self.audio.practice_id)
+                        .first()
+                        .map(|row| (*row).clone())
                     {
                         self.open_audio(&row);
                     } else {
@@ -761,6 +762,12 @@ impl AppView {
                     self.audio.library.batch = !self.audio.library.batch;
                     self.audio.checked.clear();
                     self.audio.library.pending_delete.clear();
+                }
+                Action::LibraryShowSources => {
+                    self.audio.library.show_sources = !self.audio.library.show_sources;
+                    self.audio.library.cancel_rename();
+                    self.audio.checked.clear();
+                    self.refresh();
                 }
                 Action::LibraryReset => {
                     self.audio.library.filter = 0;
@@ -2530,22 +2537,23 @@ impl AppView {
                     self.handle(Action::Audio(text(&row, "id")), window, cx);
                 }
                 Action::MergeAudios => {
-                    let rows = self
-                        .audio
-                        .audios
-                        .iter()
-                        .filter(|r| {
-                            text(r, "practice_id") == self.audio.practice_id
-                                && self.audio.checked.contains(&text(r, "id"))
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>();
+                    ensure!(self.tasks.cancel.is_none(), "请完成或取消当前任务后再合并");
+                    let rows = self.audio.library.ordered_checked(
+                        &self.audio.audios,
+                        &self.audio.practice_id,
+                        &self.audio.checked,
+                    );
                     ensure!(rows.len() >= 2, "请至少勾选两条音频");
                     let group = self.audio.practice_id.clone();
-                    self.begin("正在合并音频与字幕…", move |lib, cancel, _| {
-                        clarora_gpui::audio_tools::merge(&lib, &rows, &group, &cancel)?;
-                        Ok(Outcome::Message("已合并音频与字幕，原文件保留".into()))
-                    });
+                    self.begin_scoped(
+                        TaskScope::Application,
+                        "正在合并音频与字幕…",
+                        move |lib, cancel, _| {
+                            Ok(Outcome::AudioMerged(clarora_gpui::audio_tools::merge(
+                                &lib, &rows, &group, &cancel,
+                            )?))
+                        },
+                    );
                 }
                 Action::AudioGroupSubtitles(mode) => {
                     ensure!(self.tasks.cancel.is_none(), "请完成或取消当前任务后重试");

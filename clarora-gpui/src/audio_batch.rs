@@ -177,6 +177,12 @@ impl Plan {
             "SELECT * FROM listening_audios WHERE practice_id=? ORDER BY created_at,id",
             &[group.to_string().into()],
         )?;
+        let merges = crate::audio_tools::Catalog::load(lib, &rows)?;
+        let rows = merges
+            .learning(&rows, group)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
         ensure!(!rows.is_empty(), "当前练习组没有音频");
         Ok(Self {
             group: group.into(),

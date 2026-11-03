@@ -1081,6 +1081,7 @@ fn merge_snapshot(
             let old = text(&row, "id");
             if *table == "ai_records" {
                 crate::clip_marks::map_audio(&mut row, &mapping)?;
+                crate::audio_tools::map_record(&mut row, &mapping)?;
             }
             let mut existing = None;
             if *table == "words" {

@@ -176,6 +176,7 @@ enum Action {
     LibraryFilter(u8),
     LibrarySort(u8),
     LibraryBatch,
+    LibraryShowSources,
     LibrarySelectAll,
     LibraryReset,
     LibraryMove(String),
@@ -350,6 +351,7 @@ enum Outcome {
     TtsReady(Row),
     CommandImported(clarora_gpui::command_import::Report),
     AudioBatch(clarora_gpui::audio_batch::Report),
+    AudioMerged(clarora_gpui::audio_tools::Merged),
 }
 enum Event {
     SubtitleProgress(String),

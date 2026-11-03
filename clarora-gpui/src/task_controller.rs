@@ -189,6 +189,22 @@ impl AppView {
                             };
                         }
                         match result {
+                            Ok(Outcome::AudioMerged(merged)) => {
+                                cancelled = false;
+                                if self.audio.practice_id == text(&merged.row, "practice_id") {
+                                    self.audio.library.selected = text(&merged.row, "id");
+                                    self.audio.checked.clear();
+                                    self.audio.library.batch = false;
+                                    self.audio.library.filter = 0;
+                                    self.audio.library.show_sources = false;
+                                    self.set("library_search", "", window, cx);
+                                    if self.page == "listening" {
+                                        self.open_audio(&merged.row);
+                                        self.media.player.set("pause", "yes");
+                                    }
+                                }
+                                self.report_status(FeedbackKind::Info, format!("已合并 {} 条音频。原音频和字幕保留，学习时使用合并版本。{}", merged.sources, if merged.subtitles_complete { "字幕已按合并顺序衔接。" } else { "部分原音频缺少字幕，请为合并版本生成完整字幕。" }));
+                            }
                             Ok(Outcome::AudioBatch(report)) => {
                                 cancelled = report.cancelled;
                                 self.report_status(

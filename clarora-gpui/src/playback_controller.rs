@@ -168,10 +168,9 @@ impl AppView {
                     } else if self.media.repeat >= 3 {
                         let group = self
                             .audio
-                            .audios
-                            .iter()
-                            .filter(|r| text(r, "practice_id") == self.audio.practice_id)
-                            .collect::<Vec<_>>();
+                            .library
+                            .merges
+                            .learning(&self.audio.audios, &self.audio.practice_id);
                         if let Some(index) = group
                             .iter()
                             .position(|r| text(r, "id") == self.audio.current_id)

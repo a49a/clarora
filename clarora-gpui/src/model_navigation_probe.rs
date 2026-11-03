@@ -95,6 +95,7 @@ pub(super) struct Probe {
     fixture: Option<Fixture>,
     token: Option<Cancel>,
     foreground: Option<Cancel>,
+    merged_id: String,
     cases: Vec<Value>,
 }
 impl Probe {
@@ -106,6 +107,7 @@ impl Probe {
             fixture: None,
             token: None,
             foreground: None,
+            merged_id: String::new(),
             cases: vec![],
         }
     }
@@ -440,6 +442,114 @@ impl Probe {
                     "model owner drop did not cancel download"
                 );
                 self.note("dropping app-owned model task cancels download", app);
+                app.handle(Action::Page("library".into()), window, cx);
+                app.handle(Action::Practice("probe-group-a".into()), window, cx);
+            }
+            10 => {
+                if app.audio.practice_id != "probe-group-a" || app.audio.audios.len() != 3 {
+                    return Ok(false);
+                }
+                app.audio.library.sort = 1;
+                app.audio.library.batch = true;
+                app.audio.checked = std::collections::BTreeSet::from([
+                    "probe-audio-a".into(),
+                    "probe-audio-c".into(),
+                ]);
+                app.handle(Action::MergeAudios, window, cx);
+                ensure!(
+                    app.tasks.cancel.is_some() && app.tasks.scope == TaskScope::Application,
+                    "actual merge action did not start application task"
+                );
+                let token = app.tasks.cancel.clone().unwrap();
+                app.handle(Action::Page("settings".into()), window, cx);
+                ensure!(!token.load(Ordering::SeqCst), "page switch cancelled merge");
+                self.note("actual selected-audio merge continues across modules", app);
+            }
+            11 => {
+                if app.tasks.cancel.is_some() || app.audio.audios.len() != 4 {
+                    return Ok(false);
+                }
+                self.merged_id = app.audio.library.selected.clone();
+                ensure!(
+                    app.audio.library.merges.source_count(&self.merged_id) == 2
+                        && app.audio.checked.is_empty()
+                        && !app.audio.library.batch,
+                    "merge completion did not select study version or clear selection"
+                );
+                app.handle(Action::Page("listening".into()), window, cx);
+                app.handle(Action::AudioPractice("probe-group-a".into()), window, cx);
+                ensure!(
+                    app.audio.current_id == self.merged_id,
+                    "group study did not prefer merged version"
+                );
+                ensure!(
+                    app.audio
+                        .library
+                        .merges
+                        .learning(&app.audio.audios, "probe-group-a")
+                        .len()
+                        == 1,
+                    "learning catalog still includes originals"
+                );
+                self.note(
+                    "merge completion and group learning select merged version",
+                    app,
+                );
+                app.handle(Action::Page("settings".into()), window, cx);
+                app.handle(Action::Page("listening".into()), window, cx);
+            }
+            12 => {
+                if app.loads.restore_pending {
+                    return Ok(false);
+                }
+                ensure!(
+                    app.audio.current_id == self.merged_id,
+                    "cross-module restore returned to original"
+                );
+                app.handle(Action::Audio("probe-audio-a".into()), window, cx);
+                ensure!(
+                    app.audio.current_id == self.merged_id,
+                    "explicit stale source ID bypassed merged study version"
+                );
+                self.note(
+                    "restoring and selecting an original resolves to merged learning version",
+                    app,
+                );
+                app.handle(Action::LibraryShowSources, window, cx);
+            }
+            13 => {
+                ensure!(
+                    app.audio.library.show_sources,
+                    "show-originals action failed"
+                );
+                ensure!(
+                    app.audio
+                        .library
+                        .visible(&app.audio.audios, "probe-group-a", "")
+                        .len()
+                        == 3
+                        && app
+                            .audio
+                            .library
+                            .merges
+                            .learning(&app.audio.audios, "probe-group-a")
+                            .len()
+                            == 1,
+                    "show-originals changed study queue"
+                );
+                app.handle(Action::LibraryShowSources, window, cx);
+                ensure!(
+                    app.audio
+                        .library
+                        .visible(&app.audio.audios, "probe-group-a", "")
+                        .len()
+                        == 1,
+                    "hide-originals action failed"
+                );
+                self.note(
+                    "originals remain manageable while learning queue stays deduplicated",
+                    app,
+                );
                 self.report(true, None)?;
                 return Ok(true);
             }

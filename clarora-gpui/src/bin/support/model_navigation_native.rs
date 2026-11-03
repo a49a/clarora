@@ -10,8 +10,7 @@ use std::{
 };
 
 pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
-    let workflow =
-        "模型后台下载：视频选集/指定音频/切组/跨模块进度/并行任务与独立取消/失败及原子安装";
+    let workflow = "原生模型后台下载与音频学习版本：切组/视频选集/跨模块进度/独立取消/合并所选/隐藏原音频/恢复";
     if !cfg!(debug_assertions)
         || !cfg!(target_os = "macos")
         || std::env::var("CLARORA_GUI_MEMORY_CHECK").as_deref() != Ok("1")
@@ -56,7 +55,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         status.success()
             && report["passed"] == true
-            && report["cases"].as_array().is_some_and(|v| v.len() >= 10),
+            && report["cases"].as_array().is_some_and(|v| v.len() >= 16),
         "native model navigation failed: {}",
         path.display()
     );

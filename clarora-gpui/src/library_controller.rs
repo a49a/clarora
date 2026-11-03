@@ -28,6 +28,7 @@ pub struct Key {
     pub library_selected: String,
     pub library_filter: u8,
     pub library_sort: u8,
+    pub library_show_sources: bool,
     pub video_path: String,
 }
 
@@ -99,6 +100,8 @@ pub fn load(lib: &Library, key: &Key, include_runtime: bool) -> Result<Snapshot>
         selected: key.library_selected.clone(),
         filter: key.library_filter,
         sort: key.library_sort,
+        show_sources: key.library_show_sources,
+        merges: crate::audio_tools::Catalog::load(lib, &audios)?,
         ..Default::default()
     };
     // This legacy helper performs file probes and reads; it is safe here, on the worker.
@@ -144,7 +147,12 @@ pub fn load(lib: &Library, key: &Key, include_runtime: bool) -> Result<Snapshot>
         } else {
             0.
         };
-        Some((last, position))
+        let row = audio_library
+            .merges
+            .replacement(&last, &audios)
+            .context("上次学习音频不存在")?;
+        let target = text(row, "id");
+        Some((target.clone(), if target == last { position } else { 0. }))
     } else {
         None
     };

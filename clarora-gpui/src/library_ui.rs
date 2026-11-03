@@ -19,6 +19,15 @@ impl AppView {
             .map(|r| text(r, "name"))
             .unwrap_or_else(|| "还没有练习组".into());
         let busy = self.tasks.cancel.is_some();
+        let hidden_sources = self
+            .audio
+            .audios
+            .iter()
+            .filter(|r| {
+                text(r, "practice_id") == self.audio.practice_id
+                    && self.audio.library.merges.hidden(&text(r, "id"))
+            })
+            .count();
         let group_total = self
             .audio
             .audios
@@ -232,7 +241,8 @@ impl AppView {
                         group_total - attached
                     )),
             )
-            .child(self.audio_group_subtitle_actions("library", group_total, cx))
+            .child(self.audio_group_subtitle_actions("library", group_total - hidden_sources, cx))
+            .when(hidden_sources > 0, |v| v.child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("学习时使用合并版本；已隐藏 {hidden_sources} 条原音频，原文件和字幕均保留。"))))
             .child(Input::new(&self.inputs["library_search"]));
         let mut filters = div().flex().gap_1().items_center().flex_wrap();
         for (i, label) in [(0, "全部"), (1, "附字幕"), (2, "待配字幕")] {
@@ -247,6 +257,23 @@ impl AppView {
             );
         }
         filters = filters
+            .when(hidden_sources > 0 || self.audio.library.show_sources, |v| {
+                v.child(
+                    self.button(
+                        "library-show-sources",
+                        if self.audio.library.show_sources {
+                            "隐藏原音频"
+                        } else {
+                            "显示原音频"
+                        },
+                        Action::LibraryShowSources,
+                        cx,
+                    )
+                    .outline()
+                    .selected(self.audio.library.show_sources)
+                    .disabled(busy),
+                )
+            })
             .child(
                 self.player_menu(
                     "library-sort",
@@ -317,7 +344,11 @@ impl AppView {
                         .disabled(busy || ids.is_empty()),
                     )
                     .child(
-                        self.button("library-merge", "合并", Action::MergeAudios, cx)
+                        self.button("library-merge", "合并所选音频", Action::MergeAudios, cx)
+                            .outline()
+                            .tooltip(
+                                "按当前列表排序合并，字幕同步衔接；原音频保留，学习时使用合并版本",
+                            )
                             .disabled(busy || ids.len() < 2),
                     )
                     .child(
@@ -329,6 +360,12 @@ impl AppView {
                         )
                         .disabled(busy || ids.is_empty()),
                     ),
+            );
+            list_head = list_head.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("合并按当前列表排序进行；原音频和字幕保留，学习时自动隐藏原条目。"),
             );
         }
         list = list.child(list_head);
@@ -496,6 +533,26 @@ impl AppView {
                         .flex_col()
                         .gap_1()
                         .child(name)
+                        .when(self.audio.library.merges.source_count(&key) > 0, |v| {
+                            v.child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(cx.theme().primary)
+                                    .child(format!(
+                                        "合并学习版 · {} 条音频",
+                                        self.audio.library.merges.source_count(&key)
+                                    )),
+                            )
+                        })
+                        .when(self.audio.library.merges.hidden(&key), |v| {
+                            v.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("原音频 · 已包含在合并学习版中"),
+                            )
+                        })
                         .child(
                             div()
                                 .text_xs()

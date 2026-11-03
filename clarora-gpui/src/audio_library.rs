@@ -37,6 +37,8 @@ pub struct State {
     pub preview: Vec<Cue>,
     pub subtitle_count: usize,
     pub subtitle_ids: BTreeSet<String>,
+    pub merges: crate::audio_tools::Catalog,
+    pub show_sources: bool,
 }
 
 pub struct RenameTarget {
@@ -111,6 +113,7 @@ impl State {
             .filter(|r| {
                 text(r, "practice_id") == group
                     && text(r, "name").to_lowercase().contains(&query)
+                    && (self.show_sources || !self.merges.hidden(&text(r, "id")))
                     && match self.filter {
                         1 => self.subtitle_ids.contains(&text(r, "id")),
                         2 => !self.subtitle_ids.contains(&text(r, "id")),
@@ -129,6 +132,25 @@ impl State {
             order.then_with(|| text(a, "id").cmp(&text(b, "id")))
         });
         rows
+    }
+    /// Checked rows keep the current sort even when search/filter hides a checked item.
+    pub fn ordered_checked(
+        &self,
+        rows: &[Row],
+        group: &str,
+        checked: &BTreeSet<String>,
+    ) -> Vec<Row> {
+        let selection = Self {
+            sort: self.sort,
+            show_sources: true,
+            ..Default::default()
+        };
+        selection
+            .visible(rows, group, "")
+            .into_iter()
+            .filter(|r| checked.contains(&text(r, "id")))
+            .cloned()
+            .collect()
     }
 }
 pub fn scoped_ids(rows: &[Row], group: &str, checked: &BTreeSet<String>) -> Vec<String> {

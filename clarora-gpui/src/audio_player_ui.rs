@@ -371,10 +371,9 @@ impl AppView {
             .unwrap_or_else(|| "选择练习组".into());
         let audios = self
             .audio
-            .audios
-            .iter()
-            .filter(|r| text(r, "practice_id") == self.audio.practice_id)
-            .collect::<Vec<_>>();
+            .library
+            .merges
+            .learning(&self.audio.audios, &self.audio.practice_id);
         let index = audios
             .iter()
             .position(|r| text(r, "id") == self.audio.current_id);

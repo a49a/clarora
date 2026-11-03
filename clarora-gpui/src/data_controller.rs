@@ -32,6 +32,7 @@ impl AppView {
             library_selected: self.audio.library.selected.clone(),
             library_filter: self.audio.library.filter,
             library_sort: self.audio.library.sort,
+            library_show_sources: self.audio.library.show_sources,
             video_path: if self.page == "video" {
                 self.video
                     .path
@@ -122,6 +123,7 @@ impl AppView {
         self.audio.library.subtitle_ids = snapshot.audio_library.subtitle_ids;
         self.audio.library.preview = snapshot.audio_library.preview;
         self.audio.library.subtitle_count = snapshot.audio_library.subtitle_count;
+        self.audio.library.merges = snapshot.audio_library.merges;
         if let Some(cards) = snapshot.cards {
             self.cards = cards;
             if self.index >= self.cards.len() {
