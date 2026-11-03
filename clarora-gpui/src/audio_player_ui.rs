@@ -536,7 +536,12 @@ impl AppView {
             .child(navigation)
             .when(!self.audio.blind.enabled, |v| {
                 v.child(self.audio_subtitle_toolbar(cx))
-            });
+            })
+            .child(div().px_4().pb_3().child(self.audio_group_subtitle_actions(
+                "audio-study",
+                audios.len(),
+                cx,
+            )));
         let active = video_subtitles::active(&self.audio.cues, self.media.snapshot.position);
         let transcript = centered_list(
             &self.audio.center,

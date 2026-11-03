@@ -2,6 +2,61 @@
 use super::*;
 
 impl AppView {
+    pub(super) fn audio_group_subtitle_actions(
+        &self,
+        location: &str,
+        total: usize,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let disabled =
+            self.tasks.cancel.is_some() || self.audio.practice_id.is_empty() || total == 0;
+        div()
+            .id(SharedString::from(format!(
+                "{location}-group-subtitle-actions"
+            )))
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().accent.opacity(0.35))
+            .px_3()
+            .py_2()
+            .flex()
+            .items_center()
+            .flex_wrap()
+            .gap_2()
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(format!("整个组 · {total} 条音频")),
+            )
+            .child(
+                self.button(
+                    format!("{location}-group-english"),
+                    "整组生成英文字幕",
+                    Action::AudioGroupSubtitles(clarora_gpui::audio_batch::Mode::English),
+                    cx,
+                )
+                .outline()
+                .h(px(32.))
+                .disabled(disabled)
+                .tooltip("一键处理当前整个组，已有英文字幕跳过；不受搜索和筛选影响"),
+            )
+            .child(
+                self.button(
+                    format!("{location}-group-chinese"),
+                    "整组翻译中文字幕",
+                    Action::AudioGroupSubtitles(clarora_gpui::audio_batch::Mode::Chinese),
+                    cx,
+                )
+                .outline()
+                .h(px(32.))
+                .disabled(disabled)
+                .tooltip("只补缺少中文的句子，已有中文保留；没有英文时先自动生成英文"),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn audio_subtitle_toolbar(&self, cx: &Context<Self>) -> impl IntoElement {
         let available = !self.audio.current_id.is_empty();
         let busy = self.tasks.cancel.is_some();
@@ -21,6 +76,13 @@ impl AppView {
             .gap_2()
             .px_4()
             .pb_3()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("当前音频"),
+            )
             .child(
                 self.button(
                     "audio-generate-subtitles",
