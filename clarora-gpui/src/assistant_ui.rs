@@ -462,6 +462,7 @@ impl AppView {
             }
         }
         let mut composer = div()
+            .id("assistant-composer-content")
             .flex_shrink_0()
             .p_4()
             .border_t_1()
@@ -578,6 +579,7 @@ impl AppView {
         composer = composer
             .child(
                 Input::new(&self.inputs["question"])
+                    .flex_shrink_0()
                     .disabled(self.chat.running || self.chat.is_loading()),
             )
             .child(
@@ -601,9 +603,9 @@ impl AppView {
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(if cfg!(target_os = "macos") {
-                                "⌘ Enter 发送"
+                                "Enter 换行 · ⌘ Enter 发送"
                             } else {
-                                "Ctrl Enter 发送"
+                                "Enter 换行 · Ctrl Enter 发送"
                             }),
                     ),
             )
@@ -631,6 +633,14 @@ impl AppView {
                             ),
                     ),
             );
+        let composer = div()
+            .id("assistant-composer-scroll")
+            .flex_shrink_0()
+            .max_h(px(
+                (f32::from(window.viewport_size().height) * 0.62).max(150.)
+            ))
+            .overflow_y_scroll()
+            .child(composer);
         let mut header = div()
             .flex_shrink_0()
             .p_4()
@@ -749,7 +759,14 @@ impl AppView {
             .border_color(cx.theme().border)
             .shadow_lg()
             .overflow_hidden()
-            .child(header)
+            .child(
+                div()
+                    .id("assistant-header-scroll")
+                    .flex_shrink_0()
+                    .max_h(px((f32::from(window.viewport_size().height) * 0.3).max(72.)))
+                    .overflow_y_scroll()
+                    .child(header),
+            )
             .child(history)
             .when(!error.is_empty(), |v| {
                 v.child(

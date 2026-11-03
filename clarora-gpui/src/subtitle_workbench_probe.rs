@@ -292,6 +292,7 @@ impl Probe {
         cx: &mut Context<AppView>,
     ) -> Result<Vec<Value>> {
         let original = cx.theme().mode;
+        let question = app.value("question", cx);
         let result = (|| -> Result<Vec<Value>> {
             let mut measurements = vec![];
             for mode in [ThemeMode::Light, ThemeMode::Dark] {
@@ -316,12 +317,52 @@ impl Probe {
                         "toolbar layout overflow: {mode:?}, width={width}, measured={measured_width}x{measured_height}"
                     );
                     measurements.push(json!({"theme":format!("{mode:?}"),"available_width_bound":width,"intrinsic_width":measured_width,"height":measured_height}));
+                    let long = (0..120)
+                        .map(|i| {
+                            format!("Pasted paragraph {i}: 请解释这段英文，保留全部上下文。\n")
+                        })
+                        .collect::<String>();
+                    fs::write(app.lib.root.join("assistant-composer-long.txt"), &long)?;
+                    let mut heights = vec![];
+                    for (case, value) in [
+                        ("empty", String::new()),
+                        ("multiline", "English question.\n中文问题。\n".repeat(4)),
+                        ("long", long),
+                    ] {
+                        app.inputs["question"]
+                            .update(cx, |state, cx| state.set_value(value.clone(), window, cx));
+                        let mut input = Input::new(&app.inputs["question"]).into_any_element();
+                        let bounds = input.layout_as_root(
+                            size(
+                                AvailableSpace::Definite(px(width)),
+                                AvailableSpace::MaxContent,
+                            ),
+                            window,
+                            cx,
+                        );
+                        let height = f32::from(bounds.height);
+                        ensure!(
+                            height >= 80. && height <= 260.,
+                            "assistant editor is too small or unbounded: {case}, {mode:?}, width={width}, height={height}"
+                        );
+                        ensure!(
+                            app.value("question", cx) == value,
+                            "question text was truncated during layout"
+                        );
+                        heights.push(height);
+                        measurements.push(json!({"component":"assistant-question","case":case,"theme":format!("{mode:?}"),"available_width_bound":width,"height":height,"characters":value.chars().count(),"text_complete":true}));
+                    }
+                    ensure!(
+                        heights[1] > heights[0] + 30. && heights[2] <= heights[1] + 60.,
+                        "assistant editor did not grow and cap after pasting: {heights:?}"
+                    );
                 }
             }
             Ok(measurements)
         })();
         Theme::change(original, None, cx);
         design::apply(cx);
+        app.inputs["question"].update(cx, |state, cx| state.set_value(question, window, cx));
         result
     }
     fn draw(window: &Window, cx: &mut Context<AppView>) {

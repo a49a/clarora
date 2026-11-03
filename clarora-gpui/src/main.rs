@@ -463,7 +463,7 @@ impl AppView {
                 false,
                 false,
             ),
-            ("question", "输入问题，Enter 换行…", true, false),
+            ("question", "输入问题或粘贴内容，Enter 换行…", true, false),
             ("reference", "朗读参考原文", true, false),
             (
                 "tts_text",
@@ -494,7 +494,9 @@ impl AppView {
                 key.into(),
                 cx.new(|cx| {
                     let mut input = InputState::new(window, cx).placeholder(placeholder);
-                    if multi {
+                    if key == "question" {
+                        input = input.auto_grow(4, 10).soft_wrap(true);
+                    } else if multi {
                         input = input.multi_line(true).rows(3);
                     }
                     if masked {
