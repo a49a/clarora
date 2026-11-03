@@ -210,6 +210,7 @@ pub(super) struct TasksState {
     pub(super) cancel: Option<Cancel>,
     pub(super) scope: TaskScope,
     pub(super) models: model_controller::State,
+    pub(super) audio_subtitles: audio_subtitles_controller::State,
     pub(super) backup_progress: Option<backup::UploadProgress>,
     #[cfg(debug_assertions)]
     pub(super) backup_fixture: Option<std::net::SocketAddr>,
@@ -231,6 +232,7 @@ impl TasksState {
             cancel: None,
             scope: TaskScope::Material,
             models: Default::default(),
+            audio_subtitles: Default::default(),
             backup_progress: None,
             #[cfg(debug_assertions)]
             backup_fixture: None,

@@ -1507,6 +1507,12 @@ impl AppView {
                     }
                 }
                 Action::CancelModel => self.tasks.models.cancel(),
+                Action::CancelAudioSubtitles => self.tasks.audio_subtitles.cancel(),
+                Action::DismissAudioSubtitles => {
+                    if self.tasks.audio_subtitles.cancel.is_none() {
+                        self.tasks.audio_subtitles.notice = None;
+                    }
+                }
                 Action::DismissModelNotice => {
                     if self.tasks.models.cancel.is_none() {
                         self.tasks.models.notice = None;
@@ -2077,43 +2083,25 @@ impl AppView {
                     })
                     .detach();
                 }
-                Action::Transcribe => {
+                Action::Transcribe | Action::Translate => {
+                    let mode = if matches!(action, Action::Transcribe) {
+                        clarora_gpui::audio_batch::Mode::English
+                    } else {
+                        clarora_gpui::audio_batch::Mode::Chinese
+                    };
                     let row = self.selected().context("请先选择音频")?;
-                    self.begin_subtitle(
-                        "生成音频字幕",
-                        "正在识别音频并保存字幕，长音频可能需要几分钟",
-                        move |lib, cancel, _| {
-                            let path = ai::write_transcription(
-                                &lib,
-                                &PathBuf::from(text(&row, "audio_uri")),
-                                &cancel,
-                            )?;
-                            lib.db()?.execute(
-                                "UPDATE listening_audios SET subtitle_uri=? WHERE id=?",
-                                rusqlite::params![path, text(&row, "id")],
-                            )?;
-                            Ok(Outcome::Message("字幕已生成并载入".into()))
-                        },
-                    );
-                }
-                Action::Translate => {
-                    let row = self.selected().context("请先选择音频")?;
-                    let cues = self.audio.cues.clone();
-                    ensure!(!cues.is_empty(), "请先导入或生成原文字幕");
-                    self.begin_subtitle(
-                        "翻译音频字幕",
-                        "正在生成双语字幕…",
-                        move |lib, cancel, _| {
-                            let translated = ai::translate(&lib, &cues, &cancel)?;
-                            let path = lib.root.join("media").join(format!("{}.srt", id()));
-                            fs::write(&path, subtitles::srt(&translated))?;
-                            lib.db()?.execute(
-                                "UPDATE listening_audios SET subtitle_uri=? WHERE id=?",
-                                rusqlite::params![path.to_string_lossy(), text(&row, "id")],
-                            )?;
-                            Ok(Outcome::Message("双语字幕已生成并载入".into()))
-                        },
-                    );
+                    if mode == clarora_gpui::audio_batch::Mode::Chinese {
+                        ensure!(!self.audio.cues.is_empty(), "请先导入或生成原文字幕");
+                    }
+                    let target = audio_subtitles_controller::Target {
+                        audio: Some(text(&row, "id")),
+                        name: text(&row, "name"),
+                        mode,
+                    };
+                    self.begin_audio_subtitles(
+                        clarora_gpui::audio_batch::Plan::single(row, mode)?,
+                        target,
+                    )?;
                 }
                 Action::Record => {
                     ensure!(self.recording.is_none(), "正在录音");
@@ -2556,22 +2544,21 @@ impl AppView {
                     );
                 }
                 Action::AudioGroupSubtitles(mode) => {
-                    ensure!(self.tasks.cancel.is_none(), "请完成或取消当前任务后重试");
+                    ensure!(
+                        self.tasks.audio_subtitles.cancel.is_none(),
+                        "已有音频字幕任务正在处理，请完成或取消后重试"
+                    );
                     let plan = clarora_gpui::audio_batch::Plan::new(
                         &self.lib,
                         &self.audio.practice_id,
                         mode,
                     )?;
-                    let title = format!("{} · {}", mode.label(), plan.group_name);
-                    self.begin_scoped(TaskScope::Application, &title, move |lib, cancel, tx| {
-                        Ok(Outcome::AudioBatch(plan.run(&lib, &cancel, |stage| {
-                            let _ = tx.send(Event::SubtitleProgress(stage.into()));
-                        })))
-                    });
-                    self.tasks.notice = Some(TaskNotice::new(
-                        &title,
-                        "逐条处理全组；已有字幕自动跳过，可随时取消",
-                    ));
+                    let target = audio_subtitles_controller::Target {
+                        audio: None,
+                        name: plan.group_name.clone(),
+                        mode,
+                    };
+                    self.begin_audio_subtitles(plan, target)?;
                 }
                 Action::CommandImport => {
                     let command = self.import_command.clone();

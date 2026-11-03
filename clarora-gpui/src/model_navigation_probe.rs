@@ -96,6 +96,7 @@ pub(super) struct Probe {
     token: Option<Cancel>,
     foreground: Option<Cancel>,
     merged_id: String,
+    audio_flow: Option<audio_subtitles_probe::Flow>,
     cases: Vec<Value>,
 }
 impl Probe {
@@ -108,6 +109,7 @@ impl Probe {
             token: None,
             foreground: None,
             merged_id: String::new(),
+            audio_flow: None,
             cases: vec![],
         }
     }
@@ -159,7 +161,7 @@ impl Probe {
         cx: &mut Context<AppView>,
     ) -> Result<bool> {
         ensure!(
-            self.started.elapsed() < Duration::from_secs(35),
+            self.started.elapsed() < Duration::from_secs(65),
             "model navigation timed out stage {}",
             self.stage
         );
@@ -550,8 +552,20 @@ impl Probe {
                     "originals remain manageable while learning queue stays deduplicated",
                     app,
                 );
-                self.report(true, None)?;
-                return Ok(true);
+                self.audio_flow = Some(audio_subtitles_probe::Flow::new());
+            }
+            14 => {
+                if let Some(cases) = self
+                    .audio_flow
+                    .as_mut()
+                    .context("audio flow missing")?
+                    .step(app, window, cx)?
+                {
+                    self.cases.extend(cases);
+                    self.report(true, None)?;
+                    return Ok(true);
+                }
+                return Ok(false);
             }
             _ => {}
         }

@@ -6,6 +6,9 @@ mod audio_controller;
 mod audio_current_ui;
 mod audio_player_ui;
 mod audio_subtitle_ui;
+mod audio_subtitles_controller;
+#[cfg(debug_assertions)]
+mod audio_subtitles_probe;
 #[cfg(debug_assertions)]
 mod backup_progress_probe;
 mod chat_controller_ui;
@@ -234,6 +237,8 @@ enum Action {
     Cancel,
     DismissTaskNotice,
     CancelModel,
+    CancelAudioSubtitles,
+    DismissAudioSubtitles,
     DismissModelNotice,
     DismissFeedback(bool),
     RetryFeedback,
@@ -350,7 +355,6 @@ enum Outcome {
     Recording(PathBuf),
     TtsReady(Row),
     CommandImported(clarora_gpui::command_import::Report),
-    AudioBatch(clarora_gpui::audio_batch::Report),
     AudioMerged(clarora_gpui::audio_tools::Merged),
 }
 enum Event {
@@ -818,6 +822,7 @@ impl AppView {
                 .unwrap_or(true)
         });
         cx.on_app_quit(|this, cx| {
+            this.tasks.audio_subtitles.cancel();
             this.tasks.models.cancel();
             if let Err(error) = this.flush_writing(cx) {
                 eprintln!("退出前写作草稿保存失败：{error:#}");
@@ -2020,6 +2025,8 @@ impl Render for AppView {
                 this.handle(
                     if this.tasks.cancel.is_some() {
                         Action::Cancel
+                    } else if this.tasks.audio_subtitles.cancel.is_some() {
+                        Action::CancelAudioSubtitles
                     } else {
                         Action::CancelModel
                     },

@@ -142,6 +142,7 @@ impl AppView {
         }
         changed |= self.poll_tasks(window, cx);
         changed |= self.poll_model_download();
+        changed |= self.poll_audio_subtitles();
         changed |= self.poll_pending_video_start();
         changed |= self.poll_video_sentence_repeat();
         if let (Some(a), Some(b)) = (self.media.loop_a, self.media.loop_b) {

@@ -984,6 +984,7 @@ fn main() -> Result<()> {
         Some("--video-render-only") => "video-render-only",
         Some("--command-import-only") => "command-import-only",
         Some("--audio-merge-only") => "audio-merge-only",
+        Some("--audio-background-only") => "audio-background-only",
         Some("--audio-batch-only") => "audio-batch-only",
         Some("--clip-marks-only") => "clip-marks-only",
         Some("--subtitle-selection-only") => "subtitle-selection-only",
@@ -1041,6 +1042,8 @@ fn main() -> Result<()> {
     } else if mode == "audio-merge-only" {
         audio_merge::run(&output, &mut results)
             .and_then(|()| model_navigation_native::run(&output, &mut results))
+    } else if mode == "audio-background-only" {
+        model_navigation_native::run(&output, &mut results)
     } else if mode == "audio-batch-only" {
         let lib = Library::open(output.join(format!("audio-batch-{}", data::id())))?;
         audio_batch::run(&lib, &mut results)

@@ -10,7 +10,7 @@ use std::{
 };
 
 pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
-    let workflow = "原生模型后台下载与音频学习版本：切组/视频选集/跨模块进度/独立取消/合并所选/隐藏原音频/恢复";
+    let workflow = "原生后台任务与音频学习：下载/字幕生成翻译/切组切音频/独立取消/合并与恢复";
     if !cfg!(debug_assertions)
         || !cfg!(target_os = "macos")
         || std::env::var("CLARORA_GUI_MEMORY_CHECK").as_deref() != Ok("1")
@@ -41,7 +41,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if start.elapsed() > Duration::from_secs(50) {
+        if start.elapsed() > Duration::from_secs(80) {
             let _ = child.kill();
             let _ = child.wait();
             anyhow::bail!("model navigation timed out: {}", out.display());
@@ -55,7 +55,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         status.success()
             && report["passed"] == true
-            && report["cases"].as_array().is_some_and(|v| v.len() >= 16),
+            && report["cases"].as_array().is_some_and(|v| v.len() >= 24),
         "native model navigation failed: {}",
         path.display()
     );

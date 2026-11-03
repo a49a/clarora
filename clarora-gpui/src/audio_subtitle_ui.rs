@@ -8,8 +8,10 @@ impl AppView {
         total: usize,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let disabled =
-            self.tasks.cancel.is_some() || self.audio.practice_id.is_empty() || total == 0;
+        let disabled = self.tasks.cancel.is_some()
+            || self.tasks.audio_subtitles.cancel.is_some()
+            || self.audio.practice_id.is_empty()
+            || total == 0;
         div()
             .id(SharedString::from(format!(
                 "{location}-group-subtitle-actions"
@@ -59,15 +61,16 @@ impl AppView {
 
     pub(super) fn audio_subtitle_toolbar(&self, cx: &Context<Self>) -> impl IntoElement {
         let available = !self.audio.current_id.is_empty();
-        let busy = self.tasks.cancel.is_some();
+        let busy = self.tasks.cancel.is_some() || self.tasks.audio_subtitles.cancel.is_some();
         let has_cues = !self.audio.cues.is_empty();
-        let task = self
-            .tasks
-            .notice
-            .as_ref()
-            .map(|notice| notice.title.as_str());
-        let generating = busy && task == Some("生成音频字幕");
-        let translating = busy && task == Some("翻译音频字幕");
+        let generating = self.tasks.audio_subtitles.working(
+            &self.audio.current_id,
+            clarora_gpui::audio_batch::Mode::English,
+        );
+        let translating = self.tasks.audio_subtitles.working(
+            &self.audio.current_id,
+            clarora_gpui::audio_batch::Mode::Chinese,
+        );
         div()
             .id("audio-subtitle-toolbar")
             .flex()
@@ -102,7 +105,7 @@ impl AppView {
                 .tooltip(if !available {
                     "请先选择音频"
                 } else if busy {
-                    "请等待当前任务完成，或在上方取消任务"
+                    "已有任务正在处理，可切换音频试听；完成或在顶部取消后可再次生成"
                 } else if has_cues {
                     "重新识别音频并替换现有字幕"
                 } else {
@@ -126,7 +129,7 @@ impl AppView {
                 .tooltip(if !available {
                     "请先选择音频"
                 } else if busy {
-                    "请等待当前任务完成，或在上方取消任务"
+                    "已有任务正在处理，可切换音频试听；完成或在顶部取消后可再次生成"
                 } else if !has_cues {
                     "请先生成字幕，或从“更多”导入原文字幕"
                 } else {

@@ -37,6 +37,7 @@ impl AppView {
         if self.tasks.notice.is_none()
             && self.tasks.video_notice.is_none()
             && self.tasks.models.notice.is_none()
+            && self.tasks.audio_subtitles.notice.is_none()
             && !foreground
         {
             return None;
@@ -46,6 +47,15 @@ impl AppView {
                 .flex_shrink_0()
                 .flex()
                 .flex_col()
+                .children(self.tasks.audio_subtitles.notice.as_ref().map(|n| {
+                    self.task_notice_card(
+                        n,
+                        "background-audio",
+                        Action::CancelAudioSubtitles,
+                        Action::DismissAudioSubtitles,
+                        cx,
+                    )
+                }))
                 .children(self.tasks.models.notice.as_ref().map(|n| {
                     self.task_notice_card(
                         n,
@@ -154,6 +164,8 @@ impl AppView {
                     "取消备份"
                 } else if key == "background-model" {
                     "取消模型下载"
+                } else if key == "background-audio" {
+                    "取消字幕任务"
                 } else {
                     "取消任务"
                 },

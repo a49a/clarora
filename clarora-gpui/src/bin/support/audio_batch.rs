@@ -10,6 +10,7 @@ use std::{
     fs,
     io::{Read, Write},
     net::TcpListener,
+    path::Path,
     sync::{Arc, Mutex, atomic::Ordering},
     thread,
     time::Duration,
@@ -76,7 +77,18 @@ impl Server {
                     .contains("/audio/transcriptions");
                 let (body, kind) = if asr {
                     requests.lock().unwrap().push(json!({"kind":"asr"}));
-                    (json!({"segments":[{"start":0.,"end":1.,"text":"Generated English first."},{"start":1.,"end":2.,"text":"Generated English second."}]}).to_string(),"application/json")
+                    let chinese = bytes[split..split + length]
+                        .windows(b"chinese-asr-only".len())
+                        .any(|w| w == b"chinese-asr-only");
+                    if chinese {
+                        (
+                            json!({"segments":[{"start":0.,"end":1.,"text":"这是中文原文。"}]})
+                                .to_string(),
+                            "application/json",
+                        )
+                    } else {
+                        (json!({"segments":[{"start":0.,"end":1.,"text":"Generated English first."},{"start":1.,"end":2.,"text":"Generated English second."}]}).to_string(),"application/json")
+                    }
                 } else {
                     let request: Value = serde_json::from_slice(&bytes[split..split + length])?;
                     let message = request["messages"][0]["content"]
@@ -121,7 +133,7 @@ impl Server {
         })
     }
     fn config(&self, lib: &Library, model: &str) -> Result<()> {
-        lib.set_setting("ai_config",&json!({"engine":"compatible","base_url":self.url,"asr_base_url":self.url,"asr_model":"asr","model":model}).to_string())
+        lib.set_setting("ai_config",&json!({"engine":"compatible","base_url":self.url,"asr_base_url":self.url,"asr_model":if model=="chinese-asr-only"{model}else{"asr"},"model":model}).to_string())
     }
 }
 impl Drop for Server {
@@ -180,6 +192,7 @@ fn scenario(parent: &Library, name: &str, server: &Server) -> Result<(Library, S
 }
 pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
     let server = Server::start()?;
+    run_single(parent, &server, results)?;
     let (lib, group) = scenario(parent, "group-batch", &server)?;
     let other = lib.practice("other")?;
     let en = "1\n00:00:00,000 --> 00:00:01,000\nEnglish first.\n\n2\n00:00:01,000 --> 00:00:02,000\nEnglish second.\n";
@@ -399,5 +412,109 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         serde_json::to_vec_pretty(&*server.seen.lock().unwrap())?,
     )?;
     results.push(json!({"workflow":"整组取消保留完成项、进行中取消不保存；移动目标拒绝写入；无效/缺失字幕重新生成","passed":true,"evidence":parent.root.join("audio-batch-http.json")}));
+    Ok(())
+}
+
+// Single-item work shares the same atomic save and late-write guards as a group.
+fn run_single(parent: &Library, server: &Server, results: &mut Vec<Value>) -> Result<()> {
+    let (lib, group) = scenario(parent, "single-background-subtitles", server)?;
+    let original = "1\n00:00:00,000 --> 00:00:01,000\nOld English.\n旧译文。\n";
+    let key = audio(&lib, &group, "single", Some(original))?;
+    let before = row(&lib, &key)?;
+    let plan = Plan::single(before.clone(), Mode::English)?;
+    let report = plan.run(&lib, &process::cancel_token(), |_| {});
+    ensure!(
+        report.english == 1
+            && report.failed.is_empty()
+            && body(&lib, &key)?.contains("Generated English first.")
+            && !body(&lib, &key)?.contains("Old English"),
+        "single regenerate skipped or merged old English"
+    );
+    let plan = Plan::single(row(&lib, &key)?, Mode::Chinese)?;
+    let report = plan.run(&lib, &process::cancel_token(), |_| {});
+    ensure!(
+        report.translated == 1
+            && report.failed.is_empty()
+            && body(&lib, &key)?.contains("批量中文译文"),
+        "single translate did not save bilingual subtitles"
+    );
+    let mixed = audio(
+        &lib,
+        &group,
+        "single-chinese-plus-gap",
+        Some(
+            "1\n00:00:00,000 --> 00:00:01,000\n原有中文。\n\n2\n00:00:01,000 --> 00:00:02,000\n...\n",
+        ),
+    )?;
+    let supplemented = Plan::single(row(&lib, &mixed)?, Mode::Chinese)?.run(
+        &lib,
+        &process::cancel_token(),
+        |_| {},
+    );
+    ensure!(
+        supplemented.english == 1
+            && supplemented.failed.is_empty()
+            && body(&lib, &mixed)?.contains("原有中文。"),
+        "single translation regenerated English but lost existing Chinese"
+    );
+    lib.delete("listening_audios", &mixed)?;
+    let native_chinese = audio(&lib, &group, "native-chinese", Some(original))?;
+    server.config(&lib, "chinese-asr-only")?;
+    let original_language = Plan::single(row(&lib, &native_chinese)?, Mode::English)?.run(
+        &lib,
+        &process::cancel_token(),
+        |_| {},
+    );
+    ensure!(
+        original_language.failed.is_empty()
+            && body(&lib, &native_chinese)?.contains("这是中文原文。"),
+        "single original-language ASR rejected Chinese"
+    );
+    lib.delete("listening_audios", &native_chinese)?;
+    server.config(&lib, "good")?;
+    let old_uri = text(&row(&lib, &key)?, "subtitle_uri");
+    let captured = Plan::single(row(&lib, &key)?, Mode::English)?;
+    let newer = lib.root.join("manual-newer.srt");
+    fs::write(&newer, original)?;
+    lib.db()?.execute(
+        "UPDATE listening_audios SET subtitle_uri=? WHERE id=?",
+        rusqlite::params![newer.to_string_lossy(), key],
+    )?;
+    let count = server.seen.lock().unwrap().len();
+    let rejected = captured.run(&lib, &process::cancel_token(), |_| {});
+    ensure!(
+        rejected.failed.len() == 1
+            && server.seen.lock().unwrap().len() == count
+            && text(&row(&lib, &key)?, "subtitle_uri") == newer.to_string_lossy(),
+        "queued stale plan processed a replaced source"
+    );
+    lib.db()?.execute(
+        "UPDATE listening_audios SET subtitle_uri=? WHERE id=?",
+        [&old_uri, &key],
+    )?;
+    let current = row(&lib, &key)?;
+    let worker_lib = lib.clone();
+    let worker_key = key.clone();
+    *server.hook.lock().unwrap() = Some(Box::new(move || {
+        worker_lib
+            .db()?
+            .execute("DELETE FROM listening_audios WHERE id=?", [&worker_key])?;
+        Ok(())
+    }));
+    let report = Plan::single(current, Mode::English)?.run(&lib, &process::cancel_token(), |_| {});
+    ensure!(
+        report.failed.len() == 1
+            && lib.list("listening_audios")?.is_empty()
+            && Path::new(&old_uri).is_file(),
+        "single late result resurrected deleted audio or lost original subtitles"
+    );
+    let evidence = lib.root.join("single-subtitles-report.json");
+    fs::write(
+        &evidence,
+        serde_json::to_vec_pretty(
+            &json!({"passed":true,"regenerate_replaces":true,"translate_bilingual":true,"deleted_source_not_resurrected":true,"original_audio":text(&before,"audio_uri")}),
+        )?,
+    )?;
+    results.push(json!({"workflow":"单条重新生成覆盖旧英文→翻译双语→原记录删除后迟到结果拒绝写入","passed":true,"report":evidence}));
     Ok(())
 }

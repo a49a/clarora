@@ -150,8 +150,7 @@ impl AppView {
                         let task_retry = self.tasks.retry.take();
                         let failed = result.is_err()
                             || matches!(&result, Ok(Outcome::Issue(_)))
-                            || matches!(&result, Ok(Outcome::BackupFailed(_)))
-                            || matches!(&result, Ok(Outcome::AudioBatch(report)) if !report.failed.is_empty());
+                            || matches!(&result, Ok(Outcome::BackupFailed(_)));
                         let completed_backup = self.tasks.backup_progress.is_some();
                         let completed_sync = matches!(&result, Ok(Outcome::CloudSynced(..)));
                         let completed_chat = request.is_some();
@@ -204,17 +203,6 @@ impl AppView {
                                     }
                                 }
                                 self.report_status(FeedbackKind::Info, format!("已合并 {} 条音频。原音频和字幕保留，学习时使用合并版本。{}", merged.sources, if merged.subtitles_complete { "字幕已按合并顺序衔接。" } else { "部分原音频缺少字幕，请为合并版本生成完整字幕。" }));
-                            }
-                            Ok(Outcome::AudioBatch(report)) => {
-                                cancelled = report.cancelled;
-                                self.report_status(
-                                    if report.failed.is_empty() {
-                                        FeedbackKind::Info
-                                    } else {
-                                        FeedbackKind::Error
-                                    },
-                                    report.message(),
-                                );
                             }
                             Ok(Outcome::CommandImported(report)) if !cancelled => {
                                 self.report_status(FeedbackKind::Info, report.message());

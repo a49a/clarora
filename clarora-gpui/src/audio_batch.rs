@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Serialize, PartialEq, Eq)]
 pub enum Mode {
     English,
     Chinese,
@@ -33,6 +33,7 @@ pub struct Plan {
     pub group_name: String,
     mode: Mode,
     rows: Vec<Row>,
+    single: bool,
 }
 #[derive(Default, Serialize)]
 pub struct Report {
@@ -164,6 +165,22 @@ impl Input {
     }
 }
 impl Plan {
+    /// A single explicit regenerate preserves the original language and replaces old cues.
+    /// Group English generation keeps skipping existing English.
+    pub fn single(row: Row, mode: Mode) -> Result<Self> {
+        let group = text(&row, "practice_id");
+        ensure!(
+            !group.is_empty() && !text(&row, "id").is_empty(),
+            "请先选择音频"
+        );
+        Ok(Self {
+            group,
+            group_name: text(&row, "name"),
+            mode,
+            rows: vec![row],
+            single: true,
+        })
+    }
     pub fn new(lib: &Library, group: &str, mode: Mode) -> Result<Self> {
         let group_name = lib
             .rows(
@@ -189,6 +206,7 @@ impl Plan {
             group_name,
             mode,
             rows,
+            single: false,
         })
     }
     pub fn run(&self, lib: &Library, cancel: &Cancel, mut progress: impl FnMut(&str)) -> Report {
@@ -210,7 +228,7 @@ impl Plan {
                     total
                 ))
             };
-            let result = self.process(lib, &text(row, "id"), cancel, &mut report, &mut stage);
+            let result = self.process(lib, row, cancel, &mut report, &mut stage);
             match result {
                 Ok(false) => report.skipped += 1,
                 Ok(true) => {}
@@ -234,15 +252,21 @@ impl Plan {
     fn process(
         &self,
         lib: &Library,
-        key: &str,
+        expected: &Row,
         cancel: &Cancel,
         report: &mut Report,
         progress: &mut impl FnMut(&str),
     ) -> Result<bool> {
-        let mut input = Input::load(lib, &self.group, key)?;
+        let key = text(expected, "id");
+        let mut input = Input::load(lib, &self.group, &key)?;
+        ensure!(
+            text(&input.row, "audio_uri") == text(expected, "audio_uri")
+                && text(&input.row, "subtitle_uri") == text(expected, "subtitle_uri"),
+            "音频或字幕已更新，请重新处理"
+        );
         check(cancel)?;
         match self.mode {
-            Mode::English if has_english(&input.cues) => {
+            Mode::English if has_english(&input.cues) && !self.single => {
                 progress("已有英文字幕，跳过");
                 return Ok(false);
             }
@@ -255,29 +279,39 @@ impl Plan {
             _ => {}
         }
         let mut changed = false;
-        if !has_english(&input.cues) {
+        if !has_english(&input.cues) || (self.single && self.mode == Mode::English) {
             progress("正在识别音频，补生成英文字幕");
             let path = PathBuf::from(text(&input.row, "audio_uri"));
             let meta = fs::metadata(&path).context("音频文件不存在或不可读")?;
             let stamp = (meta.len(), meta.modified()?);
             let mut cues = ai::transcribe(lib, &path, cancel)?;
             check(cancel)?;
-            for cue in &mut cues {
-                cue.text = cue
-                    .text
-                    .lines()
-                    .filter(|s| !chinese(s))
-                    .collect::<Vec<_>>()
-                    .join("\n");
+            let original_language = self.single && self.mode == Mode::English;
+            if !original_language {
+                for cue in &mut cues {
+                    cue.text = cue
+                        .text
+                        .lines()
+                        .filter(|s| !chinese(s))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                }
             }
             cues.retain(|c| !c.text.trim().is_empty());
-            ensure!(has_english(&cues), "未识别出英文，请确认音频语言及转写模型");
+            ensure!(
+                if original_language {
+                    !cues.is_empty()
+                } else {
+                    has_english(&cues)
+                },
+                "未识别出有效字幕，请确认音频语言及转写模型"
+            );
             let after = fs::metadata(&path)?;
             ensure!(
                 (after.len(), after.modified()?) == stamp,
                 "音频文件已改变，请重新处理"
             );
-            let cues = if input.cues.is_empty() {
+            let cues = if input.cues.is_empty() || (self.single && self.mode == Mode::English) {
                 cues
             } else {
                 subtitles::merge(&input.cues, &cues, false)?
@@ -285,7 +319,7 @@ impl Plan {
             input.save(lib, &self.group, &cues, cancel)?;
             report.english += 1;
             changed = true;
-            input = Input::load(lib, &self.group, key)?;
+            input = Input::load(lib, &self.group, &key)?;
         }
         if matches!(self.mode, Mode::English) {
             return Ok(changed);
