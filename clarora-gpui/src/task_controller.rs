@@ -23,7 +23,6 @@ impl AppView {
             return;
         }
         self.tasks.notice = None;
-        self.tasks.model_progress = None;
         self.tasks.backup_progress = None;
         self.tasks.scope = scope;
         self.tasks.started = Some(Instant::now());
@@ -115,17 +114,6 @@ impl AppView {
                             notice.detail = stage;
                         }
                     }
-                    Event::ModelProgress(progress) => {
-                        if self
-                            .tasks
-                            .cancel
-                            .as_ref()
-                            .is_some_and(|t| !t.load(Ordering::SeqCst))
-                        {
-                            self.report_status(FeedbackKind::Progress, progress.label());
-                            self.tasks.model_progress = Some(progress);
-                        }
-                    }
                     Event::BackupProgress(progress) => {
                         if self.tasks.cancel.as_ref().is_some_and(|t| {
                             !t.load(Ordering::SeqCst)
@@ -175,7 +163,6 @@ impl AppView {
                             .is_some_and(|t| t.load(Ordering::SeqCst));
                         self.tasks.cancel = None;
                         self.tasks.scope = TaskScope::Material;
-                        self.tasks.model_progress = None;
                         if !accepted {
                             // The old request may have committed before its UI callback
                             // was invalidated. Refresh the current index without painting

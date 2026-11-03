@@ -20,6 +20,9 @@ mod focus_mode_probe;
 mod focus_mode_ui;
 mod focus_ui;
 mod library_ui;
+mod model_controller;
+#[cfg(debug_assertions)]
+mod model_navigation_probe;
 mod pages_ui;
 mod playback_controller;
 mod reading_ui;
@@ -229,6 +232,8 @@ enum Action {
     AutoNextPart,
     Cancel,
     DismissTaskNotice,
+    CancelModel,
+    DismissModelNotice,
     DismissFeedback(bool),
     RetryFeedback,
     Clip,
@@ -353,7 +358,6 @@ enum Event {
         std::result::Result<Outcome, String>,
     ),
     Chunk(clarora_gpui::chat_store::Request, ai::ChatReply),
-    ModelProgress(ModelProgress),
     BackupProgress(backup::UploadProgress),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -373,6 +377,8 @@ struct AppView {
     probe: Option<ui_controller_probe::Probe>,
     #[cfg(debug_assertions)]
     backup_probe: Option<backup_progress_probe::Probe>,
+    #[cfg(debug_assertions)]
+    model_probe: Option<model_navigation_probe::Probe>,
     #[cfg(debug_assertions)]
     subtitle_probe: Option<subtitle_workbench_probe::Probe>,
     data: clarora_gpui::view_data::State,
@@ -520,6 +526,8 @@ impl AppView {
             probe: None,
             #[cfg(debug_assertions)]
             backup_probe: None,
+            #[cfg(debug_assertions)]
+            model_probe: None,
             #[cfg(debug_assertions)]
             subtitle_probe: None,
             data: Default::default(),
@@ -808,6 +816,7 @@ impl AppView {
                 .unwrap_or(true)
         });
         cx.on_app_quit(|this, cx| {
+            this.tasks.models.cancel();
             if let Err(error) = this.flush_writing(cx) {
                 eprintln!("退出前写作草稿保存失败：{error:#}");
             }
@@ -2006,7 +2015,15 @@ impl Render for AppView {
                 }
             }))
             .on_action(cx.listener(|this, _: &CancelTask, window, cx| {
-                this.handle(Action::Cancel, window, cx);
+                this.handle(
+                    if this.tasks.cancel.is_some() {
+                        Action::Cancel
+                    } else {
+                        Action::CancelModel
+                    },
+                    window,
+                    cx,
+                );
             }))
             .on_action(cx.listener(|this, _: &TranscribeVideo, window, cx| {
                 this.handle(Action::VideoTranscribe, window, cx);
@@ -2375,6 +2392,23 @@ fn main() -> Result<()> {
     #[cfg(not(debug_assertions))]
     let subtitle_probe_dir: Option<PathBuf> = None;
     #[cfg(debug_assertions)]
+    let model_probe_dir = args
+        .iter()
+        .position(|a| a == "--model-navigation-check")
+        .map(|i| {
+            args.get(i + 1)
+                .context("--model-navigation-check 缺少证据目录")
+                .map(PathBuf::from)
+        })
+        .transpose()?;
+    #[cfg(not(debug_assertions))]
+    ensure!(
+        !args.iter().any(|a| a == "--model-navigation-check"),
+        "模型下载原生验收仅支持调试构建"
+    );
+    #[cfg(not(debug_assertions))]
+    let model_probe_dir: Option<PathBuf> = None;
+    #[cfg(debug_assertions)]
     let backup_probe_dir = args
         .iter()
         .position(|arg| arg == "--backup-progress-check")
@@ -2433,6 +2467,8 @@ fn main() -> Result<()> {
         Library::open(out.join("library"))?
     } else if let Some(out) = &subtitle_probe_dir {
         subtitle_workbench_probe::prepare(out)?
+    } else if let Some(out) = &model_probe_dir {
+        model_navigation_probe::prepare(out)?
     } else if let Some(out) = &backup_probe_dir {
         backup_progress_probe::prepare(out)?
     } else if let Some(out) = &probe_dir {
@@ -2573,10 +2609,12 @@ fn main() -> Result<()> {
                     WindowOptions {
                         show: probe_dir.is_none()
                             && backup_probe_dir.is_none()
+                            && model_probe_dir.is_none()
                             && subtitle_probe_dir.is_none()
                             && focus_probe_dir.is_none(),
                         focus: probe_dir.is_none()
                             && backup_probe_dir.is_none()
+                            && model_probe_dir.is_none()
                             && subtitle_probe_dir.is_none()
                             && focus_probe_dir.is_none(),
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -2596,6 +2634,10 @@ fn main() -> Result<()> {
                                     Some(ui_controller_probe::Probe::new(out).with_global_quit(
                                         args.iter().any(|arg| arg == "--ui-controller-quit-check"),
                                     ));
+                            }
+                            #[cfg(debug_assertions)]
+                            if let Some(out) = &model_probe_dir {
+                                view.model_probe = Some(model_navigation_probe::Probe::new(out));
                             }
                             #[cfg(debug_assertions)]
                             if let Some(out) = &backup_probe_dir {
@@ -2635,6 +2677,7 @@ fn main() -> Result<()> {
             .detach();
             if probe_dir.is_none()
                 && backup_probe_dir.is_none()
+                && model_probe_dir.is_none()
                 && subtitle_probe_dir.is_none()
                 && focus_probe_dir.is_none()
             {

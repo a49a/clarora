@@ -94,7 +94,7 @@ impl AppView {
                     .child("操作：下载 → 选用 → 点击下方「保存 AI 与学习设置」。已下载仅表示文件存在。 ")
                     .child(div().font_weight(FontWeight::SEMIBOLD).child(selection_summary))
                     .when(pending, |v| v.child(div().text_color(cx.theme().primary).child(format!("已选择：{draft_model} · 待保存，保存后生效"))));
-        if let Some(progress) = &self.tasks.model_progress {
+        if let Some(progress) = &self.tasks.models.progress {
             models = models.child(
                 div()
                     .p_4()
@@ -118,7 +118,16 @@ impl AppView {
                             .text_color(cx.theme().muted_foreground)
                             .child(format!("下载源：{}", progress.source)),
                     )
-                    .child(self.button("cancel-model", "取消下载", Action::Cancel, cx)),
+                    .child(
+                        self.button("cancel-model", "取消下载", Action::CancelModel, cx)
+                            .disabled(
+                                self.tasks
+                                    .models
+                                    .notice
+                                    .as_ref()
+                                    .is_some_and(|n| n.state == TaskState::Cancelling),
+                            ),
+                    ),
             );
         }
         for spec in ai::LOCAL_MODELS {
@@ -177,7 +186,7 @@ impl AppView {
                                     Action::Models(model.into()),
                                     cx,
                                 )
-                                .disabled(present || self.tasks.cancel.is_some()),
+                                .disabled(present || self.tasks.models.cancel.is_some()),
                             )
                             .child(
                                 self.button(

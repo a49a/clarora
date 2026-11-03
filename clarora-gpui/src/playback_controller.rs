@@ -19,6 +19,10 @@ impl AppView {
             return;
         }
         #[cfg(debug_assertions)]
+        if self.poll_model_probe(window, cx) {
+            return;
+        }
+        #[cfg(debug_assertions)]
         if self.poll_backup_probe(window, cx) {
             return;
         }
@@ -137,6 +141,7 @@ impl AppView {
             }
         }
         changed |= self.poll_tasks(window, cx);
+        changed |= self.poll_model_download();
         changed |= self.poll_pending_video_start();
         changed |= self.poll_video_sentence_repeat();
         if let (Some(a), Some(b)) = (self.media.loop_a, self.media.loop_b) {

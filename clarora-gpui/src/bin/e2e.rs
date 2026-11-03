@@ -49,6 +49,8 @@ mod focus_timer;
 mod gpu_memory;
 #[path = "support/kokoro.rs"]
 mod kokoro;
+#[path = "support/model_navigation_native.rs"]
+mod model_navigation_native;
 #[path = "support/model_progress.rs"]
 mod model_progress;
 #[path = "support/playback_state.rs"]
@@ -548,6 +550,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     blind_listening::run(&lib, &video, results)?;
     bilibili_parts::run(&lib, results)?;
     model_progress::run(&lib, results)?;
+    model_navigation_native::run(&lib.root, results)?;
     kokoro::run(&lib, results)?;
     video_qa::run(&lib, results)?;
     video_translation::run(&lib, &video, results)?;
@@ -960,6 +963,7 @@ fn main() -> Result<()> {
         Some("--gpu-memory-only") => "gpu-memory-only",
         Some("--runtime-stability-only") => "runtime-stability-only",
         Some("--http-only") => "http-only",
+        Some("--model-navigation-only") => "model-navigation-only",
         Some("--asr-models-only") => "asr-models-only",
         Some("--reliability-only") => "reliability-only",
         Some("--storage-config-only") => "storage-config-only",
@@ -1085,6 +1089,10 @@ fn main() -> Result<()> {
     } else if mode == "storage-errors-only" {
         let lib = Library::open(output.join(format!("storage-errors-{}", data::id())))?;
         storage_errors::run(&lib, &mut results)
+    } else if mode == "model-navigation-only" {
+        let lib = Library::open(output.join(format!("model-navigation-{}", data::id())))?;
+        model_progress::run(&lib, &mut results)
+            .and_then(|()| model_navigation_native::run(&output, &mut results))
     } else if mode == "asr-models-only" {
         asr_models::run(&Library::open(output.join("library"))?, &mut results)
     } else if mode == "focus-mode-only" {

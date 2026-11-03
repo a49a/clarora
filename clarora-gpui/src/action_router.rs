@@ -1499,6 +1499,12 @@ impl AppView {
                         }
                     }
                 }
+                Action::CancelModel => self.tasks.models.cancel(),
+                Action::DismissModelNotice => {
+                    if self.tasks.models.cancel.is_none() {
+                        self.tasks.models.notice = None;
+                    }
+                }
                 Action::CopySelectedSubtitle => {
                     let selected = self.subtitle_text.borrow().selection_text();
                     ensure!(!selected.is_empty(), "请先拖选字幕文字");
@@ -2248,18 +2254,7 @@ impl AppView {
                     );
                 }
                 Action::Models(model) => {
-                    self.begin_scoped(
-                        TaskScope::Application,
-                        "正在连接模型下载源…",
-                        move |lib, cancel, tx| {
-                            ai::download_model(&lib, &model, &cancel, |progress| {
-                                let _ = tx.send(Event::ModelProgress(progress));
-                            })?;
-                            Ok(Outcome::Message(
-                                "模型文件已下载；点击「选用」并保存设置后生效".into(),
-                            ))
-                        },
-                    );
+                    self.begin_model_download(model_controller::Request::Asr(model))?;
                 }
                 Action::CloudList => self.begin_scoped(
                     TaskScope::Application,
@@ -2489,18 +2484,7 @@ impl AppView {
                     self.lib.set_setting("tts_speed", &speed.to_string())?;
                 }
                 Action::TtsDownload => {
-                    self.begin_scoped(
-                        TaskScope::Application,
-                        "正在下载 Kokoro 中英模型…",
-                        |lib, cancel, tx| {
-                            tts::install(&lib, &cancel, &mut |p| {
-                                let _ = tx.send(Event::ModelProgress(p));
-                            })?;
-                            Ok(Outcome::Message(
-                                "Kokoro 中英模型已安装，可离线生成音频".into(),
-                            ))
-                        },
-                    );
+                    self.begin_model_download(model_controller::Request::Kokoro)?;
                 }
                 Action::TtsGenerate => {
                     let body = self.value("tts_text", cx);

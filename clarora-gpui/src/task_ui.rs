@@ -34,7 +34,11 @@ impl AppView {
     pub(super) fn subtitle_task_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let foreground =
             self.tasks.cancel.is_some() && self.tasks.notice.is_none() && !self.chat.running;
-        if self.tasks.notice.is_none() && self.tasks.video_notice.is_none() && !foreground {
+        if self.tasks.notice.is_none()
+            && self.tasks.video_notice.is_none()
+            && self.tasks.models.notice.is_none()
+            && !foreground
+        {
             return None;
         }
         Some(
@@ -42,6 +46,15 @@ impl AppView {
                 .flex_shrink_0()
                 .flex()
                 .flex_col()
+                .children(self.tasks.models.notice.as_ref().map(|n| {
+                    self.task_notice_card(
+                        n,
+                        "background-model",
+                        Action::CancelModel,
+                        Action::DismissModelNotice,
+                        cx,
+                    )
+                }))
                 .children(foreground.then(|| {
                     let started = self.tasks.started.unwrap_or_else(Instant::now);
                     let notice = TaskNotice {
@@ -139,6 +152,8 @@ impl AppView {
                     "取消后台字幕"
                 } else if key == "cloud-backup" {
                     "取消备份"
+                } else if key == "background-model" {
+                    "取消模型下载"
                 } else {
                     "取消任务"
                 },
@@ -203,9 +218,13 @@ impl AppView {
                                 notice.elapsed % 60
                             )),
                     )
-                    .when(key == "foreground", |v| {
+                    .when(key == "background-model", |v| {
                         v.when_some(
-                            self.tasks.model_progress.as_ref().and_then(|p| p.percent()),
+                            self.tasks
+                                .models
+                                .progress
+                                .as_ref()
+                                .and_then(|p| p.percent()),
                             |v, p| {
                                 v.child(Progress::new().value(p).bg(cx.theme().primary).w_full())
                             },

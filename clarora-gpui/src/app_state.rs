@@ -209,7 +209,7 @@ impl PlaybackState {
 pub(super) struct TasksState {
     pub(super) cancel: Option<Cancel>,
     pub(super) scope: TaskScope,
-    pub(super) model_progress: Option<ModelProgress>,
+    pub(super) models: model_controller::State,
     pub(super) backup_progress: Option<backup::UploadProgress>,
     #[cfg(debug_assertions)]
     pub(super) backup_fixture: Option<std::net::SocketAddr>,
@@ -230,7 +230,7 @@ impl TasksState {
         Self {
             cancel: None,
             scope: TaskScope::Material,
-            model_progress: None,
+            models: Default::default(),
             backup_progress: None,
             #[cfg(debug_assertions)]
             backup_fixture: None,

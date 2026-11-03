@@ -1404,7 +1404,7 @@ impl AppView {
                             Action::TtsDownload,
                             cx,
                         )
-                        .disabled(ready || self.tasks.cancel.is_some()),
+                        .disabled(ready || self.tasks.models.cancel.is_some()),
                     )
                     .child(
                         self.button("tts-generate", "生成并保存音频", Action::TtsGenerate, cx)
