@@ -65,6 +65,10 @@ mod protocol;
 mod review_queue;
 #[path = "support/runtime_stability.rs"]
 mod runtime_stability;
+#[path = "support/sentence_search.rs"]
+mod sentence_search;
+#[path = "support/sentence_search_native.rs"]
+mod sentence_search_native;
 #[path = "support/storage_errors.rs"]
 mod storage_errors;
 #[path = "support/subtitle_selection.rs"]
@@ -476,6 +480,8 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let selected = lib.list("listening_audios")?;
     audio_merge::run(&root, results)?;
     audio_repeat_native::run(&root, results)?;
+    sentence_search::run(&root, results)?;
+    sentence_search_native::run(&root, results)?;
     audio_tools::merge(&lib, &selected, &group, &cancel)?;
     let joined = lib
         .list("listening_audios")?
@@ -988,6 +994,7 @@ fn main() -> Result<()> {
         Some("--command-import-only") => "command-import-only",
         Some("--audio-merge-only") => "audio-merge-only",
         Some("--audio-repeat-only") => "audio-repeat-only",
+        Some("--sentence-search-only") => "sentence-search-only",
         Some("--audio-background-only") => "audio-background-only",
         Some("--audio-batch-only") => "audio-batch-only",
         Some("--clip-marks-only") => "clip-marks-only",
@@ -1046,6 +1053,9 @@ fn main() -> Result<()> {
     } else if mode == "audio-merge-only" {
         audio_merge::run(&output, &mut results)
             .and_then(|()| model_navigation_native::run(&output, &mut results))
+    } else if mode == "sentence-search-only" {
+        sentence_search::run(&output, &mut results)
+            .and_then(|()| sentence_search_native::run(&output, &mut results))
     } else if mode == "audio-repeat-only" {
         audio_repeat_native::run(&output, &mut results)
     } else if mode == "audio-background-only" {

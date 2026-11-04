@@ -30,6 +30,7 @@ impl AppView {
             )));
         }
         match self.page.as_str() {
+            "sentences" => return self.sentence_search_view(window, cx),
             "flashcard" | "discover" => {
                 let discover = self.page == "discover";
                 content = content.child(

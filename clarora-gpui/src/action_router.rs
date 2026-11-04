@@ -3,6 +3,16 @@ use super::*;
 
 impl AppView {
     pub(super) fn handle(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        let action = if self.page == "sentences" {
+            match action {
+                Action::Play => Action::Sentence(sentence_search_ui::Command::Toggle),
+                Action::Next => Action::Sentence(sentence_search_ui::Command::Step(true)),
+                Action::Previous => Action::Sentence(sentence_search_ui::Command::Step(false)),
+                other => other,
+            }
+        } else {
+            action
+        };
         if self.focus_mode.active()
             && matches!(
                 &action,
@@ -146,6 +156,9 @@ impl AppView {
                 Action::GraphSelect(node) => self.graph_node = node,
                 Action::GraphList(list) => self.graph_list = list,
                 Action::Page(page) => {
+                    if self.page == "sentences" && page != "sentences" {
+                        self.sentences.suspend();
+                    }
                     self.subtitle_text.borrow_mut().clear();
                     if self.page == "writing" {
                         self.flush_writing(cx)?;
@@ -196,6 +209,10 @@ impl AppView {
                         self.card_filter = "all".into();
                     }
                     self.focus.focus(window);
+                    if self.page == "sentences" {
+                        self.inputs["sentence_query"]
+                            .update(cx, |input, cx| input.focus(window, cx));
+                    }
                     self.revealed = false;
                     self.index = 0;
                     self.history.clear();
@@ -619,6 +636,7 @@ impl AppView {
                         self.audio.center.request(index);
                     }
                 }
+                Action::Sentence(command) => self.sentence_command(command, window, cx)?,
                 Action::AudioRepeat(mode) => self.set_audio_repeat_mode(mode)?,
                 Action::AudioSentence(direction) => self.audio_sentence(direction)?,
                 Action::LibrarySelect { id: key, reveal } => {

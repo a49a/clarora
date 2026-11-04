@@ -263,6 +263,8 @@ impl Drop for FrameChanged {
 #[derive(Clone, Default)]
 pub struct Playback {
     pub initialized: bool,
+    /// Advances only when libmpv confirms a new file has loaded, even for the same path.
+    pub load_revision: u64,
     pub position: f64,
     pub duration: f64,
     pub paused: bool,
@@ -1192,7 +1194,10 @@ fn worker(
                     break;
                 }
                 if (*event).id == 8 {
-                    shared.lock().unwrap().error.clear();
+                    let mut state = shared.lock().unwrap();
+                    state.error.clear();
+                    state.load_revision = state.load_revision.wrapping_add(1);
+                    drop(state);
                     video_ready = true;
                     last_sample = Instant::now() - Duration::from_secs(1);
                 } else if (*event).id == 7 && !(*event).data.is_null() {

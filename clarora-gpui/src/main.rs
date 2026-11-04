@@ -33,6 +33,9 @@ mod pages_ui;
 mod playback_controller;
 mod reading_ui;
 mod saved_clip_ui;
+#[cfg(debug_assertions)]
+mod sentence_search_probe;
+mod sentence_search_ui;
 mod settings_ui;
 mod subtitle_follow_ui;
 mod subtitle_text_ui;
@@ -148,9 +151,11 @@ const PAGES: &[(&str, &str, &str)] = &[
     ("stats", "学习统计", "记录每一点进步"),
     ("meditation", "冥想放松", "给专注留白"),
     ("settings", "设置", "AI 与存储"),
+    ("sentences", "句型搜索", "搜遍音视频，逐句对照听"),
 ];
 #[derive(Clone)]
 enum Action {
+    Sentence(sentence_search_ui::Command),
     Page(String),
     Pick(String),
     Audio(String),
@@ -392,6 +397,8 @@ struct AppView {
     #[cfg(debug_assertions)]
     audio_repeat_probe: Option<audio_repeat_probe::Probe>,
     #[cfg(debug_assertions)]
+    sentence_probe: Option<sentence_search_probe::Probe>,
+    #[cfg(debug_assertions)]
     subtitle_probe: Option<subtitle_workbench_probe::Probe>,
     data: clarora_gpui::view_data::State,
     loads: data_controller::Loads,
@@ -405,6 +412,7 @@ struct AppView {
     media: app_state::PlaybackState,
     video: app_state::VideoState,
     audio: app_state::AudioState,
+    sentences: sentence_search_ui::State,
     writing: Option<Entity<writing_ui::WritingView>>,
     tts_voice: i32,
     tts_speed: f32,
@@ -482,6 +490,12 @@ impl AppView {
                 false,
             ),
             ("question", "输入问题或粘贴内容，Enter 换行…", true, false),
+            (
+                "sentence_query",
+                "例如 When、when is、Why did",
+                false,
+                false,
+            ),
             ("reference", "朗读参考原文", true, false),
             (
                 "tts_text",
@@ -543,6 +557,8 @@ impl AppView {
             #[cfg(debug_assertions)]
             audio_repeat_probe: None,
             #[cfg(debug_assertions)]
+            sentence_probe: None,
+            #[cfg(debug_assertions)]
             subtitle_probe: None,
             data: Default::default(),
             loads: Default::default(),
@@ -556,6 +572,7 @@ impl AppView {
             media: app_state::PlaybackState::new(),
             video: app_state::VideoState::new(),
             audio: app_state::AudioState::new(&lib),
+            sentences: Default::default(),
             timer_chimes: timer_chimes::Chimes::new(lib.root.join("cache/timer-chimes")),
             rendered_images: Default::default(),
             tts_voice: lib
@@ -677,6 +694,24 @@ impl AppView {
                     })
                 {
                     this.handle(Action::LibraryCommitRename, window, cx);
+                }
+            },
+        ));
+        this.sentences.subscription = Some(cx.subscribe_in(
+            &this.inputs["sentence_query"],
+            window,
+            |this, input, event, window, cx| {
+                if this.page == "sentences"
+                    && matches!(event, InputEvent::PressEnter { secondary: false })
+                    && !input.update(cx, |state, cx| {
+                        state.marked_text_range(window, cx).is_some()
+                    })
+                {
+                    this.handle(
+                        Action::Sentence(sentence_search_ui::Command::Search),
+                        window,
+                        cx,
+                    );
                 }
             },
         ));
@@ -1713,11 +1748,16 @@ impl Render for AppView {
             .flex()
             .flex_col()
             .gap_1();
-        for (i, (key, label, _)) in PAGES.iter().enumerate() {
-            if let Some(section) = match i {
-                0 => Some("学习空间"),
-                6 => Some("资料库"),
-                10 => Some("我的"),
+        // Keep existing Cmd/Ctrl+number assignments while placing search in learning space.
+        for (key, label, _) in PAGES[..6]
+            .iter()
+            .chain(PAGES.last())
+            .chain(PAGES[6..PAGES.len() - 1].iter())
+        {
+            if let Some(section) = match *key {
+                "discover" => Some("学习空间"),
+                "library" => Some("资料库"),
+                "stats" => Some("我的"),
                 _ => None,
             } {
                 links = links.child(
@@ -1929,7 +1969,7 @@ impl Render for AppView {
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenFile, _, cx| {
-                if this.page == "writing" {
+                if matches!(this.page.as_str(), "writing" | "sentences") {
                     return;
                 }
                 let kind = match this.page.as_str() {
@@ -2135,6 +2175,10 @@ impl Render for AppView {
             .text_color(cx.theme().foreground)
             .text_size(px(14.))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.handle_sentence_search_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.handle_audio_arrow_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
@@ -2154,7 +2198,7 @@ impl Render for AppView {
                     }
                     return;
                 }
-                if this.page == "writing" {
+                if matches!(this.page.as_str(), "writing" | "sentences") {
                     return;
                 }
                 let subtitle_focus = this.subtitle_text.borrow().focus.clone();
@@ -2430,6 +2474,23 @@ fn main() -> Result<()> {
     #[cfg(not(debug_assertions))]
     let model_probe_dir: Option<PathBuf> = None;
     #[cfg(debug_assertions)]
+    let sentence_probe_dir = args
+        .iter()
+        .position(|a| a == "--sentence-search-check")
+        .map(|i| {
+            args.get(i + 1)
+                .context("--sentence-search-check 缺少证据目录")
+                .map(PathBuf::from)
+        })
+        .transpose()?;
+    #[cfg(not(debug_assertions))]
+    ensure!(
+        !args.iter().any(|a| a == "--sentence-search-check"),
+        "句型搜索原生验收仅支持调试构建"
+    );
+    #[cfg(not(debug_assertions))]
+    let sentence_probe_dir: Option<PathBuf> = None;
+    #[cfg(debug_assertions)]
     let audio_repeat_probe_dir = args
         .iter()
         .position(|a| a == "--audio-repeat-check")
@@ -2505,6 +2566,8 @@ fn main() -> Result<()> {
         Library::open(out.join("library"))?
     } else if let Some(out) = &subtitle_probe_dir {
         subtitle_workbench_probe::prepare(out)?
+    } else if let Some(out) = &sentence_probe_dir {
+        sentence_search_probe::prepare(out)?
     } else if let Some(out) = &audio_repeat_probe_dir {
         audio_repeat_probe::prepare(out)?
     } else if let Some(out) = &model_probe_dir {
@@ -2651,12 +2714,14 @@ fn main() -> Result<()> {
                             && backup_probe_dir.is_none()
                             && model_probe_dir.is_none()
                             && audio_repeat_probe_dir.is_none()
+                            && sentence_probe_dir.is_none()
                             && subtitle_probe_dir.is_none()
                             && focus_probe_dir.is_none(),
                         focus: probe_dir.is_none()
                             && backup_probe_dir.is_none()
                             && model_probe_dir.is_none()
                             && audio_repeat_probe_dir.is_none()
+                            && sentence_probe_dir.is_none()
                             && subtitle_probe_dir.is_none()
                             && focus_probe_dir.is_none(),
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -2680,6 +2745,10 @@ fn main() -> Result<()> {
                             #[cfg(debug_assertions)]
                             if let Some(out) = &model_probe_dir {
                                 view.model_probe = Some(model_navigation_probe::Probe::new(out));
+                            }
+                            #[cfg(debug_assertions)]
+                            if let Some(out) = &sentence_probe_dir {
+                                view.sentence_probe = Some(sentence_search_probe::Probe::new(out));
                             }
                             #[cfg(debug_assertions)]
                             if let Some(out) = &audio_repeat_probe_dir {
@@ -2725,6 +2794,7 @@ fn main() -> Result<()> {
                 && backup_probe_dir.is_none()
                 && model_probe_dir.is_none()
                 && audio_repeat_probe_dir.is_none()
+                && sentence_probe_dir.is_none()
                 && subtitle_probe_dir.is_none()
                 && focus_probe_dir.is_none()
             {

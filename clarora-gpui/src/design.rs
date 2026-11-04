@@ -69,6 +69,7 @@ fn paths(name: &str) -> Option<&'static str> {
             "<path d='M4 14v-3a8 8 0 0 1 16 0v3'/><rect x='3' y='12' width='4' height='8' rx='2'/><rect x='17' y='12' width='4' height='8' rx='2'/>"
         }
         "video" => "<rect x='3' y='4' width='18' height='16' rx='3'/><path d='m10 8 6 4-6 4Z'/>",
+        "sentences" => "<circle cx='10' cy='10' r='7'/><path d='m15 15 6 6M7 8h6m-6 4h4'/>",
         "speaking" => {
             "<rect x='9' y='3' width='6' height='12' rx='3'/><path d='M5 11v1a7 7 0 0 0 14 0v-1M12 19v3m-4 0h8'/>"
         }

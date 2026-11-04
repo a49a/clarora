@@ -19,6 +19,10 @@ impl AppView {
             return;
         }
         #[cfg(debug_assertions)]
+        if self.poll_sentence_search_probe(window, cx) {
+            return;
+        }
+        #[cfg(debug_assertions)]
         if self.poll_audio_repeat_probe(window, cx) {
             return;
         }
@@ -118,7 +122,8 @@ impl AppView {
             }
         }
         let subtitle_changed = self.poll_background_subtitles();
-        let mut changed = focus_changed
+        let mut changed = self.poll_sentence_search()
+            || focus_changed
             || subtitle_changed
             || blind_changed
             || playback_changed
