@@ -30,9 +30,13 @@ pub(super) struct AudioState {
     pub(super) current_scroll: ScrollHandle,
     pub(super) font_size: u8,
     pub(super) key_points: Vec<ai::KeyPoint>,
+    pub(super) sentence_repeat: Option<clarora_gpui::video_repeat::Session>,
+    pub(super) repeat_mode: usize,
+    pub(super) pending_repeat_pause: Option<bool>,
+    pub(super) pending_repeat_position: Option<f64>,
 }
 impl AudioState {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(lib: &Library) -> Self {
         Self {
             library: Default::default(),
             rename_subscription: None,
@@ -62,6 +66,15 @@ impl AudioState {
             current_scroll: ScrollHandle::new(),
             font_size: 18,
             key_points: vec![],
+            sentence_repeat: None,
+            repeat_mode: lib
+                .setting("audio_repeat_mode")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|n| [0, 1, 3, 4, 5, 6].contains(n))
+                .unwrap_or(0),
+            pending_repeat_pause: None,
+            pending_repeat_position: None,
         }
     }
 }

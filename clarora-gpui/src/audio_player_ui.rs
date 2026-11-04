@@ -16,8 +16,13 @@ impl AppView {
         let peaks = waveform.peaks.clone();
         let duration = waveform.duration;
         let position = self.media.snapshot.position;
-        let a = self.media.loop_a;
-        let b = self.media.loop_b;
+        let range = self
+            .audio
+            .sentence_repeat
+            .map(|s| s.range)
+            .or_else(|| self.media.loop_a.zip(self.media.loop_b));
+        let a = range.map(|(a, _)| a);
+        let b = range.map(|(_, b)| b);
         let bounds_cell = self.audio.waveform_bounds.clone();
         let color = cx.theme().primary;
         div()
@@ -89,10 +94,10 @@ impl AppView {
                         )
                         .size_full(),
                     )
-                    .when_some(a, |v, time| {
+                    .when_some(self.media.loop_a, |v, time| {
                         v.child(clip_selection_ui::waveform_edge(time, duration, true))
                     })
-                    .when_some(b, |v, time| {
+                    .when_some(self.media.loop_b, |v, time| {
                         v.child(clip_selection_ui::waveform_edge(time, duration, false))
                     })
                     .on_mouse_down(
@@ -976,15 +981,15 @@ impl AppView {
                 )
             })
             .collect();
-        let repeat = ["不循环", "单曲循环", "A–B 循环", "组循环", "单次连播"]
+        let repeat = audio_repeat_controller::MODES
             .into_iter()
             .enumerate()
             .map(|(i, n)| {
                 (
                     n.into(),
                     Action::AudioRepeat(i),
-                    self.media.repeat == i,
-                    i == 2 && !valid,
+                    self.audio.repeat_mode == i,
+                    (i == 2 && !valid) || (i >= 5 && self.audio.cues.is_empty()),
                 )
             })
             .collect();
@@ -1069,13 +1074,29 @@ impl AppView {
                         cx,
                     ))
                     .child(div().flex_1())
+                    .child(
+                        self.transport_button(
+                            "audio-previous-sentence",
+                            "上一句",
+                            Action::AudioSentence(-1),
+                            cx,
+                        )
+                        .disabled(self.audio.cues.is_empty())
+                        .tooltip("上一句字幕 · ←"),
+                    )
+                    .child(
+                        self.transport_button(
+                            "audio-next-sentence",
+                            "下一句",
+                            Action::AudioSentence(1),
+                            cx,
+                        )
+                        .disabled(self.audio.cues.is_empty())
+                        .tooltip("下一句字幕 · →"),
+                    )
                     .child(self.player_menu(
                         "audio-repeat",
-                        format!(
-                            "{} ▾",
-                            ["不循环", "单曲循环", "A–B 循环", "组循环", "单次连播"]
-                                [self.media.repeat]
-                        ),
+                        format!("{} ▾", self.audio_repeat_label()),
                         repeat,
                         cx,
                     ))
@@ -1274,7 +1295,7 @@ impl AppView {
                     ))
                     .child(self.transport_button(
                         "repeat",
-                        ["不循环", "单曲循环", "A/B循环", "组循环", "单次连播"][self.media.repeat],
+                        audio_repeat_controller::MODES[self.media.repeat.min(6)],
                         Action::Repeat,
                         cx,
                     )),

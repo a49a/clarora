@@ -19,6 +19,10 @@ impl AppView {
             return;
         }
         #[cfg(debug_assertions)]
+        if self.poll_audio_repeat_probe(window, cx) {
+            return;
+        }
+        #[cfg(debug_assertions)]
         if self.poll_model_probe(window, cx) {
             return;
         }
@@ -129,7 +133,7 @@ impl AppView {
                 if !self.audio.current_id.is_empty() {
                     let _ = self.lib.set_setting(
                         "last_listening_position",
-                        &json!({"id":self.audio.current_id,"position":self.media.snapshot.position})
+                        &json!({"id":self.audio.current_id,"position":self.audio_saved_position()})
                             .to_string(),
                     );
                 }
@@ -145,8 +149,10 @@ impl AppView {
         changed |= self.poll_audio_subtitles();
         changed |= self.poll_pending_video_start();
         changed |= self.poll_video_sentence_repeat();
+        changed |= self.poll_audio_sentence_repeat();
         if let (Some(a), Some(b)) = (self.media.loop_a, self.media.loop_b) {
             if self.video.sentence_repeat.is_none()
+                && self.audio.sentence_repeat.is_none()
                 && self.media.repeat == 2
                 && !self.media.snapshot.paused
                 && self.media.snapshot.position >= b
@@ -156,7 +162,9 @@ impl AppView {
                     .command(["seek".into(), a.to_string(), "absolute+exact".into()]);
             }
         }
-        if self.video.sentence_repeat.is_none() && (self.page != "video" || self.media.repeat != 0)
+        if self.video.sentence_repeat.is_none()
+            && self.audio.sentence_repeat.is_none()
+            && (self.page != "video" || self.media.repeat != 0)
         {
             if self.media.snapshot.duration > 0.
                 && self.media.snapshot.position >= self.media.snapshot.duration - 0.1
@@ -166,7 +174,7 @@ impl AppView {
                     if self.media.repeat == 1 {
                         self.media.player.command(["seek", "0", "absolute"]);
                         self.media.player.set("pause", "no");
-                    } else if self.media.repeat >= 3 {
+                    } else if [3, 4].contains(&self.media.repeat) {
                         let group = self
                             .audio
                             .library

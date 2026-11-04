@@ -176,6 +176,12 @@ struct RunningSentenceRepeat {
     state: SentenceRepeat,
     initial_seek_seen: bool,
     armed: bool,
+    pending_seek: Option<PendingSentenceSeek>,
+    audio_only: bool,
+}
+struct PendingSentenceSeek {
+    target: f64,
+    paused: bool,
 }
 /// Keep a timeline seek inside one sentence. The open end is intentionally just
 /// before B, so a paused click at/after B cannot itself finish the sentence.
@@ -432,8 +438,8 @@ impl Player {
     pub fn clear_sentence_repeat(&self) {
         let _ = self.tx.send(Message::ClearSentenceRepeat);
     }
-    /// Seek an active finite sentence repeat without resetting its count or
-    /// pause state. Stale/finished requests and infinite mode are left untouched.
+    /// Seek an active sentence repeat without resetting its count or pause state.
+    /// Stale and finished requests are left untouched.
     pub fn seek_sentence_repeat(&self, path: &Path, request_id: u64, time: f64) -> Result<()> {
         ensure!(!path.as_os_str().is_empty(), "请先打开视频");
         ensure!(time.is_finite(), "播放位置无效");
@@ -867,7 +873,26 @@ unsafe fn start_sentence_repeat(
     handle: Handle,
     state: SentenceRepeat,
 ) -> Result<RunningSentenceRepeat> {
+    let audio_only;
     unsafe {
+        let mut tracks: Node = std::mem::zeroed();
+        audio_only = if (api.property)(
+            handle,
+            c"track-list".as_ptr(),
+            6,
+            &mut tracks as *mut _ as _,
+        ) >= 0
+        {
+            let has_video = node_json(&tracks).as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|track| track["type"] == "video" && track["selected"] == true)
+            });
+            (api.node_free)(&mut tracks);
+            !has_video
+        } else {
+            false
+        };
         set_native(api, handle, "pause", "yes")?;
         clear_native_sentence_repeat(api, handle)?;
         // libmpv counts seek-backs, so three total plays require two loops.
@@ -897,6 +922,8 @@ unsafe fn start_sentence_repeat(
         state,
         initial_seek_seen: false,
         armed: false,
+        pending_seek: None,
+        audio_only,
     })
 }
 unsafe fn seek_running_sentence_repeat(
@@ -905,9 +932,6 @@ unsafe fn seek_running_sentence_repeat(
     repeat: &mut RunningSentenceRepeat,
     time: f64,
 ) -> Result<()> {
-    let Some(total) = repeat.state.total_plays else {
-        return Ok(());
-    };
     unsafe {
         let target = sentence_seek_target(repeat.state.start, repeat.state.end, time)?;
         let mut remaining = -1i64;
@@ -926,14 +950,29 @@ unsafe fn seek_running_sentence_repeat(
         (api.property)(handle, c"eof-reached".as_ptr(), 3, &mut eof as *mut _ as _);
         // Completion can precede the worker's next event poll. Do not revive a
         // completed request merely because its published flag has not caught up.
-        if remaining == 0 && eof != 0 && paused != 0 {
+        if repeat.armed && remaining == 0 && eof != 0 && paused != 0 {
             return Ok(());
         }
-        let current_play = if remaining >= 0 {
+        let current_play = if let Some(total) = repeat
+            .state
+            .total_plays
+            .filter(|_| repeat.armed && remaining >= 0)
+        {
             total.saturating_sub(remaining as u32).max(1).min(total)
         } else {
             repeat.state.current_play
         };
+        let paused = repeat
+            .pending_seek
+            .as_ref()
+            .map_or(paused != 0, |s| s.paused);
+        // A queued native AB wrap can race an exact audio seek and subtract a
+        // whole sentence from its target. Disable boundaries while decoding the
+        // target; rearm only after it settles and playback is requested.
+        if repeat.audio_only {
+            set_native(api, handle, "pause", "yes")?;
+            clear_native_sentence_repeat(api, handle)?;
+        }
         let position = CString::new(target.to_string())?;
         let command = [
             c"seek".as_ptr(),
@@ -945,18 +984,23 @@ unsafe fn seek_running_sentence_repeat(
             (api.command)(handle, command.as_ptr()) >= 0,
             "无法定位当前字幕句"
         );
-        // Native seeks may rearm AB properties. Preserve only the iterations
-        // still owed by this request, rather than starting three plays again.
-        set_native(
-            api,
-            handle,
-            "ab-loop-count",
-            &(total - current_play).to_string(),
-        )?;
-        set_native(api, handle, "pause", if paused != 0 { "yes" } else { "no" })?;
         repeat.state.current_play = current_play;
         repeat.initial_seek_seen = false;
         repeat.armed = false;
+        if repeat.audio_only {
+            repeat.pending_seek = Some(PendingSentenceSeek { target, paused });
+        } else {
+            // Video uses its frame clock and retains the established native
+            // boundaries while seeking. The audio decoder needs the deferred
+            // rearm above to avoid consuming an AB iteration while paused.
+            let remaining = repeat
+                .state
+                .total_plays
+                .map(|total| (total - current_play).to_string())
+                .unwrap_or_else(|| "inf".into());
+            set_native(api, handle, "ab-loop-count", &remaining)?;
+            set_native(api, handle, "pause", if paused { "yes" } else { "no" })?;
+        }
     }
     Ok(())
 }
@@ -1049,11 +1093,23 @@ fn worker(
                         sentence_repeat = None;
                         shared.lock().unwrap().sentence_repeat = None;
                     }
-                    let status = (api.set)(
-                        handle,
-                        CString::new(key)?.as_ptr(),
-                        CString::new(value)?.as_ptr(),
-                    );
+                    let defer_resume = key == "pause"
+                        && sentence_repeat
+                            .as_mut()
+                            .and_then(|r| r.pending_seek.as_mut())
+                            .is_some_and(|seek| {
+                                seek.paused = value != "no";
+                                !seek.paused
+                            });
+                    let status = if defer_resume {
+                        0
+                    } else {
+                        (api.set)(
+                            handle,
+                            CString::new(key)?.as_ptr(),
+                            CString::new(value)?.as_ptr(),
+                        )
+                    };
                     if status < 0 {
                         shared.lock().unwrap().error = format!("播放器设置失败：{status}");
                     }
@@ -1170,12 +1226,45 @@ fn worker(
                         } else {
                             repeat.initial_seek_seen = true;
                         }
-                    } else if (*event).id == 21 && repeat.initial_seek_seen {
+                    } else if (*event).id == 21
+                        && repeat.initial_seek_seen
+                        && repeat.pending_seek.is_none()
+                    {
                         repeat.armed = true;
                     }
                 }
             }
             if let Some(repeat) = sentence_repeat.as_mut().filter(|r| !r.state.finished) {
+                if let Some(seek) = repeat.pending_seek.as_ref().filter(|s| !s.paused) {
+                    let mut seeking = 1;
+                    let mut position = -1.;
+                    (api.property)(handle, c"seeking".as_ptr(), 3, &mut seeking as *mut _ as _);
+                    (api.property)(
+                        handle,
+                        c"time-pos".as_ptr(),
+                        5,
+                        &mut position as *mut _ as _,
+                    );
+                    if repeat.initial_seek_seen
+                        && seeking == 0
+                        && (position - seek.target).abs() < 0.03
+                    {
+                        if let Some(total) = repeat.state.total_plays {
+                            set_native(&api, handle, "end", &repeat.state.end.to_string())?;
+                            set_native(
+                                &api,
+                                handle,
+                                "ab-loop-count",
+                                &(total - repeat.state.current_play).to_string(),
+                            )?;
+                        }
+                        set_native(&api, handle, "ab-loop-a", &repeat.state.start.to_string())?;
+                        set_native(&api, handle, "ab-loop-b", &repeat.state.end.to_string())?;
+                        repeat.pending_seek = None;
+                        repeat.armed = true;
+                        set_native(&api, handle, "pause", "no")?;
+                    }
+                }
                 let mut remaining = -1i64;
                 let mut paused = 0;
                 let mut eof = 0;
@@ -1188,7 +1277,7 @@ fn worker(
                 (api.property)(handle, c"pause".as_ptr(), 3, &mut paused as *mut _ as _);
                 (api.property)(handle, c"eof-reached".as_ptr(), 3, &mut eof as *mut _ as _);
                 if let Some(total) = repeat.state.total_plays {
-                    if remaining >= 0 {
+                    if repeat.armed && remaining >= 0 {
                         repeat.state.current_play =
                             total.saturating_sub(remaining as u32).max(1).min(total);
                     }

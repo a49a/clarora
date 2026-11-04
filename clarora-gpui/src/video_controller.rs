@@ -98,6 +98,7 @@ impl AppView {
             }
         };
         let path = video.path;
+        self.reset_audio_sentence_request();
         self.reset_video_sentence_request();
         self.video.series = video.series;
         self.video.remove = None;

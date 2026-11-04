@@ -132,6 +132,13 @@ impl AppView {
         }
         if let Some(cues) = snapshot.cues {
             if !same_cues(&cues, &self.audio.cues) {
+                self.audio
+                    .pending_repeat_pause
+                    .get_or_insert(self.media.player.snapshot().paused);
+                self.audio
+                    .pending_repeat_position
+                    .get_or_insert(self.media.player.snapshot().position);
+                self.reset_audio_sentence_request();
                 self.audio.cues = cues;
                 self.invalidate_blind();
                 self.audio.scroll.reset(self.audio.cues.len());

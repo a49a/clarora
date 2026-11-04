@@ -3,6 +3,10 @@ use super::*;
 
 impl AppView {
     pub(super) fn open_audio(&mut self, row: &Row) {
+        self.loads.restore_pending = false;
+        self.reset_audio_sentence_request();
+        self.audio.pending_repeat_pause = Some(false);
+        self.audio.pending_repeat_position = Some(0.);
         let replacement = self
             .audio
             .library
@@ -39,9 +43,10 @@ impl AppView {
         self.audio.current_scroll.set_offset(Point::default());
         self.audio.clip_mode = false;
         self.audio.tools_open = false;
-        if self.media.repeat == 2 {
-            self.media.repeat = 0;
+        if self.audio.repeat_mode == 2 {
+            self.audio.repeat_mode = 0;
         }
+        self.media.repeat = self.audio.repeat_mode;
         self.media.loop_a = None;
         self.media.loop_b = None;
         self.refresh_saved_ranges();
@@ -63,6 +68,8 @@ impl AppView {
             .cloned()
         {
             self.open_audio(&row);
+            self.audio.pending_repeat_pause = Some(true);
+            self.audio.pending_repeat_position = Some(position);
             self.media.player.set("pause", "yes");
             self.media.player.command([
                 "seek".into(),

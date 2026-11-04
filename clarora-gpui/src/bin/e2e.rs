@@ -13,6 +13,8 @@ mod audio_batch;
 mod audio_library;
 #[path = "support/audio_merge.rs"]
 mod audio_merge;
+#[path = "support/audio_repeat_native.rs"]
+mod audio_repeat_native;
 #[path = "support/backup_cancel.rs"]
 mod backup_cancel;
 #[path = "support/backup_library.rs"]
@@ -473,6 +475,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     lib.import_audio(&group, &second)?;
     let selected = lib.list("listening_audios")?;
     audio_merge::run(&root, results)?;
+    audio_repeat_native::run(&root, results)?;
     audio_tools::merge(&lib, &selected, &group, &cancel)?;
     let joined = lib
         .list("listening_audios")?
@@ -984,6 +987,7 @@ fn main() -> Result<()> {
         Some("--video-render-only") => "video-render-only",
         Some("--command-import-only") => "command-import-only",
         Some("--audio-merge-only") => "audio-merge-only",
+        Some("--audio-repeat-only") => "audio-repeat-only",
         Some("--audio-background-only") => "audio-background-only",
         Some("--audio-batch-only") => "audio-batch-only",
         Some("--clip-marks-only") => "clip-marks-only",
@@ -1042,6 +1046,8 @@ fn main() -> Result<()> {
     } else if mode == "audio-merge-only" {
         audio_merge::run(&output, &mut results)
             .and_then(|()| model_navigation_native::run(&output, &mut results))
+    } else if mode == "audio-repeat-only" {
+        audio_repeat_native::run(&output, &mut results)
     } else if mode == "audio-background-only" {
         model_navigation_native::run(&output, &mut results)
     } else if mode == "audio-batch-only" {

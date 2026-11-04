@@ -25,6 +25,31 @@ impl AppView {
         if window.has_active_dialog(cx) && !matches!(action, Action::VideoConfirmRemove) {
             return;
         }
+        let sync_audio_mode = self.page == "listening"
+            && matches!(
+                &action,
+                Action::Word(..)
+                    | Action::Boundary(..)
+                    | Action::Mark(_)
+                    | Action::AudioClipMode
+                    | Action::AudioBlind(_)
+                    | Action::AudioBlindRow(..)
+                    | Action::AudioPractice(_)
+            );
+        let restore_audio_focus = self.page == "listening"
+            && matches!(
+                &action,
+                Action::AudioRepeat(_)
+                    | Action::Audio(_)
+                    | Action::AudioPractice(_)
+                    | Action::AudioBlind(_)
+                    | Action::AudioSentence(_)
+                    | Action::Play
+                    | Action::Seek(_)
+                    | Action::SeekTo(_)
+                    | Action::Rate(_)
+                    | Action::Word(..)
+            );
         let restore_video_focus = self.page == "video"
             && matches!(
                 &action,
@@ -135,6 +160,12 @@ impl AppView {
                         self.audio.library.tool.clear();
                     }
                     self.save_media_position();
+                    if previous == "listening" && page != "listening" {
+                        self.reset_audio_sentence_request();
+                        if self.media.repeat >= 5 {
+                            self.media.repeat = 0;
+                        }
+                    }
                     if previous == "video" && page != "video" {
                         // Suspend the old file's loop without changing the user's
                         // mode choice. Other modules share this player.
@@ -257,6 +288,7 @@ impl AppView {
                     self.refresh();
                 }
                 Action::AudioPractice(key) => {
+                    self.reset_audio_sentence_request();
                     self.invalidate_blind();
                     ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
                     ensure!(
@@ -449,6 +481,11 @@ impl AppView {
                     .context("字幕已变化或时间无效，请重新选择")?;
                     self.invalidate_blind();
                     self.assistant_open = false;
+                    if self.seek_audio_repeat(start, true)? {
+                        self.sync_chat(window, cx);
+                        window.focus(&self.focus);
+                        return Ok(());
+                    }
                     let outside_loop = self.media.repeat == 2
                         && self
                             .media
@@ -481,6 +518,10 @@ impl AppView {
                     window.focus(&self.focus);
                 }
                 Action::AudioBlindSentence(direction) => {
+                    if self.audio.repeat_mode >= 5 {
+                        self.audio_sentence(direction)?;
+                        return Ok(());
+                    }
                     ensure!(
                         self.page == "listening" && self.audio.blind.enabled,
                         "请先开启盲听"
@@ -541,6 +582,9 @@ impl AppView {
                 }
                 Action::AudioClipMode => {
                     ensure!(!self.audio.blind.enabled, "请先切回字幕模式");
+                    if self.audio.repeat_mode >= 5 {
+                        self.set_audio_repeat_mode(0)?;
+                    }
                     self.audio.clip_mode = !self.audio.clip_mode;
                     if !self.audio.clip_mode {
                         self.media.loop_a = None;
@@ -575,19 +619,8 @@ impl AppView {
                         self.audio.center.request(index);
                     }
                 }
-                Action::AudioRepeat(mode) => {
-                    ensure!(mode <= 4, "无效循环方式");
-                    if mode == 2 {
-                        ensure!(
-                            self.media
-                                .loop_a
-                                .zip(self.media.loop_b)
-                                .is_some_and(|(a, b)| b > a),
-                            "先截取有效片段"
-                        );
-                    }
-                    self.media.repeat = mode;
-                }
+                Action::AudioRepeat(mode) => self.set_audio_repeat_mode(mode)?,
+                Action::AudioSentence(direction) => self.audio_sentence(direction)?,
                 Action::LibrarySelect { id: key, reveal } => {
                     ensure!(
                         self.audio.audios.iter().any(|r| text(r, "id") == key
@@ -935,6 +968,9 @@ impl AppView {
                     self.report_status(FeedbackKind::Info, "句子卡已保存".into());
                 }
                 Action::Play => {
+                    if self.restart_finished_audio_sentence()? {
+                        return Ok(());
+                    }
                     if self.toggle_pending_video_start() {
                         return Ok(());
                     }
@@ -948,6 +984,11 @@ impl AppView {
                         .set("pause", if paused { "no" } else { "yes" });
                 }
                 Action::Seek(delta) => {
+                    if self
+                        .seek_audio_repeat(self.media.player.snapshot().position + delta, false)?
+                    {
+                        return Ok(());
+                    }
                     if self.page == "listening" {
                         self.invalidate_blind();
                         self.audio.blind_settle_until =
@@ -965,6 +1006,9 @@ impl AppView {
                         "请先切回字幕模式"
                     );
                     if !self.audio.clip_mode {
+                        if self.seek_audio_repeat(start, true)? {
+                            return Ok(());
+                        }
                         self.media.player.command([
                             "seek".into(),
                             start.to_string(),
@@ -1007,6 +1051,9 @@ impl AppView {
                     }
                 }
                 Action::Boundary(time, start) => {
+                    if self.page == "listening" && self.audio.repeat_mode >= 5 {
+                        self.set_audio_repeat_mode(0)?;
+                    }
                     let time = time.clamp(0., self.media.snapshot.duration.max(time));
                     if start {
                         self.media.loop_a = Some(
@@ -1033,6 +1080,9 @@ impl AppView {
                     }
                 }
                 Action::SeekTo(time) => {
+                    if self.seek_audio_repeat(time, false)? {
+                        return Ok(());
+                    }
                     if self.page == "listening" {
                         self.invalidate_blind();
                         self.audio.blind_settle_until =
@@ -1232,6 +1282,10 @@ impl AppView {
                     }
                 }
                 Action::LoopMode(mode) => {
+                    if self.page == "listening" {
+                        self.set_audio_repeat_mode(mode)?;
+                        return Ok(());
+                    }
                     ensure!(mode <= 2, "循环模式无效");
                     if mode == 2 {
                         ensure!(
@@ -1363,6 +1417,9 @@ impl AppView {
                     self.media.player.set("volume", self.media.volume);
                 }
                 Action::Mark(start) => {
+                    if self.page == "listening" && self.audio.repeat_mode >= 5 {
+                        self.set_audio_repeat_mode(0)?;
+                    }
                     if self.page == "video" || self.page == "listening" {
                         ensure!(
                             self.media.path.is_some() && self.media.snapshot.duration > 0.,
@@ -1409,8 +1466,28 @@ impl AppView {
                     }
                 }
                 Action::Repeat => {
-                    self.media.repeat =
-                        (self.media.repeat + 1) % if self.page == "video" { 3 } else { 5 };
+                    if self.page == "listening" {
+                        for offset in 1..=7 {
+                            let mode = (self.audio.repeat_mode + offset) % 7;
+                            if mode == 2
+                                && !self
+                                    .media
+                                    .loop_a
+                                    .zip(self.media.loop_b)
+                                    .is_some_and(|(a, b)| b > a)
+                            {
+                                continue;
+                            }
+                            if mode >= 5 && self.audio.cues.is_empty() {
+                                continue;
+                            }
+                            self.set_audio_repeat_mode(mode)?;
+                            break;
+                        }
+                    } else {
+                        self.media.repeat =
+                            (self.media.repeat + 1) % if self.page == "video" { 3 } else { 5 };
+                    }
                 }
                 Action::Subtitle(key, secondary) => {
                     self.media.player.set(
@@ -2602,6 +2679,9 @@ impl AppView {
             }
             Ok(())
         })();
+        if sync_audio_mode && result.is_ok() {
+            self.audio.repeat_mode = self.media.repeat;
+        }
         if let Err(e) = result {
             self.report_status(FeedbackKind::Error, format!("{e:#}"));
             self.feedback.attach_retry(action_retry);
@@ -2609,7 +2689,9 @@ impl AppView {
         if updates_settings {
             self.refresh_view_data();
         }
-        if restore_video_focus && !self.subtitle_text.borrow().focus.is_focused(window) {
+        if (restore_video_focus || restore_audio_focus)
+            && !self.subtitle_text.borrow().focus.is_focused(window)
+        {
             // Buttons deliberately keep the old focus on mouse-down. Explicit
             // video controls hand it back without disturbing subtitle copying.
             window.focus(&self.focus);

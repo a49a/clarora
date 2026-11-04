@@ -5,6 +5,9 @@ mod assistant_ui;
 mod audio_controller;
 mod audio_current_ui;
 mod audio_player_ui;
+mod audio_repeat_controller;
+#[cfg(debug_assertions)]
+mod audio_repeat_probe;
 mod audio_subtitle_ui;
 mod audio_subtitles_controller;
 #[cfg(debug_assertions)]
@@ -170,6 +173,7 @@ enum Action {
     AudioCopySubtitle(String, Option<Cue>),
     SavedClips(Vec<clip_marks::Saved>),
     AudioRepeat(usize),
+    AudioSentence(i8),
     LibrarySelect { id: String, reveal: bool },
     LibraryRenameAudio(String),
     LibraryCommitRename,
@@ -386,6 +390,8 @@ struct AppView {
     #[cfg(debug_assertions)]
     model_probe: Option<model_navigation_probe::Probe>,
     #[cfg(debug_assertions)]
+    audio_repeat_probe: Option<audio_repeat_probe::Probe>,
+    #[cfg(debug_assertions)]
     subtitle_probe: Option<subtitle_workbench_probe::Probe>,
     data: clarora_gpui::view_data::State,
     loads: data_controller::Loads,
@@ -535,6 +541,8 @@ impl AppView {
             #[cfg(debug_assertions)]
             model_probe: None,
             #[cfg(debug_assertions)]
+            audio_repeat_probe: None,
+            #[cfg(debug_assertions)]
             subtitle_probe: None,
             data: Default::default(),
             loads: Default::default(),
@@ -547,7 +555,7 @@ impl AppView {
             tasks: app_state::TasksState::new(),
             media: app_state::PlaybackState::new(),
             video: app_state::VideoState::new(),
-            audio: app_state::AudioState::new(),
+            audio: app_state::AudioState::new(&lib),
             timer_chimes: timer_chimes::Chimes::new(lib.root.join("cache/timer-chimes")),
             rendered_images: Default::default(),
             tts_voice: lib
@@ -974,7 +982,7 @@ impl AppView {
         if self.page == "listening" && !self.audio.current_id.is_empty() {
             let _ = self.lib.set_setting(
                 "last_listening_position",
-                &json!({"id":self.audio.current_id,"position":self.media.snapshot.position})
+                &json!({"id":self.audio.current_id,"position":self.audio_saved_position()})
                     .to_string(),
             );
         } else if self.page == "video" {
@@ -2127,6 +2135,10 @@ impl Render for AppView {
             .text_color(cx.theme().foreground)
             .text_size(px(14.))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.handle_audio_arrow_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.handle_video_arrow_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
@@ -2182,7 +2194,7 @@ impl Render for AppView {
                             window,
                             cx,
                         ),
-                        "right" => this.handle(
+                        "right" if this.page != "listening" => this.handle(
                             if ["video", "listening"].contains(&this.page.as_str()) {
                                 this.video_horizontal_action(true)
                             } else {
@@ -2191,7 +2203,7 @@ impl Render for AppView {
                             window,
                             cx,
                         ),
-                        "left" => this.handle(
+                        "left" if this.page != "listening" => this.handle(
                             if ["video", "listening"].contains(&this.page.as_str()) {
                                 this.video_horizontal_action(false)
                             } else {
@@ -2418,6 +2430,23 @@ fn main() -> Result<()> {
     #[cfg(not(debug_assertions))]
     let model_probe_dir: Option<PathBuf> = None;
     #[cfg(debug_assertions)]
+    let audio_repeat_probe_dir = args
+        .iter()
+        .position(|a| a == "--audio-repeat-check")
+        .map(|i| {
+            args.get(i + 1)
+                .context("--audio-repeat-check 缺少证据目录")
+                .map(PathBuf::from)
+        })
+        .transpose()?;
+    #[cfg(not(debug_assertions))]
+    ensure!(
+        !args.iter().any(|a| a == "--audio-repeat-check"),
+        "音频逐句重复原生验收仅支持调试构建"
+    );
+    #[cfg(not(debug_assertions))]
+    let audio_repeat_probe_dir: Option<PathBuf> = None;
+    #[cfg(debug_assertions)]
     let backup_probe_dir = args
         .iter()
         .position(|arg| arg == "--backup-progress-check")
@@ -2476,6 +2505,8 @@ fn main() -> Result<()> {
         Library::open(out.join("library"))?
     } else if let Some(out) = &subtitle_probe_dir {
         subtitle_workbench_probe::prepare(out)?
+    } else if let Some(out) = &audio_repeat_probe_dir {
+        audio_repeat_probe::prepare(out)?
     } else if let Some(out) = &model_probe_dir {
         model_navigation_probe::prepare(out)?
     } else if let Some(out) = &backup_probe_dir {
@@ -2619,11 +2650,13 @@ fn main() -> Result<()> {
                         show: probe_dir.is_none()
                             && backup_probe_dir.is_none()
                             && model_probe_dir.is_none()
+                            && audio_repeat_probe_dir.is_none()
                             && subtitle_probe_dir.is_none()
                             && focus_probe_dir.is_none(),
                         focus: probe_dir.is_none()
                             && backup_probe_dir.is_none()
                             && model_probe_dir.is_none()
+                            && audio_repeat_probe_dir.is_none()
                             && subtitle_probe_dir.is_none()
                             && focus_probe_dir.is_none(),
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -2647,6 +2680,10 @@ fn main() -> Result<()> {
                             #[cfg(debug_assertions)]
                             if let Some(out) = &model_probe_dir {
                                 view.model_probe = Some(model_navigation_probe::Probe::new(out));
+                            }
+                            #[cfg(debug_assertions)]
+                            if let Some(out) = &audio_repeat_probe_dir {
+                                view.audio_repeat_probe = Some(audio_repeat_probe::Probe::new(out));
                             }
                             #[cfg(debug_assertions)]
                             if let Some(out) = &backup_probe_dir {
@@ -2687,6 +2724,7 @@ fn main() -> Result<()> {
             if probe_dir.is_none()
                 && backup_probe_dir.is_none()
                 && model_probe_dir.is_none()
+                && audio_repeat_probe_dir.is_none()
                 && subtitle_probe_dir.is_none()
                 && focus_probe_dir.is_none()
             {
