@@ -32,7 +32,12 @@ impl AppView {
         }
         self.video.picture_click = None;
         // Modal confirmation owns interaction until it is confirmed or dismissed.
-        if window.has_active_dialog(cx) && !matches!(action, Action::VideoConfirmRemove) {
+        if window.has_active_dialog(cx)
+            && !matches!(
+                action,
+                Action::VideoConfirmRemove | Action::LibraryConfirmDelete(_)
+            )
+        {
             return;
         }
         let sync_audio_mode = self.page == "listening"
@@ -864,15 +869,17 @@ impl AppView {
                     self.report_status(FeedbackKind::Info, format!("已移动 {} 条音频", ids.len()));
                 }
                 Action::LibraryDelete(ids) => {
-                    ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
-                    self.audio.library.cancel_rename();
-                    self.audio.library.pending_delete = ids;
-                    self.audio.library.tool = "delete".into();
+                    self.open_audio_remove_dialog(ids, window, cx)?;
                 }
-                Action::LibraryConfirmDelete => {
+                Action::LibraryConfirmDelete(group) => {
+                    ensure!(window.has_active_dialog(cx), "请先打开音频移除确认弹框");
+                    ensure!(
+                        self.page == "library" && self.audio.practice_id == group,
+                        "练习组已切换，请取消后重新选择音频"
+                    );
                     ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
                     let ids = self.audio.library.pending_delete.clone();
-                    audio_library::delete_records(&self.lib, &self.audio.practice_id, &ids)?;
+                    audio_library::delete_records(&self.lib, &group, &ids)?;
                     self.audio.checked.clear();
                     self.audio.library.pending_delete.clear();
                     self.audio.library.tool.clear();

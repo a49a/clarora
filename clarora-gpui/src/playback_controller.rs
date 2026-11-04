@@ -23,6 +23,10 @@ impl AppView {
             return;
         }
         #[cfg(debug_assertions)]
+        if self.poll_audio_remove_probe(window, cx) {
+            return;
+        }
+        #[cfg(debug_assertions)]
         if self.poll_audio_repeat_probe(window, cx) {
             return;
         }

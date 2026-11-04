@@ -13,6 +13,8 @@ mod audio_batch;
 mod audio_library;
 #[path = "support/audio_merge.rs"]
 mod audio_merge;
+#[path = "support/audio_remove_native.rs"]
+mod audio_remove_native;
 #[path = "support/audio_repeat_native.rs"]
 mod audio_repeat_native;
 #[path = "support/backup_cancel.rs"]
@@ -480,6 +482,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let selected = lib.list("listening_audios")?;
     audio_merge::run(&root, results)?;
     audio_repeat_native::run(&root, results)?;
+    audio_remove_native::run(&root, results)?;
     sentence_search::run(&root, results)?;
     sentence_search_native::run(&root, results)?;
     audio_tools::merge(&lib, &selected, &group, &cancel)?;
@@ -994,6 +997,7 @@ fn main() -> Result<()> {
         Some("--command-import-only") => "command-import-only",
         Some("--audio-merge-only") => "audio-merge-only",
         Some("--audio-repeat-only") => "audio-repeat-only",
+        Some("--audio-remove-only") => "audio-remove-only",
         Some("--sentence-search-only") => "sentence-search-only",
         Some("--audio-background-only") => "audio-background-only",
         Some("--audio-batch-only") => "audio-batch-only",
@@ -1058,6 +1062,8 @@ fn main() -> Result<()> {
             .and_then(|()| sentence_search_native::run(&output, &mut results))
     } else if mode == "audio-repeat-only" {
         audio_repeat_native::run(&output, &mut results)
+    } else if mode == "audio-remove-only" {
+        audio_remove_native::run(&output, &mut results)
     } else if mode == "audio-background-only" {
         model_navigation_native::run(&output, &mut results)
     } else if mode == "audio-batch-only" {

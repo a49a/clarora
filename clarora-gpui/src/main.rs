@@ -5,6 +5,9 @@ mod assistant_ui;
 mod audio_controller;
 mod audio_current_ui;
 mod audio_player_ui;
+#[cfg(debug_assertions)]
+mod audio_remove_probe;
+mod audio_remove_ui;
 mod audio_repeat_controller;
 #[cfg(debug_assertions)]
 mod audio_repeat_probe;
@@ -193,7 +196,7 @@ enum Action {
     LibraryReset,
     LibraryMove(String),
     LibraryDelete(Vec<String>),
-    LibraryConfirmDelete,
+    LibraryConfirmDelete(String),
     LibraryStudy(bool),
     Flip,
     Next,
@@ -397,6 +400,8 @@ struct AppView {
     #[cfg(debug_assertions)]
     audio_repeat_probe: Option<audio_repeat_probe::Probe>,
     #[cfg(debug_assertions)]
+    audio_remove_probe: Option<audio_remove_probe::Probe>,
+    #[cfg(debug_assertions)]
     sentence_probe: Option<sentence_search_probe::Probe>,
     #[cfg(debug_assertions)]
     subtitle_probe: Option<subtitle_workbench_probe::Probe>,
@@ -556,6 +561,8 @@ impl AppView {
             model_probe: None,
             #[cfg(debug_assertions)]
             audio_repeat_probe: None,
+            #[cfg(debug_assertions)]
+            audio_remove_probe: None,
             #[cfg(debug_assertions)]
             sentence_probe: None,
             #[cfg(debug_assertions)]
@@ -2491,6 +2498,23 @@ fn main() -> Result<()> {
     #[cfg(not(debug_assertions))]
     let sentence_probe_dir: Option<PathBuf> = None;
     #[cfg(debug_assertions)]
+    let audio_remove_probe_dir = args
+        .iter()
+        .position(|a| a == "--audio-remove-check")
+        .map(|i| {
+            args.get(i + 1)
+                .context("--audio-remove-check 缺少证据目录")
+                .map(PathBuf::from)
+        })
+        .transpose()?;
+    #[cfg(not(debug_assertions))]
+    ensure!(
+        !args.iter().any(|a| a == "--audio-remove-check"),
+        "音频移除原生验收仅支持调试构建"
+    );
+    #[cfg(not(debug_assertions))]
+    let audio_remove_probe_dir: Option<PathBuf> = None;
+    #[cfg(debug_assertions)]
     let audio_repeat_probe_dir = args
         .iter()
         .position(|a| a == "--audio-repeat-check")
@@ -2568,6 +2592,8 @@ fn main() -> Result<()> {
         subtitle_workbench_probe::prepare(out)?
     } else if let Some(out) = &sentence_probe_dir {
         sentence_search_probe::prepare(out)?
+    } else if let Some(out) = &audio_remove_probe_dir {
+        audio_remove_probe::prepare(out)?
     } else if let Some(out) = &audio_repeat_probe_dir {
         audio_repeat_probe::prepare(out)?
     } else if let Some(out) = &model_probe_dir {
@@ -2714,6 +2740,7 @@ fn main() -> Result<()> {
                             && backup_probe_dir.is_none()
                             && model_probe_dir.is_none()
                             && audio_repeat_probe_dir.is_none()
+                            && audio_remove_probe_dir.is_none()
                             && sentence_probe_dir.is_none()
                             && subtitle_probe_dir.is_none()
                             && focus_probe_dir.is_none(),
@@ -2721,6 +2748,7 @@ fn main() -> Result<()> {
                             && backup_probe_dir.is_none()
                             && model_probe_dir.is_none()
                             && audio_repeat_probe_dir.is_none()
+                            && audio_remove_probe_dir.is_none()
                             && sentence_probe_dir.is_none()
                             && subtitle_probe_dir.is_none()
                             && focus_probe_dir.is_none(),
@@ -2749,6 +2777,10 @@ fn main() -> Result<()> {
                             #[cfg(debug_assertions)]
                             if let Some(out) = &sentence_probe_dir {
                                 view.sentence_probe = Some(sentence_search_probe::Probe::new(out));
+                            }
+                            #[cfg(debug_assertions)]
+                            if let Some(out) = &audio_remove_probe_dir {
+                                view.audio_remove_probe = Some(audio_remove_probe::Probe::new(out));
                             }
                             #[cfg(debug_assertions)]
                             if let Some(out) = &audio_repeat_probe_dir {
@@ -2794,6 +2826,7 @@ fn main() -> Result<()> {
                 && backup_probe_dir.is_none()
                 && model_probe_dir.is_none()
                 && audio_repeat_probe_dir.is_none()
+                && audio_remove_probe_dir.is_none()
                 && sentence_probe_dir.is_none()
                 && subtitle_probe_dir.is_none()
                 && focus_probe_dir.is_none()

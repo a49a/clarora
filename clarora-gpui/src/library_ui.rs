@@ -694,36 +694,6 @@ impl AppView {
                 }
                 return detail.child(targets);
             }
-            "delete" => {
-                let mut confirm = panel(cx)
-                    .child(div().text_lg().child(format!(
-                        "移除 {} 条音频记录？",
-                        self.audio.library.pending_delete.len()
-                    )))
-                    .child(
-                        div()
-                            .text_sm()
-                            .child("记录会从音频库移除，本机媒体和字幕附件保留。"),
-                    );
-                for key in &self.audio.library.pending_delete {
-                    if let Some(row) = self.audio.audios.iter().find(|r| text(r, "id") == *key) {
-                        confirm = confirm.child(div().text_sm().child(text(row, "name")));
-                    }
-                }
-                return detail.child(
-                    confirm
-                        .child(
-                            self.button(
-                                "library-confirm-delete",
-                                "确认移除",
-                                Action::LibraryConfirmDelete,
-                                cx,
-                            )
-                            .disabled(busy || self.audio.library.pending_delete.is_empty()),
-                        )
-                        .child(close),
-                );
-            }
             "advanced" => {
                 return detail.child(
                     panel(cx)
