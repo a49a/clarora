@@ -2,6 +2,8 @@
 
 React Native 统一客户端：macOS、Windows、Android、iOS 共用 `App.tsx`、学习页面、自有存储备份和 SQLite 数据模型。
 
+项目官网(功能介绍与下载入口)：<https://a49a.github.io/clarora-web/>
+
 iOS 首版工程位于 `ios/`；Windows 工程位于 `windows/`，使用 React Native Windows 0.76.17，与现有 0.76 系列保持兼容。Windows 运行 `npm run windows`，打包运行 `npm run windows:build`。平台范围、原生依赖、签名及验证限制见 [平台构建说明](../docs/platform-builds.md)。
 
 ## 功能

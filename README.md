@@ -11,6 +11,8 @@
 
 ## 下载安装
 
+项目官网(功能介绍、使用指南与下载入口):<https://a49a.github.io/clarora-web/>
+
 v0.1.0 起提供 macOS 与 Windows 安装包,从 [GitHub Releases](https://github.com/a49a/clarora/releases/latest) 下载:
 
 - macOS:`Clarora-macos-arm64.dmg`(Apple Silicon,运行时依赖已内置,无需 Homebrew)

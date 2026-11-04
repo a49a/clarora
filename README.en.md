@@ -11,6 +11,8 @@
 
 ## Download
 
+Project website (features, guides, and download links): <https://a49a.github.io/clarora-web/>
+
 macOS and Windows installers are available from [GitHub Releases](https://github.com/a49a/clarora/releases/latest) starting with v0.1.0:
 
 - macOS: `Clarora-macos-arm64.dmg` (Apple Silicon, runtime dependencies bundled, no Homebrew needed)
