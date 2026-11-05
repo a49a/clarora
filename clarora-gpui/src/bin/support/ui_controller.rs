@@ -75,9 +75,12 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         let video_report: Value = serde_json::from_slice(&fs::read(&video_report_path)?)?;
         ensure!(
             video_report["passed"] == true
-                && video_report["cases"]
-                    .as_array()
-                    .is_some_and(|cases| cases.len() >= 8),
+                && video_report["cases"].as_array().is_some_and(|cases| {
+                    cases.len() >= 8
+                        && cases
+                            .iter()
+                            .any(|case| case["case"] == "全屏助手鼠标选区退格删除且视频保持暂停")
+                }),
             "视频切页进度验收未完成：{}",
             video_report_path.display()
         );

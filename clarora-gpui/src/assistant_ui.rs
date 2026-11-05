@@ -759,6 +759,8 @@ impl AppView {
             .border_color(cx.theme().border)
             .shadow_lg()
             .overflow_hidden()
+            // The sidebar overlays selectable content with independent mouse hitboxes.
+            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .id("assistant-header-scroll")

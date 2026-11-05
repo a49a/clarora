@@ -72,6 +72,14 @@ impl State {
     pub fn begin_frame(&mut self) {
         self.layouts.clear();
     }
+    #[cfg(debug_assertions)]
+    pub(super) fn probe_audio_bounds(&self) -> Vec<Bounds<Pixels>> {
+        self.layouts
+            .iter()
+            .filter(|fragment| fragment.surface == Surface::Audio)
+            .map(|fragment| fragment.bounds)
+            .collect()
+    }
     fn doc(&self, surface: Surface) -> Arc<Document> {
         if surface == Surface::Video {
             self.video.clone()

@@ -1,6 +1,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod action_router;
 mod app_state;
+#[cfg(debug_assertions)]
+mod assistant_selection_probe;
 mod assistant_ui;
 mod audio_controller;
 mod audio_current_ui;
@@ -32,6 +34,8 @@ mod library_ui;
 mod model_controller;
 #[cfg(debug_assertions)]
 mod model_navigation_probe;
+#[cfg(debug_assertions)]
+mod native_probe_input;
 mod pages_ui;
 mod playback_controller;
 mod reading_ui;

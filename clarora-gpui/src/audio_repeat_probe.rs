@@ -1,21 +1,6 @@
 //! Hidden-window E2E of actual audio actions and libmpv sentence requests.
 use super::*;
 
-#[cfg(target_os = "macos")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct AppKitPoint {
-    x: f64,
-    y: f64,
-}
-
-#[cfg(target_os = "macos")]
-// AppKit's CGPoint consists of two CGFloat values on supported macOS targets.
-unsafe impl objc2::encode::Encode for AppKitPoint {
-    const ENCODING: objc2::encode::Encoding =
-        objc2::encode::Encoding::Struct("CGPoint", &[<f64 as objc2::encode::Encode>::ENCODING; 2]);
-}
-
 pub(super) fn prepare(out: &Path) -> Result<Library> {
     let lib = ui_controller_probe::prepare(out)?;
     let wav = lib.root.join("media/repeat.wav");
@@ -56,6 +41,7 @@ pub(super) struct Probe {
     current_card_stage: u8,
     current_card_click: Option<Instant>,
     transcript_top: Pixels,
+    assistant_selection: assistant_selection_probe::Probe,
 }
 impl Probe {
     pub(super) fn new(out: &Path) -> Self {
@@ -72,6 +58,7 @@ impl Probe {
             current_card_stage: 0,
             current_card_click: None,
             transcript_top: px(0.),
+            assistant_selection: assistant_selection_probe::Probe::new(),
         }
     }
     fn note(&mut self, name: &str, app: &AppView) {
@@ -94,75 +81,25 @@ impl Probe {
                 .expect("draw current sentence diagnostic");
         });
     }
-    #[cfg(target_os = "macos")]
     fn click_current_close(
         app: &AppView,
         window: &Window,
         cx: &mut Context<AppView>,
     ) -> Result<()> {
-        use objc2::{msg_send, runtime::AnyClass, runtime::AnyObject, sel};
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
         let bounds = app.audio.current_scroll.bounds();
         ensure!(
             bounds.size.width > px(100.) && bounds.size.height > px(50.),
             "current sentence card has no rendered bounds"
         );
         let position = point(bounds.right() - px(32.), bounds.top() - px(16.));
-        let native_position = AppKitPoint {
-            x: f64::from(f32::from(position.x)),
-            y: f64::from(f32::from(window.viewport_size().height - position.y)),
-        };
-        let native_window = HasWindowHandle::window_handle(window)
-            .map_err(|error| anyhow::anyhow!("current sentence window handle: {error:?}"))?;
-        let RawWindowHandle::AppKit(native) = native_window.as_raw() else {
-            anyhow::bail!("current sentence diagnostic requires an AppKit window");
-        };
-        let view = native.ns_view.as_ptr() as *mut AnyObject;
-        let panel: *mut AnyObject = unsafe { msg_send![view, window] };
-        ensure!(
-            !panel.is_null(),
-            "current sentence diagnostic has no window"
-        );
-        let number: isize = unsafe { msg_send![panel, windowNumber] };
-        cx.defer(move |_| {
-            let event_class = AnyClass::get(c"NSEvent").expect("NSEvent class");
-            for kind in [1usize, 2usize] {
-                let event: *mut AnyObject = unsafe {
-                    msg_send![event_class,
-                        mouseEventWithType: kind,
-                        location: native_position,
-                        modifierFlags: 0usize,
-                        timestamp: 0f64,
-                        windowNumber: number,
-                        context: std::ptr::null_mut::<AnyObject>(),
-                        eventNumber: 0isize,
-                        clickCount: 1isize,
-                        pressure: 1f32
-                    ]
-                };
-                assert!(!event.is_null(), "create native mouse event");
-                // Deliver after this GPUI update releases the app borrow.
-                unsafe {
-                    if kind == 1 {
-                        let _: () = msg_send![
-                            view, performSelector: sel!(mouseDown:),
-                            withObject: event, afterDelay: 0.01f64
-                        ];
-                    } else {
-                        let _: () = msg_send![
-                            view, performSelector: sel!(mouseUp:),
-                            withObject: event, afterDelay: 0.02f64
-                        ];
-                    }
-                }
-            }
-        });
-        Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    fn click_current_close(_: &AppView, _: &Window, _: &mut Context<AppView>) -> Result<()> {
-        anyhow::bail!("current sentence native mouse diagnostic requires macOS");
+        native_probe_input::send(
+            window,
+            cx,
+            vec![
+                native_probe_input::MouseEvent::Down(position),
+                native_probe_input::MouseEvent::Up(position),
+            ],
+        )
     }
     fn current_card_step(
         &mut self,
@@ -291,8 +228,10 @@ impl Probe {
                     "sentence card could not be restored after closing an active cue"
                 );
                 self.note("restore sentence card after closing an active cue", app);
+                self.current_card_stage = 9;
                 return Ok(true);
             }
+            9 => return Ok(true),
             _ => unreachable!(),
         }
         self.current_card_stage += 1;
@@ -350,6 +289,15 @@ impl Probe {
                     return Ok(false);
                 }
                 if !self.current_card_step(app, window, cx)? {
+                    return Ok(false);
+                }
+                if !self.assistant_selection.step(
+                    app,
+                    window,
+                    cx,
+                    &mut self.cases,
+                    &mut self.observations,
+                )? {
                     return Ok(false);
                 }
                 app.handle(Action::AudioRepeat(5), window, cx);

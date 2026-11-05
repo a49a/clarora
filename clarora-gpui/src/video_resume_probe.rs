@@ -95,6 +95,8 @@ pub(super) struct Probe {
     assistant_before_keyboard: Option<(bool, bool, bool, String)>,
     keyboard_position: f64,
     timeline_request: u64,
+    fullscreen_edit_stage: u8,
+    fullscreen_edit_started: Instant,
 }
 impl Probe {
     pub(super) fn new(out: &Path) -> Self {
@@ -106,6 +108,8 @@ impl Probe {
             assistant_before_keyboard: None,
             keyboard_position: 0.,
             timeline_request: 0,
+            fullscreen_edit_stage: 0,
+            fullscreen_edit_started: Instant::now(),
         }
     }
     fn advance(&mut self) {
@@ -1825,6 +1829,69 @@ impl Probe {
                 if !Self::at(app, &path, 0.) {
                     return Ok(false);
                 }
+                match self.fullscreen_edit_stage {
+                    0 => {
+                        ensure!(app.assistant_open, "fullscreen assistant was not open");
+                        app.video.fullscreen = true;
+                        app.assistant.offer = None;
+                        app.set("question", "before REMOVE after", window, cx);
+                        window.focus(&app.focus);
+                        Self::draw(window, cx);
+                        self.fullscreen_edit_stage = 1;
+                        return Ok(false);
+                    }
+                    1 => {
+                        let (start, end) = assistant_selection_probe::Probe::positions(
+                            app, window, cx, 7, 13, false,
+                        )?;
+                        native_probe_input::send(
+                            window,
+                            cx,
+                            vec![
+                                native_probe_input::MouseEvent::Down(start),
+                                native_probe_input::MouseEvent::Drag(end),
+                                native_probe_input::MouseEvent::Up(end),
+                            ],
+                        )?;
+                        self.fullscreen_edit_started = Instant::now();
+                        self.fullscreen_edit_stage = 2;
+                        return Ok(false);
+                    }
+                    2 => {
+                        if self.fullscreen_edit_started.elapsed() < Duration::from_millis(400) {
+                            return Ok(false);
+                        }
+                        let selection = app.inputs["question"]
+                            .update(cx, |state, cx| state.selected_text_range(false, window, cx));
+                        ensure!(
+                            selection.as_ref().is_some_and(|s| s.range == (7..13))
+                                && app.inputs["question"]
+                                    .read(cx)
+                                    .focus_handle(cx)
+                                    .is_focused(window),
+                            "fullscreen assistant lost question selection or focus: {selection:?}"
+                        );
+                        Self::dispatch_keys(window, cx, &["backspace"]);
+                        self.fullscreen_edit_started = Instant::now();
+                        self.fullscreen_edit_stage = 3;
+                        return Ok(false);
+                    }
+                    3 => {
+                        if self.fullscreen_edit_started.elapsed() < Duration::from_millis(200) {
+                            return Ok(false);
+                        }
+                        ensure!(
+                            app.value("question", cx) == "before  after"
+                                && app.video.fullscreen
+                                && Self::at(app, &path, 0.),
+                            "fullscreen assistant deletion changed video or failed to edit the question"
+                        );
+                        self.record(app, "全屏助手鼠标选区退格删除且视频保持暂停")?;
+                        self.fullscreen_edit_stage = 4;
+                    }
+                    4 => {}
+                    _ => unreachable!(),
+                }
                 self.record(app, "关闭对话框后真实键盘恢复视频导航")?;
                 app.video.fullscreen = true;
                 app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
@@ -2103,6 +2170,14 @@ impl Probe {
                     window.dispatch_keystroke(key, cx);
                 }
             });
+        });
+    }
+    fn draw(window: &Window, cx: &mut Context<AppView>) {
+        let handle = window.window_handle();
+        cx.defer(move |cx| {
+            handle
+                .update(cx, |_, window, cx| window.draw(cx).clear())
+                .expect("draw fullscreen assistant diagnostic");
         });
     }
 }
