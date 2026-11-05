@@ -44,10 +44,21 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     };
     let report_path = out.join("audio-repeat-report.json");
     let report: Value = serde_json::from_slice(&fs::read(&report_path)?)?;
+    let cases = report["cases"]
+        .as_array()
+        .context("missing audio repeat cases")?;
     ensure!(
         status.success()
             && report["passed"] == true
-            && report["cases"].as_array().is_some_and(|c| c.len() >= 10),
+            && cases.len() >= 23
+            && [
+                "close waiting sentence card and reclaim subtitle space",
+                "existing current sentence action reopens the card",
+                "close active sentence card without moving playback",
+                "restore sentence card after closing an active cue",
+            ]
+            .iter()
+            .all(|name| cases.iter().any(|case| case["case"] == *name)),
         "audio repeat failed: {}",
         report_path.display()
     );

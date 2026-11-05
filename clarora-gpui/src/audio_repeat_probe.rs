@@ -1,6 +1,21 @@
 //! Hidden-window E2E of actual audio actions and libmpv sentence requests.
 use super::*;
 
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AppKitPoint {
+    x: f64,
+    y: f64,
+}
+
+#[cfg(target_os = "macos")]
+// AppKit's CGPoint consists of two CGFloat values on supported macOS targets.
+unsafe impl objc2::encode::Encode for AppKitPoint {
+    const ENCODING: objc2::encode::Encoding =
+        objc2::encode::Encoding::Struct("CGPoint", &[<f64 as objc2::encode::Encode>::ENCODING; 2]);
+}
+
 pub(super) fn prepare(out: &Path) -> Result<Library> {
     let lib = ui_controller_probe::prepare(out)?;
     let wav = lib.root.join("media/repeat.wav");
@@ -38,6 +53,9 @@ pub(super) struct Probe {
     infinite_seek: bool,
     finite_resume: bool,
     observations: Vec<Value>,
+    current_card_stage: u8,
+    current_card_click: Option<Instant>,
+    transcript_top: Pixels,
 }
 impl Probe {
     pub(super) fn new(out: &Path) -> Self {
@@ -51,6 +69,9 @@ impl Probe {
             infinite_seek: false,
             finite_resume: false,
             observations: vec![],
+            current_card_stage: 0,
+            current_card_click: None,
+            transcript_top: px(0.),
         }
     }
     fn note(&mut self, name: &str, app: &AppView) {
@@ -65,6 +86,218 @@ impl Probe {
         )?;
         Ok(())
     }
+    fn draw(window: &Window, cx: &mut Context<AppView>) {
+        let handle = window.window_handle();
+        cx.defer(move |cx| {
+            handle
+                .update(cx, |_, window, cx| window.draw(cx).clear())
+                .expect("draw current sentence diagnostic");
+        });
+    }
+    #[cfg(target_os = "macos")]
+    fn click_current_close(
+        app: &AppView,
+        window: &Window,
+        cx: &mut Context<AppView>,
+    ) -> Result<()> {
+        use objc2::{msg_send, runtime::AnyClass, runtime::AnyObject, sel};
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        let bounds = app.audio.current_scroll.bounds();
+        ensure!(
+            bounds.size.width > px(100.) && bounds.size.height > px(50.),
+            "current sentence card has no rendered bounds"
+        );
+        let position = point(bounds.right() - px(32.), bounds.top() - px(16.));
+        let native_position = AppKitPoint {
+            x: f64::from(f32::from(position.x)),
+            y: f64::from(f32::from(window.viewport_size().height - position.y)),
+        };
+        let native_window = HasWindowHandle::window_handle(window)
+            .map_err(|error| anyhow::anyhow!("current sentence window handle: {error:?}"))?;
+        let RawWindowHandle::AppKit(native) = native_window.as_raw() else {
+            anyhow::bail!("current sentence diagnostic requires an AppKit window");
+        };
+        let view = native.ns_view.as_ptr() as *mut AnyObject;
+        let panel: *mut AnyObject = unsafe { msg_send![view, window] };
+        ensure!(
+            !panel.is_null(),
+            "current sentence diagnostic has no window"
+        );
+        let number: isize = unsafe { msg_send![panel, windowNumber] };
+        cx.defer(move |_| {
+            let event_class = AnyClass::get(c"NSEvent").expect("NSEvent class");
+            for kind in [1usize, 2usize] {
+                let event: *mut AnyObject = unsafe {
+                    msg_send![event_class,
+                        mouseEventWithType: kind,
+                        location: native_position,
+                        modifierFlags: 0usize,
+                        timestamp: 0f64,
+                        windowNumber: number,
+                        context: std::ptr::null_mut::<AnyObject>(),
+                        eventNumber: 0isize,
+                        clickCount: 1isize,
+                        pressure: 1f32
+                    ]
+                };
+                assert!(!event.is_null(), "create native mouse event");
+                // Deliver after this GPUI update releases the app borrow.
+                unsafe {
+                    if kind == 1 {
+                        let _: () = msg_send![
+                            view, performSelector: sel!(mouseDown:),
+                            withObject: event, afterDelay: 0.01f64
+                        ];
+                    } else {
+                        let _: () = msg_send![
+                            view, performSelector: sel!(mouseUp:),
+                            withObject: event, afterDelay: 0.02f64
+                        ];
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    fn click_current_close(_: &AppView, _: &Window, _: &mut Context<AppView>) -> Result<()> {
+        anyhow::bail!("current sentence native mouse diagnostic requires macOS");
+    }
+    fn current_card_step(
+        &mut self,
+        app: &mut AppView,
+        window: &mut Window,
+        cx: &mut Context<AppView>,
+    ) -> Result<bool> {
+        match self.current_card_stage {
+            0 => {
+                if !app.media.snapshot.paused || app.media.snapshot.position > 0.1 {
+                    return Ok(false);
+                }
+                ensure!(app.audio.show_current, "current sentence card not enabled");
+                Self::draw(window, cx);
+            }
+            1 => {
+                ensure!(app.audio.active.is_none(), "expected waiting sentence card");
+                self.transcript_top = app.audio.scroll.viewport_bounds().top();
+                ensure!(self.transcript_top > px(0.), "subtitle list not rendered");
+                let bounds = app.audio.current_scroll.bounds();
+                self.observations.push(json!({
+                    "current_card_body": [
+                        f32::from(bounds.left()),
+                        f32::from(bounds.top()),
+                        f32::from(bounds.right()),
+                        f32::from(bounds.bottom())
+                    ],
+                    "click": [
+                        f32::from(bounds.right() - px(32.)),
+                        f32::from(bounds.top() - px(16.))
+                    ],
+                    "transcript_top": f32::from(self.transcript_top)
+                }));
+                Self::click_current_close(app, window, cx)?;
+                self.current_card_click = Some(Instant::now());
+            }
+            2 => {
+                if app.audio.show_current {
+                    if self
+                        .current_card_click
+                        .is_none_or(|t| t.elapsed() >= Duration::from_secs(2))
+                    {
+                        let mouse = window.mouse_position();
+                        self.observations.push(json!({
+                            "mouse_after_click": [f32::from(mouse.x), f32::from(mouse.y)],
+                            "card_visible": app.audio.show_current
+                        }));
+                        anyhow::bail!(
+                            "clicking the waiting sentence close button did not hide the card"
+                        );
+                    }
+                    return Ok(false);
+                }
+                Self::draw(window, cx);
+            }
+            3 => {
+                ensure!(
+                    !app.audio.show_current,
+                    "clicking the waiting sentence close button did not hide the card"
+                );
+                ensure!(
+                    app.audio.scroll.viewport_bounds().top() + px(100.) < self.transcript_top,
+                    "hidden sentence card still occupies space"
+                );
+                ensure!(
+                    app.audio.current_id == "repeat-audio"
+                        && app.audio.cues.len() == 3
+                        && app.media.snapshot.paused
+                        && app.audio.repeat_mode == 0,
+                    "closing the sentence card changed audio playback or subtitles"
+                );
+                self.note(
+                    "close waiting sentence card and reclaim subtitle space",
+                    app,
+                );
+                app.handle(Action::AudioCurrent, window, cx);
+                Self::draw(window, cx);
+            }
+            4 => {
+                ensure!(
+                    app.audio.show_current
+                        && app.audio.scroll.viewport_bounds().top() > self.transcript_top - px(2.),
+                    "subtitle options could not reopen the sentence card"
+                );
+                self.note("existing current sentence action reopens the card", app);
+                app.media.player.command(["seek", "0.5", "absolute+exact"]);
+            }
+            5 => {
+                if (app.media.snapshot.position - 0.5).abs() > 0.04 || app.audio.active != Some(0) {
+                    return Ok(false);
+                }
+                Self::draw(window, cx);
+            }
+            6 => {
+                Self::click_current_close(app, window, cx)?;
+                self.current_card_click = Some(Instant::now());
+            }
+            7 => {
+                if app.audio.show_current {
+                    ensure!(
+                        self.current_card_click
+                            .is_some_and(|t| t.elapsed() < Duration::from_secs(2)),
+                        "clicking the active sentence close button did not hide the card"
+                    );
+                    return Ok(false);
+                }
+                ensure!(
+                    !app.audio.show_current
+                        && app.media.snapshot.paused
+                        && (app.media.snapshot.position - 0.5).abs() < 0.04
+                        && app.audio.current_id == "repeat-audio"
+                        && app.audio.cues.len() == 3,
+                    "closing the active sentence card changed playback or failed to hide"
+                );
+                self.note("close active sentence card without moving playback", app);
+                app.handle(Action::AudioCurrent, window, cx);
+                app.media.player.command(["seek", "0", "absolute+exact"]);
+                Self::draw(window, cx);
+            }
+            8 => {
+                if app.media.snapshot.position > 0.1 {
+                    return Ok(false);
+                }
+                ensure!(
+                    app.audio.show_current && app.media.snapshot.paused,
+                    "sentence card could not be restored after closing an active cue"
+                );
+                self.note("restore sentence card after closing an active cue", app);
+                return Ok(true);
+            }
+            _ => unreachable!(),
+        }
+        self.current_card_stage += 1;
+        Ok(false)
+    }
     fn step(
         &mut self,
         app: &mut AppView,
@@ -73,8 +306,9 @@ impl Probe {
     ) -> Result<bool> {
         ensure!(
             self.started.elapsed() < Duration::from_secs(35),
-            "audio repeat timeout stage {}",
-            self.stage
+            "audio repeat timeout stage {}, current card stage {}",
+            self.stage,
+            self.current_card_stage
         );
         app.poll_data();
         app.media.poll();
@@ -113,6 +347,9 @@ impl Probe {
                             .context("audio path")?
                             .to_string_lossy()
                 {
+                    return Ok(false);
+                }
+                if !self.current_card_step(app, window, cx)? {
                     return Ok(false);
                 }
                 app.handle(Action::AudioRepeat(5), window, cx);

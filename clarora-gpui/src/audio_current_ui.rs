@@ -68,7 +68,19 @@ impl AppView {
                                     self.audio.cues.len()
                                 )),
                         )
-                    }),
+                    })
+                    .child(
+                        Button::new("audio-current-close")
+                            .icon(Icon::new(IconName::Close).path("ui/close.svg"))
+                            .small()
+                            .ghost()
+                            .w(px(32.))
+                            .h(px(32.))
+                            .tooltip("关闭当前句，可在“更多”中重新打开")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.handle(Action::AudioCurrent, window, cx);
+                            })),
+                    ),
             )
             .child(
                 div()
