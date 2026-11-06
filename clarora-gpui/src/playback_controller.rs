@@ -15,6 +15,10 @@ impl AppView {
             return;
         }
         #[cfg(debug_assertions)]
+        if self.poll_assistant_latency_probe(window, cx) {
+            return;
+        }
+        #[cfg(debug_assertions)]
         if self.poll_ui_probe(window, cx) {
             return;
         }

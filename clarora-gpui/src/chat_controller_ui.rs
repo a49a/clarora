@@ -100,6 +100,7 @@ impl AppView {
             let _ = self.prepare_video_material(video_qa::Scope::All);
         }
         self.sync_chat(window, cx);
+        self.sync_assistant_history(cx);
     }
     pub(super) fn poll_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let draft = self.value("question", cx);

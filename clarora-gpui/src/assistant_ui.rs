@@ -4,6 +4,8 @@ use clarora_gpui::assistant::{self, Reference};
 
 #[derive(Default)]
 pub(super) struct State {
+    #[cfg(debug_assertions)]
+    pub debug_history_builds: std::rc::Rc<std::cell::Cell<u64>>,
     pub enabled: bool,
     pub legacy: bool,
     pub references: Vec<Reference>,
@@ -15,12 +17,19 @@ pub(super) struct State {
     pub sessions_open: bool,
     pub wide: bool,
     pub scroll: ScrollHandle,
-    rendered: (String, usize, usize),
+    history_view: Option<Entity<super::assistant_history_ui::HistoryView>>,
     pub press: Option<Point<Pixels>>,
     pub dragging: bool,
     pub offer: Option<(Reference, Point<Pixels>)>,
 }
 impl AppView {
+    // Synchronize at action/tick boundaries, before drawing. Notifying a cached
+    // child from inside parent Render can leave it stale until another event.
+    pub(super) fn sync_assistant_history(&self, cx: &mut Context<Self>) {
+        if let Some(view) = &self.assistant.history_view {
+            view.update(cx, |history, cx| history.sync(self, cx));
+        }
+    }
     /// Keep assistant actions visibly distinct from selectable learning text.
     fn assistant_button(
         &self,
@@ -259,208 +268,16 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let signature = (
-            self.chat.id.clone(),
-            self.chat.history.len(),
-            self.chat.output.len(),
-        );
-        if signature != self.assistant.rendered {
-            let follow = self.assistant.rendered.0 != signature.0
-                || f32::from(self.assistant.scroll.offset().y).abs() + 60.
-                    >= f32::from(self.assistant.scroll.max_offset().height);
-            if follow {
-                self.assistant.scroll.scroll_to_bottom();
-            }
-            self.assistant.rendered = signature;
-        }
-        let mut history = div()
-            .id("assistant-history")
-            .track_scroll(&self.assistant.scroll)
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .p_4()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
-        if self.chat.history.is_empty() && self.assistant.pending.is_none() {
-            history=history.child(div().py_6().flex().flex_col().gap_3()
-                .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("选一段文字，从这里问起"))
-                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("在字幕、电子书、闪卡或写作中拖选文字，点击浮出的「问 AI」。引用会先放在下方，确认后再发送。"))
-                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("也可以直接提问。切换栏目仍保留这段对话。")));
-        }
-        for (i, message) in self.chat.history.clone().iter().enumerate() {
-            let user = message["role"] == "user";
-            let mut bubble = div()
-                .id(SharedString::from(format!("assistant-turn-{i}")))
-                .p_4()
-                .rounded_xl()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .bg(if user {
-                    cx.theme().accent
-                } else {
-                    cx.theme().background
-                })
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(cx.theme().primary)
-                        .child(if user {
-                            "你 · 已发送"
-                        } else {
-                            "✦ Clarora · 回答"
-                        }),
-                );
-            let mut refs = assistant::references(message);
-            if refs.is_empty() {
-                if let Some(text) = message["reference"].as_str().filter(|s| !s.is_empty()) {
-                    refs.push(Reference {
-                        text: assistant::plain_reference(text),
-                    });
-                }
-            }
-            if !refs.is_empty() {
-                bubble = bubble.child(self.assistant_button(
-                    format!("turn-ref-{i}"),
-                    format!(
-                        "{} 份引用 · {}",
-                        refs.len(),
-                        if self.assistant.expanded_turn == Some(i) {
-                            "收起"
-                        } else {
-                            "查看原文"
-                        }
-                    ),
-                    Action::AssistantTurnReference(i),
-                    cx,
-                ));
-                if self.assistant.expanded_turn == Some(i) {
-                    for (r, reference) in refs.iter().enumerate() {
-                        bubble = bubble.child(self.assistant_quote_view(
-                            format!("sent-ref-{i}-{r}"),
-                            reference,
-                            window,
-                            cx,
-                        ));
-                    }
-                }
-            }
-            bubble = bubble.child(
-                TextView::markdown(
-                    ("assistant-message", i),
-                    message["content"].as_str().unwrap_or_default().to_string(),
-                    window,
-                    cx,
-                )
-                .selectable(true),
-            );
-            if !user {
-                bubble = bubble.child(self.assistant_button(
-                    format!("copy-answer-{i}"),
-                    "复制回答",
-                    Action::AssistantCopy(message["content"].as_str().unwrap_or_default().into()),
-                    cx,
-                ));
-            }
-            history = history.child(bubble);
-        }
-        if let Some((question, refs)) = &self.assistant.pending {
-            let mut pending = div()
-                .p_4()
-                .rounded_xl()
-                .bg(cx.theme().accent)
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("你 · 本次发送"),
-                )
-                .child(
-                    TextView::markdown("assistant-pending-question", question.clone(), window, cx)
-                        .selectable(true),
-                );
-            for (i, reference) in refs.clone().iter().enumerate() {
-                pending = pending.child(self.assistant_quote_view(
-                    format!("pending-ref-{i}"),
-                    reference,
-                    window,
-                    cx,
-                ));
-            }
-            history = history.child(pending);
-        }
-        if self.chat.running
-            || (self.assistant.pending.is_some() && !self.assistant.error.is_empty())
-        {
-            history = history.child(
-                div()
-                    .p_4()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().primary)
-                            .child(if self.chat.running {
-                                "✦ Clarora · 正在回答…"
-                            } else {
-                                "✦ Clarora · 未完成"
-                            }),
-                    )
-                    .child(
-                        TextView::markdown(
-                            "assistant-stream",
-                            if self.chat.running {
-                                if self.chat.output.is_empty() {
-                                    "正在等待回复…".into()
-                                } else {
-                                    self.chat.output.clone()
-                                }
-                            } else {
-                                format!(
-                                    "以下为未完成的输出，未保存为回答：\n\n{}",
-                                    self.assistant.failed_output
-                                )
-                            },
-                            window,
-                            cx,
-                        )
-                        .selectable(true),
-                    ),
-            );
-        }
-        if !self.chat.reasoning.is_empty() {
-            history = history.child(self.assistant_button(
-                "toggle-reasoning",
-                if self.chat.reasoning_open {
-                    "收起思考过程"
-                } else {
-                    "查看思考过程（非正式回答）"
-                },
-                Action::ToggleReasoning,
-                cx,
-            ));
-            if self.chat.reasoning_open {
-                history = history.child(
-                    TextView::markdown(
-                        "assistant-reasoning",
-                        self.chat.reasoning.clone(),
-                        window,
-                        cx,
-                    )
-                    .selectable(true),
-                );
-            }
-        }
+        let history_view = if let Some(view) = &self.assistant.history_view {
+            view.clone()
+        } else {
+            let owner = cx.entity().downgrade();
+            let view = cx.new(|_| super::assistant_history_ui::HistoryView::new(owner, self));
+            self.assistant.history_view = Some(view.clone());
+            view
+        };
+        let history = AnyView::from(history_view)
+            .cached(StyleRefinement::default().flex_1().min_h_0().min_w_0());
         let mut composer = div()
             .id("assistant-composer-content")
             .flex_shrink_0()
@@ -578,9 +395,37 @@ impl AppView {
         }
         composer = composer
             .child(
-                Input::new(&self.inputs["question"])
+                div()
+                    .id("assistant-question-click-target")
                     .flex_shrink_0()
-                    .disabled(self.chat.running || self.chat.is_loading()),
+                    .child(
+                        Input::new(&self.inputs["question"])
+                            .disabled(self.chat.running || self.chat.is_loading()),
+                    )
+                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                        let ClickEvent::Mouse(click) = event else {
+                            return;
+                        };
+                        // Leave ordinary caret placement and drag selection to the editor.
+                        if click.up.button != MouseButton::Left
+                            || click.up.click_count != 2
+                            || (click.up.position - click.down.position).magnitude() > 4.
+                            || this.chat.running
+                            || this.chat.is_loading()
+                        {
+                            return;
+                        }
+                        let selectable = this.inputs["question"].update(cx, |state, cx| {
+                            if state.marked_text_range(window, cx).is_some() {
+                                return false;
+                            }
+                            state.focus(window, cx);
+                            true
+                        });
+                        if selectable {
+                            window.dispatch_action(Box::new(gpui_component::input::SelectAll), cx);
+                        }
+                    })),
             )
             .child(
                 div()

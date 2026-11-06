@@ -1,6 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod action_router;
 mod app_state;
+mod assistant_history_ui;
+#[cfg(debug_assertions)]
+mod assistant_latency_probe;
 #[cfg(debug_assertions)]
 mod assistant_selection_probe;
 mod assistant_ui;
@@ -394,6 +397,8 @@ enum VideoCaptionSource {
     Hidden,
 }
 struct AppView {
+    #[cfg(debug_assertions)]
+    assistant_latency_probe: Option<assistant_latency_probe::Probe>,
     lib: Library,
     #[cfg(debug_assertions)]
     probe: Option<ui_controller_probe::Probe>,
@@ -557,6 +562,8 @@ impl AppView {
                 ),
             };
         let mut this = Self {
+            #[cfg(debug_assertions)]
+            assistant_latency_probe: None,
             #[cfg(debug_assertions)]
             probe: None,
             #[cfg(debug_assertions)]
@@ -2502,6 +2509,23 @@ fn main() -> Result<()> {
     #[cfg(not(debug_assertions))]
     let sentence_probe_dir: Option<PathBuf> = None;
     #[cfg(debug_assertions)]
+    let assistant_latency_probe_dir = args
+        .iter()
+        .position(|a| a == "--assistant-latency-check")
+        .map(|i| {
+            args.get(i + 1)
+                .context("--assistant-latency-check 缺少证据目录")
+                .map(PathBuf::from)
+        })
+        .transpose()?;
+    #[cfg(not(debug_assertions))]
+    ensure!(
+        !args.iter().any(|a| a == "--assistant-latency-check"),
+        "助手输入性能验收仅支持调试构建"
+    );
+    #[cfg(not(debug_assertions))]
+    let assistant_latency_probe_dir: Option<PathBuf> = None;
+    #[cfg(debug_assertions)]
     let audio_remove_probe_dir = args
         .iter()
         .position(|a| a == "--audio-remove-check")
@@ -2596,6 +2620,8 @@ fn main() -> Result<()> {
         subtitle_workbench_probe::prepare(out)?
     } else if let Some(out) = &sentence_probe_dir {
         sentence_search_probe::prepare(out)?
+    } else if let Some(out) = &assistant_latency_probe_dir {
+        assistant_latency_probe::prepare(out)?
     } else if let Some(out) = &audio_remove_probe_dir {
         audio_remove_probe::prepare(out)?
     } else if let Some(out) = &audio_repeat_probe_dir {
@@ -2745,6 +2771,7 @@ fn main() -> Result<()> {
                             && model_probe_dir.is_none()
                             && audio_repeat_probe_dir.is_none()
                             && audio_remove_probe_dir.is_none()
+                            && assistant_latency_probe_dir.is_none()
                             && sentence_probe_dir.is_none()
                             && subtitle_probe_dir.is_none()
                             && focus_probe_dir.is_none(),
@@ -2753,6 +2780,7 @@ fn main() -> Result<()> {
                             && model_probe_dir.is_none()
                             && audio_repeat_probe_dir.is_none()
                             && audio_remove_probe_dir.is_none()
+                            && assistant_latency_probe_dir.is_none()
                             && sentence_probe_dir.is_none()
                             && subtitle_probe_dir.is_none()
                             && focus_probe_dir.is_none(),
@@ -2781,6 +2809,11 @@ fn main() -> Result<()> {
                             #[cfg(debug_assertions)]
                             if let Some(out) = &sentence_probe_dir {
                                 view.sentence_probe = Some(sentence_search_probe::Probe::new(out));
+                            }
+                            #[cfg(debug_assertions)]
+                            if let Some(out) = &assistant_latency_probe_dir {
+                                view.assistant_latency_probe =
+                                    Some(assistant_latency_probe::Probe::new(out));
                             }
                             #[cfg(debug_assertions)]
                             if let Some(out) = &audio_remove_probe_dir {
@@ -2831,6 +2864,7 @@ fn main() -> Result<()> {
                 && model_probe_dir.is_none()
                 && audio_repeat_probe_dir.is_none()
                 && audio_remove_probe_dir.is_none()
+                && assistant_latency_probe_dir.is_none()
                 && sentence_probe_dir.is_none()
                 && subtitle_probe_dir.is_none()
                 && focus_probe_dir.is_none()

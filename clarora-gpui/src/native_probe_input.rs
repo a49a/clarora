@@ -4,8 +4,10 @@ use super::*;
 #[derive(Clone, Copy)]
 pub(super) enum MouseEvent {
     Down(Point<Pixels>),
+    DownCount(Point<Pixels>, usize),
     Drag(Point<Pixels>),
     Up(Point<Pixels>),
+    UpCount(Point<Pixels>, usize),
 }
 
 #[cfg(target_os = "macos")]
@@ -45,10 +47,12 @@ pub(super) fn send(
     cx.defer(move |_| {
         let event_class = AnyClass::get(c"NSEvent").expect("NSEvent class");
         for (index, event) in events.into_iter().enumerate() {
-            let (kind, position, selector) = match event {
-                MouseEvent::Down(position) => (1usize, position, sel!(mouseDown:)),
-                MouseEvent::Drag(position) => (6usize, position, sel!(mouseDragged:)),
-                MouseEvent::Up(position) => (2usize, position, sel!(mouseUp:)),
+            let (kind, position, selector, click_count) = match event {
+                MouseEvent::Down(position) => (1usize, position, sel!(mouseDown:), 1),
+                MouseEvent::DownCount(position, count) => (1, position, sel!(mouseDown:), count),
+                MouseEvent::Drag(position) => (6, position, sel!(mouseDragged:), 1),
+                MouseEvent::Up(position) => (2, position, sel!(mouseUp:), 1),
+                MouseEvent::UpCount(position, count) => (2, position, sel!(mouseUp:), count),
             };
             let position = AppKitPoint {
                 x: f64::from(f32::from(position.x)),
@@ -63,7 +67,7 @@ pub(super) fn send(
                     windowNumber: number,
                     context: std::ptr::null_mut::<AnyObject>(),
                     eventNumber: 0isize,
-                    clickCount: 1isize,
+                    clickCount: click_count as isize,
                     pressure: 1f32
                 ]
             };

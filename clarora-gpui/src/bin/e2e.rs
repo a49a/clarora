@@ -7,6 +7,8 @@ mod asr_models;
 mod asr_pauses;
 #[path = "support/assistant.rs"]
 mod assistant;
+#[path = "support/assistant_latency_native.rs"]
+mod assistant_latency_native;
 #[path = "support/audio_batch.rs"]
 mod audio_batch;
 #[path = "support/audio_library.rs"]
@@ -482,6 +484,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let selected = lib.list("listening_audios")?;
     audio_merge::run(&root, results)?;
     audio_repeat_native::run(&root, results)?;
+    assistant_latency_native::run(&root, results)?;
     audio_remove_native::run(&root, results)?;
     sentence_search::run(&root, results)?;
     sentence_search_native::run(&root, results)?;
@@ -997,6 +1000,7 @@ fn main() -> Result<()> {
         Some("--command-import-only") => "command-import-only",
         Some("--audio-merge-only") => "audio-merge-only",
         Some("--audio-repeat-only") => "audio-repeat-only",
+        Some("--assistant-latency-only") => "assistant-latency-only",
         Some("--audio-remove-only") => "audio-remove-only",
         Some("--sentence-search-only") => "sentence-search-only",
         Some("--audio-background-only") => "audio-background-only",
@@ -1062,6 +1066,8 @@ fn main() -> Result<()> {
             .and_then(|()| sentence_search_native::run(&output, &mut results))
     } else if mode == "audio-repeat-only" {
         audio_repeat_native::run(&output, &mut results)
+    } else if mode == "assistant-latency-only" {
+        assistant_latency_native::run(&output, &mut results)
     } else if mode == "audio-remove-only" {
         audio_remove_native::run(&output, &mut results)
     } else if mode == "audio-background-only" {

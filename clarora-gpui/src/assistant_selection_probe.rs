@@ -52,6 +52,7 @@ const SCENARIOS: [Scenario; 4] = [
 ];
 const REPLY: &str =
     "A selectable assistant response should remain available for follow-up questions.";
+const DOUBLE_CLICK_QUESTION: &str = "Double click 这里\nselect 全部 🌱";
 
 pub(super) struct Probe {
     stage: u8,
@@ -703,6 +704,94 @@ impl Probe {
                 app.audio.cues = std::mem::take(&mut self.cues);
                 app.audio.scroll.reset(app.audio.cues.len());
                 app.refresh_saved_ranges();
+                app.set("question", DOUBLE_CLICK_QUESTION, window, cx);
+                app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
+                Self::draw(window, cx);
+            }
+            29 => {
+                let (position, _) = Self::positions(app, window, cx, 2, 3, false)?;
+                native_probe_input::send(
+                    window,
+                    cx,
+                    vec![
+                        native_probe_input::MouseEvent::Down(position),
+                        native_probe_input::MouseEvent::Up(position),
+                        native_probe_input::MouseEvent::DownCount(position, 2),
+                        native_probe_input::MouseEvent::UpCount(position, 2),
+                    ],
+                )?;
+                self.started = Instant::now();
+            }
+            30 => {
+                if self.started.elapsed() < Duration::from_millis(250) {
+                    return Ok(false);
+                }
+                let selection = app.inputs["question"]
+                    .update(cx, |state, cx| state.selected_text_range(false, window, cx))
+                    .context("double click did not select the question")?
+                    .range;
+                observations.push(
+                    json!({"double_click_selection":[selection.start,selection.end],
+                    "expected_utf16_length":DOUBLE_CLICK_QUESTION.encode_utf16().count()}),
+                );
+                ensure!(
+                    selection == (0..DOUBLE_CLICK_QUESTION.encode_utf16().count())
+                        && app.value("question", cx) == DOUBLE_CLICK_QUESTION,
+                    "double click did not select the entire multilingual question: {selection:?}"
+                );
+                cases.push(json!({"case":"double click selects the entire multilingual assistant question","passed":true}));
+                // A normal click must still collapse the full selection to a caret.
+                let (position, _) = Self::positions(app, window, cx, 2, 3, false)?;
+                native_probe_input::send(
+                    window,
+                    cx,
+                    vec![
+                        native_probe_input::MouseEvent::Down(position),
+                        native_probe_input::MouseEvent::Up(position),
+                    ],
+                )?;
+                self.started = Instant::now();
+            }
+            31 => {
+                if self.started.elapsed() < Duration::from_millis(250) {
+                    return Ok(false);
+                }
+                let selection = app.inputs["question"]
+                    .update(cx, |state, cx| state.selected_text_range(false, window, cx))
+                    .context("single click did not place the caret")?
+                    .range;
+                ensure!(
+                    selection == (2..2),
+                    "single click did not place the caret: {selection:?}"
+                );
+                cases.push(json!({"case":"single click still places the assistant question caret","passed":true}));
+                let (position, _) = Self::positions(app, window, cx, 2, 3, false)?;
+                native_probe_input::send(
+                    window,
+                    cx,
+                    vec![
+                        native_probe_input::MouseEvent::DownCount(position, 2),
+                        native_probe_input::MouseEvent::UpCount(position, 2),
+                    ],
+                )?;
+                self.started = Instant::now();
+            }
+            32 => {
+                if self.started.elapsed() < Duration::from_millis(250) {
+                    return Ok(false);
+                }
+                Self::dispatch_keys(window, cx, vec!["x"]);
+                self.started = Instant::now();
+            }
+            33 => {
+                if self.started.elapsed() < Duration::from_millis(250) {
+                    return Ok(false);
+                }
+                ensure!(
+                    app.value("question", cx) == "x",
+                    "typing did not replace the double-click selection"
+                );
+                cases.push(json!({"case":"typing replaces the entire double-click selection","passed":true}));
                 app.handle(Action::Assistant, window, cx);
                 return Ok(true);
             }

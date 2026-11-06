@@ -50,7 +50,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         status.success()
             && report["passed"] == true
-            && cases.len() >= 34
+            && cases.len() >= 37
             && [
                 "close waiting sentence card and reclaim subtitle space",
                 "existing current sentence action reopens the card",
@@ -67,6 +67,9 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
                 "subtitle drag into assistant finishes with an AI quote",
                 "background editor drag into assistant finishes selection",
                 "narrow assistant mouse selection and backspace",
+                "double click selects the entire multilingual assistant question",
+                "single click still places the assistant question caret",
+                "typing replaces the entire double-click selection",
             ]
             .iter()
             .all(|name| cases.iter().any(|case| case["case"] == *name)),
