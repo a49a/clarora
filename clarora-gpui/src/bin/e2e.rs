@@ -35,6 +35,9 @@ mod blind_listening;
 mod chat_controller;
 #[path = "support/chat_store.rs"]
 mod chat_store;
+#[cfg(debug_assertions)]
+#[path = "support/chatgpt.rs"]
+mod chatgpt;
 #[path = "support/clip_marks.rs"]
 mod clip_marks;
 #[path = "support/cloud_fixture.rs"]
@@ -258,11 +261,14 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     asr_models::run(&Library::open(root.join("asr-model-fixtures"))?, results)?;
     focus_timer::run(&root, results)?;
     focus_mode_native::run(&root, results)?;
+    ui_controller::chatgpt(&root, results)?;
     gpu_memory::run(&root, results)?;
     runtime_stability::run(&root, results, 32)?;
     ui_controller::run(&root, results)?;
     subtitle_workbench_native::run(&root, results)?;
     let lib = Library::open(root.join("source"))?;
+    #[cfg(debug_assertions)]
+    chatgpt::run(&lib, results)?;
     assistant::run(&lib, results)?;
     chat_controller::run(&lib, results)?;
     data_loader::run(&root, results)?;
@@ -1001,6 +1007,8 @@ fn main() -> Result<()> {
         Some("--audio-merge-only") => "audio-merge-only",
         Some("--audio-repeat-only") => "audio-repeat-only",
         Some("--assistant-latency-only") => "assistant-latency-only",
+        #[cfg(debug_assertions)]
+        Some("--chatgpt-only") => "chatgpt-only",
         Some("--audio-remove-only") => "audio-remove-only",
         Some("--sentence-search-only") => "sentence-search-only",
         Some("--audio-background-only") => "audio-background-only",
@@ -1066,6 +1074,17 @@ fn main() -> Result<()> {
             .and_then(|()| sentence_search_native::run(&output, &mut results))
     } else if mode == "audio-repeat-only" {
         audio_repeat_native::run(&output, &mut results)
+    } else if mode == "chatgpt-only" {
+        #[cfg(debug_assertions)]
+        {
+            Library::open(output.join("chatgpt-source"))
+                .and_then(|lib| chatgpt::run(&lib, &mut results))
+                .and_then(|_| ui_controller::chatgpt(&output, &mut results))
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            anyhow::bail!("ChatGPT fixture requires a debug build")
+        }
     } else if mode == "assistant-latency-only" {
         assistant_latency_native::run(&output, &mut results)
     } else if mode == "audio-remove-only" {

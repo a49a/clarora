@@ -9,6 +9,60 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Dedicated settings acceptance avoids depending on unrelated video seek timing.
+pub fn chatgpt(root: &Path, results: &mut Vec<Value>) -> Result<()> {
+    let workflow = "ChatGPT会员设置原生布局/登录取消/切页";
+    if !cfg!(debug_assertions)
+        || !cfg!(target_os = "macos")
+        || std::env::var("CLARORA_GUI_MEMORY_CHECK").as_deref() != Ok("1")
+    {
+        results.push(json!({"workflow":workflow,"passed":true,"skipped":true,"reason":"Requires macOS graphical session and CLARORA_GUI_MEMORY_CHECK=1"}));
+        return Ok(());
+    }
+    let out = root.join(format!(
+        "native-chatgpt-settings-{}",
+        clarora_gpui::data::id()
+    ));
+    fs::create_dir_all(&out)?;
+    let exe = std::env::current_exe()?
+        .parent()
+        .context("executable directory")?
+        .join("clarora-gpui");
+    let mut child = Command::new(exe)
+        .arg("--ui-controller-check")
+        .arg(&out)
+        .env("CLARORA_CHATGPT_SETTINGS_CHECK", "1")
+        .stdin(Stdio::null())
+        .stdout(fs::File::create(out.join("stdout.log"))?)
+        .stderr(fs::File::create(out.join("stderr.log"))?)
+        .spawn()?;
+    let start = Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait()? {
+            break s;
+        }
+        if start.elapsed() > Duration::from_secs(30) {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("ChatGPT settings diagnostic timeout: {}", out.display());
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let report: Value = serde_json::from_slice(&fs::read(out.join("ui-controller-report.json"))?)?;
+    let layouts: Value =
+        serde_json::from_slice(&fs::read(out.join("chatgpt-settings-layouts.json"))?)?;
+    ensure!(
+        status.success()
+            && report["passed"] == true
+            && layouts["passed"] == true
+            && layouts["layouts"].as_array().is_some_and(|v| v.len() == 24),
+        "ChatGPT settings diagnostic failed: {}",
+        out.display()
+    );
+    results.push(json!({"workflow":workflow,"passed":true,"report":out.join("ui-controller-report.json"),"layouts":out.join("chatgpt-settings-layouts.json")}));
+    Ok(())
+}
+
 pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     let workflow = "原生AppView资料/聊天/视频进度 → 快速切材料与栏目 → 关闭与全局退出保存";
     if !cfg!(debug_assertions)
@@ -70,6 +124,15 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             "原生协调验收失败：{}，详见{}",
             name,
             report_path.display()
+        );
+        let chatgpt_layouts: Value =
+            serde_json::from_slice(&fs::read(out.join("chatgpt-settings-layouts.json"))?)?;
+        ensure!(
+            chatgpt_layouts["passed"] == true
+                && chatgpt_layouts["layouts"]
+                    .as_array()
+                    .is_some_and(|v| v.len() == 24),
+            "ChatGPT settings layouts missing or failed"
         );
         let video_report_path = out.join("video-resume-report.json");
         let video_report: Value = serde_json::from_slice(&fs::read(&video_report_path)?)?;

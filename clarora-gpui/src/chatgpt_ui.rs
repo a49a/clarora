@@ -1,0 +1,360 @@
+//! Nonblocking account work; rendering reads public snapshots only.
+use super::*;
+use clarora_gpui::chatgpt;
+#[derive(Clone)]
+pub(super) enum Command {
+    Login(Option<String>),
+    Cancel,
+    Use(bool),
+    Profile(String),
+    Model(String),
+    Refresh,
+    SignOut,
+    Usage,
+}
+enum Event {
+    Open(String),
+    Done(std::result::Result<(chatgpt::Snapshot, String), String>),
+}
+pub(super) struct State {
+    pub snapshot: chatgpt::Snapshot,
+    pub status: String,
+    pub error: String,
+    cancel: Option<Cancel>,
+    events: Option<mpsc::Receiver<Event>>,
+}
+impl State {
+    pub(super) fn busy(&self) -> bool {
+        self.cancel.is_some()
+    }
+    pub fn new(lib: &Library) -> Self {
+        let result = chatgpt::snapshot(lib);
+        Self {
+            snapshot: result.as_ref().cloned().unwrap_or_default(),
+            status: String::new(),
+            error: result.err().map(|e| e.to_string()).unwrap_or_default(),
+            cancel: None,
+            events: None,
+        }
+    }
+}
+impl Drop for State {
+    fn drop(&mut self) {
+        if let Some(c) = &self.cancel {
+            c.store(true, Ordering::SeqCst);
+        }
+    }
+}
+impl AppView {
+    pub(super) fn handle_chatgpt(
+        &mut self,
+        command: Command,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        if matches!(command, Command::Usage) {
+            cx.open_url("https://chatgpt.com/#settings");
+            return Ok(());
+        }
+        if matches!(command, Command::Cancel) {
+            if let Some(c) = &self.chatgpt.cancel {
+                c.store(true, Ordering::SeqCst);
+                self.chatgpt.status = "正在取消 ChatGPT 操作…".into();
+            }
+            return Ok(());
+        }
+        ensure!(
+            self.chatgpt.cancel.is_none(),
+            "请先完成或取消当前 ChatGPT 操作"
+        );
+        ensure!(
+            !self.chat.running
+                && self.tasks.cancel.is_none()
+                && self.tasks.audio_subtitles.cancel.is_none()
+                && self.tasks.video_job.is_none(),
+            "请先完成或取消正在使用 AI 的任务，再更改服务或账户"
+        );
+        if matches!(command, Command::Login(_)) {
+            ensure!(
+                !self.focus_mode.active(),
+                "请先退出电脑专注，再打开浏览器登录 ChatGPT"
+            );
+        }
+        let client = chatgpt::Client::new(&self.lib);
+        let lib = self.lib.clone();
+        let cancel = process::cancel_token();
+        let token = cancel.clone();
+        let (tx, rx) = mpsc::channel();
+        self.chatgpt.cancel = Some(cancel);
+        self.chatgpt.events = Some(rx);
+        self.chatgpt.error.clear();
+        self.chatgpt.status = if matches!(command, Command::Login(_)) {
+            "正在准备浏览器登录…"
+        } else {
+            "正在更新 ChatGPT 设置…"
+        }
+        .into();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<(chatgpt::Snapshot, String)> {
+                let (state, message) = match command {
+                    Command::Login(profile) => {
+                        let state = client.sign_in(profile.as_deref(), &token, |address| {
+                            tx.send(Event::Open(address.into()))
+                                .map_err(|_| anyhow::anyhow!("应用已关闭"))
+                        })?;
+                        let message = match state.current() {
+                            Some(p) if !p.sharing => "已登录，但尚未授权会员使用；可点击重新授权",
+                            Some(p) if p.models.is_empty() => {
+                                "已登录，暂未读到可用模型，请点击刷新模型"
+                            }
+                            _ => "已连接 ChatGPT，学习助手将使用所选会员账户",
+                        };
+                        (state, message.into())
+                    }
+                    Command::Use(enabled) => (
+                        chatgpt::set_enabled(&lib, enabled)?,
+                        if enabled {
+                            "已切换到 ChatGPT 会员"
+                        } else {
+                            "已切换到兼容 API，使用原有配置"
+                        }
+                        .into(),
+                    ),
+                    Command::Profile(id) => {
+                        let state = client.select_profile(&id)?;
+                        if state.current().is_some_and(|p| p.connected && p.sharing) {
+                            (
+                                client.refresh_models(&token)?,
+                                "已切换 ChatGPT 账户并更新模型".into(),
+                            )
+                        } else {
+                            (state, "已选择账户，请重新登录或授权会员使用".into())
+                        }
+                    }
+                    Command::Model(model) => {
+                        (client.select_model(&model)?, "已更新 ChatGPT 模型".into())
+                    }
+                    Command::Refresh => (
+                        client.refresh_models(&token)?,
+                        "已更新当前账户的模型目录".into(),
+                    ),
+                    Command::SignOut => {
+                        let (state, revoked) = client.sign_out(&token)?;
+                        (
+                            state,
+                            if revoked {
+                                "已退出 ChatGPT 并撤销本次登录；原账户注册保留"
+                            } else {
+                                "已清除本机登录；远端撤销未确认，请到 ChatGPT 设置断开 Clarora 授权"
+                            }
+                            .into(),
+                        )
+                    }
+                    Command::Cancel | Command::Usage => unreachable!(),
+                };
+                Ok((state, message))
+            })()
+            .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Event::Done(result));
+        });
+        Ok(())
+    }
+    pub(super) fn poll_chatgpt(&mut self, cx: &mut Context<Self>) -> bool {
+        let events = self
+            .chatgpt
+            .events
+            .as_ref()
+            .map(|r| r.try_iter().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let changed = !events.is_empty();
+        for event in events {
+            match event {
+                Event::Open(address) => {
+                    if self
+                        .chatgpt
+                        .cancel
+                        .as_ref()
+                        .is_some_and(|c| !c.load(Ordering::SeqCst))
+                    {
+                        cx.open_url(&address);
+                        self.chatgpt.status =
+                            "请在浏览器完成 ChatGPT 登录与授权，可继续切换栏目学习。".into();
+                    }
+                }
+                Event::Done(result) => {
+                    self.chatgpt.cancel = None;
+                    self.chatgpt.events = None;
+                    match result {
+                        Ok((state, message)) => {
+                            self.chatgpt.snapshot = state;
+                            self.chatgpt.status = message;
+                            self.chatgpt.error.clear();
+                        }
+                        Err(error) => {
+                            if let Ok(state) = chatgpt::snapshot(&self.lib) {
+                                self.chatgpt.snapshot = state;
+                            }
+                            self.chatgpt.error = error;
+                            self.chatgpt.status.clear();
+                        }
+                    }
+                }
+            }
+        }
+        changed
+    }
+    pub(super) fn chatgpt_settings(&self, cx: &Context<Self>) -> AnyElement {
+        let state = &self.chatgpt.snapshot;
+        let busy = self.chatgpt.busy();
+        let locked = busy
+            || self.chat.running
+            || self.tasks.cancel.is_some()
+            || self.tasks.audio_subtitles.cancel.is_some()
+            || self.tasks.video_job.is_some();
+        let action = |c| Action::ChatGpt(c);
+        let mut panel=panel(cx)
+   .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("AI 聊天服务"))
+   .child(div().flex().gap_2().flex_wrap()
+    .child(self.button("chatgpt-use","ChatGPT 会员",action(Command::Use(true)),cx).outline().selected(state.enabled).disabled(locked))
+    .child(self.button("chatgpt-compatible","兼容 API",action(Command::Use(false)),cx).outline().selected(!state.enabled).disabled(locked)))
+   .child(div().text_sm().text_color(cx.theme().muted_foreground).child("连接你自己的 ChatGPT 账户，用已授权的会员额度进行问答、字幕翻译和写作批改。语音转写与图片识字仍使用原有配置。"));
+        let accounts = state
+            .profiles
+            .iter()
+            .map(|p| {
+                (
+                    format!(
+                        "{}{}",
+                        p.label(),
+                        if p.connected { "" } else { " · 需登录" }
+                    ),
+                    action(Command::Profile(p.id.clone())),
+                    p.id == state.active,
+                    locked,
+                )
+            })
+            .collect();
+        if !state.profiles.is_empty() {
+            panel = panel.child(
+                self.surface_menu(
+                    "chatgpt-account",
+                    state
+                        .current()
+                        .map(|p| format!("账户：{} ▾", p.label()))
+                        .unwrap_or_else(|| "选择已连接的 ChatGPT 账户 ▾".into()),
+                    accounts,
+                    cx,
+                ),
+            );
+        }
+        if let Some(p) = state.current() {
+            panel = panel.child(div().text_sm().child(if p.connected {
+                if p.sharing {
+                    "已连接 · 已授权会员使用"
+                } else {
+                    "已连接 · 尚未授权会员使用"
+                }
+            } else {
+                "已退出 · 重新登录会复用原账户注册"
+            }));
+            let models = p
+                .models
+                .iter()
+                .map(|m| {
+                    (
+                        m.display_name.clone(),
+                        action(Command::Model(m.slug.clone())),
+                        m.slug == p.model,
+                        locked || !p.connected,
+                    )
+                })
+                .collect();
+            panel = panel.child(self.surface_menu(
+                "chatgpt-model",
+                format!(
+                        "模型：{} ▾",
+                        p.models
+                            .iter()
+                            .find(|m| m.slug == p.model)
+                            .map(|m| m.display_name.as_str())
+                            .unwrap_or("请先刷新模型")
+                    ),
+                models,
+                cx,
+            ));
+            panel = panel.child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        self.button(
+                            "chatgpt-reconnect",
+                            "重新登录 / 授权",
+                            action(Command::Login(Some(p.id.clone()))),
+                            cx,
+                        )
+                        .outline()
+                        .disabled(locked || self.focus_mode.active()),
+                    )
+                    .child(
+                        self.button("chatgpt-refresh", "刷新模型", action(Command::Refresh), cx)
+                            .outline()
+                            .disabled(locked || !p.connected || !p.sharing),
+                    )
+                    .child(
+                        self.button(
+                            "chatgpt-signout",
+                            "退出当前账户",
+                            action(Command::SignOut),
+                            cx,
+                        )
+                        .outline()
+                        .disabled(locked || !p.connected),
+                    ),
+            );
+        }
+        panel = panel.child(
+            div()
+                .flex()
+                .gap_2()
+                .flex_wrap()
+                .child(
+                    self.button(
+                        "chatgpt-login",
+                        "Continue with ChatGPT",
+                        action(Command::Login(None)),
+                        cx,
+                    )
+                    .outline()
+                    .disabled(locked || self.focus_mode.active()),
+                )
+                .child(
+                    self.button(
+                        "chatgpt-usage",
+                        "查看会员用量与授权",
+                        action(Command::Usage),
+                        cx,
+                    )
+                    .outline(),
+                )
+                .when(busy, |row| {
+                    row.child(
+                        self.button("chatgpt-cancel", "取消操作", action(Command::Cancel), cx)
+                            .outline(),
+                    )
+                }),
+        );
+        if !self.chatgpt.status.is_empty() {
+            panel = panel.child(div().text_sm().child(self.chatgpt.status.clone()));
+        }
+        if !self.chatgpt.error.is_empty() {
+            panel = panel.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger)
+                    .child(self.chatgpt.error.clone()),
+            );
+        }
+        panel.child(div().text_xs().text_color(cx.theme().muted_foreground).child("会员额度和支持的模型取决于你的账户与授权。不会自动切换到另行付费的 API。登录凭证由系统凭证库密钥加密，仅保存在本机，不进入资料备份。")).into_any_element()
+    }
+}

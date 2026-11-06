@@ -86,6 +86,9 @@ pub(super) struct Probe {
     highlights_revision: Option<u64>,
     clipboard_before: Option<ClipboardItem>,
     video_resume: video_resume_probe::Probe,
+    chatgpt_layout_result: Option<std::result::Result<Vec<Value>, String>>,
+    chatgpt_only: bool,
+    finished: bool,
 }
 impl Probe {
     fn clipboard_matches(before: &Option<ClipboardItem>, after: Option<ClipboardItem>) -> bool {
@@ -112,10 +115,11 @@ impl Probe {
         });
     }
     pub(super) fn new(out: &Path) -> Self {
+        let chatgpt_only = std::env::var("CLARORA_CHATGPT_SETTINGS_CHECK").as_deref() == Ok("1");
         Self {
             out: out.to_path_buf(),
             started: Instant::now(),
-            stage: 0,
+            stage: if chatgpt_only { 25 } else { 0 },
             stage_started: Instant::now(),
             cases: vec![],
             closing: false,
@@ -124,6 +128,9 @@ impl Probe {
             highlights_revision: None,
             clipboard_before: None,
             video_resume: video_resume_probe::Probe::new(out),
+            chatgpt_layout_result: None,
+            chatgpt_only,
+            finished: false,
         }
     }
     pub(super) fn with_global_quit(mut self, enabled: bool) -> Self {
@@ -616,8 +623,37 @@ impl Probe {
                 if self.stage_started.elapsed() < Duration::from_millis(200) {
                     return Ok(());
                 }
+                let Some(layouts) = self.chatgpt_layout_result.take() else {
+                    Self::draw_after_update(window, cx);
+                    return Ok(());
+                };
+                let layouts = layouts.map_err(anyhow::Error::msg)?;
                 ensure!(app.assistant.offer.is_none(), "切页后出现旧选区入口");
-                self.note("选区延迟回调在切页后安全失效", app)?;
+                if !self.chatgpt_only {
+                    self.note("选区延迟回调在切页后安全失效", app)?;
+                }
+                fs::write(
+                    self.out.join("chatgpt-settings-layouts.json"),
+                    serde_json::to_vec_pretty(
+                        &json!({"passed":true,"layouts":layouts,"real_oauth_verified":false}),
+                    )?,
+                )?;
+                self.note(
+                    "ChatGPT设置：账户/模型/未授权/等待/错误的深浅色窄宽布局",
+                    app,
+                )?;
+                if self.chatgpt_only {
+                    app.handle(
+                        Action::ChatGpt(chatgpt_ui::Command::Login(None)),
+                        window,
+                        cx,
+                    );
+                    ensure!(app.chatgpt.busy(), "ChatGPT login handler did not start");
+                    app.handle(Action::ChatGpt(chatgpt_ui::Command::Cancel), window, cx);
+                    app.handle(Action::Page("listening".into()), window, cx);
+                    self.advance();
+                    return Ok(());
+                }
                 app.assistant.enabled = false;
                 app.assistant_open = false;
                 app.handle(Action::Page("listening".into()), window, cx);
@@ -625,6 +661,21 @@ impl Probe {
                 self.advance();
             }
             26 => {
+                if self.chatgpt_only {
+                    if app.chatgpt.busy() {
+                        return Ok(());
+                    }
+                    ensure!(
+                        app.chatgpt.error.contains("取消")
+                            && app.page == "listening"
+                            && app.chatgpt.snapshot.current().is_none(),
+                        "ChatGPT cancel or module navigation failed"
+                    );
+                    self.note("原生ChatGPT登录取消/切栏目/不打开浏览器与不激活账户", app)?;
+                    self.report(Some(true), None)?;
+                    self.finished = true;
+                    return Ok(());
+                }
                 if !Self::chat_ready(app, cx) || app.chat.context != context(AUDIO_A) {
                     return Ok(());
                 }
@@ -644,9 +695,109 @@ impl Probe {
         }
         Ok(())
     }
+    fn chatgpt_layouts(
+        app: &mut AppView,
+        window: &mut Window,
+        cx: &mut Context<AppView>,
+    ) -> Result<Vec<Value>> {
+        use clarora_gpui::chatgpt::{Model, Profile, Snapshot};
+        let saved = app.chatgpt.snapshot.clone();
+        let status = app.chatgpt.status.clone();
+        let error = app.chatgpt.error.clone();
+        let theme = cx.theme().mode;
+        let result = (|| -> Result<Vec<Value>> {
+            let mut layouts = vec![];
+            for mode in [ThemeMode::Light, ThemeMode::Dark] {
+                Theme::change(mode, None, cx);
+                design::apply(cx);
+                for width in [340., 620., 1000.] {
+                    for case in [
+                        "signed-out",
+                        "connected",
+                        "permission-required",
+                        "waiting-error",
+                    ] {
+                        let profile = Profile {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            client_id: "fixture-client".into(),
+                            subject: "fixture-subject".into(),
+                            email: "fixture-account@example.invalid".into(),
+                            connected: true,
+                            sharing: case != "permission-required",
+                            model: "fixture-model".into(),
+                            models: vec![Model {
+                                slug: "fixture-model".into(),
+                                display_name: "Fixture model".into(),
+                            }],
+                        };
+                        app.chatgpt.snapshot = if case == "signed-out" {
+                            Snapshot::default()
+                        } else {
+                            Snapshot {
+                                enabled: true,
+                                active: profile.id.clone(),
+                                profiles: vec![profile],
+                                ..Default::default()
+                            }
+                        };
+                        app.chatgpt.status = if case == "waiting-error" {
+                            "正在等待浏览器授权，可以继续切换栏目学习。".into()
+                        } else {
+                            String::new()
+                        };
+                        app.chatgpt.error = if case == "waiting-error" {
+                            "ChatGPT 会员使用额度已达上限，请到设置查看用量。".into()
+                        } else {
+                            String::new()
+                        };
+                        let mut panel = app.chatgpt_settings(cx);
+                        let measured = panel.layout_as_root(
+                            size(
+                                AvailableSpace::Definite(px(width)),
+                                AvailableSpace::MaxContent,
+                            ),
+                            window,
+                            cx,
+                        );
+                        ensure!(
+                            f32::from(measured.width) <= width + 1.
+                                && f32::from(measured.height) > 100.
+                                && f32::from(measured.height) < 2000.,
+                            "ChatGPT settings layout overflow: {case}, {mode:?}, {width}, {measured:?}"
+                        );
+                        layouts.push(json!({"case":case,"theme":format!("{mode:?}"),"width":width,"measured_width":f32::from(measured.width),"height":f32::from(measured.height)}));
+                    }
+                }
+            }
+            Ok(layouts)
+        })();
+        app.chatgpt.snapshot = saved;
+        app.chatgpt.status = status;
+        app.chatgpt.error = error;
+        Theme::change(theme, None, cx);
+        design::apply(cx);
+        result
+    }
 }
 
 impl AppView {
+    /// Layout APIs must run inside Render, never from a timer/worker callback.
+    pub(super) fn capture_chatgpt_settings_layouts(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .probe
+            .as_ref()
+            .is_some_and(|p| p.stage == 25 && p.chatgpt_layout_result.is_none())
+        {
+            let result = Probe::chatgpt_layouts(self, window, cx).map_err(|e| format!("{e:#}"));
+            if let Some(probe) = &mut self.probe {
+                probe.chatgpt_layout_result = Some(result);
+            }
+        }
+    }
     /// The normal 50ms UI tick drives the probe even while its window is hidden.
     pub(super) fn poll_ui_probe(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(mut probe) = self.probe.take() else {
@@ -654,6 +805,10 @@ impl AppView {
         };
         if let Err(error) = probe.step(self, window, cx) {
             let _ = probe.report(Some(false), Some(format!("{error:#}")));
+            window.remove_window();
+            return true;
+        }
+        if probe.finished {
             window.remove_window();
             return true;
         }

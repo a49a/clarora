@@ -233,7 +233,15 @@ pub fn review_snapshot(
     );
     ensure!(!snapshot.prompt.trim().is_empty(), "请先填写并保存写作题目");
     ensure!(!snapshot.answer.trim().is_empty(), "请先填写并保存作答");
-    let model = ai::load_config(lib)?.model;
+    let chatgpt = crate::chatgpt::snapshot(lib)?;
+    let model = if chatgpt.enabled {
+        chatgpt
+            .current()
+            .map(|p| format!("ChatGPT/{}", p.model))
+            .unwrap_or_default()
+    } else {
+        ai::load_config(lib)?.model
+    };
     // JSON escaping keeps the quoted data from closing the assistant's material delimiter.
     let material = serde_json::to_string(&json!({
         "writing_prompt": snapshot.prompt,

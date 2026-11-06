@@ -23,6 +23,7 @@ mod audio_subtitles_probe;
 #[cfg(debug_assertions)]
 mod backup_progress_probe;
 mod chat_controller_ui;
+mod chatgpt_ui;
 mod clip_selection_ui;
 mod cloud_ui;
 mod data_controller;
@@ -165,6 +166,7 @@ const PAGES: &[(&str, &str, &str)] = &[
 ];
 #[derive(Clone)]
 enum Action {
+    ChatGpt(chatgpt_ui::Command),
     Sentence(sentence_search_ui::Command),
     Page(String),
     Pick(String),
@@ -417,6 +419,7 @@ struct AppView {
     data: clarora_gpui::view_data::State,
     loads: data_controller::Loads,
     settings: app_state::SettingsState,
+    chatgpt: chatgpt_ui::State,
     cloud: cloud_ui::State,
     chat: clarora_gpui::chat_controller::Controller,
     assistant: assistant_ui::State,
@@ -581,6 +584,7 @@ impl AppView {
             data: Default::default(),
             loads: Default::default(),
             settings: app_state::SettingsState::new(&lib),
+            chatgpt: chatgpt_ui::State::new(&lib),
             cloud: cloud_ui::State::new(&lib),
             chat: clarora_gpui::chat_controller::Controller::new(lib.clone()),
             assistant: Default::default(),
@@ -1700,6 +1704,8 @@ fn panel(cx: &App) -> Div {
 }
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(debug_assertions)]
+        self.capture_chatgpt_settings_layouts(window, cx);
         let mut images = Vec::new();
         if self.video_frame_path().is_some() {
             images.extend(self.media.snapshot.frame.clone());

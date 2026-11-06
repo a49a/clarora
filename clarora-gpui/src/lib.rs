@@ -4,6 +4,7 @@ pub mod assistant;
 pub mod audio_tools;
 pub mod backup;
 pub mod chat_store;
+pub mod chatgpt;
 pub mod data;
 pub mod discover;
 pub mod documents;

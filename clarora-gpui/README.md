@@ -40,6 +40,18 @@ python ./clarora-gpui/scripts/install-pdfium.py ./clarora-gpui/target/package
 
 桌面界面采用暖灰与青绿色主题，导航按学习空间、资料库和个人工具分组。页面左上角可收起/展开左侧导航，也可按 `Cmd/Ctrl+B`；导航从左侧滑动展开/收起，内容区同步扩缩；按钮用加粗双箭头指示方向，并记住状态，重启后保留。侧栏底部可切换浅色/深色，也可按 `Cmd/Ctrl+Shift+L`。闪卡页默认聚焦学习卡片，点击“添加句子卡”展开编辑区；`Cmd/Ctrl+Shift+N` 可直接打开句子编辑并定位输入框。视频控制栏“字幕：开／关”控制画面字幕（含第二轨），普通／全屏共用并记住偏好；字幕列表保留供定位、复制和翻译。字幕区“更多 → 导入英文字幕”加载 SRT／VTT，“翻译中文”调用共用聊天 API 分批生成双语字幕，保留英文和时间轴，全部成功后才保存，失败／取消保留原缓存；已有中文不重复发送给模型。视频页采用左右工作台：左侧播放器，右侧“我的视频／字幕／选集”页签；拖动中间分隔条调整宽度，窄窗口自动上下排列。字幕按正文长度展开，支持点击播放、逐句复制及提问；选集独立滚动，不再占用播放器下方空间。点击标题栏的 P 数可切到选集。字幕叠加在画面底部，可从控制栏“设置”菜单选择 14–32px 字号（默认 16px），立即生效并自动保存，普通与全屏播放共用；控制栏提供播放、前后 10 秒、进度拖动、倍速菜单、音量滑杆/静音；“设置”菜单集中管理字幕字号、循环方式和精听工具。选择“A–B 精听工具”展开起终点、清除、逐句切换、重听本句及片段闪卡；设置有效 A/B 后自动循环，进度条显示范围和金色边界，切换字幕句时退出旧循环。B 必须晚于 A；重设 A 超过旧 B 会清除旧 B。标题栏“更多”展开本地视频、bilibili 导入、字幕轨道、SRT 导出和最近视频；首次打开没有视频时自动显示。单击视频画面可播放／暂停，普通与全屏模式均支持；双击切换全屏后保持原播放状态。控制栏的“全屏”、双击视频画面或 `F11` 可进入视频专用原生全屏，`Esc` 或“退出全屏”返回；播放继续，退出后保留原导航/助手状态。
 
+## 使用 ChatGPT 会员
+
+打开“设置 → AI 聊天服务”，点击 **Continue with ChatGPT**，在系统浏览器登录并授权 Clarora 使用会员额度，完成后返回应用。登录成功后自动选择 ChatGPT 服务并读取当前账户可见模型；可切换模型、刷新目录、重新授权、添加或选择其他账户，以及退出当前账户。已有账户使用“重新登录 / 授权”复用原注册。助手问题框上方的服务按钮显示当前选择：`ChatGPT · 模型名 · 设置` 表示使用 ChatGPT，`AI 服务：兼容 API · 设置` 表示使用原有 API Base URL 配置；点击按钮可进入设置切换。
+
+此路线使用 OpenAI 官方 Sign in with ChatGPT / Responses API，需符合条件的 ChatGPT 账户和会员授权；实际准入、可用模型与额度以 OpenAI 返回为准。额度不足、拒绝授权、流中断或登录失效会明确提示，不会自动改用另行计费的 API Key。可主动选择“兼容 API”继续使用原配置。聊天、字幕翻译和写作批改共用所选文本服务；本地 Whisper、远端语音转写和图片识字继续使用原有独立路径。
+
+登录在后台进行，可切换学习栏目；更改服务/账户前需等待或取消正在使用 AI 的任务。登录令牌使用 AES-256-GCM 加密保存在本机 `chatgpt/` 目录，随机加密密钥存于系统凭证库；独立于原 API 密钥存储开关。目录在 Unix 上为 0700，文件为 0600，凭证不进入 SQLite 学习资料、ZIP 或云备份。刷新使用跨进程文件锁；退出时尝试撤销续期会话，然后清除本机令牌并保留账户注册。远端撤销无法确认时会提示用户在 ChatGPT 设置中断开授权。
+
+默认调试版 E2E 收集此流程，可用 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/evidence --chatgpt-only` 复验。使用本机 HTTP、真实签名 JWT、模拟系统凭证库和隔离磁盘，输出 `chatgpt-report.json`；测试不会登录真实账号或读取 Codex/ChatGPT 的登录凭证。启用 `CLARORA_GUI_MEMORY_CHECK=1` 后，`--chatgpt-only` 同时执行独立的原生设置区验收，覆盖 24 种账户状态、宽度和深浅主题布局，以及登录取消与切栏目；`--ui-controller-only` 也收集这组布局。测试通过不代表真实 OpenAI 账号授权、会员准入或 Windows 已实测。
+
+官方协议：[登录与注册](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)、[账户与会话](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)、[模型与请求](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)、[预览限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。
+
 ## 学习助手输入性能
 
 聊天历史使用独立的缓存视图。编辑问题、移动输入光标或定时刷新时，复用已显示的 Markdown 历史；历史、流式回答、引用展开和思考显示变化时更新缓存。历史模型在动作和轮询边界同步，避免在绘制中通知缓存造成新内容延迟。问题草稿仍由原后台线程去抖保存。

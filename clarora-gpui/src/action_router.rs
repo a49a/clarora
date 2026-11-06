@@ -2313,6 +2313,7 @@ impl AppView {
                         )))
                     });
                 }
+                Action::ChatGpt(command) => self.handle_chatgpt(command, cx)?,
                 Action::SaveStorage => {
                     self.cloud.plan = None;
                     self.cloud.versions.clear();

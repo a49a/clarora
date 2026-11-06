@@ -45,12 +45,15 @@ fn complete(reply: &ChatReply, stopped: bool, cancel: &Cancel) -> Result<()> {
     Ok(())
 }
 
-async fn cancelled(cancel: &Cancel) {
+pub(crate) async fn cancelled(cancel: &Cancel) {
     while !cancel.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
-async fn request<T>(cancel: &Cancel, work: impl Future<Output = reqwest::Result<T>>) -> Result<T> {
+pub(crate) async fn request<T>(
+    cancel: &Cancel,
+    work: impl Future<Output = reqwest::Result<T>>,
+) -> Result<T> {
     tokio::select! {
         biased;
         _ = cancelled(cancel) => bail!("已取消"),
@@ -152,6 +155,9 @@ pub(crate) fn chat_messages(
     mut progress: impl FnMut(ChatReply),
 ) -> Result<ChatReply> {
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+    if crate::chatgpt::enabled(lib)? {
+        return crate::chatgpt::Client::new(lib).stream(messages, cancel, progress);
+    }
     let (config, key) = ai::load_chat(lib)?;
     ensure!(!config.model.is_empty(), "请先设置聊天模型");
     let base = ai::endpoint_url(&config.base_url)?;

@@ -8,6 +8,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut content = div().flex().flex_col().gap_5().w_full();
+        content = content.child(self.chatgpt_settings(cx));
         content = content.child(panel(cx)
             .child(div().text_lg().child("悬浮窗与命令导入"))
             .child(self.field("command", "本机导入命令"))
@@ -215,7 +216,7 @@ impl AppView {
         content = content.child(models);
         content = content.child(
                     panel(cx)
-                        .child(div().text_lg().child("AI 服务"))
+                        .child(div().text_lg().child("兼容 API 与语音设置"))
                         .child(div().text_sm().text_color(cx.theme().muted_foreground)
                             .child("聊天与远端转写共用下面一组设置，模型需支持这两种能力。保存后统一生效。"))
                         .child(self.field("base_url", "共用 API Base URL"))

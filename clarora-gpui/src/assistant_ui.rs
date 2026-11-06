@@ -394,6 +394,29 @@ impl AppView {
             );
         }
         composer = composer
+            .child(self.assistant_button(
+                "assistant-ai-settings",
+                if self.chatgpt.snapshot.enabled {
+                    self.chatgpt
+                        .snapshot
+                        .current()
+                        .map(|p| {
+                            format!(
+                                "ChatGPT · {} · 设置",
+                                if p.model.is_empty() {
+                                    "请选择模型"
+                                } else {
+                                    &p.model
+                                }
+                            )
+                        })
+                        .unwrap_or_else(|| "ChatGPT · 请登录 · 设置".into())
+                } else {
+                    "AI 服务：兼容 API · 设置".into()
+                },
+                Action::Page("settings".into()),
+                cx,
+            ))
             .child(
                 div()
                     .id("assistant-question-click-target")
