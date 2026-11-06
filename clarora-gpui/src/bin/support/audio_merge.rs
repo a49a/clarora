@@ -1,4 +1,11 @@
 //! Real FFmpeg, SQLite, subtitles and ZIP scenarios specified before implementation.
+// Name-order regression failure scenarios, specified before the production change:
+// - Unordered SQLite rows or reversed input change the learning order.
+// - Case variants and duplicate imported names lack a deterministic ID tie-break.
+// - Reopening SQLite or renaming an audio preserves a stale ordering.
+// - Merged study versions lose priority, retain hidden originals, or skip name order.
+// - Learning order changes the manager's explicit newest/oldest selection order.
+// - Another practice group's rows enter the current learning queue.
 use anyhow::{Result, ensure};
 use clarora_gpui::{
     audio_library,
@@ -62,7 +69,211 @@ fn media_files(lib: &Library) -> Result<BTreeSet<String>> {
         .map(|r| r.unwrap().file_name().to_string_lossy().into_owned())
         .collect())
 }
+fn ordered_source(lib: &Library, group: &str, key: &str, name: &str, created: &str) -> Result<Row> {
+    let mut row = source(lib, group, key, 16000, 8000, 1, false)?;
+    lib.db()?.execute(
+        "UPDATE listening_audios SET id=?,name=?,created_at=? WHERE id=?",
+        rusqlite::params![key, name, created, text(&row, "id")],
+    )?;
+    row.insert("id".into(), json!(key));
+    row.insert("name".into(), json!(name));
+    row.insert("created_at".into(), json!(created));
+    Ok(row)
+}
+fn record_order(cases: &mut Vec<Value>, case: &str, rows: Vec<&Row>, expected: &[String]) {
+    let actual = rows.iter().map(|row| text(row, "id")).collect::<Vec<_>>();
+    let queue = rows
+        .iter()
+        .map(|row| {
+            json!({"id":text(row,"id"),"name":text(row,"name"),"group":text(row,"practice_id"),"created_at":text(row,"created_at")})
+        })
+        .collect::<Vec<_>>();
+    cases.push(json!({"case":case,"passed":actual.as_slice()==expected,"expected_ids":expected,"actual_queue":queue}));
+}
+fn name_order(root: &Path, cases: &mut Vec<Value>) -> Result<()> {
+    let lib = Library::open(root.join(format!("audio-name-order-{}", id())))?;
+    let group = lib.practice("Name order")?;
+    let other = lib.practice("Other group")?;
+    let inserted = [
+        ("sort-conv3", "conv3"),
+        ("sort-conv1-b", "conv1"),
+        ("sort-acad2", "acad2"),
+        ("sort-acad1", "acad1"),
+        ("sort-ann2", "ann2"),
+        ("sort-ann1-b", "ann1"),
+        ("sort-u-conv2", "u-conv2"),
+        ("sort-u-conv1", "u-conv1"),
+        ("sort-conv1-a", "CONV1"),
+        // SQLite can retain same-name imported rows even though the normal importer rejects them.
+        ("sort-conv1-c", "conv1"),
+        ("sort-ann1-a", "ANN1"),
+    ];
+    for (index, (key, name)) in inserted.iter().enumerate() {
+        ordered_source(
+            &lib,
+            &group,
+            key,
+            name,
+            &format!("2026-01-{:02} 00:00:00", index + 1),
+        )?;
+    }
+    ordered_source(&lib, &other, "other-z", "zzz", "2026-02-01 00:00:00")?;
+    ordered_source(&lib, &other, "other-a", "aaa", "2026-02-02 00:00:00")?;
+    let expected = [
+        "sort-acad1",
+        "sort-acad2",
+        "sort-ann1-a",
+        "sort-ann1-b",
+        "sort-ann2",
+        "sort-conv1-a",
+        "sort-conv1-b",
+        "sort-conv1-c",
+        "sort-conv3",
+        "sort-u-conv1",
+        "sort-u-conv2",
+    ]
+    .map(String::from)
+    .to_vec();
+    let first_case = cases.len();
+    let rows = lib.list("listening_audios")?;
+    let catalog = Catalog::load(&lib, &rows)?;
+    record_order(
+        cases,
+        "name-order: shuffled SQLite insertion, case-insensitive names and duplicate-name ID ties",
+        catalog.learning(&rows, &group),
+        &expected,
+    );
+    let mut reversed = rows.clone();
+    reversed.reverse();
+    record_order(
+        cases,
+        "name-order: reversed input produces the same queue",
+        catalog.learning(&reversed, &group),
+        &expected,
+    );
+    record_order(
+        cases,
+        "name-order: another group has its own queue without cross-group rows",
+        catalog.learning(&rows, &other),
+        &["other-a".into(), "other-z".into()],
+    );
+    let mut management = audio_library::State::default();
+    management.sort = 0;
+    let newest = inserted
+        .iter()
+        .rev()
+        .map(|(key, _)| (*key).to_string())
+        .collect::<Vec<_>>();
+    record_order(
+        cases,
+        "name-order: management newest order remains explicit",
+        management.visible(&rows, &group, ""),
+        &newest,
+    );
+    management.sort = 2;
+    let oldest = inserted
+        .iter()
+        .map(|(key, _)| (*key).to_string())
+        .collect::<Vec<_>>();
+    record_order(
+        cases,
+        "name-order: management oldest order remains explicit",
+        management.visible(&rows, &group, ""),
+        &oldest,
+    );
+    management.sort = 1;
+    record_order(
+        cases,
+        "name-order: management name order agrees with the ordinary learning queue",
+        management.visible(&rows, &group, ""),
+        &expected,
+    );
+    let reopened = Library::open(lib.root.clone())?;
+    let rows = reopened.list("listening_audios")?;
+    record_order(
+        cases,
+        "name-order: SQLite reopen preserves the name queue",
+        Catalog::load(&reopened, &rows)?.learning(&rows, &group),
+        &expected,
+    );
+    audio_library::rename(&reopened, "listening_audios", "sort-conv3", "aaa-renamed")?;
+    let renamed = std::iter::once("sort-conv3".to_string())
+        .chain(expected.iter().filter(|key| *key != "sort-conv3").cloned())
+        .collect::<Vec<_>>();
+    let rows = reopened.list("listening_audios")?;
+    record_order(
+        cases,
+        "name-order: rename refreshes alphabetical position",
+        Catalog::load(&reopened, &rows)?.learning(&rows, &group),
+        &renamed,
+    );
+    let mut merged_ids = vec![];
+    for (index, name) in ["z-merged", "A-merged"].iter().enumerate() {
+        let a = ordered_source(
+            &reopened,
+            &group,
+            &format!("merged-source-{index}-a"),
+            &format!("merged source {index} a"),
+            "2026-03-01 00:00:00",
+        )?;
+        let b = ordered_source(
+            &reopened,
+            &group,
+            &format!("merged-source-{index}-b"),
+            &format!("merged source {index} b"),
+            "2026-03-02 00:00:00",
+        )?;
+        let merged = audio_tools::merge(&reopened, &[a, b], &group, &process::cancel_token())?;
+        let key = text(&merged.row, "id");
+        audio_library::rename(&reopened, "listening_audios", &key, name)?;
+        merged_ids.push(key);
+    }
+    let with_merged = [merged_ids[1].clone(), merged_ids[0].clone()]
+        .into_iter()
+        .chain(renamed)
+        .collect::<Vec<_>>();
+    let rows = reopened.list("listening_audios")?;
+    let catalog = Catalog::load(&reopened, &rows)?;
+    record_order(
+        cases,
+        "name-order: merged versions stay first and each category sorts by name with sources hidden",
+        catalog.learning(&rows, &group),
+        &with_merged,
+    );
+    let mut reversed = rows.clone();
+    reversed.reverse();
+    record_order(
+        cases,
+        "name-order: merged and ordinary order remains stable with reversed rows",
+        catalog.learning(&reversed, &group),
+        &with_merged,
+    );
+    record_order(
+        cases,
+        "name-order: merging and renaming in one group leave the other group unchanged",
+        catalog.learning(&rows, &other),
+        &["other-a".into(), "other-z".into()],
+    );
+    let passed = cases[first_case..]
+        .iter()
+        .all(|case| case["passed"] == true);
+    let evidence = lib.root.join("name-order-report.json");
+    fs::write(
+        &evidence,
+        serde_json::to_vec_pretty(
+            &json!({"passed":passed,"cases":&cases[first_case..],"library":lib.root,"real_sqlite_and_media":true,"independent_review":false}),
+        )?,
+    )?;
+    ensure!(
+        passed,
+        "audio name-order regression: {}",
+        evidence.display()
+    );
+    Ok(())
+}
 pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
+    let mut cases = vec![];
+    name_order(root, &mut cases)?;
     let lib = Library::open(root.join(format!("audio-merge-{}", id())))?;
     let group = lib.practice("短句学习")?;
     let other = lib.practice("其它组")?;
@@ -74,7 +285,6 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         .iter()
         .map(|r| fs::read(text(r, "audio_uri")))
         .collect::<std::io::Result<Vec<_>>>()?;
-    let mut cases = vec![];
     let mut management = audio_library::State::default();
     management.sort = 1;
     let checked = BTreeSet::from([text(&a, "id"), text(&b, "id")]);

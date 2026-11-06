@@ -102,8 +102,14 @@ impl Catalog {
             .iter()
             .filter(|r| text(r, "practice_id") == group && !self.hidden(&text(r, "id")))
             .collect::<Vec<_>>();
-        // Stable sorting keeps the existing order within merged and ordinary items.
-        rows.sort_by_key(|r| self.source_count(&text(r, "id")) == 0);
+        // Learning order is independent of database return order and management filters.
+        rows.sort_by_cached_key(|r| {
+            (
+                self.source_count(&text(r, "id")) == 0,
+                text(r, "name").to_lowercase(),
+                text(r, "id"),
+            )
+        });
         rows
     }
 }
