@@ -31,6 +31,8 @@ mod cloud_ui;
 mod data_controller;
 mod design;
 mod feedback_ui;
+#[cfg(debug_assertions)]
+mod flashcard_shortcut_probe;
 mod floating_ui;
 #[cfg(debug_assertions)]
 mod focus_mode_probe;
@@ -211,6 +213,7 @@ enum Action {
     LibraryConfirmDelete(String),
     LibraryStudy(bool),
     Flip,
+    ReplayCard,
     Next,
     Previous,
     Grade(String),
@@ -2202,6 +2205,10 @@ impl Render for AppView {
             .text_color(cx.theme().foreground)
             .text_size(px(14.))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.handle_card_study_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.handle_sentence_search_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
@@ -2256,15 +2263,9 @@ impl Render for AppView {
                         }
                     }
                     match event.keystroke.key.as_str() {
-                        "space" => this.handle(
-                            if ["flashcard", "discover"].contains(&this.page.as_str()) {
-                                Action::Flip
-                            } else {
-                                Action::Play
-                            },
-                            window,
-                            cx,
-                        ),
+                        "space" if !matches!(this.page.as_str(), "flashcard" | "discover") => {
+                            this.handle(Action::Play, window, cx)
+                        }
                         "right" if this.page != "listening" => this.handle(
                             if ["video", "listening"].contains(&this.page.as_str()) {
                                 this.video_horizontal_action(true)

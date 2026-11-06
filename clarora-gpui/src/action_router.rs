@@ -68,6 +68,20 @@ impl AppView {
                     | Action::Rate(_)
                     | Action::Word(..)
             );
+        let restore_card_focus = matches!(self.page.as_str(), "flashcard" | "discover")
+            && matches!(
+                &action,
+                Action::Flip
+                    | Action::ReplayCard
+                    | Action::Next
+                    | Action::Previous
+                    | Action::Grade(_)
+                    | Action::Filter(_)
+                    | Action::ReviewMode(_)
+                    | Action::Saved(_)
+                    | Action::Favorite
+                    | Action::Play
+            );
         let restore_video_focus = self.page == "video"
             && matches!(
                 &action,
@@ -105,6 +119,7 @@ impl AppView {
         if matches!(
             &action,
             Action::Flip
+                | Action::ReplayCard
                 | Action::Next
                 | Action::Previous
                 | Action::Grade(_)
@@ -922,6 +937,21 @@ impl AppView {
                     self.refresh();
                 }
                 Action::Flip => self.revealed = !self.revealed,
+                Action::ReplayCard => {
+                    ensure!(
+                        matches!(self.page.as_str(), "flashcard" | "discover"),
+                        "请先打开闪卡"
+                    );
+                    let card = self.current_card().context("当前没有闪卡")?;
+                    if card.media.is_empty() {
+                        self.report_status(FeedbackKind::Info, "这张闪卡没有可重播的音频".into());
+                        return Ok(());
+                    }
+                    // Reload the current card's own range, never swap in a stale
+                    // preloader or merely resume whichever file the player holds.
+                    self.media.preloaded_index = None;
+                    self.play_card();
+                }
                 Action::Next => {
                     if !self.cards.is_empty() {
                         self.history.push(self.index);
@@ -2734,7 +2764,7 @@ impl AppView {
         if updates_settings {
             self.refresh_view_data();
         }
-        if (restore_video_focus || restore_audio_focus)
+        if (restore_video_focus || restore_audio_focus || restore_card_focus)
             && !self.subtitle_text.borrow().focus.is_focused(window)
         {
             // Buttons deliberately keep the old focus on mouse-down. Explicit

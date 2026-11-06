@@ -88,6 +88,9 @@ pub(super) struct Probe {
     video_resume: video_resume_probe::Probe,
     chatgpt_layout_result: Option<std::result::Result<Vec<Value>, String>>,
     chatgpt_only: bool,
+    flashcard_only: bool,
+    flashcard_flow: flashcard_shortcut_probe::Flow,
+    flashcard_started: bool,
     finished: bool,
 }
 impl Probe {
@@ -130,6 +133,9 @@ impl Probe {
             video_resume: video_resume_probe::Probe::new(out),
             chatgpt_layout_result: None,
             chatgpt_only,
+            flashcard_only: std::env::var("CLARORA_FLASHCARD_KEYS_CHECK").as_deref() == Ok("1"),
+            flashcard_flow: flashcard_shortcut_probe::Flow::new(out),
+            flashcard_started: false,
             finished: false,
         }
     }
@@ -144,7 +150,8 @@ impl Probe {
                 "passed":passed,"error":error,"stage":self.stage,"elapsed_ms":self.started.elapsed().as_millis(),
                 "cases":self.cases,"library":self.out.join("library"),"hidden_native_window":true,
                 "actual_handlers":true,"actual_input_state":true,"mouse_keyboard_visual_verified":false,
-                "independent_review":false,"global_quit_action":self.global_quit
+                "independent_review":false,"global_quit_action":self.global_quit,
+                "flashcard_shortcut_report":self.out.join("flashcard-shortcut-report.json")
             }))?,
         )?;
         Ok(())
@@ -182,7 +189,20 @@ impl Probe {
         );
         match self.stage {
             0 => {
-                if !app.cards_ready() || !app.cards.iter().any(|c| c.id == "native-probe-card") {
+                if !self.flashcard_started
+                    && (!app.cards_ready()
+                        || !app.cards.iter().any(|c| c.id == "native-probe-card"))
+                {
+                    return Ok(());
+                }
+                self.flashcard_started = true;
+                if !self.flashcard_flow.step(app, window, cx)? {
+                    return Ok(());
+                }
+                self.cases.extend(self.flashcard_flow.cases());
+                if self.flashcard_only {
+                    self.report(Some(true), None)?;
+                    self.finished = true;
                     return Ok(());
                 }
                 // The normal player API and AppView's real clock are exercised without a sound device.

@@ -2,6 +2,48 @@
 use super::*;
 
 impl AppView {
+    pub(super) fn handle_card_study_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let modifiers = event.keystroke.modifiers;
+        if !matches!(self.page.as_str(), "flashcard" | "discover")
+            || !matches!(event.keystroke.key.as_str(), "space" | "r")
+            || modifiers.control
+            || modifiers.platform
+            || modifiers.alt
+            || modifiers.shift
+            || window.has_active_dialog(cx)
+        {
+            return false;
+        }
+        let contexts = window.context_stack();
+        if contexts
+            .iter()
+            .any(|c| c.contains("Input") || c.contains("PopupMenu"))
+            || !(window.focused(cx) == Some(self.focus.clone())
+                || contexts.iter().any(|c| c.contains("StudyCard")))
+        {
+            return false;
+        }
+        // A held key must not flood flips/reloads. Empty/loading cards never act
+        // on a previous card's media or acquire a hidden back face.
+        if !event.is_held && self.cards_ready() && self.current_card().is_some() {
+            self.handle(
+                if event.keystroke.key == "r" {
+                    Action::ReplayCard
+                } else {
+                    Action::Flip
+                },
+                window,
+                cx,
+            );
+        }
+        true
+    }
+
     pub(super) fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut content = div().flex().flex_col().gap_5().w_full();
         if matches!(self.page.as_str(), "flashcard" | "discover") && !self.cards_ready() {
@@ -155,10 +197,12 @@ impl AppView {
                     let back = if self.revealed {
                         card.back.clone()
                     } else {
-                        "点击翻面查看释义".into()
+                        "按空格键翻面查看释义".into()
                     };
                     content = content.child(
                         div()
+                            .id("study-card")
+                            .key_context("StudyCard")
                             .p_8()
                             .min_h(px(310.))
                             .rounded_2xl()
@@ -201,8 +245,9 @@ impl AppView {
                                             )),
                                     ),
                             )
-                            .child(
-                                div()
+                            .child({
+                                let front = div()
+                                    .relative()
                                     .py_4()
                                     .text_size(px(if card.kind == "word" { 36. } else { 23. }))
                                     .font_weight(FontWeight::SEMIBOLD)
@@ -214,8 +259,11 @@ impl AppView {
                                             cx,
                                         )
                                         .selectable(true),
-                                    ),
-                            )
+                                    );
+                                #[cfg(debug_assertions)]
+                                let front = front.children(flashcard_shortcut_probe::front_probe());
+                                front
+                            })
                             .child(div().text_color(cx.theme().muted_foreground).child(
                                 TextView::markdown("card-back", back, window, cx).selectable(true),
                             ))
@@ -230,12 +278,18 @@ impl AppView {
                                     .items_center()
                                     .child(
                                         div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
                                             .child(if self.revealed {
-                                                "回想一次，再选择熟悉程度"
+                                                "空格键：收起答案"
                                             } else {
-                                                "先回想，再查看答案 · Space"
+                                                "空格键：查看答案"
+                                            })
+                                            .when(!card.media.is_empty(), |hint| {
+                                                hint.child("R 键：重播本卡音频")
                                             }),
                                     )
                                     .child(
@@ -249,7 +303,8 @@ impl AppView {
                                             Action::Flip,
                                             cx,
                                         )
-                                        .primary(),
+                                        .primary()
+                                        .tooltip("空格键：查看或收起答案"),
                                     ),
                             ),
                     );

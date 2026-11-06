@@ -981,6 +981,7 @@ fn main() -> Result<()> {
     let mode = match args.get(2).and_then(|arg| arg.to_str()) {
         Some("--video-batch-translation-only") => "video-batch-translation-only",
         Some("--ui-controller-only") => "ui-controller-only",
+        Some("--flashcard-keys-only") => "flashcard-keys-only",
         Some("--subtitle-workbench-only") => "subtitle-workbench-only",
         Some("--assistant-only") => "assistant-only",
         Some("--network-proxy-only") => "network-proxy-only",
@@ -1033,6 +1034,8 @@ fn main() -> Result<()> {
             .and_then(|lib| assistant::run(&lib, &mut results))
     } else if mode == "ui-controller-only" {
         ui_controller::run(&output, &mut results)
+    } else if mode == "flashcard-keys-only" {
+        ui_controller::flashcard(&output, &mut results)
     } else if mode == "subtitle-workbench-only" {
         Library::open(output.join("subtitle-workbench-source")).and_then(|lib| {
             transcript::run(&lib, &mut results)?;
