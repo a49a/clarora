@@ -63,7 +63,7 @@ pub(crate) async fn request<T>(
         },
     }
 }
-pub(crate) fn remote_json<F, Fut>(cancel: &Cancel, create: F) -> Result<Value>
+pub(crate) fn remote_json<F, Fut>(cancel: &Cancel, base: &str, create: F) -> Result<Value>
 where
     F: FnOnce(reqwest::Client) -> Fut,
     Fut: Future<Output = Result<reqwest::RequestBuilder>>,
@@ -73,7 +73,7 @@ where
         .enable_all()
         .build()?
         .block_on(async {
-            let client = reqwest::Client::builder()
+            let client = crate::network::client_builder(base)
                 .connect_timeout(Duration::from_secs(20))
                 .timeout(Duration::from_secs(180))
                 .build()?;
@@ -165,7 +165,7 @@ pub(crate) fn chat_messages(
         .enable_all()
         .build()?
         .block_on(async {
-            let client = reqwest::Client::builder()
+            let client = crate::network::client_builder(&base)
                 .connect_timeout(Duration::from_secs(20))
                 .timeout(Duration::from_secs(180))
                 .build()?;

@@ -10,6 +10,7 @@ pub mod discover;
 pub mod documents;
 pub mod ebook;
 pub mod media;
+mod network;
 pub mod process;
 pub mod recording;
 pub mod runtime;

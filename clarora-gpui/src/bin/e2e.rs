@@ -64,6 +64,8 @@ mod kokoro;
 mod model_navigation_native;
 #[path = "support/model_progress.rs"]
 mod model_progress;
+#[path = "support/network_proxy.rs"]
+mod network_proxy;
 #[path = "support/playback_state.rs"]
 mod playback_state;
 #[path = "support/protocol.rs"]
@@ -270,6 +272,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     #[cfg(debug_assertions)]
     chatgpt::run(&lib, results)?;
     assistant::run(&lib, results)?;
+    network_proxy::run(&root, results)?;
     chat_controller::run(&lib, results)?;
     data_loader::run(&root, results)?;
     video_batch_translation::run(&lib, results)?;
@@ -980,6 +983,7 @@ fn main() -> Result<()> {
         Some("--ui-controller-only") => "ui-controller-only",
         Some("--subtitle-workbench-only") => "subtitle-workbench-only",
         Some("--assistant-only") => "assistant-only",
+        Some("--network-proxy-only") => "network-proxy-only",
         Some("--chat-controller-only") => "chat-controller-only",
         Some("--data-loader-only") => "data-loader-only",
         Some("--focus-timer-only") => "focus-timer-only",
@@ -1019,7 +1023,9 @@ fn main() -> Result<()> {
         Some("--timer-chimes-audible") => "timer-chimes-audible",
         _ => "full",
     };
-    let result = if mode == "video-batch-translation-only" {
+    let result = if mode == "network-proxy-only" {
+        network_proxy::run(&output, &mut results)
+    } else if mode == "video-batch-translation-only" {
         Library::open(output.join("batch-translate-source"))
             .and_then(|lib| video_batch_translation::run(&lib, &mut results))
     } else if mode == "assistant-only" {

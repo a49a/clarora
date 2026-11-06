@@ -1,5 +1,19 @@
 //! Real OAuth callback, signed identity, protected storage and Responses HTTP fixtures.
 //! Fake OS vault stays in this process; no user's browser, account or keychain is accessed.
+// Responses failure scenarios, recorded before extending the HTTP fixtures:
+// - Valid SSE is rejected because Content-Type uses mixed case, a charset parameter,
+//   text/plain, or no Content-Type; a completed final event lacks its trailing blank line.
+// - A complete JSON Response is rejected, or accepted only after a second paid request.
+// - HTTP 200 hides an error object/string, detail response, HTML interstitial, unfinished
+//   Response, empty/malformed body, or completed Response without assistant output_text.
+// - A completed-looking JSON body also carries error/detail and is falsely accepted.
+// - Diagnostics lose HTTP status/request ID/body shape or echo secrets from the body.
+// - Any response path drops question/reference/history, or retries an unsuccessful call.
+// Additional boundaries recorded before adding their HTTP cases:
+// - Valid SSE starts with id:/retry: and is incorrectly fixed into the JSON state.
+// - A body closes before its advertised Content-Length and loses transport diagnostics.
+// - Secrets occur directly in error strings or error.code, bypassing message redaction.
+// - Cancellation from the final JSON progress callback still returns a successful answer.
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use clarora_gpui::{ai, backup, chatgpt, data::Library, process};
@@ -68,6 +82,8 @@ struct ServerState {
     case: String,
     refreshes: usize,
     requests: Vec<Value>,
+    exchanges: usize,
+    callback_pages: Vec<String>,
 }
 struct Fixture {
     base: String,
@@ -118,16 +134,100 @@ fn request(socket: &mut TcpStream) -> Result<(String, BTreeMap<String, String>, 
     Ok((path, headers, bytes[split..split + length].into()))
 }
 fn response(s: &mut TcpStream, status: u16, kind: &str, body: &str) -> Result<()> {
+    response_length(s, status, kind, body, body.len())
+}
+fn response_length(
+    s: &mut TcpStream,
+    status: u16,
+    kind: &str,
+    body: &str,
+    length: usize,
+) -> Result<()> {
+    let content_type = if kind.is_empty() {
+        String::new()
+    } else {
+        format!("Content-Type: {kind}\r\n")
+    };
     write!(
         s,
-        "HTTP/1.1 {status} Fixture\r\nContent-Type: {kind}\r\nx-request-id: fixture-request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
+        "HTTP/1.1 {status} Fixture\r\n{content_type}x-request-id: fixture-request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        length
     )?;
     Ok(())
 }
 fn event(kind: &str, mut value: Value) -> String {
     value["type"] = json!(kind);
     format!("data: {value}\n\n")
+}
+const RESPONSE_SECRET: &str = "private-access-token fixture-code fixture@example.invalid";
+fn json_response(status: &str) -> Value {
+    json!({"object":"response","status":status,"output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"你好 🌱"}]}]})
+}
+fn response_variant(case: &str, stream: String) -> (&'static str, String) {
+    match case {
+        "sse-charset" => ("text/event-stream; charset=utf-8", stream),
+        "sse-mixed-case" => ("Text/Event-Stream; Charset=UTF-8", stream),
+        "sse-plain" => ("text/plain", stream),
+        "sse-no-content-type" => ("", stream),
+        "sse-eof-completed" => ("text/event-stream", stream.trim_end().into()),
+        "sse-id-prefix" => ("text/event-stream", format!("id: fixture-event\n{stream}")),
+        "sse-retry-prefix" => ("text/event-stream", format!("retry: 1000\n{stream}")),
+        "json-completed" | "json-cancel-completed" => {
+            ("application/json", json_response("completed").to_string())
+        }
+        "json-error-object" => (
+            "application/json",
+            json!({"error":{"code":"subscription_sharing_usage_limit_exceeded","message":RESPONSE_SECRET}}).to_string(),
+        ),
+        "json-error-string" => (
+            "application/json",
+            json!({"error":"unauthorized_client","error_description":RESPONSE_SECRET}).to_string(),
+        ),
+        "json-error-secret-string" => (
+            "application/json",
+            json!({"error":RESPONSE_SECRET}).to_string(),
+        ),
+        "json-error-secret-code" => (
+            "application/json",
+            json!({"error":{"code":RESPONSE_SECRET}}).to_string(),
+        ),
+        "json-detail" => ("application/json", json!({"detail":RESPONSE_SECRET}).to_string()),
+        "html-200" => (
+            "text/html",
+            format!("<!doctype html><title>Just a moment...</title>{RESPONSE_SECRET}"),
+        ),
+        "json-incomplete" => ("application/json", json_response("incomplete").to_string()),
+        "json-failed" => ("application/json", json_response("failed").to_string()),
+        "json-in-progress" => ("application/json", json_response("in_progress").to_string()),
+        "json-completed-error" => {
+            let mut value = json_response("completed");
+            value["error"] = json!({"code":"subscription_sharing_usage_limit_exceeded","message":RESPONSE_SECRET});
+            ("application/json", value.to_string())
+        }
+        "json-completed-detail" => {
+            let mut value = json_response("completed");
+            value["detail"] = json!(RESPONSE_SECRET);
+            ("application/json", value.to_string())
+        }
+        "json-no-answer" => (
+            "application/json",
+            json!({"object":"response","status":"completed","output":[]}).to_string(),
+        ),
+        "json-non-assistant" => {
+            let mut value = json_response("completed");
+            value["output"][0]["role"] = json!("user");
+            ("application/json", value.to_string())
+        }
+        "json-empty-answer" => {
+            let mut value = json_response("completed");
+            value["output"][0]["content"][0]["text"] = json!(" \n");
+            ("application/json", value.to_string())
+        }
+        "empty-json" => ("application/json", String::new()),
+        "invalid-json" => ("application/json", format!("{{{RESPONSE_SECRET}")),
+        "invalid-plain" => ("text/plain", RESPONSE_SECRET.into()),
+        _ => ("text/event-stream", stream),
+    }
 }
 impl Fixture {
     fn new() -> Result<Self> {
@@ -160,6 +260,7 @@ impl Fixture {
                 } else if path == "/jwks" {
                     response(&mut socket,200,"application/json",&json!({"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","kid":"fixture-key","x":B64.encode(&public[1..33]),"y":B64.encode(&public[33..65])}]}).to_string())?;
                 } else if path == "/api/accounts/oauth/token" {
+                    s.exchanges += 1;
                     let form = url::form_urlencoded::parse(&body)
                         .into_owned()
                         .collect::<BTreeMap<_, _>>();
@@ -168,6 +269,51 @@ impl Fixture {
                         form["resource"] == "https://api.openai.com/v1",
                         "missing resource"
                     );
+                    let failure = match s.case.as_str() {
+                        "exchange-region" => Some((
+                            403,
+                            "application/json",
+                            r#"{"error":{"code":"unsupported_country_region_territory","message":"private-access-token fixture-code fixture@example.invalid"}}"#,
+                        )),
+                        "exchange-client" => Some((
+                            403,
+                            "application/json",
+                            r#"{"error":"unauthorized_client","error_description":"private-access-token fixture-code fixture@example.invalid"}"#,
+                        )),
+                        "exchange-detail" => Some((
+                            403,
+                            "application/json",
+                            r#"{"detail":"private-access-token fixture-code fixture@example.invalid"}"#,
+                        )),
+                        "exchange-html" => Some((
+                            403,
+                            "text/html",
+                            "<!doctype html><title>Just a moment...</title>private-access-token fixture-code fixture@example.invalid",
+                        )),
+                        "exchange-invalid-json" => Some((
+                            403,
+                            "application/json",
+                            "private-access-token fixture-code fixture@example.invalid",
+                        )),
+                        "exchange-invalid-grant" => {
+                            Some((400, "application/json", r#"{"error":"invalid_grant"}"#))
+                        }
+                        "exchange-temporary" => Some((
+                            503,
+                            "application/json",
+                            r#"{"error":"temporarily_unavailable"}"#,
+                        )),
+                        "exchange-rate" => Some((
+                            429,
+                            "application/json",
+                            r#"{"error":"rate_limit_exceeded"}"#,
+                        )),
+                        _ => None,
+                    };
+                    if let Some((status, kind, body)) = failure {
+                        response(&mut socket, status, kind, body)?;
+                        continue;
+                    }
                     if form["grant_type"] == "refresh_token" {
                         if s.case == "refresh-temporary" {
                             response(
@@ -268,7 +414,7 @@ impl Fixture {
                                 json!({"response":{"status":"incomplete"}}),
                             )
                         }
-                        "truncated" => {}
+                        "truncated" | "transport-truncated" => {}
                         _ => {
                             body += &event(
                                 "response.completed",
@@ -276,7 +422,12 @@ impl Fixture {
                             )
                         }
                     }
-                    let _ = response(&mut socket, 200, "text/event-stream", &body);
+                    let (kind, body) = response_variant(&s.case, body);
+                    if s.case == "transport-truncated" {
+                        let _ = response_length(&mut socket, 200, kind, &body, body.len() + 32);
+                    } else {
+                        let _ = response(&mut socket, 200, kind, &body);
+                    }
                 } else if path == "/revoke" {
                     let form = url::form_urlencoded::parse(&body)
                         .into_owned()
@@ -305,7 +456,8 @@ impl Fixture {
         profile: Option<&str>,
         cancel: &process::Cancel,
     ) -> Result<chatgpt::Snapshot> {
-        client.sign_in(profile, cancel, |address| {
+        let (page_tx, page_rx) = std::sync::mpsc::channel();
+        let result = client.sign_in(profile, cancel, |address| {
             let url = url::Url::parse(address)?;
             let params = url.query_pairs().into_owned().collect::<BTreeMap<_, _>>();
             ensure!(
@@ -364,14 +516,25 @@ impl Fixture {
             let invalid = matches!(s.case.as_str(), "state" | "duplicate-state");
             let cancellation = cancel.clone();
             let callback = callback.to_string();
+            let page_tx = page_tx.clone();
             thread::spawn(move || {
-                let _ = reqwest::blocking::get(callback);
+                if let Ok(response) = reqwest::blocking::Client::builder()
+                    .no_proxy()
+                    .build()
+                    .and_then(|c| c.get(callback).send())
+                {
+                    let _ = page_tx.send(response.text().unwrap_or_default());
+                }
                 if invalid {
                     cancellation.store(true, Ordering::SeqCst);
                 }
             });
             Ok(())
-        })
+        });
+        if let Ok(page) = page_rx.recv_timeout(Duration::from_secs(1)) {
+            self.state.lock().unwrap().callback_pages.push(page);
+        }
+        result
     }
     fn finish(&mut self) -> Result<()> {
         self.stop.store(true, Ordering::SeqCst);
@@ -386,6 +549,172 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = self.finish();
     }
+}
+fn response_protocol(
+    lib: &Library,
+    server: &Fixture,
+    cancel: &process::Cancel,
+    cases: &mut Vec<Value>,
+) -> Result<()> {
+    let mut evidence = vec![];
+    let mut failures = vec![];
+    for (case, success, shape) in [
+        ("sse-charset", true, "sse"),
+        ("sse-mixed-case", true, "sse"),
+        ("sse-plain", true, "sse"),
+        ("sse-no-content-type", true, "sse"),
+        ("sse-eof-completed", true, "sse"),
+        ("sse-id-prefix", true, "sse"),
+        ("sse-retry-prefix", true, "sse"),
+        ("transport-truncated", false, "transport"),
+        ("json-completed", true, "response"),
+        ("json-cancel-completed", false, "cancelled"),
+        ("json-error-object", false, "error_object"),
+        ("json-error-string", false, "error_string"),
+        ("json-error-secret-string", false, "error_string"),
+        ("json-error-secret-code", false, "error_object"),
+        ("json-detail", false, "detail"),
+        ("html-200", false, "html"),
+        ("json-incomplete", false, "response"),
+        ("json-failed", false, "response"),
+        ("json-in-progress", false, "response"),
+        ("json-completed-error", false, "error_object"),
+        ("json-completed-detail", false, "detail"),
+        ("json-no-answer", false, "response"),
+        ("json-non-assistant", false, "response"),
+        ("json-empty-answer", false, "response"),
+        ("empty-json", false, "empty"),
+        ("invalid-json", false, "non_json"),
+        ("invalid-plain", false, "non_json"),
+    ] {
+        server.state.lock().unwrap().case = case.into();
+        let before = server.state.lock().unwrap().requests.len();
+        let mut chunks = vec![];
+        let cancel_on_progress = case == "json-cancel-completed";
+        let request_cancel = if cancel_on_progress {
+            process::cancel_token()
+        } else {
+            cancel.clone()
+        };
+        let mut cancelled_by_progress = false;
+        let result = ai::chat_stream(
+            lib,
+            "解释 why did",
+            "Selected words only",
+            &[
+                json!({"role":"user","content":"previous question"}),
+                json!({"role":"assistant","content":"previous answer"}),
+            ],
+            &request_cancel,
+            |reply| {
+                chunks.push(reply.answer.clone());
+                if cancel_on_progress && reply.answer == "你好 🌱" {
+                    cancelled_by_progress = true;
+                    request_cancel.store(true, Ordering::SeqCst);
+                }
+            },
+        );
+        let requests = server.state.lock().unwrap().requests[before..].to_vec();
+        let request = requests.first().cloned().unwrap_or(Value::Null);
+        let mut reasons = vec![];
+        if requests.len() != 1 {
+            reasons.push("request was missing or automatically retried");
+        }
+        if request["model"] != "fixture-model"
+            || request["stream"] != true
+            || request["store"] != false
+            || !request["instructions"]
+                .as_str()
+                .is_some_and(|s| s.contains("<material>\nSelected words only\n</material>"))
+            || request["input"]
+                != json!([
+                    {"role":"user","content":"previous question"},
+                    {"role":"assistant","content":"previous answer"},
+                    {"role":"user","content":"解释 why did"},
+                ])
+        {
+            reasons.push("model, question, reference, history or Responses fields changed");
+        }
+        let mut diagnosis = String::new();
+        let mut answer = String::new();
+        match result {
+            Ok(reply) => {
+                answer = reply.answer;
+                if !success {
+                    reasons.push("unsuccessful or invalid response was accepted");
+                } else if answer != "你好 🌱" || !chunks.last().is_some_and(|s| s == "你好 🌱")
+                {
+                    reasons.push("valid response or final progress lost its answer");
+                }
+            }
+            Err(error) => {
+                diagnosis = format!("{error:#}");
+                if success {
+                    reasons.push("valid response was rejected");
+                } else if cancel_on_progress {
+                    if !cancelled_by_progress || !diagnosis.contains("已取消") {
+                        reasons.push("final JSON progress cancellation was not acknowledged");
+                    }
+                } else {
+                    let kind = if case == "html-200" {
+                        "text/html"
+                    } else if case == "invalid-plain" {
+                        "text/plain"
+                    } else if case == "transport-truncated" {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    };
+                    if !diagnosis.contains("HTTP 200")
+                        || !diagnosis.contains("fixture-request")
+                        || (case != "transport-truncated"
+                            && !diagnosis.contains(&format!("response={shape}")))
+                        || !diagnosis.contains(&format!("content-type={kind}"))
+                    {
+                        reasons.push(
+                            "safe HTTP, request ID, response shape or MIME diagnosis missing",
+                        );
+                    }
+                }
+            }
+        }
+        let mut secret_leaked = false;
+        for secret in [
+            "private-access-token",
+            "fixture-code",
+            "fixture@example.invalid",
+        ] {
+            if diagnosis.contains(secret) {
+                secret_leaked = true;
+                diagnosis = diagnosis.replace(secret, "[redacted]");
+            }
+        }
+        if secret_leaked {
+            reasons.push("response body secrets leaked into diagnostics");
+        }
+        let passed = reasons.is_empty();
+        if !passed {
+            failures.push(case);
+        }
+        let item = json!({"case":case,"passed":passed,"expected_success":success,"expected_shape":shape,"request_count":requests.len(),"request":request,"answer":answer,"progress":chunks,"cancelled_by_progress":cancelled_by_progress,"diagnosis":diagnosis,"secret_leaked":secret_leaked,"failure_reasons":reasons});
+        cases.push(item.clone());
+        evidence.push(item);
+    }
+    server.state.lock().unwrap().case.clear();
+    let report = lib.root.join("responses-protocol-report.json");
+    fs::write(
+        &report,
+        serde_json::to_vec_pretty(
+            &json!({"passed":failures.is_empty(),"cases":evidence,"live_openai_verified":false}),
+        )?,
+    )?;
+    ensure!(
+        failures.is_empty(),
+        "Responses protocol cases failed: {}; evidence: {}",
+        failures.join(", "),
+        report.display()
+    );
+    Ok(())
 }
 pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     let lib = Library::open(lib.root.join("chatgpt-fixture"))?;
@@ -419,6 +748,94 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
             "invalid identity stored"
         );
         cases.push(json!({"case":case,"passed":true}));
+    }
+    for (case, status, expected, shape) in [
+        ("exchange-region", 403, "地区", "error_object"),
+        ("exchange-client", 403, "应用注册", "error_string"),
+        ("exchange-detail", 403, "拒绝", "detail"),
+        ("exchange-html", 403, "网络防护", "html"),
+        ("exchange-invalid-json", 403, "拒绝", "non_json"),
+        ("exchange-invalid-grant", 400, "失效", "error_string"),
+        ("exchange-temporary", 503, "暂时", "error_string"),
+        ("exchange-rate", 429, "频繁", "error_string"),
+    ] {
+        let failure_lib = Library::open(lib.root.join(case))?;
+        chatgpt::diagnostic::configure(&failure_lib, &server.base)?;
+        let failure_client = chatgpt::Client::new(&failure_lib);
+        server.state.lock().unwrap().case = case.into();
+        let exchanges = server.state.lock().unwrap().exchanges;
+        let error = server
+            .login(&failure_client, None, &cancel)
+            .err()
+            .context("accepted denied token exchange")?;
+        let message = format!("{error:#}");
+        fs::write(failure_lib.root.join("failure.txt"), &message)?;
+        ensure!(
+            message.contains("换取登录凭证")
+                && message.contains(&format!("HTTP {status}"))
+                && message.contains(expected)
+                && message.contains(shape)
+                && message.contains("fixture-request"),
+            "missing safe exchange diagnosis for {case}: {message}"
+        );
+        ensure!(
+            ![
+                "private-access-token",
+                "fixture-code",
+                "fixture@example.invalid"
+            ]
+            .iter()
+            .any(|v| message.contains(v)),
+            "authorization details leaked into error"
+        );
+        let pending = chatgpt::snapshot(&failure_lib)?;
+        ensure!(
+            !pending.enabled && pending.profiles.len() == 1 && !pending.profiles[0].connected,
+            "failed exchange changed active service or registration"
+        );
+        let pending_id = pending.profiles[0].id.clone();
+        let issued = pending.profiles[0].client_id.clone();
+        ensure!(
+            pending.login_profile().is_some_and(|p| p.id == pending_id),
+            "continue login forgot pending registration"
+        );
+        ensure!(
+            server.state.lock().unwrap().exchanges == exchanges + 1,
+            "exchange failure was retried automatically"
+        );
+        ensure!(
+            server
+                .state
+                .lock()
+                .unwrap()
+                .callback_pages
+                .last()
+                .is_some_and(|p| p.contains("不代表登录成功")),
+            "browser acknowledgement misleadingly reports login success"
+        );
+        server.state.lock().unwrap().case.clear();
+        let retried = server.login(&failure_client, Some(&pending_id), &cancel)?;
+        ensure!(
+            retried.profiles.len() == 1
+                && retried
+                    .current()
+                    .is_some_and(|p| p.id == pending_id && p.client_id == issued && p.connected),
+            "retry created a different dynamic registration"
+        );
+        ensure!(
+            retried.login_profile().is_some_and(|p| p.id == pending_id),
+            "continue login ignored selected account"
+        );
+        let existing = serde_json::to_value(&retried)?;
+        server.state.lock().unwrap().case = case.into();
+        ensure!(
+            server
+                .login(&failure_client, Some(&pending_id), &cancel)
+                .is_err()
+                && serde_json::to_value(chatgpt::snapshot(&failure_lib)?)? == existing,
+            "failed reauthorization changed a working session"
+        );
+        cases.push(json!({"case":case,"passed":true,"status":status,"shape":shape,"diagnosis":message,"retry_reuses_registration":true,"failed_reauth_preserves_session":true}));
     }
     server.state.lock().unwrap().case.clear();
     let first = server.login(&client, None, &cancel)?;
@@ -485,6 +902,7 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     cases.push(
         json!({"case":"signed OAuth to model discovery to actual assistant stream","passed":true}),
     );
+    response_protocol(&lib, &server, &cancel, &mut cases)?;
     for case in ["failed", "incomplete", "truncated"] {
         server.state.lock().unwrap().case = case.into();
         let r = ai::chat_stream(&lib, "q", "", &[], &cancel, |_| {});

@@ -12,10 +12,10 @@ use tokio::{
 };
 
 #[derive(Debug)]
-pub(super) struct Expired;
+pub(super) struct Expired(String);
 impl std::fmt::Display for Expired {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ChatGPT 登录已过期或被撤销，请重新登录")
+        f.write_str(&self.0)
     }
 }
 impl std::error::Error for Expired {}
@@ -32,7 +32,7 @@ async fn limited(response: reqwest::Response, cancel: &Cancel) -> Result<Value> 
 async fn metadata(client: &Client, cancel: &Cancel) -> Result<Value> {
     let response = crate::ai_chat::request(
         cancel,
-        http()?
+        http(client)?
             .get(format!("{}/.well-known/openid-configuration", client.auth))
             .send(),
     )
@@ -80,7 +80,7 @@ async fn validate(
         .context("ChatGPT 身份签名缺少密钥标识")?;
     let meta = metadata(client, cancel).await?;
     let jwks = endpoint(client, &meta, "jwks_uri")?;
-    let response = crate::ai_chat::request(cancel, http()?.get(jwks).send()).await?;
+    let response = crate::ai_chat::request(cancel, http(client)?.get(jwks).send()).await?;
     ensure!(response.status().is_success(), "读取 ChatGPT 签名公钥失败");
     let keys = limited(response, cancel).await?;
     let key = keys["keys"]
@@ -164,19 +164,20 @@ async fn exchange(
 ) -> Result<Value> {
     let response = crate::ai_chat::request(
         cancel,
-        http()?
+        http(client)?
             .post(format!("{}/api/accounts/oauth/token", client.auth))
             .form(form)
             .send(),
     )
     .await?;
     let status = response.status();
-    let value = limited(response, cancel).await?;
+    let headers = response.headers().clone();
+    let value = limited(response, cancel).await;
+    ensure!(!cancel.load(Ordering::SeqCst), "已取消 ChatGPT 操作");
     if !status.is_success() {
-        let code = value["error"]
-            .as_str()
-            .or_else(|| value["error"]["code"].as_str())
-            .unwrap_or("");
+        let value = value.unwrap_or(Value::Null);
+        let code = login_error::code(&value);
+        let error = login_error::failure(status.as_u16(), &headers, &value, refresh);
         if refresh
             && [
                 "invalid_grant",
@@ -188,14 +189,11 @@ async fn exchange(
             ]
             .contains(&code)
         {
-            return Err(Expired.into());
+            return Err(Expired(error.to_string()).into());
         }
-        if code == "invalid_grant" {
-            anyhow::bail!("ChatGPT 授权码已过期，请重新点击登录");
-        }
-        anyhow::bail!("ChatGPT 授权请求失败（HTTP {status}），请稍后重试或重新登录");
+        return Err(error);
     }
-    Ok(value)
+    value
 }
 fn tokens(
     value: &Value,
@@ -287,7 +285,7 @@ async fn callback(
         }
         valid &= params.get("state").is_some_and(|v| v == state);
         let body = if valid {
-            "<!doctype html><meta charset=utf-8><title>Clarora</title><p>授权已返回 Clarora。请回到应用查看登录结果。</p>"
+            "<!doctype html><meta charset=utf-8><title>Clarora</title><p>已收到登录回调，此页面不代表登录成功。请回到 Clarora 查看最终登录结果。</p>"
         } else {
             "Invalid callback"
         };
@@ -511,7 +509,7 @@ pub(super) async fn sign_out(client: &Client, cancel: &Cancel) -> Result<(Snapsh
                 let endpoint = endpoint(client, &meta, "revocation_endpoint")?;
                 let response = crate::ai_chat::request(
                     cancel,
-                    http()?
+                    http(client)?
                         .post(endpoint)
                         .form(&[
                             ("token", session.refresh_token.as_str()),

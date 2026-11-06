@@ -23,7 +23,7 @@ regex = "1"
 libloading = "0.8"
 raw-window-handle = "0.6"
 image = "0.25"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "stream", "system-proxy"] }
 futures-core = "0.3"
 sha2 = "0.10"
 hmac = "0.12"

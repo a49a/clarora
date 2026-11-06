@@ -81,10 +81,6 @@ pub fn download(
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(3600))
-            .connect_timeout(Duration::from_secs(20))
-            .build()?;
         for (index, spec) in files.iter().enumerate() {
             ensure!(
                 Path::new(&spec.name).file_name().and_then(|p| p.to_str())
@@ -108,6 +104,10 @@ pub fn download(
                 };
                 notify(progress.clone());
                 let transfer = async {
+                    let client = crate::network::client_builder(host)
+                        .timeout(Duration::from_secs(3600))
+                        .connect_timeout(Duration::from_secs(20))
+                        .build()?;
                     let mut response = client
                         .get(format!(
                             "{}/{}/{}",

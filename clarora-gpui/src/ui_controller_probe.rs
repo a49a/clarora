@@ -716,13 +716,20 @@ impl Probe {
                         "connected",
                         "permission-required",
                         "waiting-error",
+                        "pending-registration",
+                        "exchange-forbidden",
                     ] {
+                        let pending = matches!(case, "pending-registration" | "exchange-forbidden");
                         let profile = Profile {
                             id: uuid::Uuid::new_v4().to_string(),
                             client_id: "fixture-client".into(),
-                            subject: "fixture-subject".into(),
+                            subject: if pending {
+                                String::new()
+                            } else {
+                                "fixture-subject".into()
+                            },
                             email: "fixture-account@example.invalid".into(),
-                            connected: true,
+                            connected: !pending,
                             sharing: case != "permission-required",
                             model: "fixture-model".into(),
                             models: vec![Model {
@@ -734,8 +741,12 @@ impl Probe {
                             Snapshot::default()
                         } else {
                             Snapshot {
-                                enabled: true,
-                                active: profile.id.clone(),
+                                enabled: !pending,
+                                active: if case == "pending-registration" {
+                                    String::new()
+                                } else {
+                                    profile.id.clone()
+                                },
                                 profiles: vec![profile],
                                 ..Default::default()
                             }
@@ -745,7 +756,9 @@ impl Probe {
                         } else {
                             String::new()
                         };
-                        app.chatgpt.error = if case == "waiting-error" {
+                        app.chatgpt.error = if case == "exchange-forbidden" {
+                            "换取登录凭证失败（HTTP 403）：OpenAI 拒绝了本次登录请求，具体限制尚无法确定。请复制错误详情进一步排查。\n诊断：code=unsupported_country_region_territory; response=error_object; request=fixture-request".into()
+                        } else if case == "waiting-error" {
                             "ChatGPT 会员使用额度已达上限，请到设置查看用量。".into()
                         } else {
                             String::new()

@@ -659,9 +659,27 @@ impl AppView {
                     div()
                         .px_4()
                         .py_2()
-                        .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(error),
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().danger)
+                                .child(error.split("\n诊断：").next().unwrap_or("").to_string()),
+                        )
+                        .child(
+                            div().child(
+                                self.assistant_button(
+                                    "assistant-copy-error",
+                                    "复制错误详情",
+                                    Action::CopySelection(error.clone()),
+                                    cx,
+                                )
+                                .outline()
+                                .h(px(32.)),
+                            ),
+                        ),
                 )
             })
             .when(self.chat.is_loading(), |v| {

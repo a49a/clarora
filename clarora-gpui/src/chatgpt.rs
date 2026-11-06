@@ -1,5 +1,6 @@
 //! Official Sign in with ChatGPT for the open-source local client.
 //! Tokens stay in an encrypted local vault; only public snapshots reach GPUI.
+mod login_error;
 mod oauth;
 mod responses;
 mod storage;
@@ -54,6 +55,14 @@ impl Snapshot {
     pub fn current(&self) -> Option<&Profile> {
         self.profiles.iter().find(|p| p.id == self.active)
     }
+    pub fn login_profile(&self) -> Option<&Profile> {
+        self.current().or_else(|| {
+            self.profiles
+                .iter()
+                .rev()
+                .find(|p| !p.connected && p.subject.is_empty() && !p.client_id.is_empty())
+        })
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Session {
@@ -97,8 +106,8 @@ fn run<T>(work: impl Future<Output = Result<T>>) -> Result<T> {
         .build()?
         .block_on(work)
 }
-fn http() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
+fn http(client: &Client) -> Result<reqwest::Client> {
+    Ok(crate::network::client_builder(&client.auth)
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(180))

@@ -2121,7 +2121,7 @@ impl Storage {
         .await
     }
     fn client(&self) -> Result<reqwest::Client> {
-        let mut builder = reqwest::Client::builder()
+        let mut builder = crate::network::client_builder(&self.config.endpoint)
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(120))
             .redirect(reqwest::redirect::Policy::none());

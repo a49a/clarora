@@ -261,7 +261,8 @@ pub fn ocr(lib: &Library, path: &Path, cancel: &Cancel) -> Result<String> {
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     let base = endpoint_url(&c.base_url)?;
     let payload = json!({"model":model,"messages":[{"role":"user","content":[{"type":"text","text":"逐字识别图片中的文字，保留段落，不要解释。"},{"type":"image_url","image_url":{"url":format!("data:{mime};base64,{encoded}")}}]}]});
-    let value = crate::ai_chat::remote_json(cancel, move |client| async move {
+    let connection_base = base.clone();
+    let value = crate::ai_chat::remote_json(cancel, &connection_base, move |client| async move {
         let mut request = client
             .post(format!("{base}/chat/completions"))
             .json(&payload);
@@ -296,20 +297,22 @@ pub fn transcribe(lib: &Library, path: &Path, cancel: &Cancel) -> Result<Vec<Cue
         ensure!(!c.asr_model.is_empty(), "请配置转写模型");
         let base = endpoint_url(base)?;
         let model = c.asr_model;
-        let value = crate::ai_chat::remote_json(cancel, move |client| async move {
-            let form = reqwest::multipart::Form::new()
-                .text("model", model)
-                .text("response_format", "verbose_json")
-                .file("file", path)
-                .await?;
-            let mut request = client
-                .post(format!("{base}/audio/transcriptions"))
-                .multipart(form);
-            if !key.is_empty() {
-                request = request.bearer_auth(key);
-            }
-            Ok(request)
-        })?;
+        let connection_base = base.clone();
+        let value =
+            crate::ai_chat::remote_json(cancel, &connection_base, move |client| async move {
+                let form = reqwest::multipart::Form::new()
+                    .text("model", model)
+                    .text("response_format", "verbose_json")
+                    .file("file", path)
+                    .await?;
+                let mut request = client
+                    .post(format!("{base}/audio/transcriptions"))
+                    .multipart(form);
+                if !key.is_empty() {
+                    request = request.bearer_auth(key);
+                }
+                Ok(request)
+            })?;
         ensure!(!cancel.load(Ordering::SeqCst), "已取消");
         let segments = value["segments"]
             .as_array()

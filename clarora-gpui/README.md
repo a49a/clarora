@@ -42,13 +42,19 @@ python ./clarora-gpui/scripts/install-pdfium.py ./clarora-gpui/target/package
 
 ## 使用 ChatGPT 会员
 
-打开“设置 → AI 聊天服务”，点击 **Continue with ChatGPT**，在系统浏览器登录并授权 Clarora 使用会员额度，完成后返回应用。登录成功后自动选择 ChatGPT 服务并读取当前账户可见模型；可切换模型、刷新目录、重新授权、添加或选择其他账户，以及退出当前账户。已有账户使用“重新登录 / 授权”复用原注册。助手问题框上方的服务按钮显示当前选择：`ChatGPT · 模型名 · 设置` 表示使用 ChatGPT，`AI 服务：兼容 API · 设置` 表示使用原有 API Base URL 配置；点击按钮可进入设置切换。
+打开“设置 → AI 聊天服务”，点击 **Continue with ChatGPT**，在系统浏览器登录并授权 Clarora 使用会员额度，完成后返回应用。浏览器回调页面仅确认已收到回调，最终登录结果以应用为准。登录成功后自动选择 ChatGPT 服务并读取当前账户可见模型；可切换模型、刷新目录、重新授权、添加或选择其他账户，以及退出当前账户。Continue with ChatGPT 优先复用所选账户或上次未完成的注册；“添加其他账户”单独启动新注册。助手问题框上方的服务按钮显示当前选择：`ChatGPT · 模型名 · 设置` 表示使用 ChatGPT，`AI 服务：兼容 API · 设置` 表示使用原有 API Base URL 配置；点击按钮可进入设置切换。
+
+登录凭证交换或续期失败时，应用显示失败阶段与相应处理建议。“复制错误详情”包含 HTTP 状态、服务端错误码、响应结构和请求编号，不包含授权码、令牌或原始响应正文。403 不能仅凭状态码认定为密码或 API Base URL 配置错误；地区限制、应用注册权限和网络防护页面按实际返回区分，无法确认时明确提示待排查。失败保留已有注册与原有效会话，不自动循环重试。
+
+ChatGPT 请求始终发送 `stream:true`、`store:false`。回答接收按实际正文识别事件流，兼容响应头大小写、参数、缺失或被改写，以及事件编号/重试字段开头的 SSE；必须收到 completed 才算完成。若返回完整 JSON，仅接受明确 `object:response`、`status:completed` 且包含非空助手正文的结果，这是客户端容错而非服务端保证降级。空内容、网页、错误 JSON、未完成和截断均不保存为完整回答，不自动重发或切换付费路径。助手错误区提供“复制错误详情”，包含 HTTP、实际响应类型、结构、可识别错误码和请求编号，不回显原始服务正文；问题、引用和未完成输出继续保留。默认 ChatGPT E2E 包含 27 类响应/传输场景，另存 `responses-protocol-report.json`。
+
+HTTP 请求读取系统 HTTP/HTTPS 代理及代理环境变量；系统浏览器与应用可使用同一套原生代理配置。数值回环地址和 localhost 上的本机 AI、模型来源及测试 OAuth 服务保持直连，不把本机数据转交代理。此支持不绕过服务地区或账户准入限制。
 
 此路线使用 OpenAI 官方 Sign in with ChatGPT / Responses API，需符合条件的 ChatGPT 账户和会员授权；实际准入、可用模型与额度以 OpenAI 返回为准。额度不足、拒绝授权、流中断或登录失效会明确提示，不会自动改用另行计费的 API Key。可主动选择“兼容 API”继续使用原配置。聊天、字幕翻译和写作批改共用所选文本服务；本地 Whisper、远端语音转写和图片识字继续使用原有独立路径。
 
 登录在后台进行，可切换学习栏目；更改服务/账户前需等待或取消正在使用 AI 的任务。登录令牌使用 AES-256-GCM 加密保存在本机 `chatgpt/` 目录，随机加密密钥存于系统凭证库；独立于原 API 密钥存储开关。目录在 Unix 上为 0700，文件为 0600，凭证不进入 SQLite 学习资料、ZIP 或云备份。刷新使用跨进程文件锁；退出时尝试撤销续期会话，然后清除本机令牌并保留账户注册。远端撤销无法确认时会提示用户在 ChatGPT 设置中断开授权。
 
-默认调试版 E2E 收集此流程，可用 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/evidence --chatgpt-only` 复验。使用本机 HTTP、真实签名 JWT、模拟系统凭证库和隔离磁盘，输出 `chatgpt-report.json`；测试不会登录真实账号或读取 Codex/ChatGPT 的登录凭证。启用 `CLARORA_GUI_MEMORY_CHECK=1` 后，`--chatgpt-only` 同时执行独立的原生设置区验收，覆盖 24 种账户状态、宽度和深浅主题布局，以及登录取消与切栏目；`--ui-controller-only` 也收集这组布局。测试通过不代表真实 OpenAI 账号授权、会员准入或 Windows 已实测。
+默认调试版 E2E 收集此流程，可用 `cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/evidence --chatgpt-only` 复验。使用本机 HTTP、真实签名 JWT、模拟系统凭证库和隔离磁盘，输出 `chatgpt-report.json`；测试不会登录真实账号或读取 Codex/ChatGPT 的登录凭证。启用 `CLARORA_GUI_MEMORY_CHECK=1` 后，`--chatgpt-only` 同时执行独立的原生设置区验收，覆盖 36 种账户状态、宽度和深浅主题布局，包括注册未完成与 403 提示，以及登录取消与切栏目；`--ui-controller-only` 也收集这组布局。默认 E2E 还包含 `--network-proxy-only`：独立子进程设置不可达代理与空 NO_PROXY，复验本机 AI、模型下载和 OAuth 始终直连，保留 JSON。测试通过不代表真实 OpenAI 账号授权、会员准入或 Windows 已实测。
 
 官方协议：[登录与注册](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)、[账户与会话](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)、[模型与请求](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)、[预览限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。
 

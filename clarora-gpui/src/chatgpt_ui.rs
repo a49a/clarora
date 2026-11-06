@@ -240,7 +240,7 @@ impl AppView {
                     state
                         .current()
                         .map(|p| format!("账户：{} ▾", p.label()))
-                        .unwrap_or_else(|| "选择已连接的 ChatGPT 账户 ▾".into()),
+                        .unwrap_or_else(|| "选择已有的 ChatGPT 注册 ▾".into()),
                     accounts,
                     cx,
                 ),
@@ -253,6 +253,8 @@ impl AppView {
                 } else {
                     "已连接 · 尚未授权会员使用"
                 }
+            } else if p.subject.is_empty() {
+                "已收到注册 · 登录未完成，继续登录会复用该注册"
             } else {
                 "已退出 · 重新登录会复用原账户注册"
             }));
@@ -322,12 +324,25 @@ impl AppView {
                     self.button(
                         "chatgpt-login",
                         "Continue with ChatGPT",
-                        action(Command::Login(None)),
+                        action(Command::Login(state.login_profile().map(|p| p.id.clone()))),
                         cx,
                     )
                     .outline()
+                    .tooltip("继续所选账户或上次未完成的登录，复用已有应用注册")
                     .disabled(locked || self.focus_mode.active()),
                 )
+                .when(!state.profiles.is_empty(), |row| {
+                    row.child(
+                        self.button(
+                            "chatgpt-add-account",
+                            "添加其他账户",
+                            action(Command::Login(None)),
+                            cx,
+                        )
+                        .outline()
+                        .disabled(locked || self.focus_mode.active()),
+                    )
+                })
                 .child(
                     self.button(
                         "chatgpt-usage",
@@ -350,9 +365,31 @@ impl AppView {
         if !self.chatgpt.error.is_empty() {
             panel = panel.child(
                 div()
-                    .text_sm()
-                    .text_color(cx.theme().danger)
-                    .child(self.chatgpt.error.clone()),
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div().text_sm().text_color(cx.theme().danger).child(
+                            self.chatgpt
+                                .error
+                                .split("\n诊断：")
+                                .next()
+                                .unwrap_or("")
+                                .to_string(),
+                        ),
+                    )
+                    .child(
+                        div().child(
+                            self.button(
+                                "chatgpt-copy-error",
+                                "复制错误详情",
+                                Action::CopySelection(self.chatgpt.error.clone()),
+                                cx,
+                            )
+                            .outline()
+                            .small(),
+                        ),
+                    ),
             );
         }
         panel.child(div().text_xs().text_color(cx.theme().muted_foreground).child("会员额度和支持的模型取决于你的账户与授权。不会自动切换到另行付费的 API。登录凭证由系统凭证库密钥加密，仅保存在本机，不进入资料备份。")).into_any_element()
