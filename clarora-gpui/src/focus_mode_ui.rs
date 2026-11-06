@@ -261,62 +261,115 @@ impl AppView {
         }
         let view = cx.entity().downgrade();
         let fallback_focus = self.focus.clone();
-        let resumable = self.timer.strict() && self.timer.is_running();
+        let resumable = cfg!(target_os = "macos") && self.timer.strict() && self.timer.is_running();
+        let primary_label = self.focus_control_label().to_string();
+        let primary_action = self.focus_control_primary_action();
         let label = div()
             .flex_none()
             .line_height(relative(1.))
             .font_weight(FontWeight::BOLD)
             .text_color(cx.theme().primary_foreground)
-            .child(if resumable {
-                "继续电脑专注"
-            } else {
-                "开启电脑专注"
-            });
+            .child(format!("{primary_label} ▾"));
         #[cfg(debug_assertions)]
-        let label = label.children(focus_mode_probe::label_color_probe(cx.theme().primary));
-        Button::new("focus-computer")
+        let label = label.children(if self.timer.awaiting_focus() {
+            focus_mode_probe::button_color_probe(cx.theme().primary, "timer-confirmation")
+        } else {
+            focus_mode_probe::label_color_probe(cx.theme().primary)
+        });
+        Button::new("global-focus-control")
             .child(label)
             .h(px(40.))
             .px_4()
-            .custom(ButtonCustomVariant::new(cx)
-                .color(cx.theme().primary)
-                .foreground(cx.theme().primary_foreground)
-                .border(cx.theme().primary)
-                .hover(cx.theme().primary_hover)
-                .active(cx.theme().primary_active)
-                .shadow(true))
-            .disabled(!cfg!(target_os = "macos"))
-            .tooltip("选择时长后全屏专注，限制切换其他应用；App 内学习操作正常。计时结束自动解除。系统强制退出保留用于异常恢复。")
+            .custom(
+                ButtonCustomVariant::new(cx)
+                    .color(cx.theme().primary)
+                    .foreground(cx.theme().primary_foreground)
+                    .border(cx.theme().primary)
+                    .hover(cx.theme().primary_hover)
+                    .active(cx.theme().primary_active)
+                    .shadow(true),
+            )
+            .tooltip(
+                "管理专注计时、时长和电脑专注。电脑专注需明确选择，开启后全屏并限制切换其他应用。",
+            )
             .dropdown_menu_with_anchor(Corner::BottomRight, move |mut menu, window, cx| {
                 // The builder runs before the menu takes focus. Cancel restores
                 // the original editor; a successful start restores video focus.
-                menu = menu.action_context(window.focused(cx).unwrap_or_else(|| fallback_focus.clone()));
-                let mut choices = vec![];
+                menu = menu
+                    .action_context(window.focused(cx).unwrap_or_else(|| fallback_focus.clone()));
+                menu = menu.item(Self::focus_menu_item(
+                    view.clone(),
+                    primary_label.clone(),
+                    primary_action.clone(),
+                ));
                 if resumable {
-                    choices.push(("继续上次专注（沿用剩余时间）".to_string(), Action::FocusResume));
+                    menu = menu.item(Self::focus_menu_item(
+                        view.clone(),
+                        "仅暂停计时",
+                        Action::TimerPause,
+                    ));
                 }
-                choices.extend([5, 15, 25, 45, 60].map(|minutes| (
-                    format!("专注 {minutes} 分钟 · 屏蔽其他应用"),
-                    Action::FocusStart(minutes * 60),
-                )));
-                for (label, action) in choices {
-                    let view = view.clone();
-                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                        let view = view.clone();
-                        let action = action.clone();
-                        let handle = window.window_handle();
-                        // Let menu dismissal return focus before starting the
-                        // fullscreen transition and assigning the learning focus.
-                        cx.defer(move |cx| {
-                            let _ = handle.update(cx, move |_, window, cx| {
-                                let _ = view.update(cx, |this, cx| this.handle(action, window, cx));
-                            });
-                        });
-                    }));
+                let duration_view = view.clone();
+                menu = menu.separator().submenu(
+                    "专注时长（选择后开始）",
+                    window,
+                    cx,
+                    move |mut sub, _, _| {
+                        for minutes in [5, 10, 15, 25, 45, 60] {
+                            sub = sub.item(Self::focus_menu_item(
+                                duration_view.clone(),
+                                format!("{minutes} 分钟"),
+                                Action::Timer(minutes * 60),
+                            ));
+                        }
+                        sub
+                    },
+                );
+                if cfg!(target_os = "macos") {
+                    let computer_view = view.clone();
+                    menu = menu.submenu(
+                        "电脑专注 · 限制切换应用",
+                        window,
+                        cx,
+                        move |mut sub, _, _| {
+                            for minutes in [5, 15, 25, 45, 60] {
+                                sub = sub.item(Self::focus_menu_item(
+                                    computer_view.clone(),
+                                    format!("专注 {minutes} 分钟"),
+                                    Action::FocusStart(minutes * 60),
+                                ));
+                            }
+                            sub
+                        },
+                    );
+                } else {
+                    menu = menu.item(PopupMenuItem::new("电脑专注仅支持 macOS").disabled(true));
                 }
-                menu
+                menu.separator().item(Self::focus_menu_item(
+                    view.clone(),
+                    "重置计时",
+                    Action::TimerReset,
+                ))
             })
             .into_any_element()
+    }
+
+    fn focus_menu_item(
+        view: WeakEntity<Self>,
+        label: impl Into<SharedString>,
+        action: Action,
+    ) -> PopupMenuItem {
+        PopupMenuItem::new(label).on_click(move |_, window, cx| {
+            let view = view.clone();
+            let action = action.clone();
+            let handle = window.window_handle();
+            // Restore the menu context first, then apply the selected action.
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, move |_, window, cx| {
+                    let _ = view.update(cx, |this, cx| this.handle(action, window, cx));
+                });
+            });
+        })
     }
 }
 struct Cover {

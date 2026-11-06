@@ -1,4 +1,10 @@
 //! Inactive hidden native self-check. Never activates a kiosk on the user's desktop.
+// Unified-control failure scenarios, recorded before changing the production UI:
+// - The header action and its state label diverge for idle, running, paused or rest.
+// - Waiting for the next round still starts automatically or bypasses the shared action.
+// - A reopened strict timer silently enables native restrictions instead of offering resume.
+// - Removing the duplicate status-bar controls loses the only start/pause/resume path.
+// - The single header loses contrast or overflows in dark/fullscreen/narrow layouts.
 use super::*;
 use focus_mode_ui::native;
 use std::sync::{Arc, Mutex};
@@ -11,6 +17,9 @@ fn label_colors() -> Vec<Value> {
         .clone()
 }
 pub(super) fn label_color_probe(background: Hsla) -> Option<AnyElement> {
+    button_color_probe(background, "computer-focus")
+}
+pub(super) fn button_color_probe(background: Hsla, control: &'static str) -> Option<AnyElement> {
     if !std::env::args().any(|arg| arg == "--focus-mode-check")
         || std::env::var("CLARORA_FOCUS_DIAGNOSTIC_INACTIVE").as_deref() != Ok("1")
     {
@@ -25,7 +34,7 @@ pub(super) fn label_color_probe(background: Hsla) -> Option<AnyElement> {
         };
         let a = luminance(foreground);
         let b = luminance(background);
-        let row = json!({"theme":format!("{:?}",cx.theme().mode),"foreground":[foreground.r,foreground.g,foreground.b,foreground.a],"background":[background.r,background.g,background.b,background.a],"contrast":(a.max(b)+0.05)/(a.min(b)+0.05)});
+        let row = json!({"control":control,"theme":format!("{:?}",cx.theme().mode),"foreground":[foreground.r,foreground.g,foreground.b,foreground.a],"background":[background.r,background.g,background.b,background.a],"contrast":(a.max(b)+0.05)/(a.min(b)+0.05)});
         let mut values = LABEL_COLORS.get_or_init(Default::default).lock().unwrap();
         if !values.contains(&row) { values.push(row); }
     }).absolute().size_full().into_any_element())
@@ -75,6 +84,24 @@ impl Probe {
         self.cases.push(json!({"case":name,"passed":true,"presentation_options":native::options(),"active":app.focus_mode.active(),"deadline":app.timer.deadline_ms()}));
         Ok(())
     }
+    fn control(app: &AppView, label: &str, resume_strict: bool) -> Result<()> {
+        ensure!(
+            app.focus_control_label() == label,
+            "unified focus control label: expected {label}, got {}",
+            app.focus_control_label()
+        );
+        ensure!(
+            if resume_strict {
+                matches!(app.focus_control_primary_action(), Action::FocusResume)
+            } else if label == "紧急结束" {
+                matches!(app.focus_control_primary_action(), Action::FocusEmergency)
+            } else {
+                matches!(app.focus_control_primary_action(), Action::TimerPause)
+            },
+            "unified focus control primary action does not match {label}"
+        );
+        Ok(())
+    }
     fn step(
         &mut self,
         app: &mut AppView,
@@ -102,11 +129,68 @@ impl Probe {
                 design::apply(cx);
                 self.baseline = native::options();
                 let now = focus_timer::now_ms();
+
+                app.handle(Action::TimerReset, w, cx);
+                Self::control(app, "开始专注", false)?;
+                let action = app.focus_control_primary_action();
+                app.handle(action, w, cx);
+                ensure!(
+                    app.timer.is_running() && !app.timer.strict(),
+                    "ordinary start enabled restrictions or failed"
+                );
+                Self::control(app, "暂停专注", false)?;
+                self.note("single header action starts an ordinary focus timer without native restrictions", app)?;
+                let action = app.focus_control_primary_action();
+                app.handle(action, w, cx);
+                ensure!(
+                    app.timer.paused() && !app.timer.is_running(),
+                    "header pause failed"
+                );
+                Self::control(app, "继续专注", false)?;
+                let action = app.focus_control_primary_action();
+                app.handle(action, w, cx);
+                ensure!(
+                    app.timer.is_running() && !app.timer.strict(),
+                    "header resume failed"
+                );
+                Self::control(app, "暂停专注", false)?;
+                self.note(
+                    "same header action pauses and resumes focus with matching labels",
+                    app,
+                )?;
+
+                app.lib.set_setting(focus_timer::KEY, &json!({"version":1,"strict":false,"focus":false,"paused":false,"duration_ms":300000,"remaining_ms":300000,"deadline_ms":now+300000}).to_string())?;
+                app.timer = focus_timer::Timer::load(&app.lib, now)?.timer;
+                app.timer_remaining = app.timer.remaining_seconds(now);
+                Self::control(app, "暂停休息", false)?;
+                let action = app.focus_control_primary_action();
+                app.handle(action, w, cx);
+                Self::control(app, "继续休息", false)?;
+                let action = app.focus_control_primary_action();
+                app.handle(action, w, cx);
+                ensure!(
+                    app.timer.is_running() && !app.timer.focus(),
+                    "header rest resume began focus instead"
+                );
+                Self::control(app, "暂停休息", false)?;
+                self.note("single header action pauses and resumes rest without starting a new focus round", app)?;
+
+                app.timer.start_strict(&app.lib, now, 60)?;
+                app.timer = focus_timer::Timer::load(&app.lib, now)?.timer;
+                app.timer_remaining = app.timer.remaining_seconds(now);
+                Self::control(app, "继续电脑专注", true)?;
+                ensure!(
+                    !app.focus_mode.active() && native::options() == self.baseline,
+                    "reopened strict timer activated native restrictions"
+                );
+                self.note("reopened strict timer offers explicit computer-focus resume without restricting the desktop", app)?;
+
                 app.lib.set_setting(focus_timer::KEY, &json!({"version":1,"strict":false,"focus":false,"paused":false,"duration_ms":300000,"remaining_ms":300000,"deadline_ms":now-1}).to_string())?;
                 app.timer = focus_timer::Timer::load(&app.lib, now)?.timer;
                 app.timer_remaining = app.timer.remaining_seconds(now);
+                Self::control(app, "开始下一轮专注", false)?;
                 ensure!(
-                    app.focus_timer_toggle_label() == "开始下一轮专注" && !app.timer.is_running(),
+                    !app.timer.is_running() && !app.focus_mode.active(),
                     "waiting confirmation is not explicit in the timer UI"
                 );
                 let handle = w.window_handle();
@@ -129,21 +213,44 @@ impl Probe {
                     return Ok(false);
                 };
                 layout.map_err(anyhow::Error::msg)?;
-                self.note("header focus control and waiting-confirmation timer lay out in light/dark, normal/fullscreen and narrow/wide widths", app)?;
-                app.handle(Action::TimerPause, w, cx);
+                if !label_colors()
+                    .iter()
+                    .any(|r| r["control"] == "timer-confirmation" && r["theme"] == "Light")
+                {
+                    Self::keys(w, cx, &[]);
+                    return Ok(false);
+                }
+                Theme::change(ThemeMode::Dark, None, cx);
+                design::apply(cx);
+                Self::keys(w, cx, &[]);
+                self.stage = 14;
+            }
+            14 => {
+                if !label_colors()
+                    .iter()
+                    .any(|r| r["control"] == "timer-confirmation" && r["theme"] == "Dark")
+                {
+                    Self::keys(w, cx, &[]);
+                    return Ok(false);
+                }
+                Theme::change(ThemeMode::Light, None, cx);
+                design::apply(cx);
+                self.note("single header focus control and display-only timer status lay out in light/dark, normal/fullscreen and narrow/wide widths", app)?;
+                let action = app.focus_control_primary_action();
+                app.handle(action, w, cx);
+                Self::control(app, "暂停专注", false)?;
                 ensure!(
                     app.timer.is_running()
                         && app.timer.focus()
                         && app.timer_remaining == 1500
-                        && app.focus_timer_toggle_label() == "暂停",
+                        && !app.timer.strict()
+                        && !app.focus_mode.active(),
                     "actual confirmation action did not begin a full new focus round"
                 );
                 self.note("rest completion waits for actual AppView confirmation before starting the next focus", app)?;
                 app.handle(Action::TimerReset, w, cx);
-                ensure!(
-                    !app.timer.is_running() && app.focus_timer_toggle_label() == "开始",
-                    "reset did not clear waiting state"
-                );
+                Self::control(app, "开始专注", false)?;
+                ensure!(!app.timer.is_running(), "reset did not clear waiting state");
                 app.media.player = Player::without_audio_device();
                 video_resume_probe::prepare(&app.lib)?;
                 app.handle(Action::Page("video".into()), w, cx);
@@ -170,6 +277,19 @@ impl Probe {
                 if !app.assistant_open {
                     app.handle(Action::Assistant, w, cx);
                 }
+                app.handle(Action::TimerReset, w, cx);
+                app.inputs["question"].update(cx, |state, cx| state.focus(w, cx));
+                let ordinary = app.focus_control_primary_action();
+                app.handle(ordinary, w, cx);
+                ensure!(
+                    app.timer.is_running()
+                        && !app.timer.strict()
+                        && !app.focus_mode.active()
+                        && w.focused(cx) == Some(app.focus.clone())
+                        && Self::at_sentence(app, 0),
+                    "unified ordinary timer action lost video focus or sentence repeat"
+                );
+                self.note("unified ordinary timer action returns keyboard to video and preserves sentence repeats", app)?;
                 app.inputs["question"].update(cx, |state, cx| state.focus(w, cx));
                 app.handle(Action::FocusStart(60), w, cx);
                 ensure!(
@@ -251,6 +371,7 @@ impl Probe {
             }
             10 => {
                 app.handle(Action::FocusStart(60), w, cx);
+                Self::control(app, "紧急结束", false)?;
                 ensure!(
                     app.focus_mode.active()
                         && app.timer.strict()
@@ -284,8 +405,10 @@ impl Probe {
                     "in-app learning navigation blocked or exited kiosk"
                 );
                 self.note("Clarora modules stay usable inside computer focus", app)?;
-                app.handle(Action::FocusEmergency, w, cx);
-                app.handle(Action::FocusEmergency, w, cx);
+                let action = app.focus_control_primary_action();
+                app.handle(action, w, cx);
+                let action = app.focus_control_primary_action();
+                app.handle(action, w, cx);
                 ensure!(app.focus_mode.active(), "emergency countdown bypassed");
                 self.note("emergency exit requires deliberate countdown", app)?;
                 self.stage = 11;
@@ -294,7 +417,8 @@ impl Probe {
                 if app.focus_mode.escape_remaining() != Some(0) {
                     return Ok(false);
                 }
-                app.handle(Action::FocusEmergency, w, cx);
+                let action = app.focus_control_primary_action();
+                app.handle(action, w, cx);
                 ensure!(
                     !app.focus_mode.active()
                         && !app.timer.strict()
@@ -341,9 +465,11 @@ impl Probe {
             13 => {
                 let colors = label_colors();
                 ensure!(
-                    ["Light", "Dark"]
+                    ["computer-focus", "timer-confirmation"]
                         .iter()
-                        .all(|mode| colors.iter().any(|r| r["theme"] == *mode)),
+                        .all(|control| ["Light", "Dark"].iter().all(|mode| colors
+                            .iter()
+                            .any(|r| r["control"] == *control && r["theme"] == *mode))),
                     "missing painted label color evidence: {colors:?}"
                 );
                 ensure!(
@@ -352,7 +478,7 @@ impl Probe {
                         .all(|r| r["contrast"].as_f64().is_some_and(|c| c >= 4.5)),
                     "painted focus label has insufficient contrast: {colors:?}"
                 );
-                self.note("actual painted focus label contrast is at least 4.5:1 in light and dark themes", app)?;
+                self.note("actual painted computer-focus and next-focus labels have contrast at least 4.5:1 in light and dark themes", app)?;
                 if let Some(mode) = self.original_theme {
                     Theme::change(mode, None, cx);
                     design::apply(cx);
@@ -379,8 +505,8 @@ impl Probe {
                     app.video.fullscreen = full;
                     for width in [420., 760., 1240.] {
                         for (name, mut bar) in [
-                            ("computer-focus", app.computer_focus_control(cx)),
-                            ("timer-confirmation", app.focus_timer_bar(cx)),
+                            ("unified-focus-header", app.computer_focus_control(cx)),
+                            ("timer-status-only", app.focus_timer_bar(cx)),
                         ] {
                             let measured = bar.layout_as_root(
                                 size(

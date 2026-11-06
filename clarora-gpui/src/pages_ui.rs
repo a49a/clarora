@@ -1452,26 +1452,9 @@ impl AppView {
                         })
                         .child(
                             div()
-                                .flex()
-                                .gap_3()
-                                .child(self.button(
-                                    "timer-pause",
-                                    self.focus_timer_toggle_label(),
-                                    Action::TimerPause,
-                                    cx,
-                                ))
-                                .child(self.button("timer-reset", "重置", Action::TimerReset, cx)),
+                                .text_sm()
+                                .child("使用顶部专注按钮开始、暂停或设置时长。"),
                         )
-                        .child(div().flex().gap_2().flex_wrap().children(
-                            [5u64, 10, 15, 25, 45, 60].into_iter().map(|minutes| {
-                                self.button(
-                                    format!("timer-{minutes}"),
-                                    format!("{minutes} 分钟"),
-                                    Action::Timer(minutes * 60),
-                                    cx,
-                                )
-                            }),
-                        ))
                         .child(
                             div()
                                 .text_sm()

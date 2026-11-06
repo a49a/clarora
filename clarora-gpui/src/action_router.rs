@@ -55,6 +55,9 @@ impl AppView {
             && matches!(
                 &action,
                 Action::AudioRepeat(_)
+                    | Action::TimerPause
+                    | Action::Timer(_)
+                    | Action::TimerReset
                     | Action::Audio(_)
                     | Action::AudioPractice(_)
                     | Action::AudioBlind(_)
@@ -69,6 +72,9 @@ impl AppView {
             && matches!(
                 &action,
                 Action::Play
+                    | Action::TimerPause
+                    | Action::Timer(_)
+                    | Action::TimerReset
                     | Action::Seek(_)
                     | Action::SeekTo(_)
                     | Action::VideoTimelineSeek(_)

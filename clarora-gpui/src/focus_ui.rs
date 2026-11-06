@@ -1,15 +1,37 @@
 use super::*;
 
 impl AppView {
-    pub(super) fn focus_timer_toggle_label(&self) -> &'static str {
-        if self.timer.awaiting_focus() {
+    pub(super) fn focus_control_label(&self) -> &'static str {
+        if self.focus_mode.active() {
+            "紧急结束"
+        } else if cfg!(target_os = "macos") && self.timer.strict() && self.timer.is_running() {
+            "继续电脑专注"
+        } else if self.timer.awaiting_focus() {
             "开始下一轮专注"
         } else if self.timer.is_running() {
-            "暂停"
+            if self.timer.focus() {
+                "暂停专注"
+            } else {
+                "暂停休息"
+            }
         } else if self.timer.paused() {
-            "继续"
+            if self.timer.focus() {
+                "继续专注"
+            } else {
+                "继续休息"
+            }
         } else {
-            "开始"
+            "开始专注"
+        }
+    }
+
+    pub(super) fn focus_control_primary_action(&self) -> Action {
+        if self.focus_mode.active() {
+            Action::FocusEmergency
+        } else if cfg!(target_os = "macos") && self.timer.strict() && self.timer.is_running() {
+            Action::FocusResume
+        } else {
+            Action::TimerPause
         }
     }
 
@@ -56,50 +78,6 @@ impl AppView {
             rgb(0x7dd8b5).into()
         } else {
             cx.theme().primary
-        };
-        let button_style = || {
-            ButtonCustomVariant::new(cx)
-                .foreground(foreground)
-                .hover(primary.opacity(0.12))
-                .active(primary.opacity(0.2))
-        };
-        let view = cx.entity().downgrade();
-        let duration = Button::new("global-focus-duration")
-            .label("专注时长")
-            .small()
-            .disabled(self.focus_mode.active())
-            .ghost()
-            .custom(button_style())
-            .tooltip("选择时长，开始新一轮专注")
-            .dropdown_menu_with_anchor(Corner::BottomRight, move |mut menu, _, _| {
-                for minutes in [5u64, 10, 15, 25, 45, 60] {
-                    let view = view.clone();
-                    menu = menu.item(PopupMenuItem::new(format!("{minutes} 分钟")).on_click(
-                        move |_, window, cx| {
-                            let _ = view.update(cx, |this, cx| {
-                                this.handle(Action::Timer(minutes * 60), window, cx)
-                            });
-                        },
-                    ));
-                }
-                menu
-            });
-        let toggle = self
-            .button(
-                "global-focus-toggle",
-                self.focus_timer_toggle_label(),
-                Action::TimerPause,
-                cx,
-            )
-            .disabled(self.focus_mode.active());
-        let toggle = if self.timer.awaiting_focus() {
-            toggle
-                .primary()
-                .h(px(32.))
-                .px_3()
-                .font_weight(FontWeight::SEMIBOLD)
-        } else {
-            toggle.custom(button_style())
         };
         div()
             .id("global-focus-timer")
@@ -149,16 +127,6 @@ impl AppView {
             } else {
                 "待开始"
             }))
-            .child(div().flex_1())
-            .child(toggle)
-            .child(duration)
-            .child(
-                self.button("global-focus-reset", "重置", Action::TimerReset, cx)
-                    .disabled(self.focus_mode.active())
-                    .ghost()
-                    .custom(button_style())
-                    .tooltip("回到 25 分钟，等待开始"),
-            )
             .into_any_element()
     }
 }
