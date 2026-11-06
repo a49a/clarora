@@ -7,10 +7,21 @@ use ring::{
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
-    io::Write,
-    path::PathBuf,
+    io::{Read, Write},
+    path::{Path, PathBuf},
     sync::atomic::Ordering,
 };
+const FORMAT: &[u8] = b"CLARORA-CGPT-VAULT-1\n";
+const VAULT_REF: &str = "chatgpt_vault_ref";
+
+fn managed_session(path: &Path) -> Result<bool> {
+    let mut header = [0; FORMAT.len()];
+    match File::open(path)?.read_exact(&mut header) {
+        Ok(()) => Ok(header == FORMAT),
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
 
 fn directory(lib: &Library) -> Result<PathBuf> {
     let p = lib.root.join("chatgpt");
@@ -42,7 +53,11 @@ pub(super) fn load(lib: &Library) -> Result<Snapshot> {
     ensure!(state.profiles.len() <= 100, "ChatGPT 账户过多");
     for p in &mut state.profiles {
         uuid::Uuid::parse_str(&p.id).context("ChatGPT 账户标识无效")?;
-        p.connected &= lib.root.join(format!("chatgpt/{}.session", p.id)).is_file();
+        let file = lib.root.join(format!("chatgpt/{}.session", p.id));
+        let exists = file.is_file();
+        let legacy = exists && !managed_session(&file)?;
+        state.needs_legacy_import |= legacy;
+        p.connected &= exists && !legacy;
     }
     Ok(state)
 }
@@ -84,6 +99,39 @@ pub(super) fn lock_blocking(lib: &Library) -> Result<File> {
     Ok(f)
 }
 fn cipher(lib: &Library, create: bool) -> Result<aead::LessSafeKey> {
+    let saved = lib.setting(VAULT_REF)?;
+    let name = if saved.is_empty() {
+        format!(
+            "chatgpt-vault-{}",
+            hex::encode(Sha256::digest(lib.root.to_string_lossy().as_bytes()))
+        )
+    } else {
+        saved.clone()
+    };
+    let mut encoded = crate::credentials::get_optional(lib, &name)?;
+    if encoded.is_empty() {
+        // A reference without a readable key can follow an explicit opt-out from
+        // keychain storage. Never generate a replacement and strand other sessions.
+        ensure!(
+            saved.is_empty() && create,
+            "本机没有可用的 ChatGPT 加密密钥。请在设置中主动导入旧钥匙串密钥；默认不会访问钥匙串"
+        );
+        let mut key = [0; 32];
+        SystemRandom::new()
+            .fill(&mut key)
+            .map_err(|_| anyhow::anyhow!("生成本机加密密钥失败"))?;
+        encoded = B64.encode(key);
+        crate::credentials::store_config(
+            lib,
+            VAULT_REF,
+            &name,
+            &[(name.clone(), encoded.clone())],
+        )?;
+    }
+    decode_key(&encoded)
+}
+// Called exclusively by the explicit import command, never by normal reads.
+fn legacy_cipher(lib: &Library) -> Result<aead::LessSafeKey> {
     let name = format!(
         "vault-{}",
         hex::encode(Sha256::digest(lib.root.to_string_lossy().as_bytes()))
@@ -91,22 +139,14 @@ fn cipher(lib: &Library, create: bool) -> Result<aead::LessSafeKey> {
     let entry = keyring::Entry::new("Clarora-ChatGPT", &name)?;
     let encoded = match entry.get_password() {
         Ok(v) => v,
-        Err(keyring::Error::NoEntry) if create => {
-            let mut key = [0; 32];
-            SystemRandom::new()
-                .fill(&mut key)
-                .map_err(|_| anyhow::anyhow!("生成本机加密密钥失败"))?;
-            let v = B64.encode(key);
-            entry
-                .set_password(&v)
-                .context("无法保存到系统凭证库，请允许 Clarora 访问凭证库")?;
-            v
-        }
         Err(keyring::Error::NoEntry) => {
             anyhow::bail!("系统凭证库中没有 ChatGPT 登录密钥，请重新登录")
         }
         Err(_) => anyhow::bail!("无法读取系统凭证库，请允许 Clarora 访问凭证库"),
     };
+    decode_key(&encoded)
+}
+fn decode_key(encoded: &str) -> Result<aead::LessSafeKey> {
     let key = B64.decode(encoded).context("本机加密密钥无效")?;
     let key = aead::UnboundKey::new(&aead::AES_256_GCM, &key)
         .map_err(|_| anyhow::anyhow!("本机加密密钥无效"))?;
@@ -125,7 +165,8 @@ pub(super) fn save_session(lib: &Library, p: &Profile, s: &Session) -> Result<()
         &mut bytes,
     )
     .map_err(|_| anyhow::anyhow!("加密 ChatGPT 登录失败"))?;
-    let mut blob = nonce.to_vec();
+    let mut blob = FORMAT.to_vec();
+    blob.extend_from_slice(&nonce);
     blob.extend_from_slice(&bytes);
     atomic(lib, &format!("{}.session", p.id), &blob)
 }
@@ -134,13 +175,28 @@ pub(super) fn session(lib: &Library, p: &Profile) -> Result<Option<Session>> {
     if !file.exists() {
         return Ok(None);
     }
-    let mut bytes = fs::read(file)?;
+    let bytes = read_session(&file)?;
+    ensure!(
+        bytes.starts_with(FORMAT),
+        "旧 ChatGPT 登录需要主动导入钥匙串，或重新登录；默认不会访问钥匙串"
+    );
+    let key = cipher(lib, false)?;
+    Ok(Some(decrypt(&bytes[FORMAT.len()..], p, &key)?))
+}
+fn read_session(file: &Path) -> Result<Vec<u8>> {
+    ensure!(
+        fs::metadata(file)?.len() <= 128 * 1024,
+        "ChatGPT 登录凭证过大"
+    );
+    Ok(fs::read(file)?)
+}
+fn decrypt(bytes: &[u8], p: &Profile, key: &aead::LessSafeKey) -> Result<Session> {
     ensure!(
         bytes.len() >= 28 && bytes.len() <= 128 * 1024,
         "ChatGPT 登录凭证损坏，请重新登录"
     );
     let nonce: [u8; 12] = bytes[..12].try_into()?;
-    let key = cipher(lib, false)?;
+    let mut bytes = bytes.to_vec();
     let plain = key
         .open_in_place(
             aead::Nonce::assume_unique_for_key(nonce),
@@ -148,9 +204,36 @@ pub(super) fn session(lib: &Library, p: &Profile) -> Result<Option<Session>> {
             &mut bytes[12..],
         )
         .map_err(|_| anyhow::anyhow!("ChatGPT 登录凭证无法解密，请重新登录"))?;
-    Ok(Some(
-        serde_json::from_slice(plain).context("ChatGPT 登录凭证损坏")?,
-    ))
+    serde_json::from_slice(plain).context("ChatGPT 登录凭证损坏")
+}
+pub(super) fn import_legacy(lib: &Library) -> Result<Snapshot> {
+    let _lock = lock_blocking(lib)?;
+    let mut state = load(lib)?;
+    ensure!(state.needs_legacy_import, "没有需要导入的旧 ChatGPT 登录");
+    let key = legacy_cipher(lib)?;
+    let mut sessions = vec![];
+    // Validate every old session before replacing any. A refused authorization,
+    // corrupt ciphertext or mismatched account leaves the old sessions untouched.
+    for p in &state.profiles {
+        let file = lib.root.join(format!("chatgpt/{}.session", p.id));
+        if file.is_file() && !managed_session(&file)? {
+            let session = decrypt(&read_session(&file)?, p, &key)?;
+            ensure!(
+                session.client_id == p.client_id && session.subject == p.subject,
+                "旧 ChatGPT 登录与账户不匹配，请重新登录"
+            );
+            sessions.push((p.clone(), session));
+        }
+    }
+    for (p, session) in &sessions {
+        save_session(lib, p, session)?;
+        if let Some(saved) = state.profiles.iter_mut().find(|v| v.id == p.id) {
+            saved.connected = true;
+            saved.sharing = session.scopes.iter().any(|s| s == DIRECT);
+        }
+    }
+    save(lib, &state)?;
+    load(lib)
 }
 pub(super) fn clear_session(lib: &Library, p: &Profile) -> Result<()> {
     let file = lib.root.join(format!("chatgpt/{}.session", p.id));

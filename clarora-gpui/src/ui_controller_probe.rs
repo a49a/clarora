@@ -718,6 +718,7 @@ impl Probe {
                         "waiting-error",
                         "pending-registration",
                         "exchange-forbidden",
+                        "legacy-keychain",
                     ] {
                         let pending = matches!(case, "pending-registration" | "exchange-forbidden");
                         let profile = Profile {
@@ -729,7 +730,7 @@ impl Probe {
                                 "fixture-subject".into()
                             },
                             email: "fixture-account@example.invalid".into(),
-                            connected: !pending,
+                            connected: !pending && case != "legacy-keychain",
                             sharing: case != "permission-required",
                             model: "fixture-model".into(),
                             models: vec![Model {
@@ -748,6 +749,7 @@ impl Probe {
                                     profile.id.clone()
                                 },
                                 profiles: vec![profile],
+                                needs_legacy_import: case == "legacy-keychain",
                                 ..Default::default()
                             }
                         };

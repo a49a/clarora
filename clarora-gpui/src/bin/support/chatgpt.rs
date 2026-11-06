@@ -14,11 +14,18 @@
 // - A body closes before its advertised Content-Length and loses transport diagnostics.
 // - Secrets occur directly in error strings or error.code, bypassing message redaction.
 // - Cancellation from the final JSON progress callback still returns a successful answer.
+// Keychain opt-in failure scenarios, recorded before changing production storage:
+// - Default login, snapshot, renewal, inference or logout touches the OS vault.
+// - Legacy keychain sessions read automatically or silently fall back to paid API.
+// - Explicit legacy import denied by the vault changes original ciphertext/state.
+// - Legacy import overwrites the local vault key and breaks newer saved sessions.
+// - Mode changes lose the vault key, or backups expose key material and vault references.
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use clarora_gpui::{ai, backup, chatgpt, data::Library, process};
 use keyring::credential::{Credential, CredentialApi, CredentialBuilderApi};
 use ring::{
+    aead,
     rand::SystemRandom,
     signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair},
 };
@@ -30,22 +37,46 @@ use std::{
     fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
 
 #[derive(Clone, Default)]
-struct Vault(Arc<Mutex<BTreeMap<String, Vec<u8>>>>);
+struct Vault {
+    entries: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    counts: Arc<Mutex<[u64; 4]>>,
+    blocked: Arc<AtomicBool>,
+}
+impl Vault {
+    fn activity(&self) -> [u64; 4] {
+        *self.counts.lock().unwrap()
+    }
+}
 struct Entry(Vault, String);
 impl CredentialApi for Entry {
     fn set_secret(&self, v: &[u8]) -> keyring::Result<()> {
-        self.0.0.lock().unwrap().insert(self.1.clone(), v.into());
+        self.0.counts.lock().unwrap()[1] += 1;
+        if self.0.blocked.load(Ordering::SeqCst) {
+            return Err(keyring::Error::NoEntry);
+        }
+        self.0
+            .entries
+            .lock()
+            .unwrap()
+            .insert(self.1.clone(), v.into());
         Ok(())
     }
     fn get_secret(&self) -> keyring::Result<Vec<u8>> {
+        self.0.counts.lock().unwrap()[2] += 1;
+        if self.0.blocked.load(Ordering::SeqCst) {
+            return Err(keyring::Error::NoEntry);
+        }
         self.0
-            .0
+            .entries
             .lock()
             .unwrap()
             .get(&self.1)
@@ -53,7 +84,8 @@ impl CredentialApi for Entry {
             .ok_or(keyring::Error::NoEntry)
     }
     fn delete_credential(&self) -> keyring::Result<()> {
-        self.0.0.lock().unwrap().remove(&self.1);
+        self.0.counts.lock().unwrap()[3] += 1;
+        self.0.entries.lock().unwrap().remove(&self.1);
         Ok(())
     }
     fn as_any(&self) -> &dyn Any {
@@ -67,6 +99,7 @@ impl CredentialBuilderApi for Vault {
         service: &str,
         user: &str,
     ) -> keyring::Result<Box<Credential>> {
+        self.counts.lock().unwrap()[0] += 1;
         Ok(Box::new(Entry(self.clone(), format!("{service}/{user}"))))
     }
     fn as_any(&self) -> &dyn Any {
@@ -716,14 +749,287 @@ fn response_protocol(
     );
     Ok(())
 }
+fn default_keychain_off(root: &Library, vault: &Vault, cases: &mut Vec<Value>) -> Result<()> {
+    let lib = Library::open(root.root.join("default-keychain-off"))?;
+    let mut server = Fixture::new()?;
+    chatgpt::diagnostic::configure(&lib, &server.base)?;
+    let client = chatgpt::Client::new(&lib);
+    let cancel = process::cancel_token();
+    let before = vault.activity();
+    ensure!(
+        !clarora_gpui::credentials::secure_mode(&lib)?,
+        "new library enables keychain"
+    );
+    let signed = server.login(&client, None, &cancel)?;
+    ensure!(
+        signed.enabled && signed.current().is_some_and(|p| p.connected),
+        "default login failed"
+    );
+    let reopened = Library::open(lib.root.clone())?;
+    ensure!(
+        chatgpt::snapshot(&reopened)?
+            .current()
+            .is_some_and(|p| p.connected),
+        "reopen lost default session"
+    );
+    chatgpt::diagnostic::expire(&lib)?;
+    client.refresh_models(&cancel)?;
+    ensure!(
+        server.state.lock().unwrap().refreshes == 1,
+        "default renewal did not rotate token"
+    );
+    let reply = ai::chat_stream(&lib, "default storage", "", &[], &cancel, |_| {})?;
+    ensure!(reply.answer == "你好 🌱", "default inference failed");
+    let (state, revoked) = client.sign_out(&cancel)?;
+    ensure!(
+        revoked && state.current().is_some_and(|p| !p.connected),
+        "default logout failed"
+    );
+    let after = vault.activity();
+    let passed = before == after;
+    let report = lib.root.join("keychain-default-report.json");
+    let item = json!({"case":"default login, reopen, rotating refresh, inference and logout never access OS credentials","passed":passed,"before_build_set_get_delete":before,"after_build_set_get_delete":after,"real_oauth_http_and_sqlite":true});
+    fs::write(&report, serde_json::to_vec_pretty(&item)?)?;
+    cases.push(item);
+    server.finish()?;
+    ensure!(
+        passed,
+        "default ChatGPT storage touched OS credentials: {}",
+        report.display()
+    );
+    Ok(())
+}
+const VAULT_PREFIX: &[u8] = b"CLARORA-CGPT-VAULT-1\n";
+fn local_session(lib: &Library, p: &chatgpt::Profile) -> Result<Value> {
+    let name = lib.setting("chatgpt_vault_ref")?;
+    let encoded = clarora_gpui::credentials::get(lib, &name)?;
+    let key = B64.decode(encoded)?;
+    let key = aead::LessSafeKey::new(
+        aead::UnboundKey::new(&aead::AES_256_GCM, &key)
+            .map_err(|_| anyhow::anyhow!("fixture key invalid"))?,
+    );
+    let bytes = fs::read(lib.root.join(format!("chatgpt/{}.session", p.id)))?;
+    ensure!(
+        bytes.starts_with(VAULT_PREFIX),
+        "new session has no vault format marker"
+    );
+    let mut bytes = bytes[VAULT_PREFIX.len()..].to_vec();
+    let nonce: [u8; 12] = bytes[..12].try_into()?;
+    let plain = key
+        .open_in_place(
+            aead::Nonce::assume_unique_for_key(nonce),
+            aead::Aad::from(p.id.as_bytes()),
+            &mut bytes[12..],
+        )
+        .map_err(|_| anyhow::anyhow!("fixture local decryption failed"))?;
+    Ok(serde_json::from_slice(plain)?)
+}
+fn legacy_blob(p: &chatgpt::Profile, session: &Value, key: &[u8; 32]) -> Result<Vec<u8>> {
+    let key = aead::LessSafeKey::new(
+        aead::UnboundKey::new(&aead::AES_256_GCM, key)
+            .map_err(|_| anyhow::anyhow!("fixture legacy key invalid"))?,
+    );
+    let nonce = [0x6c; 12];
+    let mut bytes = serde_json::to_vec(session)?;
+    key.seal_in_place_append_tag(
+        aead::Nonce::assume_unique_for_key(nonce),
+        aead::Aad::from(p.id.as_bytes()),
+        &mut bytes,
+    )
+    .map_err(|_| anyhow::anyhow!("fixture legacy encryption failed"))?;
+    Ok(nonce.into_iter().chain(bytes).collect())
+}
+fn storage_opt_in(root: &Library, vault: &Vault, cases: &mut Vec<Value>) -> Result<()> {
+    let lib = Library::open(root.root.join("legacy-keychain-migration"))?;
+    let mut server = Fixture::new()?;
+    chatgpt::diagnostic::configure(&lib, &server.base)?;
+    let client = chatgpt::Client::new(&lib);
+    let cancel = process::cancel_token();
+    let before = vault.activity();
+    let first = server.login(&client, None, &cancel)?;
+    let old = first.current().context("legacy profile missing")?.clone();
+    let old_session = local_session(&lib, &old)?;
+    let old_file = lib.root.join(format!("chatgpt/{}.session", old.id));
+    let legacy_key = [0x53; 32];
+    let old_blob = legacy_blob(&old, &old_session, &legacy_key)?;
+    fs::write(&old_file, &old_blob)?;
+    let legacy_name = format!(
+        "Clarora-ChatGPT/vault-{}",
+        hex::encode(Sha256::digest(lib.root.to_string_lossy().as_bytes()))
+    );
+    vault
+        .entries
+        .lock()
+        .unwrap()
+        .insert(legacy_name, B64.encode(legacy_key).into_bytes());
+    let hidden = chatgpt::snapshot(&lib)?;
+    ensure!(
+        hidden.enabled
+            && hidden.needs_legacy_import
+            && hidden.current().is_some_and(|p| !p.connected),
+        "legacy session was silently enabled or changed service"
+    );
+    let requests = server.state.lock().unwrap().requests.len();
+    ensure!(
+        client.refresh_models(&cancel).is_err()
+            && ai::chat_stream(&lib, "legacy", "", &[], &cancel, |_| {}).is_err(),
+        "legacy session was implicitly used"
+    );
+    ensure!(
+        server.state.lock().unwrap().requests.len() == requests && vault.activity() == before,
+        "legacy snapshot/request accessed vault or paid service"
+    );
+    cases.push(json!({"case":"legacy sessions require explicit import and never switch API or read keychain automatically","passed":true}));
+    let second = server.login(&client, None, &cancel)?;
+    let new = second.current().context("new profile missing")?.clone();
+    let new_file = lib.root.join(format!("chatgpt/{}.session", new.id));
+    let new_blob = fs::read(&new_file)?;
+    let new_plain = local_session(&lib, &new)?;
+    let key_name = lib.setting("chatgpt_vault_ref")?;
+    let key_value = clarora_gpui::credentials::get(&lib, &key_name)?;
+    let state_path = lib.root.join("chatgpt/state.json");
+    let public_before = fs::read(&state_path)?;
+    ensure!(
+        vault.activity() == before,
+        "new login touched legacy keychain"
+    );
+    vault.blocked.store(true, Ordering::SeqCst);
+    let denied = chatgpt::import_legacy(&lib);
+    vault.blocked.store(false, Ordering::SeqCst);
+    ensure!(
+        denied.is_err()
+            && fs::read(&state_path)? == public_before
+            && fs::read(&old_file)? == old_blob
+            && fs::read(&new_file)? == new_blob,
+        "denied legacy import changed original sessions or metadata"
+    );
+    cases.push(json!({"case":"denied legacy vault import preserves all ciphertext and public state","passed":true}));
+    let imported = chatgpt::import_legacy(&lib)?;
+    ensure!(
+        !imported.needs_legacy_import
+            && imported
+                .profiles
+                .iter()
+                .any(|p| p.id == old.id && p.connected)
+            && imported.active == new.id,
+        "explicit import did not restore legacy connection or changed selected account"
+    );
+    ensure!(
+        local_session(&lib, &old)? == old_session
+            && local_session(&lib, &new)? == new_plain
+            && fs::read(&new_file)? == new_blob
+            && clarora_gpui::credentials::get(&lib, &key_name)? == key_value,
+        "legacy import replaced current vault key or changed existing new session"
+    );
+    let after_import = vault.activity();
+    ensure!(
+        after_import[2] > before[2],
+        "explicit legacy import did not request old key"
+    );
+    client.select_profile(&old.id)?;
+    client.refresh_models(&cancel)?;
+    ensure!(
+        ai::chat_stream(&lib, "imported session", "", &[], &cancel, |_| {})?.answer == "你好 🌱"
+            && vault.activity() == after_import,
+        "imported session still accesses legacy vault"
+    );
+    let _ = chatgpt::import_legacy(&lib);
+    ensure!(
+        vault.activity() == after_import,
+        "no-op import accessed legacy vault"
+    );
+    cases.push(json!({"case":"explicit import reencrypts old login, preserves newer login/key and needs no later OS reads","passed":true,"before_build_set_get_delete":before,"after_import_build_set_get_delete":after_import}));
+    let zip = lib.root.join("vault-backup.zip");
+    backup::export_local(&lib, &zip)?;
+    let mut archive = zip::ZipArchive::new(fs::File::open(&zip)?)?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        let mut bytes = vec![];
+        entry.read_to_end(&mut bytes)?;
+        let text = String::from_utf8_lossy(&bytes);
+        ensure!(
+            !text.contains(&key_name)
+                && !text.contains(&key_value)
+                && !text.contains("chatgpt_vault_ref")
+                && !entry.name()?.contains("chatgpt/"),
+            "vault key or reference entered backup"
+        );
+    }
+    cases.push(json!({"case":"new vault key, reference and all sessions stay out of exported ZIP","passed":true}));
+    server.finish()?;
+
+    let lib = Library::open(root.root.join("credential-mode-transition"))?;
+    let mut server = Fixture::new()?;
+    chatgpt::diagnostic::configure(&lib, &server.base)?;
+    let client = chatgpt::Client::new(&lib);
+    server.login(&client, None, &cancel)?;
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(lib.root.join("chatgpt/session.lock"))?;
+    fs2::FileExt::try_lock_exclusive(&held)?;
+    let count = vault.activity();
+    let locked = clarora_gpui::credentials::set_secure_mode(&lib, true);
+    fs2::FileExt::unlock(&held)?;
+    ensure!(
+        locked.is_err()
+            && !clarora_gpui::credentials::secure_mode(&lib)?
+            && vault.activity() == count,
+        "mode changed during active session transaction"
+    );
+    cases.push(json!({"case":"credential mode change respects active ChatGPT session lock before OS access","passed":true}));
+    clarora_gpui::credentials::set_secure_mode(&lib, true)?;
+    ensure!(
+        clarora_gpui::credentials::secure_mode(&lib)? && vault.activity()[1] > count[1],
+        "explicit opt-in did not migrate key to OS storage"
+    );
+    client.refresh_models(&cancel)?;
+    ensure!(
+        ai::chat_stream(&lib, "opt in", "", &[], &cancel, |_| {})?.answer == "你好 🌱",
+        "opt-in chat failed"
+    );
+    clarora_gpui::credentials::set_secure_mode(&lib, false)?;
+    let count = vault.activity();
+    let blocked = client.refresh_models(&cancel);
+    ensure!(
+        blocked.is_err()
+            && vault.activity() == count
+            && clarora_gpui::credentials::needs_legacy_import(&lib)?,
+        "turning mode off automatically read keychain or lost import hint"
+    );
+    let found = clarora_gpui::credentials::import_legacy(&lib)?;
+    ensure!(
+        found > 0,
+        "explicit generic key import did not include ChatGPT vault"
+    );
+    let count = vault.activity();
+    client.refresh_models(&cancel)?;
+    ensure!(
+        ai::chat_stream(&lib, "back to local", "", &[], &cancel, |_| {})?.answer == "你好 🌱"
+            && vault.activity() == count,
+        "local mode failed after explicit credential migration"
+    );
+    cases.push(json!({"case":"explicit keychain opt-in and opt-out preserve login with intentional one-time migration","passed":true}));
+    server.finish()?;
+    fs::write(
+        root.root.join("keychain-opt-in-report.json"),
+        serde_json::to_vec_pretty(
+            &json!({"passed":true,"cases":cases,"fake_os_store_only":true,"live_keychain_accessed":false}),
+        )?,
+    )?;
+    Ok(())
+}
 pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     let lib = Library::open(lib.root.join("chatgpt-fixture"))?;
     let mut server = Fixture::new()?;
-    keyring::set_default_credential_builder(Box::new(Vault::default()));
+    let vault = Vault::default();
+    keyring::set_default_credential_builder(Box::new(vault.clone()));
     chatgpt::diagnostic::configure(&lib, &server.base)?;
     let client = chatgpt::Client::new(&lib);
     let cancel = process::cancel_token();
     let mut cases = vec![];
+    default_keychain_off(&lib, &vault, &mut cases)?;
+    storage_opt_in(&lib, &vault, &mut cases)?;
     for case in [
         "nonce",
         "signature",

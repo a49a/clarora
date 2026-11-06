@@ -2261,7 +2261,11 @@ impl AppView {
                 }
                 Action::CredentialMode(enabled) => {
                     ensure!(
-                        self.tasks.cancel.is_none() && self.tasks.video_job.is_none(),
+                        self.tasks.cancel.is_none()
+                            && self.tasks.video_job.is_none()
+                            && self.tasks.audio_subtitles.cancel.is_none()
+                            && !self.chat.running
+                            && !self.chatgpt.busy(),
                         "请先完成或取消当前任务再切换密钥存储模式"
                     );
                     self.begin_scoped(
@@ -2275,7 +2279,11 @@ impl AppView {
                 }
                 Action::ImportLegacyCredentials => {
                     ensure!(
-                        self.tasks.cancel.is_none() && self.tasks.video_job.is_none(),
+                        self.tasks.cancel.is_none()
+                            && self.tasks.video_job.is_none()
+                            && self.tasks.audio_subtitles.cancel.is_none()
+                            && !self.chat.running
+                            && !self.chatgpt.busy(),
                         "请先完成或取消当前任务"
                     );
                     self.begin_scoped(

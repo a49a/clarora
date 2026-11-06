@@ -55,10 +55,14 @@ pub fn chatgpt(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         status.success()
             && report["passed"] == true
             && layouts["passed"] == true
-            && layouts["layouts"].as_array().is_some_and(|v| v.len() == 36
-                && ["pending-registration", "exchange-forbidden"]
-                    .iter()
-                    .all(|name| v.iter().any(|r| r["case"] == *name))),
+            && layouts["layouts"].as_array().is_some_and(|v| v.len() == 42
+                && [
+                    "pending-registration",
+                    "exchange-forbidden",
+                    "legacy-keychain"
+                ]
+                .iter()
+                .all(|name| v.iter().any(|r| r["case"] == *name))),
         "ChatGPT settings diagnostic failed: {}",
         out.display()
     );
@@ -134,10 +138,14 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             chatgpt_layouts["passed"] == true
                 && chatgpt_layouts["layouts"]
                     .as_array()
-                    .is_some_and(|v| v.len() == 36
-                        && ["pending-registration", "exchange-forbidden"]
-                            .iter()
-                            .all(|name| v.iter().any(|r| r["case"] == *name))),
+                    .is_some_and(|v| v.len() == 42
+                        && [
+                            "pending-registration",
+                            "exchange-forbidden",
+                            "legacy-keychain"
+                        ]
+                        .iter()
+                        .all(|name| v.iter().any(|r| r["case"] == *name))),
             "ChatGPT settings layouts missing or failed"
         );
         let video_report_path = out.join("video-resume-report.json");

@@ -50,6 +50,8 @@ pub struct Snapshot {
     pub enabled: bool,
     pub active: String,
     pub profiles: Vec<Profile>,
+    #[serde(skip)]
+    pub needs_legacy_import: bool,
 }
 impl Snapshot {
     pub fn current(&self) -> Option<&Profile> {
@@ -85,6 +87,13 @@ pub fn snapshot(lib: &Library) -> Result<Snapshot> {
 }
 pub fn enabled(lib: &Library) -> Result<bool> {
     Ok(snapshot(lib)?.enabled)
+}
+/// Explicit user action: legacy keychain access must never be a session-read fallback.
+pub fn import_legacy(lib: &Library) -> Result<Snapshot> {
+    storage::import_legacy(lib)
+}
+pub(crate) fn storage_mode_guard(lib: &Library) -> Result<std::fs::File> {
+    storage::lock_blocking(lib)
 }
 pub fn set_enabled(lib: &Library, enabled: bool) -> Result<Snapshot> {
     let _lock = storage::lock_blocking(lib)?;
@@ -185,7 +194,14 @@ impl Client {
             .current()
             .cloned()
             .context("请先在设置中登录 ChatGPT")?;
-        ensure!(p.connected, "ChatGPT 已退出，请重新登录");
+        ensure!(
+            p.connected,
+            if state.needs_legacy_import {
+                "旧 ChatGPT 登录需要主动导入钥匙串，或重新登录；默认不会访问钥匙串"
+            } else {
+                "ChatGPT 已退出，请重新登录"
+            }
+        );
         let mut session =
             storage::session(&self.lib, &p)?.context("ChatGPT 登录已失效，请重新登录")?;
         ensure!(

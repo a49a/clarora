@@ -91,6 +91,9 @@ pub fn store_config(
     Ok(())
 }
 pub fn set_secure_mode(lib: &Library, enabled: bool) -> Result<()> {
+    // Share the session lock so a rotating ChatGPT refresh cannot change storage
+    // mode between resolving its key and durably saving the replacement token.
+    let _sessions = crate::chatgpt::storage_mode_guard(lib)?;
     let mut cache = cache().lock().unwrap();
     if enabled == secure_mode(lib)? {
         return Ok(());
@@ -118,6 +121,10 @@ pub fn set_secure_mode(lib: &Library, enabled: bool) -> Result<()> {
 }
 fn referenced(lib: &Library) -> Result<Vec<String>> {
     let mut names = vec![];
+    let chatgpt = lib.setting("chatgpt_vault_ref")?;
+    if !chatgpt.is_empty() {
+        names.push(chatgpt);
+    }
     let raw = lib.setting("ai_config")?;
     if !raw.is_empty() {
         let c: serde_json::Value = serde_json::from_str(&raw)?;

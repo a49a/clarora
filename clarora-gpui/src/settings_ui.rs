@@ -58,19 +58,24 @@ impl AppView {
                 .child(self.button("theme", "切换深浅主题", Action::Theme, cx))
                 .child(self.field("daily_limit", "每日新卡上限")),
         );
+        let credential_locked = self.tasks.cancel.is_some()
+            || self.tasks.video_job.is_some()
+            || self.tasks.audio_subtitles.cancel.is_some()
+            || self.chat.running
+            || self.chatgpt.busy();
         content=content.child(panel(cx)
                     .child(div().text_lg().child("密钥存储"))
                     .child(Switch::new("credential-security-mode")
                         .label("使用系统凭证库保护密钥")
                         .checked(self.settings.secure_credentials)
-                        .disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some())
+                        .disabled(credential_locked)
                         .on_click(cx.listener(|this,checked:&bool,window,cx|this.handle(Action::CredentialMode(*checked),window,cx))))
-                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("默认关闭：密钥保存到本机 SQLite，不访问钥匙串。开启后使用系统凭证库，系统可能要求授权。"))
-                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("SQLite 中的密钥未额外加密。应用导出的资料备份不包含密钥。"))
+                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("默认关闭：API 密钥及 ChatGPT 登录加密密钥保存到本机 SQLite，不访问钥匙串。主动开启后使用系统凭证库，系统可能要求授权。"))
+                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("SQLite 中的密钥未额外加密。ChatGPT 登录凭证另行加密保存。应用导出的资料备份不包含这些凭证和密钥。"))
                     .when(!self.settings.secure_credentials && self.data.needs_legacy_import,|v|v
                         .child(div().text_sm().child("旧密钥还在钥匙串中。可重新输入后保存，或主动导入一次。"))
                         .child(self.button("import-legacy-credentials","导入旧钥匙串密钥（可能需一次授权）",Action::ImportLegacyCredentials,cx)
-                            .disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()))));
+                            .disabled(credential_locked))));
         // Read only the saved configuration, without accessing the credential store
         // during rendering. Keep draft selection distinct from the active engine.
         let saved_ai = self.data.saved_ai.as_ref();

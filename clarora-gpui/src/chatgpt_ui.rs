@@ -10,6 +10,7 @@ pub(super) enum Command {
     Model(String),
     Refresh,
     SignOut,
+    ImportLegacy,
     Usage,
 }
 enum Event {
@@ -149,6 +150,10 @@ impl AppView {
                             .into(),
                         )
                     }
+                    Command::ImportLegacy => (
+                        chatgpt::import_legacy(&lib)?,
+                        "已导入旧 ChatGPT 登录，后续按所选密钥存储方式读取".into(),
+                    ),
                     Command::Cancel | Command::Usage => unreachable!(),
                 };
                 Ok((state, message))
@@ -217,6 +222,27 @@ impl AppView {
     .child(self.button("chatgpt-use","ChatGPT 会员",action(Command::Use(true)),cx).outline().selected(state.enabled).disabled(locked))
     .child(self.button("chatgpt-compatible","兼容 API",action(Command::Use(false)),cx).outline().selected(!state.enabled).disabled(locked)))
    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("连接你自己的 ChatGPT 账户，用已授权的会员额度进行问答、字幕翻译和写作批改。语音转写与图片识字仍使用原有配置。"));
+        if state.needs_legacy_import {
+            panel = panel.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(div().text_sm().child(
+                        "旧登录保存在钥匙串中，默认不读取。可以重新登录，或主动授权导入一次。",
+                    ))
+                    .child(
+                        self.button(
+                            "chatgpt-import-legacy",
+                            "导入旧 ChatGPT 登录（需钥匙串授权）",
+                            action(Command::ImportLegacy),
+                            cx,
+                        )
+                        .outline()
+                        .disabled(locked),
+                    ),
+            );
+        }
         let accounts = state
             .profiles
             .iter()
@@ -392,6 +418,6 @@ impl AppView {
                     ),
             );
         }
-        panel.child(div().text_xs().text_color(cx.theme().muted_foreground).child("会员额度和支持的模型取决于你的账户与授权。不会自动切换到另行付费的 API。登录凭证由系统凭证库密钥加密，仅保存在本机，不进入资料备份。")).into_any_element()
+        panel.child(div().text_xs().text_color(cx.theme().muted_foreground).child("默认不访问钥匙串：登录凭证在本机加密，加密密钥保存在本机 SQLite。可在「密钥存储」主动开启系统凭证库。登录凭证及密钥均不进入资料备份；直接复制整个本机资料目录会包含它们。")).into_any_element()
     }
 }
