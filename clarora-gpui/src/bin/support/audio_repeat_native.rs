@@ -50,7 +50,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         status.success()
             && report["passed"] == true
-            && cases.len() >= 37
+            && cases.len() >= 49
             && [
                 "close waiting sentence card and reclaim subtitle space",
                 "existing current sentence action reopens the card",
@@ -70,6 +70,18 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
                 "double click selects the entire multilingual assistant question",
                 "single click still places the assistant question caret",
                 "typing replaces the entire double-click selection",
+                "audio current card drag selects words without seeking or leaving triple repeat",
+                "audio selection floating copy button writes exact OS clipboard text",
+                "audio current card ask AI attaches only selected words without sending",
+                "audio transcript selects across cues Chinese and emoji exactly",
+                "audio subtitle native keyboard copy preserves bilingual cross-cue selection",
+                "audio transcript ask AI preserves exact multilingual selection",
+                "audio blind mode clears selection and offers no hidden subtitle quote",
+                "audio subtitle single click still seeks and retains triple repeat",
+                "visible audio copy full button copies complete bilingual transcript without changing playback",
+                "audio copy full follows the newly selected audio",
+                "stale audio full copy action cannot copy old material",
+                "blind listening hides and blocks full audio copy",
             ]
             .iter()
             .all(|name| cases.iter().any(|case| case["case"] == *name)),

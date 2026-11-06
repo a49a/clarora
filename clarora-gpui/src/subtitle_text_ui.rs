@@ -24,6 +24,8 @@ pub(super) struct State {
     surface: Surface,
     press: Point<Pixels>,
     layouts: Vec<Fragment>,
+    #[cfg(debug_assertions)]
+    pub(super) probe_audio_copy: Option<Bounds<Pixels>>,
 }
 impl State {
     pub fn new(cx: &mut App) -> Self {
@@ -36,6 +38,8 @@ impl State {
             surface: Surface::Audio,
             press: Point::default(),
             layouts: vec![],
+            #[cfg(debug_assertions)]
+            probe_audio_copy: None,
         }
     }
     pub fn documents(&mut self, audio: Document, video: Document) {
@@ -71,6 +75,10 @@ impl State {
     }
     pub fn begin_frame(&mut self) {
         self.layouts.clear();
+        #[cfg(debug_assertions)]
+        {
+            self.probe_audio_copy = None;
+        }
     }
     #[cfg(debug_assertions)]
     pub(super) fn probe_audio_bounds(&self) -> Vec<Bounds<Pixels>> {
@@ -79,6 +87,66 @@ impl State {
             .filter(|fragment| fragment.surface == Surface::Audio)
             .map(|fragment| fragment.bounds)
             .collect()
+    }
+    #[cfg(debug_assertions)]
+    pub(super) fn probe_fragments(&self, surface: Surface) -> Vec<(Range<usize>, Bounds<Pixels>)> {
+        self.layouts
+            .iter()
+            .filter(|f| f.surface == surface)
+            .map(|f| (f.range.clone(), f.bounds))
+            .collect()
+    }
+    #[cfg(debug_assertions)]
+    pub(super) fn probe_point(
+        &self,
+        surface: Surface,
+        index: usize,
+        visible: Bounds<Pixels>,
+    ) -> Option<Point<Pixels>> {
+        for fragment in &self.layouts {
+            if fragment.surface != surface
+                || index < fragment.range.start
+                || index > fragment.range.end
+            {
+                continue;
+            }
+            let bounds = fragment.bounds;
+            if let Some(caret) = fragment
+                .layout
+                .position_for_index(index - fragment.range.start)
+            {
+                let p = caret + point(px(0.5), px(1.));
+                let local = fragment
+                    .layout
+                    .index_for_position(p)
+                    .unwrap_or_else(|i| i)
+                    .min(fragment.range.len());
+                if visible.contains(&p)
+                    && (bounds.contains(&p) || index == fragment.range.end)
+                    && fragment.range.start + local == index
+                {
+                    return Some(p);
+                }
+            }
+            for y in (f32::from(bounds.top().max(visible.top())).ceil() as i32)
+                ..(f32::from(bounds.bottom().min(visible.bottom())).floor() as i32)
+            {
+                for x in (f32::from(bounds.left().max(visible.left())).ceil() as i32)
+                    ..(f32::from(bounds.right().min(visible.right())).floor() as i32)
+                {
+                    let p = point(px(x as f32), px(y as f32));
+                    let local = fragment
+                        .layout
+                        .index_for_position(p)
+                        .unwrap_or_else(|i| i)
+                        .min(fragment.range.len());
+                    if fragment.range.start + local == index {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        None
     }
     fn doc(&self, surface: Surface) -> Arc<Document> {
         if surface == Surface::Video {

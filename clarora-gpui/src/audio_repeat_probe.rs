@@ -25,6 +25,12 @@ pub(super) fn prepare(out: &Path) -> Result<Library> {
     for id in ["repeat-audio", "repeat-other"] {
         lib.put("listening_audios",json!({"id":id,"practice_id":"probe-group-a","name":id,"audio_uri":wav,"subtitle_uri":srt}))?;
     }
+    let selection = lib.root.join("media/selection.srt");
+    fs::write(
+        &selection,
+        "1\n00:00:00,300 --> 00:00:00,800\nWhen is the train leaving?\n火车🌱什么时候出发？\n\n2\n00:00:01,200 --> 00:00:01,700\nWhy did you leave?\n你为什么离开？\n",
+    )?;
+    lib.put("listening_audios",json!({"id":"selection-audio","practice_id":"probe-group-a","name":"Bilingual selection fixture","audio_uri":wav,"subtitle_uri":selection}))?;
     Ok(lib)
 }
 
@@ -42,6 +48,7 @@ pub(super) struct Probe {
     current_card_click: Option<Instant>,
     transcript_top: Pixels,
     assistant_selection: assistant_selection_probe::Probe,
+    audio_selection: audio_selection_probe::Flow,
 }
 impl Probe {
     pub(super) fn new(out: &Path) -> Self {
@@ -59,6 +66,7 @@ impl Probe {
             current_card_click: None,
             transcript_top: px(0.),
             assistant_selection: assistant_selection_probe::Probe::new(),
+            audio_selection: audio_selection_probe::Flow::new(),
         }
     }
     fn note(&mut self, name: &str, app: &AppView) {
@@ -604,6 +612,17 @@ impl Probe {
                     "direct video open releases audio request without changing video mode",
                     app,
                 );
+            }
+            11 => {
+                if !self.audio_selection.step(
+                    app,
+                    window,
+                    cx,
+                    &mut self.cases,
+                    &mut self.observations,
+                )? {
+                    return Ok(false);
+                }
                 self.report(true, None)?;
                 return Ok(true);
             }

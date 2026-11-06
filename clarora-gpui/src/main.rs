@@ -16,6 +16,8 @@ mod audio_remove_ui;
 mod audio_repeat_controller;
 #[cfg(debug_assertions)]
 mod audio_repeat_probe;
+#[cfg(debug_assertions)]
+mod audio_selection_probe;
 mod audio_subtitle_ui;
 mod audio_subtitles_controller;
 #[cfg(debug_assertions)]
@@ -187,6 +189,7 @@ enum Action {
     AudioCurrent,
     AudioFollow,
     CopySelectedSubtitle,
+    CopySelection(String),
     AudioCopySubtitle(String, Option<Cue>),
     SavedClips(Vec<clip_marks::Saved>),
     AudioRepeat(usize),

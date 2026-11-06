@@ -137,6 +137,7 @@ impl AppView {
                 }),
             )
             .child(self.audio_subtitle_more(available, busy, cx))
+            .child(self.audio_copy_full_button(cx))
             .child(
                 div()
                     .flex_1()
@@ -144,13 +145,40 @@ impl AppView {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(if has_cues {
-                        format!("已载入 {} 句字幕", self.audio.cues.len())
+                        format!(
+                            "已载入 {} 句字幕 · 拖选文字可复制或问 AI",
+                            self.audio.cues.len()
+                        )
                     } else if available {
                         "先生成字幕，再翻译成中文".into()
                     } else {
                         "选择音频后生成字幕".into()
                     }),
             )
+    }
+
+    fn audio_copy_full_button(&self, cx: &Context<Self>) -> impl IntoElement {
+        let button = div().child(
+            self.button(
+                "audio-copy-all",
+                "复制全文",
+                Action::AudioCopySubtitle(self.audio.current_id.clone(), None),
+                cx,
+            )
+            .icon(Icon::default().path("ui/copy.svg"))
+            .outline()
+            .h(px(32.))
+            .disabled(self.audio.current_id.is_empty() || self.audio.cues.is_empty())
+            .tooltip("复制当前音频的全部字幕，包含已有中文，不含时间戳；拖选文字可单独复制或问 AI"),
+        );
+        #[cfg(debug_assertions)]
+        let button = {
+            let state = self.subtitle_text.clone();
+            button.on_children_prepainted(move |bounds, _, _| {
+                state.borrow_mut().probe_audio_copy = bounds.first().copied();
+            })
+        };
+        button
     }
 
     fn audio_subtitle_more(

@@ -49,7 +49,7 @@ impl AppView {
             Action::Assistant => Some("assistant-close"),
             Action::AssistantCurrent => Some("plus"),
             Action::AssistantRemove(_) => Some("close"),
-            Action::AssistantCopy(_) => Some("copy"),
+            Action::AssistantCopy(_) | Action::CopySelection(_) => Some("copy"),
             Action::SaveAnswer => Some("bookmark"),
             Action::Chat => Some("send"),
             Action::Cancel => Some("close"),
@@ -204,15 +204,21 @@ impl AppView {
                 .left(
                     position
                         .x
-                        .min(window.viewport_size().width - px(150.))
+                        .min(window.viewport_size().width - px(240.))
                         .max(px(8.)),
                 )
                 .top(
                     (position.y + px(12.))
-                        .min(window.viewport_size().height - px(60.))
+                        .min(window.viewport_size().height - px(52.))
                         .max(px(8.)),
                 )
                 .p_1()
+                .w(px(232.))
+                .h(px(44.))
+                .occlude()
+                .flex()
+                .items_center()
+                .gap_1()
                 .rounded_lg()
                 .shadow_lg()
                 .bg(cx.theme().background)
@@ -220,12 +226,22 @@ impl AppView {
                 .border_color(cx.theme().border)
                 .child(
                     self.assistant_button(
+                        "selection-copy",
+                        "复制",
+                        Action::CopySelection(reference.text.clone()),
+                        cx,
+                    )
+                    .flex_1(),
+                )
+                .child(
+                    self.assistant_button(
                         "selection-ask-ai",
-                        "✦ 问 AI",
+                        "问 AI",
                         Action::AssistantQuote(reference.clone()),
                         cx,
                     )
-                    .primary(),
+                    .primary()
+                    .flex_1(),
                 )
                 .into_any_element(),
         )

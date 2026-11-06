@@ -488,28 +488,6 @@ impl AppView {
                 )
                 .ghost(),
             )
-            .when(!self.audio.blind.enabled, |v| {
-                v.child(
-                    self.button(
-                        "audio-copy-selected",
-                        "复制选中",
-                        Action::CopySelectedSubtitle,
-                        cx,
-                    )
-                    .ghost()
-                    .disabled(!self.has_subtitle_selection()),
-                )
-                .child(
-                    self.button(
-                        "audio-copy-all",
-                        "复制全部",
-                        Action::AudioCopySubtitle(self.audio.current_id.clone(), None),
-                        cx,
-                    )
-                    .ghost()
-                    .disabled(self.audio.cues.is_empty()),
-                )
-            })
             .when(self.audio.blind.enabled, |v| {
                 v.child(
                     self.button(

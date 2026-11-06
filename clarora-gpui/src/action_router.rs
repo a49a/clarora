@@ -1626,6 +1626,11 @@ impl AppView {
                     cx.write_to_clipboard(ClipboardItem::new_string(selected));
                     self.report_status(FeedbackKind::Info, "已复制选中文字".into());
                 }
+                Action::CopySelection(selected) => {
+                    ensure!(!selected.trim().is_empty(), "请先拖选文字");
+                    cx.write_to_clipboard(ClipboardItem::new_string(selected));
+                    self.report_status(FeedbackKind::Info, "已复制选中文字".into());
+                }
                 Action::SavedClips(saved) => self.show_saved_clips(saved, window, cx),
                 Action::Clip => {
                     ensure!(
