@@ -1,4 +1,4 @@
-import { currentPlatform, getNativeModules } from './platform';
+import { currentPlatform, nativeSecretBridge } from './platform';
 
 /**
  * 系统凭证保险库抽象：macOS 走钥匙串（RNMacKeychain），Windows 走
@@ -43,7 +43,7 @@ export async function discardGeneration(store: SecretStore, bases: readonly stri
   }
 }
 
-type NativeSecretStore = {
+export type NativeSecretStore = {
   setSecret: (name: string, value: string) => Promise<void>;
   getSecret: (name: string) => Promise<string | null>;
   deleteSecret: (name: string) => Promise<void>;
@@ -95,27 +95,9 @@ export function isDevBuild(): boolean {
 }
 
 export function secretStore(): SecretStore | null {
-  if (currentPlatform === 'macos') {
-    const module = getNativeModules().RNMacKeychain as NativeSecretStore | undefined;
-    if (!module?.setSecret) return null;
-    return macStore ??= sessionStore(module);
-  }
-  if (currentPlatform === 'windows') {
-    const module = getNativeModules().RNWindowsCredentials as NativeSecretStore | undefined;
-    if (!module?.setSecret) return null;
-    return module;
-  }
-  if (currentPlatform === 'ios') {
-    const module = getNativeModules().RNIOSKeychain as NativeSecretStore | undefined;
-    if (!module?.setSecret) return null;
-    return macStore ??= sessionStore(module);
-  }
-  if (currentPlatform === 'android') {
-    const module = getNativeModules().RNAndroidKeychain as NativeSecretStore | undefined;
-    if (!module?.setSecret) return null;
-    return macStore ??= sessionStore(module);
-  }
-  return null;
+  const module = nativeSecretBridge();
+  if (!module?.setSecret) return null;
+  return currentPlatform === 'windows' ? module : macStore ??= sessionStore(module);
 }
 
 /**

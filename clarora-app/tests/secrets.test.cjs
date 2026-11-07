@@ -5,7 +5,7 @@ const loader = require('./helpers/load-ts.cjs');
 
 function setup(native) {
   return loader({
-    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: native }) },
+    './platform': { currentPlatform: 'macos', nativeSecretBridge: () => native },
   })(path.join(__dirname, '../shared/services/secrets.ts'));
 }
 

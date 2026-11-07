@@ -45,7 +45,7 @@ test('release build without a credential module refuses to save plaintext secret
   const stored = [];
   const { saveStorageConfig } = loader({
     '../data/database': { getSetting: async () => null, setSetting: async (_k, v) => { stored.push(v); } },
-    './platform': { currentPlatform: 'macos', getNativeModules: () => ({}) },
+    './platform': { currentPlatform: 'macos', nativeSecretBridge: () => undefined },
   })(file);
   await assert.rejects(saveStorageConfig(config), /保险库不可用/);
   assert.equal(stored.length, 0);
@@ -56,11 +56,11 @@ test('a partial staging failure aborts cleanly so the storage endpoint keeps its
   const stored = [];
   const { saveStorageConfig } = loader({
     '../data/database': { getSetting: async () => stored[stored.length - 1] ?? null, setSetting: async (_k, v) => { stored.push(v); } },
-    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+    './platform': { currentPlatform: 'macos', nativeSecretBridge: () => ({
       getSecret: async key => vault.get(key) ?? null,
       setSecret: async (key, value) => { if (key === 'clarora.storage.session-token.v1') throw new Error('denied'); vault.set(key, value); },
       deleteSecret: async key => vault.delete(key),
-    } }) },
+    }) },
   })(file);
   await assert.rejects(saveStorageConfig(config), /保险库写入失败/);
   // 暂存半成品已清理,数据库仍引用旧代:老端点配老密钥,不会错代。
@@ -73,11 +73,11 @@ test('a failed config write keeps the previous generation referenced and discard
   const vault = new Map([['clarora.storage.secret-access-key', 'old-secret']]);
   const { saveStorageConfig } = loader({
     '../data/database': { getSetting: async () => null, setSetting: async () => {} },
-    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+    './platform': { currentPlatform: 'macos', nativeSecretBridge: () => ({
       getSecret: async key => vault.get(key) ?? null,
       setSecret: async (key, value) => { vault.set(key, value); },
       deleteSecret: async key => { vault.delete(key); },
-    } }) },
+    }) },
   })(file);
   await assert.rejects(saveStorageConfig(config), /校验失败/);
   assert.equal(vault.get('clarora.storage.secret-access-key'), 'old-secret');
@@ -92,11 +92,11 @@ test('a failed read of the current config aborts saving instead of staging over 
       getSetting: async () => { if (++reads === 1) throw new Error('read failed'); return null; },
       setSetting: async () => {},
     },
-    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+    './platform': { currentPlatform: 'macos', nativeSecretBridge: () => ({
       getSecret: async key => vault.get(key) ?? null,
       setSecret: async (key, value) => { vault.set(key, value); },
       deleteSecret: async key => { vault.delete(key); },
-    } }) },
+    }) },
   })(file);
   await assert.rejects(saveStorageConfig(config), /中止/);
   assert.equal(vault.get('clarora.storage.secret-access-key.v1'), 'live-secret');
@@ -125,11 +125,11 @@ test('a stale load no longer writes back over a newer saved config', async () =>
       getSetting: async () => (reads++ === 0 ? oldRow : newRow),
       setSetting: async (_k, v) => { writes.push(v); },
     },
-    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+    './platform': { currentPlatform: 'macos', nativeSecretBridge: () => ({
       getSecret: async key => vault.get(key) ?? null,
       setSecret: async (key, value) => { vault.set(key, value); },
       deleteSecret: async key => { vault.delete(key); },
-    } }) },
+    }) },
   })(file);
   await loadStorageConfig();
   // 审查复现:行在读取期间被更新时,旧读取任务必须跳过迁移回写。
@@ -156,7 +156,7 @@ function makeStorageHarness({ failOn = '', gate = null, failReadFrom = 0 } = {})
       },
       setSetting: async (_k, v) => { stored.push(v); },
     },
-    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+    './platform': { currentPlatform: 'macos', nativeSecretBridge: () => ({
       getSecret: async key => { events.push(`get:${key}`); return vault.get(key) ?? null; },
       setSecret: async (key, value) => {
         if (key === failOn && !failed) { failed = true; throw new Error('denied'); }
@@ -164,7 +164,7 @@ function makeStorageHarness({ failOn = '', gate = null, failReadFrom = 0 } = {})
         vault.set(key, value);
       },
       deleteSecret: async key => { events.push(`del:${key}`); vault.delete(key); },
-    } }) },
+    }) },
   })(file);
   };
   const saveStorageConfig = mount().saveStorageConfig;

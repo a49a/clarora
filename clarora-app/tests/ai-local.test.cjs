@@ -198,7 +198,7 @@ test('real secrets helper stores once and reuses the vault value', async () => {
     deleteSecret: async key => { map.delete(key); },
   };
   const secrets = loader({
-    './platform': { currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: keychain }) },
+    './platform': { currentPlatform: 'macos', nativeSecretBridge: () => keychain },
   })(secretsFile);
   const first = await secrets.migrateSecret(await secrets.secretStore(), 'clarora.ai.api-key', 'plain-key');
   assert.equal(first, 'plain-key');

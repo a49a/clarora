@@ -10,7 +10,7 @@ function setup(config = {}, reply = { choices: [{ message: { content: 'answer' }
     saveAiRecord: async (id, kind, value) => records.set(id, { kind, value: JSON.parse(JSON.stringify(value)) }),
     listAiRecords: async kind => [...records.values()].filter(r => r.kind === kind).map(r => r.value),
     deleteAiRecord: async id => records.delete(id),
-  }, './platform': { FileSystem: {
+  }, './platform': { nativeSecretBridge: () => undefined, FileSystem: {
     readAsStringAsync: async () => '1\n00:00:01,200 --> 00:00:02,300\nHello\n\n2\n00:00:03,000 --> 00:00:04,000\nWorld\n',
     readBase64Async: async () => 'aGVsbG8=',
     uploadFileAsync: async (...args) => { uploads.push(args); return { status: 200, body: JSON.stringify({ text: 'hello world', duration: 2, segments: [{ start: 0, end: 2, text: 'hello world' }] }) }; },
@@ -25,9 +25,9 @@ test('a rejected keychain write fails the save instead of storing database plain
       saveAiRecord: async () => {}, listAiRecords: async () => [], deleteAiRecord: async () => {},
     },
     './platform': { FileSystem: { readAsStringAsync: async () => '', readBase64Async: async () => '', uploadFileAsync: async () => ({ status: 200, body: '{}' }) },
-      currentPlatform: 'macos', getNativeModules: () => ({ RNMacKeychain: {
+      currentPlatform: 'macos', nativeSecretBridge: () => ({
         getSecret: async () => null, setSecret: async () => { throw new Error('Access denied'); }, deleteSecret: async () => {},
-      } }) },
+      }) },
   }, { fetch: async () => ({ ok: true, json: async () => ({ choices: [] }) }) })(file);
   await assert.rejects(
     api.saveAiConfig({ ...api.DEFAULT_AI, baseUrl: 'https://chat.example/v1', model: 'm', apiKey: 'chat-key', asrApiKey: 'speech-key' }),

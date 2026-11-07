@@ -36,7 +36,7 @@ export class DiscoverAudio {
     void enqueue(async () => {
       if (this.disposed || version !== this.version) return;
       const api = native();
-      if (!api?.feedPrepare) {
+      if (!api?.feedPrepare || !api.feedPause || !api.feedPlay || !api.feedStatus) {
         if (item.audio) throw new Error('请重新构建客户端以启用音频预加载');
         return;
       }
@@ -62,10 +62,10 @@ export class DiscoverAudio {
         this.timer = setInterval(() => {
           void enqueue(async () => {
             if (this.disposed || version !== this.version) return;
-            const status = await api.feedStatus(this.active);
-            if (this.disposed || version !== this.version) return;
+            const status = await api.feedStatus?.(this.active);
+            if (!status || this.disposed || version !== this.version) return;
             if (status.positionMillis >= item.audio!.endMs || !status.isPlaying) {
-              await api.feedPause(this.active);
+              await api.feedPause?.(this.active);
               clearInterval(this.timer);
               this.position = item.audio!.endMs;
               this.update(false, this.position);
@@ -87,7 +87,9 @@ export class DiscoverAudio {
     this.slots[slot] = undefined;
     const uri = item.audio.uri;
     const path = nativePath(uri);
-    await native().feedPrepare(slot, path, item.audio.startMs);
+    const api = native();
+    if (!api?.feedPrepare) return;
+    await api.feedPrepare(slot, path, item.audio.startMs);
     this.slots[slot] = item.key;
   }
 

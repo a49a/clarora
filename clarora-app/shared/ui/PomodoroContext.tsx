@@ -7,14 +7,14 @@ export type PomodoroPhase = "focus" | "break";
 
 // 阶段切换提示音：Mac 用系统音效，Android 用 ToneGenerator。
 function playPhaseChime() {
-  const module = nativeRecordingAudio() as { playChime?: () => void } | undefined;
-  module?.playChime?.();
+  const module = nativeRecordingAudio();
+  void Promise.resolve(module?.playChime?.()).catch(() => {});
 }
 
 // 停止共享播放器（RNMacAudio/RNAndroidAudio 的 player 全 App 单例），
 // 兜底确保休息音乐不会残留到专注阶段。
 function stopSharedPlayer() {
-  const module = nativeLearningAudio() as { unload?: () => unknown } | undefined;
+  const module = nativeLearningAudio();
   try {
     // Promise 型原生方法:无参调用,桥自动注入回调;拒绝静默吞掉。
     const result = module?.unload?.() as unknown;
@@ -111,7 +111,7 @@ export function PomodoroProvider({ children }: { children: ReactNode }) {
     try {
       const uri = await getSetting("meditation_music_uri");
       if (!uri) return;
-      const shared = nativeLearningAudio() as { pause?: () => unknown } | undefined;
+      const shared = nativeLearningAudio();
       const paused = shared?.pause?.() as unknown;
       if (paused && typeof (paused as Promise<void>).catch === "function") {
         (paused as Promise<void>).catch(() => {});

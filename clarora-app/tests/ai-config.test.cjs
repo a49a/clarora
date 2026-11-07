@@ -23,7 +23,7 @@ function setup({ dev = false, denyRead = false, denyWrite = false, failOn = '', 
       },
       setSetting: async (_, value) => { if (!discardWrite) stored = value; },
     },
-    './platform': { currentPlatform: 'macos', getNativeModules: () => noVaultModule ? {} : ({ RNMacKeychain: {
+    './platform': { currentPlatform: 'macos', nativeSecretBridge: () => noVaultModule ? undefined : ({
       getSecret: async key => { if (denyRead) throw new Error('denied'); return vault.get(key) ?? null; },
       setSecret: async (key, value) => {
         if (denyWrite) throw new Error('denied');
@@ -31,7 +31,7 @@ function setup({ dev = false, denyRead = false, denyWrite = false, failOn = '', 
         vault.set(key, value);
       },
       deleteSecret: async key => { vault.delete(key); },
-    } }) },
+    }) },
   }, {
     __DEV__: dev,
     fetch: async (url, options) => {

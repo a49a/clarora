@@ -1,16 +1,28 @@
 import { NativeModules, Platform } from "react-native";
+import type { NativeSecretStore } from "./secrets";
 import RNFS from "./rnfs";
 
 const usesRNFS = Platform.OS === "android" || Platform.OS === "ios";
 /** Current OS name, exported so services can branch without importing react-native directly. */
 export const currentPlatform = Platform.OS;
+// Legacy desktop bridge consumers use the original module lookup.
 export const getNativeModules = (): Record<string, unknown> => NativeModules as unknown as Record<string, unknown>;
-export const nativeLearningAudio = () => Platform.OS === "ios"
+
+export const nativeLearningAudio = (): NativeAudio | undefined => Platform.OS === "ios"
   ? NativeModules.RNIOSAudio
   : Platform.OS === "windows" ? NativeModules.RNWindowsAudio
-  : Platform.OS === "android" ? NativeModules.RNAndroidAudio : NativeModules.RNMacAudio;
-export const nativeRecordingAudio = () => Platform.OS === "macos"
+    : Platform.OS === "android" ? NativeModules.RNAndroidAudio : NativeModules.RNMacAudio;
+export const nativeRecordingAudio = (): NativeAudioRecorder | undefined => Platform.OS === "macos"
   ? NativeModules.RNMacAudioRecorder : nativeLearningAudio();
+
+export function nativeSecretBridge(): NativeSecretStore | undefined {
+  switch (Platform.OS) {
+    case "macos": return NativeModules.RNMacKeychain;
+    case "windows": return NativeModules.RNWindowsCredentials;
+    case "ios": return NativeModules.RNIOSKeychain;
+    case "android": return NativeModules.RNAndroidKeychain;
+  }
+}
 
 type NativeFilePicker = {
   pickFile: (options: { type?: string }) => Promise<PickedFile | null>;
@@ -262,7 +274,17 @@ export type SoundLike = {
   setLoopAsync: (loop: boolean) => Promise<void>;
 };
 
-type NativeAudio = {
+type NativeAudio = NativeAudioRecorder & {
+  mergeAudios?: (paths: string[], outputPath: string) => Promise<MergedAudio>;
+  feedPrepare?: (slot: number, path: string, startMs: number) => Promise<unknown>;
+  feedPlay?: (slot: number) => Promise<unknown>;
+  feedPause?: (slot: number) => Promise<unknown>;
+  feedStatus?: (slot: number) => Promise<{ positionMillis: number; isPlaying: boolean }>;
+  feedUnload?: () => Promise<unknown>;
+  playBreak?: (uri: string) => unknown;
+  pauseBreak?: () => unknown;
+  resumeBreak?: () => unknown;
+  stopBreak?: () => unknown;
   load: (path: string, rate: number) => Promise<AVPlaybackStatus>;
   play: () => Promise<AVPlaybackStatus>;
   pause: () => Promise<AVPlaybackStatus>;
@@ -274,40 +296,72 @@ type NativeAudio = {
 };
 
 function getNativeAudio(): NativeAudio {
-  const audio = nativeLearningAudio() as NativeAudio | undefined;
+  const audio = nativeLearningAudio();
   if (!audio) throw new Error(`${Platform.OS} 音频播放器尚未配置`);
   return audio;
 }
 
+// Each SoundLike is a lease on the same native player. A late teardown or
+// status poll from a previous screen must not touch its replacement.
+let nativeAudioTail: Promise<unknown> = Promise.resolve();
+let retireCurrentSound: (() => void) | undefined;
+
+function withNativeAudio<T>(operation: () => Promise<T>): Promise<T> {
+  const task = nativeAudioTail.then(operation);
+  nativeAudioTail = task.catch(() => {});
+  return task;
+}
+
 export const Audio = {
   Sound: {
-    async createAsync(
+    createAsync(
       source: { uri: string },
       options: { shouldPlay?: boolean; rate?: number; loop?: boolean; progressUpdateIntervalMillis?: number },
       onStatus?: (status: AVPlaybackStatus) => void
     ): Promise<{ sound: SoundLike }> {
-      const audio = getNativeAudio();
-      const update = async () => onStatus?.(await audio.status());
-      const loaded = await audio.load(nativePath(source.uri), options.rate ?? 1);
-      onStatus?.(loaded);
-      if (options.loop) {
-        await audio.setLoop(true);
-      }
-      if (options.shouldPlay) await audio.play();
-      const interval = setInterval(update, options.progressUpdateIntervalMillis ?? 250);
-      return {
-        sound: {
-          unloadAsync: async () => { clearInterval(interval); await audio.unload(); },
-          playAsync: async () => { onStatus?.(await audio.play()); },
-          pauseAsync: async () => { onStatus?.(await audio.pause()); },
-          setPositionAsync: async (position) => { onStatus?.(await audio.setPosition(position)); },
-          setRateAsync: async (rate) => { const status = await audio.setRate(rate); if (status) onStatus?.(status); },
-          setLoopAsync: async (loop) => {
-            const status = await audio.setLoop(loop);
-            if (status) onStatus?.(status);
+      return withNativeAudio(async () => {
+        const audio = getNativeAudio();
+        retireCurrentSound?.();
+        const loaded = await audio.load(nativePath(source.uri), options.rate ?? 1);
+        try {
+          onStatus?.(loaded);
+          if (options.loop) await audio.setLoop(true);
+          if (options.shouldPlay) await audio.play();
+        } catch (error) {
+          await audio.unload().catch(() => {});
+          throw error;
+        }
+        const update = (operation: () => Promise<AVPlaybackStatus | null>) => withNativeAudio(async () => {
+          if (retireCurrentSound !== retire) return;
+          const status = await operation();
+          if (status) onStatus?.(status);
+        });
+        let polling = false;
+        const interval = setInterval(() => {
+          if (polling) return;
+          polling = true;
+          void update(() => audio.status()).catch(() => {}).finally(() => { polling = false; });
+        }, options.progressUpdateIntervalMillis ?? 250);
+        const retire = () => {
+          clearInterval(interval);
+          retireCurrentSound = undefined;
+        };
+        retireCurrentSound = retire;
+        return {
+          sound: {
+            unloadAsync: () => withNativeAudio(async () => {
+              if (retireCurrentSound !== retire) return;
+              retire();
+              await audio.unload();
+            }),
+            playAsync: () => update(() => audio.play()),
+            pauseAsync: () => update(() => audio.pause()),
+            setPositionAsync: position => update(() => audio.setPosition(position)),
+            setRateAsync: rate => update(() => audio.setRate(rate)),
+            setLoopAsync: loop => update(() => audio.setLoop(loop)),
           },
-        },
-      };
+        };
+      });
     },
   },
 };
@@ -319,10 +373,6 @@ export type MergedAudio = {
   segmentDurationMs: number[];
 };
 
-type NativeAudioMerge = {
-  mergeAudios: (paths: string[], outputPath: string) => Promise<MergedAudio>;
-};
-
 /**
  * Concatenate audio files into one M4A file. macOS only — AVFoundation
  * re-encodes on export, so inputs may mix containers / sample rates. The
@@ -332,7 +382,7 @@ export async function mergeAudios(paths: string[], outputPath: string): Promise<
   if (Platform.OS !== "macos" && Platform.OS !== "windows") {
     throw new Error("合并音频目前仅支持 Mac 端");
   }
-  const audio = nativeLearningAudio() as NativeAudioMerge | undefined;
+  const audio = nativeLearningAudio();
   if (!audio?.mergeAudios) {
     throw new Error("macOS 音频合并模块尚未配置");
   }
@@ -375,20 +425,21 @@ export async function runCommandArgs(
 // ── 口语跟读录音（Android: ClaroraAudioModule / Mac: RNMacAudioRecorder）────
 
 type NativeAudioRecorder = {
-  startRecording: () => Promise<boolean | void>;
-  stopRecording: () => Promise<{ uri: string; name: string }>;
+  playChime?: () => Promise<boolean | void> | void;
+  startRecording?: () => Promise<boolean | void>;
+  stopRecording?: () => Promise<{ uri: string; name: string }>;
 };
 
 export const audioRecorder = {
   async start(): Promise<void> {
-    const module = nativeRecordingAudio() as NativeAudioRecorder | undefined;
+    const module = nativeRecordingAudio();
     if (!module?.startRecording) {
       throw new Error(`${Platform.OS} 录音模块尚未配置`);
     }
     await module.startRecording();
   },
   async stop(): Promise<{ uri: string; name: string }> {
-    const module = nativeRecordingAudio() as NativeAudioRecorder | undefined;
+    const module = nativeRecordingAudio();
     if (!module?.stopRecording) {
       throw new Error(`${Platform.OS} 录音模块尚未配置`);
     }
