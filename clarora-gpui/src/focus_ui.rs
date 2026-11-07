@@ -61,7 +61,10 @@ impl AppView {
                     .border_color(primary.opacity(0.4))
                     .bg(primary.opacity(0.12))
                     .text_color(primary)
-                    .child("电脑专注中"),
+                    .child(format!(
+                        "电脑专注中 · {} 退出",
+                        focus_mode_ui::EXIT_SHORTCUT
+                    )),
             )
             .child(self.focus_mode_button(cx))
             .into_any_element()

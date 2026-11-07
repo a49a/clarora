@@ -461,6 +461,8 @@ impl Probe {
                     "failed start restores native options and never leaves half-active session",
                     app,
                 )?;
+                #[cfg(target_os = "macos")]
+                self.check_recovery(app, w, cx)?;
                 Theme::change(ThemeMode::Dark, None, cx);
                 design::apply(cx);
                 Self::keys(w, cx, &[]);
@@ -493,6 +495,122 @@ impl Probe {
         }
         Ok(false)
     }
+
+    #[cfg(target_os = "macos")]
+    fn check_recovery(
+        &mut self,
+        app: &mut AppView,
+        window: &mut Window,
+        cx: &mut Context<AppView>,
+    ) -> Result<()> {
+        use focus_mode_ui::recovery::probe;
+
+        app.handle(Action::FocusStart(60), window, cx);
+        ensure!(
+            app.focus_mode.active(),
+            "foreground loss fixture did not start"
+        );
+        let previous_id = probe::id()?;
+        simulate_app_deactivation();
+        ensure!(
+            native::options() == self.baseline,
+            "presentation restrictions survived application deactivation"
+        );
+        app.poll_focus_mode(window, cx);
+        ensure!(
+            !app.focus_mode.active() && app.timer.paused() && !app.timer.strict(),
+            "foreground loss did not clear the session and pause the timer"
+        );
+        self.note(
+            "AppKit deactivation releases restrictions and pauses the timer",
+            app,
+        )?;
+
+        // An occupied key must fail before changing the active ordinary timer.
+        app.handle(Action::Timer(120), window, cx);
+        let deadline = app.timer.deadline_ms();
+        probe::with_reserved_shortcut(|| {
+            app.handle(Action::FocusStart(60), window, cx);
+            ensure!(
+                !app.focus_mode.active()
+                    && native::options() == self.baseline
+                    && app.timer.deadline_ms() == deadline
+                    && !app.timer.strict()
+                    && app.status.contains(focus_mode_ui::EXIT_SHORTCUT),
+                "hot key registration failure applied restrictions or changed the timer"
+            );
+            Ok(())
+        })?;
+        self.note(
+            "occupied global shortcut leaves the desktop and ordinary timer usable",
+            app,
+        )?;
+
+        app.handle(Action::FocusStart(60), window, cx);
+        let current_id = probe::id()?;
+        ensure!(
+            app.focus_mode.active() && current_id != previous_id,
+            "shortcut was not rearmed"
+        );
+        probe::dispatch_shortcut(previous_id)?;
+        app.poll_focus_mode(window, cx);
+        ensure!(
+            app.focus_mode.active() && native::options() & native::REQUIRED == native::REQUIRED,
+            "late hot key event ended the next session"
+        );
+        self.note(
+            "late shortcut event cannot affect the next focus session",
+            app,
+        )?;
+        app.handle(Action::FocusEmergency, window, cx);
+        ensure!(
+            app.focus_mode
+                .escape_remaining()
+                .is_some_and(|remaining| remaining > 0)
+        );
+        probe::dispatch_shortcut(current_id)?;
+        ensure!(
+            native::options() == self.baseline,
+            "Carbon shortcut did not immediately restore AppKit options"
+        );
+        app.poll_focus_mode(window, cx);
+        let saved = focus_timer::Timer::load(&app.lib, focus_timer::now_ms())?.timer;
+        ensure!(
+            !app.focus_mode.active()
+                && app.focus_mode.escape_remaining().is_none()
+                && app.timer.paused()
+                && saved.paused()
+                && !saved.strict()
+                && (1..=60).contains(&saved.remaining_seconds(focus_timer::now_ms())),
+            "global shortcut did not save the paused timer"
+        );
+        self.note(
+            "Carbon shortcut bypasses the button countdown and saves the paused timer",
+            app,
+        )?;
+
+        app.handle(Action::FocusStart(60), window, cx);
+        let id = probe::id()?;
+        app.lib.db()?.execute_batch("CREATE TRIGGER reject_focus_stop BEFORE UPDATE ON app_settings WHEN NEW.key='focus_timer_v1' BEGIN SELECT RAISE(ABORT,'focus stop fixture failure'); END;")?;
+        probe::dispatch_shortcut(id)?;
+        app.poll_focus_mode(window, cx);
+        ensure!(
+            !app.focus_mode.active()
+                && native::options() == self.baseline
+                && app.status.contains("电脑专注已解除，但暂停计时失败"),
+            "failed pause persistence left the desktop restricted"
+        );
+        app.lib
+            .db()?
+            .execute_batch("DROP TRIGGER reject_focus_stop;")?;
+        probe::with_reserved_shortcut(|| Ok(()))?;
+        self.note(
+            "failed pause save still releases restrictions and unregisters the shortcut",
+            app,
+        )?;
+        Ok(())
+    }
+
     fn measure_bars(
         app: &mut AppView,
         window: &mut Window,
@@ -571,10 +689,26 @@ impl Probe {
         fs::write(
             self.out.join("focus-mode-report.json"),
             serde_json::to_vec_pretty(
-                &json!({"passed":passed,"error":error,"cases":self.cases,"top_bar_layouts":self.layouts.lock().unwrap().clone(),"focus_label_colors":label_colors(),"inactive_hidden_window":true,"real_appkit_options":true,"actual_appview_actions":true,"physical_shortcuts_fullscreen_multimonitor_verified":false}),
+                &json!({"passed":passed,"error":error,"cases":self.cases,"top_bar_layouts":self.layouts.lock().unwrap().clone(),"focus_label_colors":label_colors(),"inactive_hidden_window":true,"real_appkit_options":true,"actual_appview_actions":true,"shortcut_fixture":"OS registration and in-process Carbon event, no system keystrokes","deactivation_fixture":"process-local AppKit notification","physical_shortcuts_fullscreen_multimonitor_verified":false}),
             )?,
         )?;
         Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn simulate_app_deactivation() {
+    use objc2::{class, msg_send, runtime::AnyObject};
+
+    #[link(name = "AppKit", kind = "framework")]
+    unsafe extern "C" {
+        static NSApplicationDidResignActiveNotification: *const AnyObject;
+    }
+    // Post to this process's notification center only. The diagnostic stays inactive.
+    unsafe {
+        let center: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        let _: () = msg_send![center, postNotificationName: NSApplicationDidResignActiveNotification, object: app];
     }
 }
 impl diagnostics::Probe for Probe {

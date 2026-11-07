@@ -3,13 +3,13 @@ use super::*;
 
 impl AppView {
     pub(super) fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus_changed = self.poll_focus_mode(window, cx);
         let data_changed = self.poll_data();
         self.media.preloader.set_video_target(0, 0, false);
         if self.video_frame_path().is_none() {
             self.media.player.set_video_target(0, 0, false);
         }
         let chat_changed = self.poll_chat(window, cx);
-        let focus_changed = self.poll_focus_mode(window, cx);
         self.poll_auto_cloud_sync(window, cx);
         if self.poll_close(window, cx) {
             return;

@@ -1,12 +1,26 @@
 //! Explicit macOS kiosk session. Native policy is process-local and RAII-restored.
 use super::*;
 
+#[cfg(target_os = "macos")]
+#[path = "focus_recovery_macos.rs"]
+pub(super) mod recovery;
+
+pub(super) const EXIT_SHORTCUT: &str = "Ctrl + Shift + Esc";
+
+#[derive(Clone, Copy)]
+pub(super) enum Interruption {
+    #[cfg(target_os = "macos")]
+    Shortcut,
+    Deactivated,
+}
+
 #[derive(Default)]
 pub(super) struct Mode {
     native: Option<native::Guard>,
     pub deadline: u64,
     maximum: Option<Instant>,
     owned_fullscreen: bool,
+    restore_fullscreen_at: Option<Instant>,
     entered: Option<Instant>,
     pub escape: Option<Instant>,
     covers: Vec<AnyWindowHandle>,
@@ -69,12 +83,12 @@ impl AppView {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
         if !self.focus_probe_active() {
-            self.focus_mode.owned_fullscreen = !window.is_fullscreen();
-            if self.focus_mode.owned_fullscreen {
+            let fullscreen = window.is_fullscreen();
+            self.focus_mode.owned_fullscreen =
+                self.focus_mode.restore_fullscreen_at.take().is_some() || !fullscreen;
+            if !fullscreen {
                 window.toggle_fullscreen();
             }
-            window.activate_window();
-            cx.activate(true);
             if let Err(error) = self.update_focus_covers(window, cx) {
                 self.stop_focus_mode(window, cx);
                 return Err(error);
@@ -89,7 +103,7 @@ impl AppView {
         self.play_timer_chime(timer_chimes::Cue::Start);
         self.report_status(
             FeedbackKind::Info,
-            "电脑专注已开启，计时结束后自动恢复应用切换".into(),
+            format!("电脑专注已开启，按 {EXIT_SHORTCUT} 立即退出"),
         );
         cx.notify();
         Ok(())
@@ -100,11 +114,50 @@ impl AppView {
         for handle in self.focus_mode.covers.drain(..) {
             let _ = handle.update(cx, |_, w, _| w.remove_window());
         }
-        if self.focus_mode.owned_fullscreen && window.is_fullscreen() {
-            window.toggle_fullscreen();
+        if self.focus_mode.owned_fullscreen {
+            // Wait for an in-flight fullscreen transition and the user's return
+            // to Clarora. Exiting its Space in the background can steal focus.
+            self.focus_mode.restore_fullscreen_at = self
+                .focus_mode
+                .entered
+                .map(|entered| entered + Duration::from_secs(1));
         }
-        self.focus_mode = Mode::default();
+        self.focus_mode = Mode {
+            restore_fullscreen_at: self.focus_mode.restore_fullscreen_at,
+            ..Mode::default()
+        };
+        self.restore_focus_fullscreen(window);
         cx.notify();
+    }
+    fn restore_focus_fullscreen(&mut self, window: &mut Window) {
+        if self
+            .focus_mode
+            .restore_fullscreen_at
+            .is_some_and(|at| Instant::now() >= at)
+            && native::is_active()
+        {
+            self.focus_mode.restore_fullscreen_at = None;
+            if window.is_fullscreen() {
+                window.toggle_fullscreen();
+            }
+        }
+    }
+    fn interrupt_focus(
+        &mut self,
+        message: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        self.stop_focus_mode(window, cx);
+        let now = focus_timer::now_ms();
+        if self.timer.is_running() {
+            self.timer
+                .toggle(&self.lib, now)
+                .context("电脑专注已解除，但暂停计时失败")?;
+        }
+        self.timer_remaining = self.timer.remaining_seconds(now);
+        self.report_status(FeedbackKind::Info, message.into());
+        Ok(())
     }
     pub(super) fn emergency_focus_end(
         &mut self,
@@ -119,15 +172,7 @@ impl AppView {
                 at.elapsed() >= Duration::from_secs(5),
                 "请等待应急结束倒计时"
             );
-            self.stop_focus_mode(window, cx);
-            if self.timer.is_running() {
-                let _ = self.timer.toggle(&self.lib, focus_timer::now_ms())?;
-            }
-            self.timer_remaining = self.timer.remaining_seconds(focus_timer::now_ms());
-            self.report_status(
-                FeedbackKind::Info,
-                "电脑专注已提前结束，应用切换已恢复".into(),
-            );
+            self.interrupt_focus("电脑专注已提前结束，计时已暂停", window, cx)?;
         } else {
             self.focus_mode.escape = Some(Instant::now());
             cx.notify();
@@ -135,9 +180,10 @@ impl AppView {
         Ok(())
     }
     pub(super) fn poll_focus_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if !self.focus_mode.active() {
+        let Some(guard) = &self.focus_mode.native else {
+            self.restore_focus_fullscreen(window);
             return false;
-        }
+        };
         if focus_timer::now_ms() >= self.focus_mode.deadline
             || self
                 .focus_mode
@@ -147,18 +193,29 @@ impl AppView {
             self.stop_focus_mode(window, cx);
             return true;
         }
-        if !self.focus_probe_active() {
-            if let Err(error) = self.focus_mode.native.as_ref().unwrap().refresh() {
+        let diagnostic = self.focus_probe_active();
+        let interruption = guard
+            .interruption()
+            .or_else(|| (!diagnostic && !native::is_active()).then_some(Interruption::Deactivated));
+        if let Some(interruption) = interruption {
+            let message = match interruption {
+                #[cfg(target_os = "macos")]
+                Interruption::Shortcut => "已通过快捷键退出电脑专注，计时已暂停",
+                Interruption::Deactivated => "Clarora 已离开前台，电脑专注已解除，计时已暂停",
+            };
+            if let Err(error) = self.interrupt_focus(message, window, cx) {
+                self.report_status(FeedbackKind::Error, format!("{error:#}"));
+            }
+            return true;
+        }
+        if !diagnostic {
+            if let Err(error) = guard.refresh() {
                 self.stop_focus_mode(window, cx);
                 self.report_status(
                     FeedbackKind::Error,
                     format!("专注限制未保持，已解除：{error:#}"),
                 );
                 return true;
-            }
-            if !native::is_active() {
-                cx.activate(true);
-                window.activate_window();
             }
             if !window.is_fullscreen()
                 && self
@@ -289,9 +346,11 @@ impl AppView {
                     .active(cx.theme().primary_active)
                     .shadow(true),
             )
-            .tooltip(
-                "管理专注计时、时长和电脑专注。电脑专注需明确选择，开启后全屏并限制切换其他应用。",
-            )
+            .tooltip(if cfg!(target_os = "macos") {
+                format!("管理专注计时和电脑专注。电脑专注开启后可按 {EXIT_SHORTCUT} 立即退出。")
+            } else {
+                "管理专注计时和时长。".into()
+            })
             .dropdown_menu_with_anchor(Corner::BottomRight, move |mut menu, window, cx| {
                 // The builder runs before the menu takes focus. Cancel restores
                 // the original editor; a successful start restores video focus.
@@ -388,7 +447,9 @@ impl Render for Cover {
             .justify_center()
             .gap_4()
             .child(div().text_2xl().child("正在电脑专注"))
-            .child("在 Clarora 主窗口继续学习，计时结束后恢复。")
+            .child(format!(
+                "返回学习窗口继续学习，或按 {EXIT_SHORTCUT} 退出专注"
+            ))
             .child(
                 Button::new("return-focus-main")
                     .label("返回学习窗口")
@@ -403,14 +464,16 @@ impl Render for Cover {
 }
 
 pub(super) mod native {
+    use super::Interruption;
     use anyhow::{Result, ensure};
     pub const REQUIRED: usize = (1 << 1) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 8);
     pub struct Guard {
         previous: usize,
-        _main_thread: std::marker::PhantomData<std::rc::Rc<()>>,
+        #[cfg(target_os = "macos")]
+        recovery: super::recovery::Recovery,
     }
     #[cfg(target_os = "macos")]
-    fn application() -> *mut objc2::runtime::AnyObject {
+    pub(super) fn application() -> *mut objc2::runtime::AnyObject {
         use objc2::{msg_send, runtime::AnyClass};
         unsafe {
             AnyClass::get(c"NSApplication")
@@ -435,7 +498,7 @@ pub(super) mod native {
         0
     }
     #[cfg(target_os = "macos")]
-    fn set(value: usize) {
+    pub(super) fn set(value: usize) {
         use objc2::msg_send;
         unsafe {
             let app = application();
@@ -460,23 +523,38 @@ pub(super) mod native {
     }
     impl Guard {
         pub fn enter() -> Result<Self> {
-            #[cfg(debug_assertions)]
-            if std::env::args().any(|a| a == "--focus-mode-check") {
-                ensure!(
-                    std::env::var("CLARORA_FOCUS_DIAGNOSTIC_INACTIVE").as_deref() == Ok("1")
-                        && !is_active(),
-                    "专注诊断只允许在显式标记的非激活隐藏进程内运行"
-                );
+            #[cfg(not(target_os = "macos"))]
+            anyhow::bail!("系统专注目前仅支持 macOS");
+            #[cfg(target_os = "macos")]
+            {
+                let diagnostic =
+                    cfg!(debug_assertions) && std::env::args().any(|a| a == "--focus-mode-check");
+                if diagnostic {
+                    ensure!(
+                        std::env::var("CLARORA_FOCUS_DIAGNOSTIC_INACTIVE").as_deref() == Ok("1")
+                            && !is_active(),
+                        "专注诊断只允许在显式标记的非激活隐藏进程内运行"
+                    );
+                } else {
+                    ensure!(is_active(), "请先回到 Clarora，再开启电脑专注");
+                }
+                let previous = options();
+                let guard = Self {
+                    previous,
+                    recovery: super::recovery::Recovery::install(previous)?,
+                };
+                guard.refresh()?;
+                Ok(guard)
             }
-            ensure!(cfg!(target_os = "macos"), "系统专注目前仅支持 macOS");
-            let guard = Self {
-                previous: options(),
-                _main_thread: Default::default(),
-            };
-            guard.refresh()?;
-            Ok(guard)
+        }
+        pub fn interruption(&self) -> Option<Interruption> {
+            #[cfg(target_os = "macos")]
+            return self.recovery.interruption();
+            #[cfg(not(target_os = "macos"))]
+            None
         }
         pub fn refresh(&self) -> Result<()> {
+            ensure!(self.interruption().is_none(), "电脑专注已解除");
             // Hide/auto-hide pairs are mutually exclusive. Preserve the OS full-screen
             // flags while replacing its default dock/menu policy with kiosk options.
             let desired = (options() & !((1 << 0) | (1 << 2))) | REQUIRED;
@@ -489,7 +567,9 @@ pub(super) mod native {
     }
     impl Drop for Guard {
         fn drop(&mut self) {
-            set(self.previous);
+            if self.interruption().is_none() {
+                set(self.previous);
+            }
         }
     }
     pub fn shield(window: &gpui::Window) {
@@ -504,7 +584,7 @@ pub(super) mod native {
                         let panel: *mut AnyObject = msg_send![view, window];
                         let _: () = msg_send![panel,setLevel:1000isize];
                         let _: () = msg_send![panel,setCollectionBehavior:(1usize|(1<<8))];
-                        let _: () = msg_send![panel,setHidesOnDeactivate:false];
+                        let _: () = msg_send![panel,setHidesOnDeactivate:true];
                     }
                 }
             }
