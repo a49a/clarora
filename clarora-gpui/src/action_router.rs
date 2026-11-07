@@ -1032,6 +1032,9 @@ impl AppView {
                     if self.restart_finished_audio_sentence()? {
                         return Ok(());
                     }
+                    if self.restart_finished_audio_track()? {
+                        return Ok(());
+                    }
                     if self.toggle_pending_video_start() {
                         return Ok(());
                     }

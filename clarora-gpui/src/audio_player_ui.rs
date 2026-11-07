@@ -1005,7 +1005,9 @@ impl AppView {
                         self.player_icon(
                             "audio-play",
                             "play",
-                            if self.media.snapshot.paused {
+                            if self.media.snapshot.eof {
+                                "重播 · 空格"
+                            } else if self.media.snapshot.paused {
                                 "播放 · 空格"
                             } else {
                                 "暂停 · 空格"

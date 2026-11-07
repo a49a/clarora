@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
-    let workflow = "音频逐句循环/定位与切页保留/助手选区删除与侧栏隔离";
+    let workflow = "音频EOF原生按钮复播/逐句循环/定位与切页保留/助手选区删除与侧栏隔离";
     if !cfg!(debug_assertions)
         || !cfg!(target_os = "macos")
         || std::env::var("CLARORA_GUI_MEMORY_CHECK").as_deref() != Ok("1")
@@ -35,7 +35,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if start.elapsed() > Duration::from_secs(45) {
+        if start.elapsed() > Duration::from_secs(60) {
             let _ = child.kill();
             let _ = child.wait();
             anyhow::bail!("audio repeat diagnostic timeout: {}", out.display());
@@ -50,8 +50,18 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         status.success()
             && report["passed"] == true
-            && cases.len() >= 49
+            && cases.len() >= 59
             && [
+                "native audio play button starts ordinary playback",
+                "native audio pause button preserves a nonzero position",
+                "native audio play resumes before EOF without rewinding",
+                "ordinary audio reaches natural EOF before replay click",
+                "native audio play at EOF rejects mismatched material",
+                "audio play at EOF rejects an empty material context",
+                "audio EOF invalid-context checks restore original subtitle fixture",
+                "native audio play button rewinds and resumes after natural EOF",
+                "ordinary audio reaches natural EOF again after replay",
+                "native audio play button replays a second natural EOF",
                 "close waiting sentence card and reclaim subtitle space",
                 "existing current sentence action reopens the card",
                 "close active sentence card without moving playback",

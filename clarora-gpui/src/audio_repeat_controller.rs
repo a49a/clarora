@@ -187,6 +187,38 @@ impl AppView {
         }
         Ok(true)
     }
+    pub(super) fn restart_finished_audio_track(&mut self) -> Result<bool> {
+        if self.page != "listening"
+            || self.audio.repeat_mode >= 5
+            || !self.media.player.snapshot().eof
+        {
+            return Ok(false);
+        }
+        let (_, state) = self.audio_repeat_ready()?;
+        if !state.eof {
+            return Ok(false);
+        }
+        let start = if self.media.repeat == 2 {
+            self.media
+                .loop_a
+                .zip(self.media.loop_b)
+                .filter(|(a, b)| {
+                    a.is_finite() && b.is_finite() && *a >= 0. && *a < state.duration && b > a
+                })
+                .map(|(a, _)| a)
+                .unwrap_or(0.)
+        } else {
+            0.
+        };
+        self.invalidate_blind();
+        self.media
+            .player
+            .command(["seek".into(), start.to_string(), "absolute+exact".into()]);
+        self.media.player.set("pause", "no");
+        // Keep the old EOF handled until polling observes the completed seek,
+        // so continuous playback cannot advance using a stale end snapshot.
+        Ok(true)
+    }
     pub(super) fn restart_finished_audio_sentence(&mut self) -> Result<bool> {
         if self.page != "listening" || self.audio.repeat_mode < 5 {
             return Ok(false);
