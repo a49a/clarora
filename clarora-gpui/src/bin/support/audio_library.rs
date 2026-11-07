@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs, path::Path};
 pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()> {
     run_inline_rename(lib, fixture, results)?;
+    run_import_rollback(lib, fixture, results)?;
     // An isolated real library prevents management operations affecting other E2E workflows.
     let lib = Library::open(lib.root.join("audio-manager"))?;
     let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 23).unwrap();
@@ -170,6 +171,44 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
         )?,
     )?;
     results.push(json!({"workflow":"音频管理：真实SQLite/文件 → 搜索筛选/分组选择 → 重命名/移动冲突回滚 → 删除作用域及附件保留 → 重开", "passed":true,"evidence":"audio-manager/management-evidence.json"}));
+    Ok(())
+}
+
+fn run_import_rollback(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()> {
+    let lib = Library::open(lib.root.join("audio-import-rollback"))?;
+    let group = lib.practice("带字幕的导入")?;
+    let source = lib.root.join("输入.mp4");
+    fs::copy(fixture, &source)?;
+    fs::write(
+        source.with_extension("srt"),
+        "1\n00:00:00,000 --> 00:00:01,000\nExample.\n",
+    )?;
+    lib.db()?.execute_batch(
+        "CREATE TRIGGER fail_audio BEFORE INSERT ON listening_audios BEGIN SELECT RAISE(ABORT, 'audio fixture error'); END;",
+    )?;
+    ensure!(lib.import_audio(&group, &source).is_err(), "写入故障未传达");
+    ensure!(
+        lib.list("listening_audios")?.is_empty()
+            && fs::read_dir(lib.root.join("media"))?.count() == 0,
+        "失败的导入遗留音频记录或附件"
+    );
+    lib.db()?.execute_batch("DROP TRIGGER fail_audio")?;
+    lib.import_audio(&group, &source)?;
+    let reopened = Library::open(lib.root.clone())?;
+    let rows = reopened.list("listening_audios")?;
+    ensure!(
+        rows.len() == 1
+            && text(&rows[0], "practice_id") == group
+            && Path::new(&text(&rows[0], "audio_uri")).is_file()
+            && Path::new(&text(&rows[0], "subtitle_uri")).is_file(),
+        "重试后没有保存音频和字幕"
+    );
+    let evidence = lib.root.join("import-rollback.json");
+    fs::write(
+        &evidence,
+        serde_json::to_vec_pretty(&json!({"failed_insert_kept_no_files":true,"retry_rows":rows}))?,
+    )?;
+    results.push(json!({"workflow":"音频导入：写入失败清理音频和字幕，再导入并重开","passed":true,"evidence":evidence}));
     Ok(())
 }
 

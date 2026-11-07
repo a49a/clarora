@@ -22,13 +22,7 @@ pub struct Report {
 impl Report {
     pub fn rename(&mut self, lib: &Library, index: usize, name: &str) -> Result<()> {
         let audio = self.audios.get_mut(index).context("本次导入中没有该音频")?;
-        crate::audio_library::rename_scoped(
-            lib,
-            "listening_audios",
-            &text(audio, "id"),
-            name,
-            Some(&self.group_id),
-        )?;
+        lib.rename_audio(&text(audio, "id"), name, Some(&self.group_id))?;
         audio["name"] = name.trim().into();
         Ok(())
     }
@@ -52,22 +46,18 @@ impl Request {
     pub fn new(lib: &Library, group: &str, command: &str) -> Result<Self> {
         ensure!(!command.trim().is_empty(), "请先在设置中填写本机导入命令");
         let row = lib
-            .list("listening_practices")?
-            .into_iter()
-            .find(|row| text(row, "id") == group)
+            .audio_practice(group)?
             .context("请先新建或选择有效的练习组")?;
         Ok(Self {
             command: command.into(),
             group: group.into(),
-            name: text(&row, "name"),
+            name: row.name,
         })
     }
     pub fn run(self, lib: &Library, cancel: &Cancel) -> Result<Report> {
         // Revalidate before launching a process, including independently deleted groups.
         ensure!(
-            lib.list("listening_practices")?
-                .iter()
-                .any(|row| text(row, "id") == self.group),
+            lib.audio_practice(&self.group)?.is_some(),
             "目标练习组已不存在，请重新选择"
         );
         let (exe, args) = if cfg!(windows) {
@@ -108,7 +98,7 @@ impl Request {
             match lib.import_audio_record(&self.group, &path) {
                 Ok(row) => {
                     report.imported += 1;
-                    report.audios.push(row);
+                    report.audios.push(row.into_row());
                 }
                 Err(error) => {
                     report.failed += 1;

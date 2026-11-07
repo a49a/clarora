@@ -1,85 +1,49 @@
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use chrono::{Local, Utc};
-use rusqlite::{
-    Connection, OptionalExtension, TransactionBehavior, params, types::Value as SqlValue,
-};
+use rusqlite::{Connection, params, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
 
 pub type Row = Map<String, Value>;
-const CARD_KINDS: [&str; 5] = ["word", "sentence", "ai", "clip", "video"];
-pub const TABLES: &[(&str, &[&str])] = &[
-    ("words", &["id", "word", "meaning", "source", "created_at"]),
-    ("listening_practices", &["id", "name", "created_at"]),
-    (
-        "listening_audios",
-        &[
-            "id",
-            "practice_id",
-            "name",
-            "audio_uri",
-            "subtitle_uri",
-            "created_at",
-        ],
-    ),
-    (
-        "clip_cards",
-        &[
-            "id",
-            "en_text",
-            "zh_text",
-            "audio_uri",
-            "start_ms",
-            "end_ms",
-            "created_at",
-        ],
-    ),
-    (
-        "sentence_cards",
-        &["id", "text", "translation", "notes", "created_at"],
-    ),
-    (
-        "ai_cards",
-        &["id", "question", "answer", "context_text", "created_at"],
-    ),
-    (
-        "video_clips",
-        &["id", "en_text", "zh_text", "video_uri", "created_at"],
-    ),
-    (
-        "review_schedule",
-        &[
-            "card_kind",
-            "card_id",
-            "ease",
-            "interval_days",
-            "due_at",
-            "reps",
-            "lapses",
-            "suspended",
-            "last_graded_at",
-            "created_at",
-        ],
-    ),
-    (
-        "study_stats",
-        &["day", "listen_seconds", "review_count", "pomodoro_count"],
-    ),
-    ("discover_favorites", &["key", "payload"]),
-    ("ai_records", &["id", "kind", "payload", "created_at"]),
-];
+mod audio;
+mod cards;
+pub(crate) mod schema;
+mod tracking;
+pub use schema::CardKind;
+use schema::{TABLES, table_spec};
+
 pub fn text(row: &Row, key: &str) -> String {
     match row.get(key) {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Number(n)) => n.to_string(),
         _ => String::new(),
     }
+}
+// SQLite text columns in older libraries can contain numeric values or NULL.
+fn column_text(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<String> {
+    use rusqlite::types::ValueRef;
+    Ok(match row.get_ref(index)? {
+        ValueRef::Text(bytes) => std::str::from_utf8(bytes)
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    index,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?
+            .to_owned(),
+        ValueRef::Integer(value) => value.to_string(),
+        ValueRef::Real(value) => serde_json::Number::from_f64(value)
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        _ => String::new(),
+    })
 }
 pub fn id() -> String {
     Uuid::new_v4().simple().to_string()
@@ -120,7 +84,7 @@ impl Library {
         };
         let db = this.db()?;
         db.execute_batch(include_str!("schema.sql"))?;
-        crate::backup::sync::install_tracking(&db)?;
+        tracking::install(&db)?;
         for dir in ["media", "pdf", "models", "downloads", "recordings"] {
             fs::create_dir_all(this.root.join(dir))?;
         }
@@ -137,7 +101,7 @@ impl Library {
         query_rows(&db, query, values)
     }
     pub fn list(&self, table: &str) -> Result<Vec<Row>> {
-        ensure!(TABLES.iter().any(|(t, _)| *t == table), "无效资料表");
+        ensure!(table_spec(table).is_some(), "无效资料表");
         self.rows(&format!("SELECT * FROM {table}"), &[])
     }
     pub fn setting(&self, key: &str) -> Result<String> {
@@ -163,7 +127,7 @@ impl Library {
         )
     }
     pub fn delete(&self, table: &str, key: &str) -> Result<()> {
-        ensure!(TABLES.iter().any(|(t, _)| *t == table), "无效资料表");
+        let spec = table_spec(table).context("无效资料表")?;
         let mut db = self.db()?;
         let tx = db.transaction()?;
         tx.execute(
@@ -177,14 +141,7 @@ impl Library {
             ),
             [key],
         )?;
-        let kind = match table {
-            "words" => "word",
-            "clip_cards" => "clip",
-            "sentence_cards" => "sentence",
-            "video_clips" => "video",
-            "ai_cards" => "ai",
-            _ => "",
-        };
+        let kind = spec.card.map_or("", CardKind::as_str);
         tx.execute(
             "DELETE FROM review_schedule WHERE card_kind=? AND card_id=?",
             params![kind, key],
@@ -207,7 +164,10 @@ impl Library {
             "文件扩展名无效"
         );
         let dst = self.root.join(folder).join(format!("{}.{}", id(), ext));
-        fs::copy(path, &dst)?;
+        if let Err(error) = fs::copy(path, &dst) {
+            let _ = fs::remove_file(&dst);
+            return Err(error.into());
+        }
         Ok(dst)
     }
     pub fn import_words(
@@ -280,176 +240,6 @@ impl Library {
         tx.commit()?;
         Ok(pairs.len())
     }
-    pub fn cards(&self, due: bool) -> Result<Vec<Card>> {
-        self.cards_for_kind(due, "all")
-    }
-    pub fn cards_for_kind(&self, due: bool, kind: &str) -> Result<Vec<Card>> {
-        ensure!(kind == "all" || CARD_KINDS.contains(&kind), "未知卡片类型");
-        let mut cards = vec![];
-        for (table, card_kind, front, back, media) in [
-            ("words", "word", "word", "meaning", ""),
-            ("sentence_cards", "sentence", "text", "translation", ""),
-            ("ai_cards", "ai", "question", "answer", ""),
-            ("clip_cards", "clip", "en_text", "zh_text", "audio_uri"),
-            ("video_clips", "video", "en_text", "zh_text", "video_uri"),
-        ] {
-            if kind != "all" && kind != card_kind {
-                continue;
-            }
-            for r in self.rows(
-                &format!("SELECT * FROM {table} ORDER BY created_at,id"),
-                &[],
-            )? {
-                cards.push(Card {
-                    kind: card_kind.into(),
-                    id: text(&r, "id"),
-                    front: text(&r, front),
-                    back: text(&r, back),
-                    media: text(&r, media),
-                    start: r.get("start_ms").and_then(Value::as_f64).unwrap_or(0.) / 1000.,
-                    end: r.get("end_ms").and_then(Value::as_f64).unwrap_or(0.) / 1000.,
-                });
-            }
-        }
-        if !due {
-            return Ok(cards);
-        }
-        let schedules = self
-            .list("review_schedule")?
-            .into_iter()
-            .map(|schedule| {
-                (
-                    (text(&schedule, "card_kind"), text(&schedule, "card_id")),
-                    schedule,
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let now = now();
-        let limit = self
-            .setting("new_cards_per_day")?
-            .parse::<usize>()
-            .unwrap_or(20);
-        let introduced: usize = self.db()?.query_row(
-            "SELECT COUNT(*) FROM review_schedule WHERE reps>0 AND date(created_at,'localtime')=date('now','localtime')",
-            [],
-            |row| row.get(0),
-        )?;
-        let mut remaining = limit.saturating_sub(introduced);
-        let mut scheduled = vec![];
-        let mut new_cards: [VecDeque<Card>; 5] = std::array::from_fn(|_| VecDeque::new());
-        for card in cards {
-            if let Some(schedule) = schedules.get(&(card.kind.clone(), card.id.clone())) {
-                if schedule["suspended"].as_i64() != Some(0) {
-                    continue;
-                }
-                if schedule["reps"].as_i64().unwrap_or(0) > 0 {
-                    let due_at = text(schedule, "due_at");
-                    if due_at <= now {
-                        scheduled.push((due_at, card));
-                    }
-                    continue;
-                }
-            }
-            // A schedule created only by suspend/resume is still an unintroduced card.
-            let index = CARD_KINDS
-                .iter()
-                .position(|kind| *kind == card.kind)
-                .unwrap();
-            new_cards[index].push_back(card);
-        }
-        scheduled.sort_by(|(a_due, a), (b_due, b)| {
-            (a_due, &a.kind, &a.id).cmp(&(b_due, &b.kind, &b.id))
-        });
-        let mut cards = scheduled
-            .into_iter()
-            .map(|(_, card)| card)
-            .collect::<Vec<_>>();
-        let next_kind = self.setting("review_new_card_next_kind")?;
-        let start = CARD_KINDS
-            .iter()
-            .position(|kind| *kind == next_kind)
-            .unwrap_or(0);
-        while remaining > 0 {
-            let mut added = false;
-            for offset in 0..CARD_KINDS.len() {
-                if remaining == 0 {
-                    break;
-                }
-                if let Some(card) = new_cards[(start + offset) % CARD_KINDS.len()].pop_front() {
-                    cards.push(card);
-                    remaining -= 1;
-                    added = true;
-                }
-            }
-            if !added {
-                break;
-            }
-        }
-        Ok(cards)
-    }
-    pub fn update_card(&self, card: &Card, front: &str, back: &str) -> Result<()> {
-        ensure!(!front.trim().is_empty(), "原文不能为空");
-        let (table, a, b) = match card.kind.as_str() {
-            "word" => ("words", "word", "meaning"),
-            "sentence" => ("sentence_cards", "text", "translation"),
-            "ai" => ("ai_cards", "question", "answer"),
-            "clip" => ("clip_cards", "en_text", "zh_text"),
-            "video" => ("video_clips", "en_text", "zh_text"),
-            _ => bail!("未知卡片类型"),
-        };
-        let count = self.db()?.execute(
-            &format!("UPDATE {table} SET {a}=?,{b}=? WHERE id=?"),
-            params![front.trim(), back.trim(), card.id],
-        )?;
-        ensure!(count == 1, "卡片尚未保存，请先收藏后编辑");
-        Ok(())
-    }
-    pub fn grade(&self, card: &Card, grade: &str) -> Result<String> {
-        ensure!(["again", "hard", "good"].contains(&grade), "评分无效");
-        let mut db = self.db()?;
-        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (reps, ease, interval, mut lapses) = tx
-            .query_row(
-                "SELECT reps,ease,interval_days,lapses FROM review_schedule WHERE card_kind=? AND card_id=?",
-                params![card.kind, card.id],
-                |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?, row.get::<_, f64>(2)?, row.get::<_, f64>(3)?)),
-            )
-            .optional()?
-            .unwrap_or((0., 2.5, 0., 0.));
-        let (next_ease, days) = if grade == "again" {
-            if reps > 0. {
-                lapses += 1.;
-            }
-            (
-                if reps == 0. {
-                    2.5
-                } else {
-                    (ease - 0.2).max(1.3)
-                },
-                10. / 1440.,
-            )
-        } else if reps == 0. {
-            (2.5, if grade == "good" { 4. } else { 1. })
-        } else if grade == "hard" {
-            ((ease - 0.15).max(1.3), (interval * 1.2).clamp(1., 730.))
-        } else {
-            ((ease + 0.1).min(3.2), (interval * ease).clamp(1., 730.))
-        };
-        let graded_at = Utc::now();
-        let due = (graded_at + chrono::Duration::seconds((days * 86400.) as i64))
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-        let timestamp = graded_at.format("%Y-%m-%d %H:%M:%S").to_string();
-        tx.execute("INSERT INTO review_schedule(card_kind,card_id,ease,interval_days,due_at,reps,lapses,last_graded_at,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(card_kind,card_id) DO UPDATE SET ease=excluded.ease,interval_days=excluded.interval_days,due_at=excluded.due_at,reps=excluded.reps,lapses=excluded.lapses,last_graded_at=excluded.last_graded_at,created_at=CASE WHEN review_schedule.reps=0 THEN excluded.created_at ELSE review_schedule.created_at END",params![card.kind,card.id,next_ease,days,due,reps+1.,lapses,timestamp,timestamp])?;
-        tx.execute("INSERT INTO study_stats(day,review_count) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET review_count=review_count+1",[graded_at.with_timezone(&Local).format("%Y-%m-%d").to_string()])?;
-        if reps == 0. {
-            if let Some(index) = CARD_KINDS.iter().position(|kind| *kind == card.kind) {
-                tx.execute("INSERT INTO app_settings(key,value) VALUES('review_new_card_next_kind',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[CARD_KINDS[(index + 1) % CARD_KINDS.len()]])?;
-            }
-        }
-        tx.commit()?;
-        Ok(due)
-    }
     pub fn stat(&self, field: &str, amount: f64) -> Result<()> {
         ensure!(
             ["listen_seconds", "review_count", "pomodoro_count"].contains(&field)
@@ -459,58 +249,6 @@ impl Library {
         );
         self.db()?.execute(&format!("INSERT INTO study_stats(day,{field}) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET {field}={field}+excluded.{field}"),params![Local::now().format("%Y-%m-%d").to_string(),amount])?;
         Ok(())
-    }
-    pub fn practice(&self, name: &str) -> Result<String> {
-        ensure!(!name.trim().is_empty(), "请输入练习组名称");
-        let rows = self.rows(
-            "SELECT id FROM listening_practices WHERE lower(name)=lower(?)",
-            &[name.to_string().into()],
-        )?;
-        if let Some(row) = rows.first() {
-            return Ok(text(row, "id"));
-        }
-        let key = id();
-        self.put(
-            "listening_practices",
-            json!({"id":key,"name":name.trim(),"created_at":now()}),
-        )?;
-        Ok(key)
-    }
-    pub fn import_audio(&self, practice: &str, path: &Path) -> Result<()> {
-        self.import_audio_record(practice, path).map(|_| ())
-    }
-    /// Return the exact inserted row so subsequent actions never infer identity from selection.
-    pub(crate) fn import_audio_record(&self, practice: &str, path: &Path) -> Result<Row> {
-        let name = path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        if !self
-            .rows(
-                "SELECT id FROM listening_audios WHERE practice_id=? AND name=?",
-                &[practice.to_string().into(), name.clone().into()],
-            )?
-            .is_empty()
-        {
-            bail!("同组已存在同名音频")
-        }
-        let media = self.copy_media(path, "media")?;
-        let sub = ["srt", "vtt", "txt"]
-            .iter()
-            .map(|ext| path.with_extension(ext))
-            .find(|p| p.is_file());
-        let subtitle = if let Some(p) = sub {
-            self.copy_media(&p, "media")?.to_string_lossy().to_string()
-        } else {
-            String::new()
-        };
-        let row = json!({"id":id(),"practice_id":practice,"name":name,"audio_uri":media.to_string_lossy(),"subtitle_uri":subtitle,"created_at":now()});
-        if let Err(e) = self.put("listening_audios", row.clone()) {
-            let _ = fs::remove_file(media);
-            return Err(e);
-        }
-        Ok(row.as_object().expect("audio row is an object").clone())
     }
     pub fn vault(&self) -> Result<BTreeMap<String, Vec<Row>>> {
         Ok(self.vault_with_settings()?.0)
@@ -524,7 +262,8 @@ impl Library {
         let tx = db.transaction()?;
         let data = TABLES
             .iter()
-            .map(|(table, _)| {
+            .map(|spec| {
+                let table = spec.name;
                 Ok((
                     table.to_string(),
                     query_rows(&tx, &format!("SELECT * FROM {table}"), &[])?,
@@ -539,7 +278,7 @@ impl Library {
         Ok((data, settings))
     }
 }
-fn query_rows(db: &Connection, query: &str, values: &[SqlValue]) -> Result<Vec<Row>> {
+pub(crate) fn query_rows(db: &Connection, query: &str, values: &[SqlValue]) -> Result<Vec<Row>> {
     let mut stmt = db.prepare(query)?;
     let cols = stmt
         .column_names()
@@ -568,11 +307,7 @@ fn query_rows(db: &Connection, query: &str, values: &[SqlValue]) -> Result<Vec<R
     Ok(rows)
 }
 pub fn insert(db: &Connection, table: &str, row: &Row, ignore: bool) -> Result<()> {
-    let allowed = TABLES
-        .iter()
-        .find(|(t, _)| *t == table)
-        .context("资料表无效")?
-        .1;
+    let allowed = table_spec(table).context("资料表无效")?.columns;
     ensure!(
         row.keys().all(|k| allowed.contains(&k.as_str())),
         "包含未知字段"

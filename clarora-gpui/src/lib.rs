@@ -11,6 +11,7 @@ pub mod documents;
 pub mod ebook;
 pub mod media;
 mod network;
+mod object_storage;
 pub mod process;
 pub mod recording;
 pub mod runtime;

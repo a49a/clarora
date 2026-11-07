@@ -1,25 +1,12 @@
 //! Content-addressed cloud snapshots, verified chunks and CAS-coordinated cleanup.
+pub use super::attachments::{Attachment, Chunk, checksum};
 use super::*;
+use crate::object_storage::{Objects, Payload, UploadReporter};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 pub const CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 const LIMIT: usize = 64 * 1024 * 1024;
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Chunk {
-    pub sha256: String,
-    pub length: u64,
-    pub key: String,
-}
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Attachment {
-    pub sha256: String,
-    pub length: u64,
-    pub extension: String,
-    pub chunks: Vec<Chunk>,
-}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Snapshot {
@@ -96,20 +83,10 @@ pub struct Prepared {
     pub paths: BTreeMap<String, PathBuf>,
     pub stamps: BTreeMap<PathBuf, (u64, std::time::SystemTime)>,
 }
-#[derive(Clone)]
-pub struct Listed {
-    pub key: String,
-    pub length: u64,
-    pub modified: chrono::DateTime<chrono::Utc>,
-}
 pub struct Session<'a> {
     pub storage: &'a Storage,
     pub cancel: &'a Cancel,
-    client: reqwest::Client,
-    runtime: tokio::runtime::Runtime,
-}
-pub fn checksum(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+    pub(super) objects: Objects<'a>,
 }
 fn time() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -147,157 +124,49 @@ impl<'a> Session<'a> {
         Ok(Self {
             storage,
             cancel,
-            client: storage.client()?,
-            runtime: tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?,
+            objects: Objects::new(storage, cancel)?,
         })
     }
     pub fn prefix(&self) -> String {
-        format!("{}/v3", self.storage.config.prefix)
+        format!("{}/v3", self.storage.config().prefix)
     }
     pub fn scope(&self) -> String {
         hash(&format!(
             "{}|{}|{}|{}",
-            self.storage.config.provider,
-            self.storage.config.endpoint,
-            self.storage.config.bucket,
-            self.storage.config.prefix
+            self.storage.config().provider,
+            self.storage.config().endpoint,
+            self.storage.config().bucket,
+            self.storage.config().prefix
         ))
     }
     pub fn key(&self, suffix: &str) -> String {
         format!("{}/{suffix}", self.prefix())
     }
-    fn raw(
-        &self,
-        method: &str,
-        key: &str,
-        body: Option<Payload>,
-        headers: &BTreeMap<String, String>,
-    ) -> Result<reqwest::Response> {
-        self.runtime.block_on(self.storage.response_with_headers(
-            &self.client,
-            method,
-            key,
-            &BTreeMap::new(),
-            body,
-            headers,
-            true,
-            self.cancel,
-        ))
-    }
-    fn checked(&self, response: reqwest::Response) -> Result<reqwest::Response> {
-        if response.status().is_success() {
-            return Ok(response);
-        }
-        let status = response.status();
-        let bytes = self.read(response).unwrap_or_default();
-        check_cancel(self.cancel)?;
-        let code = storage_error_code(&bytes).filter(|code| {
-            [
-                &self.storage.config.access_key_id,
-                &self.storage.secret,
-                &self.storage.token,
-            ]
-            .iter()
-            .all(|s| s.is_empty() || !code.contains(s.as_str()))
-        });
-        anyhow::bail!(storage_error_message(status, code.as_deref()))
-    }
-    pub fn read(&self, mut response: reqwest::Response) -> Result<Vec<u8>> {
-        self.runtime.block_on(cancellable(self.cancel, async {
-            let mut bytes = vec![];
-            while let Some(chunk) = response.chunk().await? {
-                check_cancel(self.cancel)?;
-                ensure!(bytes.len() + chunk.len() <= LIMIT, "云清单或分块过大");
-                bytes.extend_from_slice(&chunk);
-            }
-            Ok(bytes)
-        }))
-    }
-    pub fn get(&self, key: &str) -> Result<Option<(Vec<u8>, Option<String>)>> {
-        let response = self.raw("GET", key, None, &BTreeMap::new())?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        let response = self.checked(response)?;
-        let etag = response
-            .headers()
-            .get("etag")
-            .and_then(|s| s.to_str().ok())
-            .map(String::from);
-        Ok(Some((self.read(response)?, etag)))
-    }
-    pub fn put(&self, key: &str, bytes: Vec<u8>, condition: Option<(&str, &str)>) -> Result<bool> {
-        let headers = condition
-            .map(|(k, v)| BTreeMap::from([(k.into(), v.into())]))
-            .unwrap_or_default();
-        let response = self.raw("PUT", key, Some(Payload::Bytes(bytes)), &headers)?;
-        if response.status() == reqwest::StatusCode::PRECONDITION_FAILED
-            || response.status() == reqwest::StatusCode::CONFLICT
-        {
-            return Ok(false);
-        }
-        self.checked(response)?;
-        Ok(true)
-    }
-    pub fn delete(&self, key: &str, etag: Option<&str>) -> Result<()> {
-        let headers = etag
-            .map(|s| BTreeMap::from([("if-match".into(), s.into())]))
-            .unwrap_or_default();
-        let response = self.raw("DELETE", key, None, &headers)?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(());
-        }
-        self.checked(response)?;
-        Ok(())
-    }
-    pub fn head(&self, key: &str) -> Result<Option<(u64, Option<String>, Option<String>)>> {
-        let response = self.raw("HEAD", key, None, &BTreeMap::new())?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        let response = self.checked(response)?;
-        let len = response
-            .headers()
-            .get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse().ok())
-            .context("存储服务没有返回对象长度")?;
-        let field = |name: &str| {
-            response
-                .headers()
-                .get(name)
-                .and_then(|s| s.to_str().ok())
-                .map(String::from)
-        };
-        Ok(Some((len, field("etag"), field("x-amz-meta-sha256"))))
-    }
     pub fn verify_cas(&self) -> Result<()> {
         ensure!(
-            self.storage.config.provider == "s3",
+            self.storage.config().provider == "s3",
             "新版增量备份与同步需要支持条件写入的 S3 接口；旧 OSS 备份仍可读取"
         );
         let key = self.key(&format!("probes/{}", id()));
         ensure!(
-            self.put(
+            self.objects.put(
                 &key,
                 b"conditional-write-probe".to_vec(),
                 Some(("if-none-match", "*"))
             )?,
             "存储条件写入探测失败"
         );
-        let create = self.put(
+        let create = self.objects.put(
             &key,
             b"probe-must-not-overwrite".to_vec(),
             Some(("if-none-match", "*")),
         )?;
-        let replace = self.put(
+        let replace = self.objects.put(
             &key,
             b"probe-must-not-overwrite".to_vec(),
             Some(("if-match", "\"clarora-mismatched-etag\"")),
         )?;
-        let _ = self.delete(&key, None);
+        let _ = self.objects.delete(&key, None);
         ensure!(
             !create && !replace,
             "存储服务未执行安全条件写入，已停止新版备份／同步，避免覆盖其他设备"
@@ -305,7 +174,7 @@ impl<'a> Session<'a> {
         Ok(())
     }
     pub fn catalog(&self) -> Result<(Catalog, Option<String>)> {
-        let Some((bytes, etag)) = self.get(&self.key("catalog.json"))? else {
+        let Some((bytes, etag)) = self.objects.get(&self.key("catalog.json"))? else {
             return Ok((Catalog::empty(), None));
         };
         ensure!(
@@ -321,7 +190,7 @@ impl<'a> Session<'a> {
         self.validate_catalog(catalog)?;
         let bytes = serde_json::to_vec(catalog)?;
         ensure!(bytes.len() <= LIMIT, "云端目录过大，请先清理历史版本");
-        self.put(
+        self.objects.put(
             &self.key("catalog.json"),
             bytes,
             Some(
@@ -403,7 +272,7 @@ impl<'a> Session<'a> {
                             || key.starts_with(&self.key("snapshots/"))
                             || key.starts_with(&format!(
                                 "{}/snapshots/",
-                                self.storage.config.prefix
+                                self.storage.config().prefix
                             ))),
                     "云任务清单路径无效"
                 );
@@ -411,7 +280,7 @@ impl<'a> Session<'a> {
             ensure!(
                 p.objects.len() <= 100000
                     && p.objects.iter().all(|key| self.object_key(key)
-                        || key.starts_with(&format!("{}/media/", self.storage.config.prefix))),
+                        || key.starts_with(&format!("{}/media/", self.storage.config().prefix))),
                 "云任务引用无效"
             );
         }
@@ -421,15 +290,15 @@ impl<'a> Session<'a> {
         Ok(())
     }
     fn owned_key(&self, key: &str) -> bool {
-        (key.starts_with(&format!("{}/v3/", self.storage.config.prefix))
-            || key.starts_with(&format!("{}/media/", self.storage.config.prefix))
-            || key.starts_with(&format!("{}/snapshots/", self.storage.config.prefix)))
+        (key.starts_with(&format!("{}/v3/", self.storage.config().prefix))
+            || key.starts_with(&format!("{}/media/", self.storage.config().prefix))
+            || key.starts_with(&format!("{}/snapshots/", self.storage.config().prefix)))
             && !key.split('/').any(|s| s == ".." || s == ".")
             && !key.contains('\\')
     }
     pub fn remote_bytes(&self, remote: &Remote) -> Result<Vec<u8>> {
         self.validate_remote(remote)?;
-        let (bytes, _) = self.get(&remote.key)?.context("云清单不存在")?;
+        let (bytes, _) = self.objects.get(&remote.key)?.context("云清单不存在")?;
         ensure!(
             bytes.len() as u64 == remote.length && checksum(&bytes) == remote.sha256,
             "云清单完整性校验失败"
@@ -456,7 +325,8 @@ impl<'a> Session<'a> {
         };
         ensure!(remote.length <= LIMIT as u64, "云清单过大");
         ensure!(
-            self.put(&remote.key, bytes, Some(("if-none-match", "*")))?,
+            self.objects
+                .put(&remote.key, bytes, Some(("if-none-match", "*")))?,
             "云清单标识已存在，请重试"
         );
         Ok(remote)
@@ -542,7 +412,7 @@ impl<'a> Session<'a> {
                     offset += chunk.length;
                     continue;
                 }
-                let remote = self.head(&chunk.key)?;
+                let remote = self.objects.head(&chunk.key)?;
                 if remote.as_ref().is_some_and(|(n, _, sha)| {
                     *n == chunk.length && sha.as_deref() == Some(&chunk.sha256)
                 }) {
@@ -598,7 +468,7 @@ impl<'a> Session<'a> {
                 } else {
                     headers.insert("if-none-match".into(), "*".into());
                 }
-                let response = self.raw(
+                let response = self.objects.raw(
                     "PUT",
                     &chunk.key,
                     Some(Payload::FileRange {
@@ -611,7 +481,7 @@ impl<'a> Session<'a> {
                     &headers,
                 )?;
                 if response.status() == reqwest::StatusCode::PRECONDITION_FAILED {
-                    let Some((length, _, sha)) = self.head(&chunk.key)? else {
+                    let Some((length, _, sha)) = self.objects.head(&chunk.key)? else {
                         anyhow::bail!("其他设备附件上传尚未完成，请重试");
                     };
                     ensure!(
@@ -619,7 +489,7 @@ impl<'a> Session<'a> {
                         "远端附件与摘要不一致"
                     );
                 } else {
-                    self.checked(response)?;
+                    self.objects.checked(response)?;
                 }
             }
             reporter.update(true, |p| {
@@ -644,7 +514,7 @@ impl<'a> Session<'a> {
         for (reference, file) in &snapshot.attachments {
             ensure!(
                 valid_hash(&file.sha256)
-                    && file.length < 8 * 1024 * 1024 * 1024
+                    && file.length < super::attachments::MAX_ATTACHMENT_BYTES
                     && valid_extension(&file.extension),
                 "附件摘要或格式无效"
             );
@@ -678,27 +548,10 @@ impl<'a> Session<'a> {
             check_cancel(self.cancel)?;
             let path = root.join(&snapshot.manifest.files[reference]);
             ensure!(path.parent() == Some(root), "附件落盘路径无效");
-            let mut output = fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&path)?;
-            let mut hasher = Sha256::new();
-            let mut length = 0;
-            for chunk in &file.chunks {
-                let (bytes, _) = self.get(&chunk.key)?.context("备份附件分块缺失")?;
-                ensure!(
-                    bytes.len() as u64 == chunk.length && checksum(&bytes) == chunk.sha256,
-                    "附件分块完整性校验失败"
-                );
-                output.write_all(&bytes)?;
-                hasher.update(&bytes);
-                length += bytes.len() as u64;
-            }
-            ensure!(
-                length == file.length && hex::encode(hasher.finalize()) == file.sha256,
-                "附件文件完整性校验失败"
-            );
-            output.sync_all()?;
+            super::attachments::materialize_chunks(file, &path, self.cancel, |chunk| {
+                let (bytes, _) = self.objects.get(&chunk.key)?.context("备份附件分块缺失")?;
+                Ok(bytes)
+            })?;
             mapped.insert(reference.clone(), path.to_string_lossy().into_owned());
         }
         let sources = snapshot.manifest.sources.clone();
@@ -711,68 +564,6 @@ impl<'a> Session<'a> {
             mapped.get(reference).cloned().context("备份缺少附件")
         })?;
         Ok(())
-    }
-    pub fn list_prefix(&self, prefix: &str) -> Result<Vec<Listed>> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "PascalCase")]
-        struct Listing {
-            #[serde(default)]
-            contents: Vec<Entry>,
-            #[serde(default)]
-            is_truncated: bool,
-            next_continuation_token: Option<String>,
-        }
-        #[derive(Deserialize)]
-        #[serde(rename_all = "PascalCase")]
-        struct Entry {
-            key: String,
-            size: u64,
-            last_modified: String,
-        }
-        let mut result = vec![];
-        let mut token = String::new();
-        let mut seen = BTreeSet::new();
-        loop {
-            let mut query = BTreeMap::from([
-                ("list-type".into(), "2".into()),
-                ("prefix".into(), prefix.into()),
-            ]);
-            if !token.is_empty() {
-                query.insert("continuation-token".into(), token);
-            }
-            let bytes = self.runtime.block_on(self.storage.request(
-                &self.client,
-                "GET",
-                "",
-                &query,
-                None,
-                self.cancel,
-            ))?;
-            let xml = std::str::from_utf8(&bytes)?;
-            ensure!(
-                !xml.contains("<!DOCTYPE") && !xml.contains("<!ENTITY"),
-                "不支持的存储列表"
-            );
-            let list: Listing = quick_xml::de::from_str(xml)?;
-            for entry in list.contents {
-                ensure!(entry.key.starts_with(prefix), "存储列表越过前缀");
-                result.push(Listed {
-                    key: entry.key,
-                    length: entry.size,
-                    modified: utc(&entry.last_modified)?,
-                });
-            }
-            ensure!(result.len() <= 200000, "云对象过多，请缩小资料库前缀");
-            if !list.is_truncated {
-                break;
-            }
-            token = list.next_continuation_token.context("存储分页缺少令牌")?;
-            ensure!(
-                !token.is_empty() && seen.insert(token.clone()),
-                "存储分页循环"
-            );
-        }
-        Ok(result)
     }
 }
 pub fn prepare(lib: &Library, cancel: &Cancel) -> Result<Prepared> {
@@ -847,11 +638,11 @@ pub fn object_keys(snapshot: &Snapshot) -> BTreeSet<String> {
 }
 impl Storage {
     pub fn restore_checked(&self, lib: &Library, key: &str, cancel: &Cancel) -> Result<usize> {
-        if key.starts_with(&format!("{}/v3/snapshots/", self.config.prefix)) {
+        if key.starts_with(&format!("{}/v3/snapshots/", self.config().prefix)) {
             return self.restore_incremental(lib, key, cancel);
         }
         ensure!(
-            key.starts_with(&format!("{}/snapshots/", self.config.prefix)),
+            key.starts_with(&format!("{}/snapshots/", self.config().prefix)),
             "备份路径无效"
         );
         let session = Session::new(self, cancel)?;
@@ -860,7 +651,7 @@ impl Storage {
             return self.restore(lib, key, cancel);
         }
         session.verify_cas()?;
-        let (bytes, _) = session.get(key)?.context("旧备份清单缺失")?;
+        let (bytes, _) = session.objects.get(key)?.context("旧备份清单缺失")?;
         let mut manifest: Manifest = serde_json::from_slice(&bytes)?;
         validate(&mut manifest)?;
         let pin = session.pin(manifest.files.values().cloned().collect(), Some(key.into()))?;
@@ -935,7 +726,7 @@ impl Storage {
             if catalog.retired_legacy.contains(&key) {
                 continue;
             }
-            let Some((bytes, _)) = session.get(&key)? else {
+            let Some((bytes, _)) = session.objects.get(&key)? else {
                 continue;
             };
             let mut manifest: Manifest = serde_json::from_slice(&bytes)?;
@@ -1017,13 +808,18 @@ impl Storage {
                 keys = object_keys(&snapshot);
             } else {
                 let (bytes, _) = session
+                    .objects
                     .get(&version.key)?
                     .context("旧备份清单缺失，已停止清理")?;
                 let mut manifest: Manifest = serde_json::from_slice(&bytes)?;
                 validate(&mut manifest)?;
                 for key in manifest.files.values() {
                     ensure!(
-                        key.starts_with(&format!("{}/media/{}/", self.config.prefix, manifest.id)),
+                        key.starts_with(&format!(
+                            "{}/media/{}/",
+                            self.config().prefix,
+                            manifest.id
+                        )),
                         "旧附件越过备份前缀"
                     );
                     keys.insert(key.clone());
@@ -1045,11 +841,11 @@ impl Storage {
         }
         for prefix in [
             session.key("objects/"),
-            format!("{}/media/", self.config.prefix),
+            format!("{}/media/", self.config().prefix),
             session.key("sync/"),
             session.key("snapshots/"),
         ] {
-            for object in session.list_prefix(&prefix)? {
+            for object in session.objects.list_prefix(&prefix)? {
                 all.insert(object.key.clone(), object);
             }
         }
@@ -1116,7 +912,7 @@ impl Storage {
         catalog.snapshots.retain(|_, r| !retiring.contains(&r.key));
         catalog.blobs.retain(|_, b| !retiring.contains(&b.key));
         for key in &plan.snapshots {
-            if key.starts_with(&format!("{}/snapshots/", self.config.prefix)) {
+            if key.starts_with(&format!("{}/snapshots/", self.config().prefix)) {
                 catalog.retired_legacy.insert(key.clone());
             }
         }
@@ -1131,8 +927,8 @@ impl Storage {
         let mut deleted = 0;
         for key in &retiring {
             check_cancel(cancel)?;
-            let etag = session.head(key)?.and_then(|(_, e, _)| e);
-            session.delete(key, etag.as_deref())?;
+            let etag = session.objects.head(key)?.and_then(|(_, e, _)| e);
+            session.objects.delete(key, etag.as_deref())?;
             session.mutate(|c| {
                 c.garbage.remove(key);
                 Ok(())

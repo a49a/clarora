@@ -1,6 +1,8 @@
 //! Device revision tracking and last-modified-wins cloud synchronization.
 use super::cloud::{self, Attachment, Prepared, Session, Snapshot};
 use super::*;
+use crate::data::schema::TableSpec;
+use crate::object_storage::UploadReporter;
 use std::collections::BTreeSet;
 mod apply;
 
@@ -35,15 +37,6 @@ struct Local {
 fn entity_key(kind: &str, identity: &Value) -> String {
     json!([kind, identity]).to_string()
 }
-fn raw_key(table: &str, row: &Row) -> String {
-    Value::Array(
-        primary(table)
-            .iter()
-            .map(|k| row.get(*k).cloned().unwrap_or_default())
-            .collect(),
-    )
-    .to_string()
-}
 fn blob(file: &Attachment) -> String {
     format!("blob:{}.{}", file.sha256, file.extension)
 }
@@ -73,7 +66,8 @@ fn word_reference(id: &str, words: &BTreeMap<String, String>) -> String {
         .map(|word| format!("word/{word}"))
         .unwrap_or_else(|| id.into())
 }
-fn stable_identity(table: &str, row: &Row, words: &BTreeMap<String, String>) -> Value {
+fn stable_identity(spec: &TableSpec, row: &Row, words: &BTreeMap<String, String>) -> Value {
+    let table = spec.name;
     let mut row = row.clone();
     if table == "review_schedule" && text(&row, "card_kind") == "word" {
         row.insert(
@@ -87,12 +81,7 @@ fn stable_identity(table: &str, row: &Row, words: &BTreeMap<String, String>) -> 
             row.insert("key".into(), json!(value));
         }
     }
-    Value::Array(
-        primary(table)
-            .iter()
-            .map(|key| row.get(*key).cloned().unwrap_or_default())
-            .collect(),
-    )
+    spec.identity(&row)
 }
 fn canonical_context(binding: &ContextBinding) -> String {
     hash(&json!(["cloud-material", binding.page, binding.path, binding.cue]).to_string())
@@ -234,26 +223,27 @@ fn capture(lib: &Library, scope: &str, cancel: &Cancel) -> Result<Local> {
             (kind.into(), identity, value, raw),
         );
     };
-    for (table, _) in TABLES {
+    for spec in TABLES {
+        let table = spec.name;
         for (index, row) in manifest
             .data
-            .get_mut(*table)
+            .get_mut(table)
             .context("同步缺少资料表")?
             .iter_mut()
             .enumerate()
         {
-            let original = &originals[*table][index];
-            let raw = Some((table.to_string(), raw_key(table, original)));
-            if *table == "words" {
+            let original = &originals[table][index];
+            let raw = Some((table.to_string(), spec.identity(original).to_string()));
+            if table == "words" {
                 row.remove("id");
             }
-            if *table == "review_schedule" && text(row, "card_kind") == "word" {
+            if table == "review_schedule" && text(row, "card_kind") == "word" {
                 row.insert(
                     "card_id".into(),
                     json!(word_reference(&text(row, "card_id"), &word_ids)),
                 );
             }
-            if *table == "discover_favorites" {
+            if table == "discover_favorites" {
                 let key = text(row, "key");
                 if let Some(id) = key.strip_prefix("word:") {
                     let stable = word_reference(id, &word_ids);
@@ -266,12 +256,7 @@ fn capture(lib: &Library, scope: &str, cancel: &Cancel) -> Result<Local> {
                     }
                 }
             }
-            let identity = Value::Array(
-                primary(table)
-                    .iter()
-                    .map(|key| row.get(*key).cloned().unwrap_or_default())
-                    .collect(),
-            );
+            let identity = spec.identity(row);
             add(table, identity, Value::Object(row.clone()), raw);
         }
     }
@@ -345,8 +330,7 @@ fn capture(lib: &Library, scope: &str, cancel: &Cancel) -> Result<Local> {
         let old = observed.get(&key);
         let changed = old.is_none_or(|(e, _)| e.value.as_ref() != Some(&value));
         let revision = raw.as_ref().and_then(|r| revisions.get(r));
-        let individual =
-            kind == "setting" || kind == "subtitle" || TABLES.iter().any(|(t, _)| *t == kind);
+        let individual = kind == "setting" || kind == "subtitle" || table_spec(&kind).is_some();
         let edited = individual
             && old.is_some_and(|(_, seen)| revision.is_some_and(|(_, seq, _, _)| seq > seen));
         let version = if !changed && !edited {
@@ -393,13 +377,12 @@ fn capture(lib: &Library, scope: &str, cancel: &Cancel) -> Result<Local> {
             })
             .find_map(|((table, _), (ms, seq, _, payload))| {
                 let row = serde_json::from_str::<Row>(payload).ok()?;
-                (entity_key(table, &stable_identity(table, &row, &word_ids)) == *key).then_some(
-                    Version {
+                (entity_key(table, &stable_identity(table_spec(table)?, &row, &word_ids)) == *key)
+                    .then_some(Version {
                         modified_ms: *ms,
                         device: device.clone(),
                         sequence: *seq,
-                    },
-                )
+                    })
             })
             .or_else(|| {
                 let raw = match old.kind.as_str() {
@@ -462,7 +445,7 @@ fn merge(mut local: Envelope, remote: Envelope) -> Result<Envelope> {
     for (key, entry) in remote.records {
         ensure!(
             key == entity_key(&entry.kind, &entry.identity)
-                && (TABLES.iter().any(|(table, _)| *table == entry.kind)
+                && (table_spec(&entry.kind).is_some()
                     || ["video", "book", "subtitle", "context", "setting"]
                         .contains(&entry.kind.as_str()))
                 && entry.version.modified_ms >= 0
@@ -668,7 +651,7 @@ fn snapshot(state: &Envelope) -> Result<(Snapshot, BTreeMap<String, String>)> {
         created_at: chrono::Utc::now().to_rfc3339(),
         data: TABLES
             .iter()
-            .map(|(t, _)| (t.to_string(), vec![]))
+            .map(|spec| (spec.name.to_string(), vec![]))
             .collect(),
         files: BTreeMap::new(),
         sources: BTreeMap::new(),
@@ -678,19 +661,10 @@ fn snapshot(state: &Envelope) -> Result<(Snapshot, BTreeMap<String, String>)> {
         let value = entry.value.clone().unwrap();
         if let Some(rows) = manifest.data.get_mut(&entry.kind) {
             let row = value.as_object().context("同步资料行无效")?;
-            let columns = TABLES
-                .iter()
-                .find(|(t, _)| *t == entry.kind)
-                .context("同步资料类型无效")?
-                .1;
+            let spec = table_spec(&entry.kind).context("同步资料类型无效")?;
             ensure!(
-                row.keys().all(|k| columns.contains(&k.as_str()))
-                    && Value::Array(
-                        primary(&entry.kind)
-                            .iter()
-                            .map(|k| row.get(*k).cloned().unwrap_or_default())
-                            .collect()
-                    ) == entry.identity,
+                row.keys().all(|k| spec.columns.contains(&k.as_str()))
+                    && spec.identity(row) == entry.identity,
                 "同步资料字段或主键不一致"
             );
             rows.push(row.clone());
@@ -810,93 +784,6 @@ fn map_word_links(
         });
     }
     Ok(())
-}
-
-pub(crate) fn install_tracking(db: &rusqlite::Connection) -> Result<()> {
-    db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS cloud_sync_identity(singleton INTEGER PRIMARY KEY CHECK(singleton=1),device_id TEXT NOT NULL,last_ms INTEGER NOT NULL DEFAULT 0,sequence INTEGER NOT NULL DEFAULT 0,applying INTEGER NOT NULL DEFAULT 0,tracking INTEGER NOT NULL DEFAULT 0);
-         INSERT OR IGNORE INTO cloud_sync_identity(singleton,device_id) VALUES(1,lower(hex(randomblob(16))));
-         CREATE TABLE IF NOT EXISTS cloud_sync_journal(id INTEGER PRIMARY KEY AUTOINCREMENT,table_name TEXT NOT NULL,record_key TEXT NOT NULL,modified_ms INTEGER NOT NULL,sequence INTEGER NOT NULL,deleted INTEGER NOT NULL,payload TEXT NOT NULL);
-         CREATE TABLE IF NOT EXISTS cloud_sync_revisions(table_name TEXT NOT NULL,record_key TEXT NOT NULL,modified_ms INTEGER NOT NULL,sequence INTEGER NOT NULL,deleted INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(table_name,record_key));
-         CREATE TABLE IF NOT EXISTS cloud_sync_entities(scope TEXT NOT NULL,entity_key TEXT NOT NULL,value TEXT NOT NULL,local_sequence INTEGER NOT NULL,PRIMARY KEY(scope,entity_key));
-         CREATE TABLE IF NOT EXISTS cloud_sync_status(scope TEXT PRIMARY KEY,last_success TEXT NOT NULL,last_error TEXT NOT NULL DEFAULT '');"
-    )?;
-    let mut tables = TABLES
-        .iter()
-        .map(|(t, c)| (*t, c.to_vec()))
-        .collect::<Vec<_>>();
-    tables.push(("app_settings", vec!["key", "value"]));
-    for (table, columns) in tables {
-        for (name, operation, row) in [
-            ("insert", "INSERT", "NEW"),
-            ("update", "UPDATE", "NEW"),
-            ("delete", "DELETE", "OLD"),
-        ] {
-            let predicate = if table == "app_settings" {
-                let exact = PREFERENCES
-                    .iter()
-                    .copied()
-                    .chain(["video_favorites_v1"])
-                    .map(|key| format!("'{key}'"))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                format!(
-                    "AND ({row}.key IN ({exact}) OR {row}.key LIKE 'reader_progress_%' OR {row}.key LIKE 'key_points_%' OR {row}.key LIKE 'video_subtitles_%')"
-                )
-            } else {
-                String::new()
-            };
-            let payload = |r: &str| {
-                format!(
-                    "json_object({})",
-                    columns
-                        .iter()
-                        .map(|c| format!("'{c}',{r}.\"{c}\""))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )
-            };
-            let key = |r: &str| {
-                format!(
-                    "json_array({})",
-                    primary(table)
-                        .iter()
-                        .map(|c| format!("{r}.\"{c}\""))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )
-            };
-            let statement = |r: &str, deleted: bool, condition: &str| {
-                format!(
-                "INSERT INTO cloud_sync_journal(table_name,record_key,modified_ms,sequence,deleted,payload) SELECT '{table}',{},last_ms,sequence,{},{} FROM cloud_sync_identity WHERE singleton=1 {condition};
-                 INSERT INTO cloud_sync_revisions(table_name,record_key,modified_ms,sequence,deleted,payload) SELECT '{table}',{},last_ms,sequence,{},{} FROM cloud_sync_identity WHERE singleton=1 {condition} ON CONFLICT(table_name,record_key) DO UPDATE SET modified_ms=excluded.modified_ms,sequence=excluded.sequence,deleted=excluded.deleted,payload=excluded.payload;",
-                key(r),u8::from(deleted),payload(r),key(r),u8::from(deleted),payload(r))
-            };
-            let mut body = String::from(
-                "UPDATE cloud_sync_identity SET last_ms=MAX(last_ms,CAST(strftime('%s','now') AS INTEGER)*1000+CAST(substr(strftime('%f','now'),4,3) AS INTEGER)),sequence=sequence+1 WHERE singleton=1;",
-            );
-            if name == "update" {
-                body.push_str(&statement(
-                    "OLD",
-                    true,
-                    &format!("AND {} != {}", key("OLD"), key("NEW")),
-                ));
-            }
-            body.push_str(&statement(row, name == "delete", ""));
-            db.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS cloud_sync_{table}_{name} AFTER {operation} ON {table} WHEN (SELECT applying=0 AND tracking=1 FROM cloud_sync_identity WHERE singleton=1) {predicate} BEGIN {body} END;"))?;
-        }
-    }
-    Ok(())
-}
-
-fn primary(table: &str) -> &'static [&'static str] {
-    match table {
-        "words" => &["word"],
-        "review_schedule" => &["card_kind", "card_id"],
-        "study_stats" => &["day"],
-        "discover_favorites" | "app_settings" => &["key"],
-        _ => &["id"],
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]

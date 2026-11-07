@@ -89,13 +89,17 @@ fn segment(cards: &mut Vec<Card>, row: &Row, cues: &[Cue]) {
 /// Blocking work, intentionally separate from the controller's nonblocking UI API.
 /// A failure returns no replacement snapshot. Missing subtitle files mean no subtitles.
 pub fn load(lib: &Library, key: &Key, include_runtime: bool) -> Result<Snapshot> {
-    let practices = lib.list("listening_practices")?;
+    let (practices, audios) = lib.audio_catalog()?;
+    let practices: Vec<Row> = practices
+        .into_iter()
+        .map(|practice| practice.into_row())
+        .collect();
     let practice_id = if practices.iter().any(|r| text(r, "id") == key.practice_id) {
         key.practice_id.clone()
     } else {
         practices.first().map(|r| text(r, "id")).unwrap_or_default()
     };
-    let audios = lib.list("listening_audios")?;
+    let audios: Vec<Row> = audios.into_iter().map(|audio| audio.into_row()).collect();
     let mut audio_library = audio_library::State {
         selected: key.library_selected.clone(),
         filter: key.library_filter,

@@ -210,12 +210,7 @@ impl Command {
                         app.audio.library.filter = 0;
                         app.set("library_search", "", window, cx);
                     }
-                    "group-rename" => audio_library::rename(
-                        &app.lib,
-                        "listening_practices",
-                        &app.audio.practice_id,
-                        &name,
-                    )?,
+                    "group-rename" => app.lib.rename_practice(&app.audio.practice_id, &name)?,
                     _ => anyhow::bail!("请重新打开名称编辑"),
                 }
                 app.lib
@@ -280,7 +275,8 @@ impl Command {
                     &app.audio.practice_id,
                     &app.audio.checked,
                 );
-                audio_library::move_records(&app.lib, &app.audio.practice_id, &destination, &ids)?;
+                app.lib
+                    .move_audio_records(&app.audio.practice_id, &destination, &ids)?;
                 app.audio.checked.clear();
                 app.audio.library.tool.clear();
                 app.refresh();
@@ -299,7 +295,7 @@ impl Command {
                 );
                 ensure!(!app.tasks.foreground.is_running(), "请等待当前任务完成");
                 let ids = app.audio.library.pending_delete.clone();
-                audio_library::delete_records(&app.lib, &group, &ids)?;
+                app.lib.delete_audio_records(&group, &ids)?;
                 app.audio.checked.clear();
                 app.audio.library.pending_delete.clear();
                 app.audio.library.tool.clear();

@@ -1,42 +1,24 @@
 //! Verified materialization and guarded, atomic application of a merged sync view.
+use super::super::attachments::{StagedAttachment, materialize_chunks};
 use super::*;
-use sha2::{Digest, Sha256};
 
 fn download_file(session: &Session<'_>, file: &Attachment, target: &Path) -> Result<()> {
-    ensure!(file.length < 8 * 1024 * 1024 * 1024, "同步附件描述无效");
-    let mut output = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(target)?;
-    let mut digest = Sha256::new();
-    let mut size = 0u64;
-    for chunk in &file.chunks {
-        check_cancel(session.cancel)?;
+    let prefix = format!("{}/objects/", session.prefix());
+    materialize_chunks(file, target, session.cancel, |chunk| {
         ensure!(
-            chunk
-                .key
-                .starts_with(&format!("{}/objects/", session.prefix()))
+            chunk.key.starts_with(&prefix)
                 && chunk.key.ends_with(&chunk.sha256)
                 && chunk.length > 0
                 && chunk.length <= cloud::CHUNK_BYTES
                 && !chunk.key.split('/').any(|s| s == ".." || s == "."),
             "同步附件路径无效"
         );
-        let (bytes, _) = session.get(&chunk.key)?.context("同步附件分块缺失")?;
-        ensure!(
-            bytes.len() as u64 == chunk.length && cloud::checksum(&bytes) == chunk.sha256,
-            "同步附件分块校验失败"
-        );
-        output.write_all(&bytes)?;
-        digest.update(&bytes);
-        size += bytes.len() as u64;
-    }
-    ensure!(
-        size == file.length && hex::encode(digest.finalize()) == file.sha256,
-        "同步附件文件校验失败"
-    );
-    output.sync_all()?;
-    Ok(())
+        let (bytes, _) = session
+            .objects
+            .get(&chunk.key)?
+            .context("同步附件分块缺失")?;
+        Ok(bytes)
+    })
 }
 
 pub(super) fn prepare(
@@ -131,17 +113,10 @@ fn copy_verified(
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut output = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(target)?;
+    let mut output = StagedAttachment::new(target, Some(&file.sha256))?;
+    output.copy(fs::File::open(source)?, cancel)?;
+    output.finish(target, Some(file.length), cancel)?;
     created.push(target.into());
-    copy_cancellable(fs::File::open(source)?, &mut output, cancel)?;
-    output.sync_all()?;
-    ensure!(
-        file_hash(target, cancel)? == file.sha256,
-        "同步附件落盘校验失败"
-    );
     Ok(())
 }
 
@@ -269,7 +244,8 @@ pub(super) fn run(
             .iter()
             .map(|r| (text(r, "word"), r.get("id").cloned().unwrap_or(Value::Null)))
             .collect::<BTreeMap<_, _>>();
-        for (table, _) in TABLES.iter().rev() {
+        for spec in TABLES.iter().rev() {
+            let table = spec.name;
             check_cancel(cancel)?;
             tx.execute(&format!("DELETE FROM {table}"), [])?;
         }
@@ -291,11 +267,12 @@ pub(super) fn run(
             word_ids.insert(temporary, id);
         }
         map_word_links(&mut manifest.data, &word_ids)?;
-        for (table, _) in TABLES {
-            if *table == "words" {
+        for spec in TABLES {
+            let table = spec.name;
+            if table == "words" {
                 continue;
             }
-            for row in &manifest.data[*table] {
+            for row in &manifest.data[table] {
                 check_cancel(cancel)?;
                 insert(&tx, table, row, false)?;
             }

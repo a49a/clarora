@@ -67,7 +67,7 @@ impl State {
     pub fn save_rename(&mut self, lib: &Library, group: &str, name: &str) -> Result<()> {
         let target = self.renaming.as_ref().context("请先双击音频名称")?;
         ensure!(target.group == group, "练习组已切换，请重新选择音频");
-        rename_scoped(lib, "listening_audios", &target.id, name, Some(group))?;
+        lib.rename_audio(&target.id, name, Some(group))?;
         self.renaming = None;
         Ok(())
     }
@@ -160,109 +160,17 @@ pub fn scoped_ids(rows: &[Row], group: &str, checked: &BTreeSet<String>) -> Vec<
         .collect()
 }
 pub fn rename(lib: &Library, table: &str, key: &str, name: &str) -> Result<()> {
-    rename_scoped(lib, table, key, name, None)
+    match table {
+        "listening_practices" => lib.rename_practice(key, name),
+        "listening_audios" => lib.rename_audio(key, name, None),
+        _ => anyhow::bail!("不支持的名称操作"),
+    }
 }
 
-pub(crate) fn rename_scoped(
-    lib: &Library,
-    table: &str,
-    key: &str,
-    name: &str,
-    expected_group: Option<&str>,
-) -> Result<()> {
-    ensure!(
-        ["listening_practices", "listening_audios"].contains(&table),
-        "不支持的名称操作"
-    );
-    let name = name.trim();
-    ensure!(
-        !name.is_empty() && name.chars().count() <= 120,
-        "名称需为 1–120 字"
-    );
-    let mut db = lib.db()?;
-    let tx = db.transaction()?;
-    let group: String = if table == "listening_audios" {
-        tx.query_row(
-            "SELECT practice_id FROM listening_audios WHERE id=?",
-            [key],
-            |r| r.get(0),
-        )
-        .context("音频不存在")?
-    } else {
-        String::new()
-    };
-    if let Some(expected) = expected_group {
-        ensure!(group == expected, "音频已移动，请重新选择音频");
-    }
-    let duplicate: i64 = if table == "listening_audios" {
-        tx.query_row("SELECT count(*) FROM listening_audios WHERE practice_id=? AND lower(trim(name))=lower(?) AND id<>?",[group.as_str(),name,key],|r|r.get(0))?
-    } else {
-        tx.query_row(
-            "SELECT count(*) FROM listening_practices WHERE lower(trim(name))=lower(?) AND id<>?",
-            [name, key],
-            |r| r.get(0),
-        )?
-    };
-    ensure!(duplicate == 0, "已存在同名条目，请换一个名称");
-    ensure!(
-        tx.execute(
-            &format!("UPDATE {table} SET name=? WHERE id=?"),
-            [name, key]
-        )? == 1,
-        "条目已不存在"
-    );
-    tx.commit()?;
-    Ok(())
-}
-fn validate_targets(tx: &rusqlite::Transaction<'_>, source: &str, ids: &[String]) -> Result<()> {
-    ensure!(!ids.is_empty(), "请先选择音频");
-    ensure!(
-        ids.iter().collect::<BTreeSet<_>>().len() == ids.len(),
-        "音频选择重复"
-    );
-    for key in ids {
-        let count: i64 = tx.query_row(
-            "SELECT count(*) FROM listening_audios WHERE id=? AND practice_id=?",
-            [key.as_str(), source],
-            |r| r.get(0),
-        )?;
-        ensure!(count == 1, "选择的音频或所属组已改变，请重新选择");
-    }
-    Ok(())
-}
 pub fn move_records(lib: &Library, source: &str, destination: &str, ids: &[String]) -> Result<()> {
-    ensure!(source != destination, "请选择另一个练习组");
-    let mut db = lib.db()?;
-    let tx = db.transaction()?;
-    validate_targets(&tx, source, ids)?;
-    let exists: i64 = tx.query_row(
-        "SELECT count(*) FROM listening_practices WHERE id=?",
-        [destination],
-        |r| r.get(0),
-    )?;
-    ensure!(exists == 1, "目标练习组已不存在");
-    for key in ids {
-        let name: String =
-            tx.query_row("SELECT name FROM listening_audios WHERE id=?", [key], |r| {
-                r.get(0)
-            })?;
-        let duplicate: i64 = tx.query_row("SELECT count(*) FROM listening_audios WHERE practice_id=? AND lower(trim(name))=lower(trim(?))",[destination,name.as_str()],|r|r.get(0))?;
-        ensure!(duplicate == 0, "目标组已存在「{name}」，未移动任何音频");
-        tx.execute(
-            "UPDATE listening_audios SET practice_id=? WHERE id=?",
-            [destination, key],
-        )?;
-    }
-    tx.commit()?;
-    Ok(())
+    lib.move_audio_records(source, destination, ids)
 }
+
 pub fn delete_records(lib: &Library, source: &str, ids: &[String]) -> Result<()> {
-    let mut db = lib.db()?;
-    let tx = db.transaction()?;
-    validate_targets(&tx, source, ids)?;
-    for key in ids {
-        tx.execute("DELETE FROM listening_audios WHERE id=?", [key])?;
-    }
-    tx.commit()?;
-    Ok(())
+    lib.delete_audio_records(source, ids)
 }
