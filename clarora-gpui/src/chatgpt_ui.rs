@@ -116,7 +116,7 @@ impl AppView {
                         if enabled {
                             "已切换到 ChatGPT 会员"
                         } else {
-                            "已切换到兼容 API，使用原有配置"
+                            "已切换到自定义 AI 服务，使用你配置的地址和模型"
                         }
                         .into(),
                     ),
@@ -217,11 +217,12 @@ impl AppView {
             || self.tasks.video_job.is_some();
         let action = |c| Action::ChatGpt(c);
         let mut panel=panel(cx)
-   .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("AI 聊天服务"))
+   .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("AI 服务设置"))
    .child(div().flex().gap_2().flex_wrap()
     .child(self.button("chatgpt-use","ChatGPT 会员",action(Command::Use(true)),cx).outline().selected(state.enabled).disabled(locked))
-    .child(self.button("chatgpt-compatible","兼容 API",action(Command::Use(false)),cx).outline().selected(!state.enabled).disabled(locked)))
-   .child(div().text_sm().text_color(cx.theme().muted_foreground).child("连接你自己的 ChatGPT 账户，用已授权的会员额度进行问答、字幕翻译和写作批改。语音转写与图片识字仍使用原有配置。"));
+    .child(self.button("chatgpt-compatible","自定义 AI 服务",action(Command::Use(false)),cx).outline().selected(!state.enabled).disabled(locked)))
+   .child(div().text_sm().text_color(cx.theme().muted_foreground).child("问答、字幕翻译和写作批改使用所选服务；远端语音转写和图片识字使用下方的自定义配置。"))
+   .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("ChatGPT 账户与授权"));
         if state.needs_legacy_import {
             panel = panel.child(
                 div()
@@ -418,6 +419,31 @@ impl AppView {
                     ),
             );
         }
-        panel.child(div().text_xs().text_color(cx.theme().muted_foreground).child("默认不访问钥匙串：登录凭证在本机加密，加密密钥保存在本机 SQLite。可在「密钥存储」主动开启系统凭证库。登录凭证及密钥均不进入资料备份；直接复制整个本机资料目录会包含它们。")).into_any_element()
+        panel
+            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("默认不访问钥匙串：登录凭证在本机加密，加密密钥保存在本机 SQLite。可在「密钥存储」主动开启系统凭证库。登录凭证及密钥均不进入资料备份；直接复制整个本机资料目录会包含它们。"))
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .pt_4()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("自定义 AI 服务"))
+                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("配置服务地址、模型和 API Key。远端转写需使用支持时间轴的模型；图片识字可单独指定视觉模型。"))
+                    .child(self.field("base_url", "共用 API Base URL"))
+                    .child(self.field("model", "聊天／远端转写共用模型 ID"))
+                    .child(self.field("chat_key", "共用 API Key · 留空保留已保存密钥"))
+                    .child(self.field("vision_model", "视觉模型（可选，留空使用共用模型）"))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("此按钮统一保存本页的 AI 与学习设置。"))
+                    .child(
+                        self.button("save-ai", "保存 AI 与学习设置", Action::SaveAi, cx)
+                            .primary()
+                            .disabled(self.tasks.cancel.is_some()),
+                    ),
+            )
+            .into_any_element()
     }
 }

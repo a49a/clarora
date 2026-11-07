@@ -428,7 +428,7 @@ impl AppView {
                         })
                         .unwrap_or_else(|| "ChatGPT · 请登录 · 设置".into())
                 } else {
-                    "AI 服务：兼容 API · 设置".into()
+                    "自定义 AI 服务 · 设置".into()
                 },
                 Action::Page("settings".into()),
                 cx,

@@ -94,12 +94,14 @@ impl AppView {
         };
         let pending = draft_local && active_model != Some(draft_model.as_str());
         let mut models = panel(cx)
-                    .child(div().text_lg().child("本地语音识别模型 · ASR"))
+                    .child(div().text_lg().child("语音转写与本地模型"))
                     .child("用于音频、视频字幕及跟读转写。下载后可离线识别；聊天与图片识字仍使用 API。")
                     .child("中文视频请选择多语言 Whisper 或 SenseVoice；.en 仅英语。体积为下载量，不是运行内存。")
                     .child("操作：下载 → 选用 → 点击下方「保存 AI 与学习设置」。已下载仅表示文件存在。 ")
                     .child(div().font_weight(FontWeight::SEMIBOLD).child(selection_summary))
-                    .when(pending, |v| v.child(div().text_color(cx.theme().primary).child(format!("已选择：{draft_model} · 待保存，保存后生效"))));
+                    .when(pending, |v| v.child(div().text_color(cx.theme().primary).child(format!("已选择：{draft_model} · 待保存，保存后生效"))))
+                    .child(self.field("engine", "转写引擎：local = 本机；compatible = 远端 API"))
+                    .child(self.field("local_model", "本地语音模型 ID（local 引擎使用，选用后需保存）"));
         if let Some(progress) = &self.tasks.models.progress {
             models = models.child(
                 div()
@@ -217,30 +219,14 @@ impl AppView {
         }
         models = models
                     .child("运行要求：FFmpeg；Whisper 需 clarora-asr 或 whisper-cli，SenseVoice 需 clarora-asr + sherpa-onnx。下载模型不会安装推理程序。")
-                    .child("本机已实测 Whisper tiny.en；其余模型尚未完成真实推理验收。详细来源、文件路径和安装方法见项目说明文档。 ");
+                    .child("本机已实测 Whisper tiny.en；其余模型尚未完成真实推理验收。详细来源、文件路径和安装方法见项目说明文档。 ")
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("此按钮统一保存本页的 AI 与学习设置。"))
+                    .child(
+                        self.button("save-asr-settings", "保存 AI 与学习设置", Action::SaveAi, cx)
+                            .primary()
+                            .disabled(self.tasks.cancel.is_some()),
+                    );
         content = content.child(models);
-        content = content.child(
-                    panel(cx)
-                        .child(div().text_lg().child("兼容 API 与语音设置"))
-                        .child(div().text_sm().text_color(cx.theme().muted_foreground)
-                            .child("聊天与远端转写共用下面一组设置，模型需支持这两种能力。保存后统一生效。"))
-                        .child(self.field("base_url", "共用 API Base URL"))
-                        .child(self.field("model", "聊天／远端转写共用模型 ID"))
-                        .child(self.field("chat_key", "共用 API Key · 留空保留已保存密钥"))
-                        .child(self.field("vision_model", "视觉模型（可选，留空使用共用模型）"))
-                        .child(
-                            self.field("engine", "转写引擎：local = 本机；compatible = 远端 API"),
-                        )
-                        .child(self.field(
-                            "local_model",
-                            "本地语音模型 ID（local 引擎使用，选用后需保存）",
-                        ))
-                        .child(
-                            self.button("save-ai", "保存 AI 与学习设置", Action::SaveAi, cx)
-                                .primary()
-                                .disabled(self.tasks.cancel.is_some()),
-                        ),
-                );
 
         content = content.child(
             panel(cx)
