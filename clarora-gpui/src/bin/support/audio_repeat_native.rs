@@ -50,7 +50,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         status.success()
             && report["passed"] == true
-            && cases.len() >= 59
+            && cases.len() >= 64
             && [
                 "native audio play button starts ordinary playback",
                 "native audio pause button preserves a nonzero position",
@@ -80,6 +80,11 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
                 "double click selects the entire multilingual assistant question",
                 "single click still places the assistant question caret",
                 "typing replaces the entire double-click selection",
+                "audio current card native double click selects a word without punctuation",
+                "audio current card double clicked word floating copy writes exact OS clipboard text",
+                "audio transcript native double click selects a word without punctuation",
+                "audio transcript double clicked word keyboard copy writes exact OS clipboard text",
+                "audio ordinary subtitle single click still seeks after double-click copy",
                 "audio current card drag selects words without seeking or leaving triple repeat",
                 "audio selection floating copy button writes exact OS clipboard text",
                 "audio current card ask AI attaches only selected words without sending",

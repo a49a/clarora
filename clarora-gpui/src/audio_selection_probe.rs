@@ -12,6 +12,7 @@ pub(super) struct Flow {
     expected: String,
     last_observation: Value,
     focus_drawn: bool,
+    word_request: u64,
 }
 impl Flow {
     pub fn new() -> Self {
@@ -24,6 +25,7 @@ impl Flow {
             expected: String::new(),
             last_observation: Value::Null,
             focus_drawn: false,
+            word_request: 0,
         }
     }
     fn draw(window: &Window, cx: &mut Context<AppView>) {
@@ -85,6 +87,63 @@ impl Flow {
             ],
         )?;
         Ok(())
+    }
+    fn double_click_word(
+        &mut self,
+        app: &AppView,
+        surface: Surface,
+        window: &Window,
+        cx: &mut Context<AppView>,
+        observations: &mut Vec<Value>,
+    ) -> Result<()> {
+        let doc = Self::document(app);
+        let start = doc
+            .text
+            .find("illustrates,")
+            .context("missing punctuated word fixture")?;
+        let offset = start + 4;
+        let (position, _) = Self::points(app, surface, offset..offset + 1)?;
+        self.expected = "illustrates".into();
+        self.position = app.media.snapshot.position;
+        observations.push(json!({
+            "event": "native audio subtitle double click",
+            "surface": if surface == Surface::Focus { "current-card" } else { "transcript" },
+            "input": if surface == Surface::Focus {
+                "AppKit full double click: Down1/Up1/Down2/Up2"
+            } else {
+                "AppKit second click: Down2/Up2"
+            },
+            "click_counts": if surface == Surface::Focus { vec![1, 1, 2, 2] } else { vec![2, 2] },
+            "click_count": 2, "offset": offset,
+            "click": [f32::from(position.x), f32::from(position.y)],
+            "expected": self.expected, "fixture": doc.text,
+            "position": self.position, "paused": app.media.snapshot.paused,
+            "mode": app.audio.repeat_mode,
+        }));
+        let mut events = vec![];
+        if surface == Surface::Focus {
+            events.push(native_probe_input::MouseEvent::DownCount(position, 1));
+            events.push(native_probe_input::MouseEvent::UpCount(position, 1));
+        }
+        events.push(native_probe_input::MouseEvent::DownCount(position, 2));
+        events.push(native_probe_input::MouseEvent::UpCount(position, 2));
+        native_probe_input::send(window, cx, events)
+    }
+    fn copy_shortcut(window: &Window, cx: &mut Context<AppView>) {
+        let handle = window.window_handle();
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                window.dispatch_keystroke(
+                    Keystroke::parse(if cfg!(target_os = "macos") {
+                        "cmd-c"
+                    } else {
+                        "ctrl-c"
+                    })
+                    .unwrap(),
+                    cx,
+                );
+            });
+        });
     }
     fn click_offer(
         app: &AppView,
@@ -300,20 +359,7 @@ impl Flow {
                 observations
                     .push(json!({"audio_selection_surface":"transcript","selected":self.expected}));
                 cases.push(json!({"case":"audio transcript selects across cues Chinese and emoji exactly","passed":true}));
-                let h = window.window_handle();
-                cx.defer(move |cx| {
-                    let _ = h.update(cx, |_, window, cx| {
-                        window.dispatch_keystroke(
-                            Keystroke::parse(if cfg!(target_os = "macos") {
-                                "cmd-c"
-                            } else {
-                                "ctrl-c"
-                            })
-                            .unwrap(),
-                            cx,
-                        );
-                    });
-                });
+                Self::copy_shortcut(window, cx);
             }
             9 => {
                 ensure!(
@@ -503,6 +549,156 @@ impl Flow {
                 app.media.player.set("pause", "yes");
             }
             21 => {
+                if app.audio.current_id != "repeat-audio"
+                    || app.loads.restore_pending
+                    || !app.media.snapshot.paused
+                {
+                    return Ok(false);
+                }
+                let subtitle = app.lib.root.join("media/word-double-click.srt");
+                fs::write(
+                    &subtitle,
+                    "1\n00:00:00,300 --> 00:00:00,800\nThis illustrates, punctuation.\n",
+                )?;
+                app.lib.put("listening_audios", json!({
+                    "id": "word-double-click-audio", "practice_id": "probe-group-a",
+                    "name": "Punctuated word double click fixture",
+                    "audio_uri": app.lib.root.join("media/repeat.wav"), "subtitle_uri": subtitle,
+                }))?;
+                app.refresh();
+            }
+            22 => {
+                if !app
+                    .audio
+                    .audios
+                    .iter()
+                    .any(|row| text(row, "id") == "word-double-click-audio")
+                {
+                    return Ok(false);
+                }
+                app.handle(Action::Audio("word-double-click-audio".into()), window, cx);
+                if !app.audio.show_current {
+                    app.handle(Action::AudioCurrent, window, cx);
+                }
+            }
+            23 => {
+                if app.audio.current_id != "word-double-click-audio"
+                    || app.loads.restore_pending
+                    || app.audio.cues.len() != 1
+                    || app.audio.cues[0].text != "This illustrates, punctuation."
+                {
+                    return Ok(false);
+                }
+                app.media.player.set("pause", "yes");
+                app.media.player.command(["seek", "0.4", "absolute+exact"]);
+                Self::draw(window, cx);
+            }
+            24 => {
+                if !app.media.snapshot.paused || (app.media.snapshot.position - 0.4).abs() > 0.05 {
+                    return Ok(false);
+                }
+                self.double_click_word(app, Surface::Focus, window, cx, observations)?;
+            }
+            25 | 28 => {
+                observations.push(json!({
+                    "event": "native word double click result", "audio_selection_stage": self.stage,
+                    "expected": self.expected, "selected": app.subtitle_text.borrow().selection_text(),
+                    "offer": app.assistant.offer.as_ref().map(|(r, _)| r.text.clone()),
+                    "position": app.media.snapshot.position, "paused": app.media.snapshot.paused,
+                    "mode": app.audio.repeat_mode,
+                }));
+                self.selected(app)?;
+                if self.stage == 25 {
+                    cases.push(json!({"case":"audio current card native double click selects a word without punctuation","passed":true}));
+                    Self::click_offer(app, false, window, cx)?;
+                } else {
+                    cases.push(json!({"case":"audio transcript native double click selects a word without punctuation","passed":true}));
+                    Self::copy_shortcut(window, cx);
+                }
+            }
+            26 | 29 => {
+                let copied = cx
+                    .read_from_clipboard()
+                    .and_then(|v| v.text())
+                    .unwrap_or_default();
+                ensure!(
+                    copied == "illustrates",
+                    "double-clicked word copied wrong text: {copied:?}"
+                );
+                let name = if self.stage == 26 {
+                    "current-card"
+                } else {
+                    "transcript"
+                };
+                fs::write(
+                    app.lib.root.join(format!("double-click-{name}-copied.txt")),
+                    &copied,
+                )?;
+                observations.push(json!({"event":"double clicked word OS clipboard", "surface":name,"clipboard":copied}));
+                if self.stage == 26 {
+                    cases.push(json!({"case":"audio current card double clicked word floating copy writes exact OS clipboard text","passed":true}));
+                    app.subtitle_text.borrow_mut().clear();
+                    app.assistant.offer = None;
+                    app.handle(Action::AudioCurrent, window, cx);
+                    Self::draw(window, cx);
+                } else {
+                    cases.push(json!({"case":"audio transcript double clicked word keyboard copy writes exact OS clipboard text","passed":true}));
+                    self.word_request = app
+                        .audio
+                        .sentence_repeat
+                        .context("word double-click sentence request")?
+                        .request_id;
+                    let doc = Self::document(app);
+                    let index = doc
+                        .text
+                        .find("punctuation.")
+                        .context("missing single-click word fixture")?
+                        + 4;
+                    let (point, _) = Self::points(app, Surface::Audio, index..index + 1)?;
+                    observations.push(json!({"event":"native ordinary single click after double-click copy",
+                        "click_count":1,"click":[f32::from(point.x),f32::from(point.y)],
+                        "previous_request":self.word_request,"position":app.media.snapshot.position}));
+                    native_probe_input::send(
+                        window,
+                        cx,
+                        vec![
+                            native_probe_input::MouseEvent::DownCount(point, 1),
+                            native_probe_input::MouseEvent::UpCount(point, 1),
+                        ],
+                    )?;
+                }
+            }
+            27 => self.double_click_word(app, Surface::Audio, window, cx, observations)?,
+            30 => {
+                if app.media.snapshot.paused
+                    || !app
+                        .audio
+                        .sentence_repeat
+                        .is_some_and(|session| session.request_id != self.word_request)
+                {
+                    ensure!(
+                        self.started.elapsed() < Duration::from_secs(2),
+                        "ordinary subtitle single click after double click did not resume sentence playback"
+                    );
+                    return Ok(false);
+                }
+                ensure!(
+                    app.audio.repeat_mode == 6 && !app.has_subtitle_selection(),
+                    "ordinary subtitle single click after double click retained selection or changed mode"
+                );
+                cases.push(json!({"case":"audio ordinary subtitle single click still seeks after double-click copy","passed":true}));
+                observations.push(json!({"event":"native ordinary single click after double-click result",
+                    "request":app.audio.sentence_repeat.map(|session|session.request_id),
+                    "previous_request":self.word_request,"position":app.media.snapshot.position,
+                    "paused":app.media.snapshot.paused,"selected":app.subtitle_text.borrow().selection_text(),
+                    "mode":app.audio.repeat_mode}));
+                app.handle(Action::Audio("repeat-audio".into()), window, cx);
+                app.media.player.set("pause", "yes");
+                if app.audio.show_current != self.show_current {
+                    app.handle(Action::AudioCurrent, window, cx);
+                }
+            }
+            31 => {
                 if app.audio.current_id != "repeat-audio"
                     || app.loads.restore_pending
                     || !app.media.snapshot.paused

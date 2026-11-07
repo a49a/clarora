@@ -146,7 +146,7 @@ impl AppView {
                     .text_color(cx.theme().muted_foreground)
                     .child(if has_cues {
                         format!(
-                            "已载入 {} 句字幕 · 拖选文字可复制或问 AI",
+                            "已载入 {} 句字幕 · 双击选词，拖选文字可复制或问 AI",
                             self.audio.cues.len()
                         )
                     } else if available {

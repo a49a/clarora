@@ -274,17 +274,41 @@ impl Element for SelectableText {
                 .index_for_position(event.position)
                 .unwrap_or_else(|i| i)
                 .min(range.len());
+            let word = (surface != Surface::Video && event.click_count == 2)
+                .then(|| document.word_at(range.clone(), range.start + index))
+                .flatten();
+            let selected_word = word.is_some();
             let focus = {
                 let mut state = state.borrow_mut();
                 let doc = state.doc(surface);
                 state.surface = surface;
                 state.press = event.position;
-                state.selection.begin(doc, range.start + index);
+                if let Some(word) = word {
+                    state.selection.begin(doc, word.start);
+                    state.selection.extend(word.end, true);
+                    state.selection.finish();
+                    state.block_click = true;
+                } else {
+                    state.selection.begin(doc, range.start + index);
+                }
                 state.focus.clone()
             };
             window.focus(&focus);
             window.prevent_default();
-            let _ = view.update(cx, |_, cx| cx.notify());
+            if selected_word {
+                // Keep the second click from reaching the word's seek action
+                // or the parent's ordinary mouse-down selection reset.
+                cx.stop_propagation();
+            }
+            let _ = view.update(cx, |this, cx| {
+                if selected_word {
+                    this.media.player.set("pause", "yes");
+                    // The root's release handler offers Copy / Ask AI for this
+                    // selection even though the pointer has not been dragged.
+                    this.assistant.dragging = true;
+                }
+                cx.notify();
+            });
         });
         let state = self.state.clone();
         let view = self.view.clone();

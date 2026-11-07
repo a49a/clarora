@@ -56,6 +56,24 @@ impl Document {
         }
         index
     }
+    pub fn word_at(&self, fragment: Range<usize>, offset: usize) -> Option<Range<usize>> {
+        static WORDS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let words = WORDS.get_or_init(|| {
+            regex::Regex::new(
+                r"[\p{L}\p{N}][\p{L}\p{N}\p{M}]*(?:['’\-‐‑][\p{L}\p{N}][\p{L}\p{N}\p{M}]*)*",
+            )
+            .expect("valid subtitle word pattern")
+        });
+        let text = self.text.get(fragment.clone())?;
+        if offset < fragment.start || offset > fragment.end {
+            return None;
+        }
+        let local = self.boundary(offset) - fragment.start;
+        words
+            .find_iter(text)
+            .find(|word| word.start() <= local && local <= word.end())
+            .map(|word| fragment.start + word.start()..fragment.start + word.end())
+    }
 }
 #[derive(Default)]
 pub struct Selection {
