@@ -211,9 +211,7 @@ impl AppView {
                     return false;
                 }
                 #[cfg(debug_assertions)]
-                if self.probe.is_some() {
-                    ui_controller_probe::close_verified(self, window, cx);
-                }
+                self.diagnostic_closing(window, cx);
                 window.remove_window();
                 true
             }

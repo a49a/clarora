@@ -113,6 +113,14 @@ HTTP 请求读取系统 HTTP/HTTPS 代理及代理环境变量；系统浏览器
 
 默认 E2E 收集真实 SQLite/SRT 的纯文本与 UTF-8 选区映射，可用 `--subtitle-selection-only` 定向复验，保留选中 TXT 和 JSON；这不代替原生窗口鼠标及剪贴板交互验收。
 
+## 诊断与验收入口
+
+原生诊断统一选择一个场景，负责隔离资料准备、隐藏窗口、轮询、清理和真实关闭后的校验。每次使用新的证据目录；已有 `library/` 或运行标记的目录会在准备前拒绝，不覆盖旧证据。诊断参数不能混用或与运行环境检查同时执行；发布构建拒绝调试诊断。
+
+`cargo run --manifest-path clarora-gpui/Cargo.toml -- --list-diagnostics /absolute/native-catalog.json` 可导出原生诊断目录；不打开学习资料库。E2E 的 `--list-scenarios` 在证据目录生成 `scenario-catalog.json`。已有定向选项保留，拼错模式、缺少媒体参数或多余参数会生成失败报告，不再默认为全套。
+
+先构建两个可执行文件：`cargo build --manifest-path clarora-gpui/Cargo.toml --locked --bins`，再运行 E2E。原生子进程统一输出 `native-invocation.json`、`native-process.json`、`diagnostic-run.json` 和原场景报告，保留耗时、退出和清理状态；超时会终止并回收子进程。跳过的环境与实际失败分别计数。可用 `--diagnostic-entry-only` 定向验证目录登记、参数拒绝与目录隔离；设置 `CLARORA_GUI_MEMORY_CHECK=1` 时额外验证故意失败、超时回收及后续场景独立完成。默认 E2E 和 macOS CI 同样收集这些验收。
+
 ## 冥想与计时提示音
 
 计时状态保存在本机资料库，不进入云端／ZIP 备份。恢复已到期的一轮与完成统计使用同一事务，重复打开不会重复统计；保存失败会提示并保留原状态。可用 `--focus-timer-only` 定向运行跨进程、暂停继续、离线到期、事务失败和损坏记录恢复 E2E，默认完整 E2E 同时收集，保留 SQLite 和 JSON 证据。
@@ -417,6 +425,7 @@ GPU 图片纹理按当前场景管理：视频换帧、离开视频／复习页�
 ```sh
 cargo fmt --manifest-path clarora-gpui/Cargo.toml --check
 cargo check --manifest-path clarora-gpui/Cargo.toml --locked --all-targets
+cargo build --manifest-path clarora-gpui/Cargo.toml --locked --bins
 PDFIUM_LIB_PATH=/absolute/path/containing/pdfium cargo run --manifest-path clarora-gpui/Cargo.toml --locked --bin e2e -- /absolute/path/to/evidence
 ```
 

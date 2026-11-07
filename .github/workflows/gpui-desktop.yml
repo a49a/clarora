@@ -33,7 +33,7 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --check
       - run: cargo check --locked --all-targets
-      - run: cargo build --locked
+      - run: cargo build --locked --bins
       - name: Install macOS media dependencies
         run: brew install mpv ffmpeg
       - name: Install pinned PDF runtime

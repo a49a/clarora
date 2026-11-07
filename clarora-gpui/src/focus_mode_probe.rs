@@ -577,28 +577,22 @@ impl Probe {
         Ok(())
     }
 }
-impl AppView {
-    pub(super) fn poll_focus_probe(&mut self, w: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(mut probe) = self.focus_mode_probe.take() else {
-            return false;
-        };
-        match probe.step(self, w, cx) {
-            Ok(true) => {
-                self.stop_focus_mode(w, cx);
-                let _ = probe.report(true, None);
-                w.remove_window();
-                true
-            }
-            Err(error) => {
-                self.stop_focus_mode(w, cx);
-                let _ = probe.report(false, Some(format!("{error:#}")));
-                w.remove_window();
-                true
-            }
-            Ok(false) => {
-                self.focus_mode_probe = Some(probe);
-                false
-            }
-        }
+impl diagnostics::Probe for Probe {
+    fn tick(
+        &mut self,
+        app: &mut AppView,
+        window: &mut Window,
+        cx: &mut Context<AppView>,
+    ) -> Result<bool> {
+        self.step(app, window, cx)
+    }
+    fn failed(&mut self, error: String) -> Result<()> {
+        self.report(false, Some(error))
+    }
+    fn cleanup(&mut self, app: &mut AppView, window: &mut Window, cx: &mut Context<AppView>) {
+        app.stop_focus_mode(window, cx);
+    }
+    fn completed(&mut self) -> Result<()> {
+        self.report(true, None)
     }
 }

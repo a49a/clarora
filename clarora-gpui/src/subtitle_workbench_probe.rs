@@ -875,28 +875,16 @@ impl Probe {
         Ok(false)
     }
 }
-impl AppView {
-    pub(super) fn poll_subtitle_probe(
+impl diagnostics::Probe for Probe {
+    fn tick(
         &mut self,
+        app: &mut AppView,
         window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(mut probe) = self.subtitle_probe.take() else {
-            return false;
-        };
-        match probe.step(self, window, cx) {
-            Ok(true) => {
-                window.remove_window();
-                return true;
-            }
-            Err(error) => {
-                let _ = probe.report(Some(false), Some(format!("{error:#}")));
-                window.remove_window();
-                return true;
-            }
-            Ok(false) => {}
-        }
-        self.subtitle_probe = Some(probe);
-        false
+        cx: &mut Context<AppView>,
+    ) -> Result<bool> {
+        self.step(app, window, cx)
+    }
+    fn failed(&mut self, error: String) -> Result<()> {
+        self.report(Some(false), Some(error))
     }
 }

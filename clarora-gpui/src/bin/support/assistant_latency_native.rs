@@ -1,13 +1,7 @@
 //! Synthetic long conversation, actual native editor/layout and isolated draft persistence.
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Stdio},
-    thread,
-    time::{Duration, Instant},
-};
+use std::{fs, path::Path, process::Command, time::Duration};
 pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     let workflow = "AI助手长对话输入/绘制延迟与中文粘贴/复制/草稿保存";
     if !cfg!(debug_assertions)
@@ -26,30 +20,12 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         .parent()
         .context("executable directory")?
         .join("clarora-gpui");
-    let mut child = Command::new(exe)
-        .arg("--assistant-latency-check")
-        .arg(&out)
-        .env(
-            "CLARORA_ASSISTANT_LATENCY_REQUIRE_CACHED",
-            std::env::var("CLARORA_ASSISTANT_LATENCY_REQUIRE_CACHED")
-                .unwrap_or_else(|_| "1".into()),
-        )
-        .stdin(Stdio::null())
-        .stdout(fs::File::create(out.join("stdout.log"))?)
-        .stderr(fs::File::create(out.join("stderr.log"))?)
-        .spawn()?;
-    let began = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if began.elapsed() > Duration::from_secs(180) {
-            let _ = child.kill();
-            let _ = child.wait();
-            anyhow::bail!("assistant latency diagnostic timeout: {}", out.display());
-        }
-        thread::sleep(Duration::from_millis(20));
-    };
+    let mut command = Command::new(exe);
+    command.arg("--assistant-latency-check").arg(&out).env(
+        "CLARORA_ASSISTANT_LATENCY_REQUIRE_CACHED",
+        std::env::var("CLARORA_ASSISTANT_LATENCY_REQUIRE_CACHED").unwrap_or_else(|_| "1".into()),
+    );
+    let status = super::native_diagnostic::run(command, &out, Duration::from_secs(180))?;
     let path = out.join("assistant-latency-report.json");
     let report: Value = serde_json::from_slice(&fs::read(&path)?)?;
     ensure!(

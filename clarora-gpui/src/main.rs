@@ -30,6 +30,7 @@ mod clip_selection_ui;
 mod cloud_ui;
 mod data_controller;
 mod design;
+mod diagnostics;
 mod feedback_ui;
 #[cfg(debug_assertions)]
 mod flashcard_shortcut_probe;
@@ -402,24 +403,8 @@ enum VideoCaptionSource {
 }
 struct AppView {
     #[cfg(debug_assertions)]
-    assistant_latency_probe: Option<assistant_latency_probe::Probe>,
+    diagnostic: Option<diagnostics::Active>,
     lib: Library,
-    #[cfg(debug_assertions)]
-    probe: Option<ui_controller_probe::Probe>,
-    #[cfg(debug_assertions)]
-    backup_probe: Option<backup_progress_probe::Probe>,
-    #[cfg(debug_assertions)]
-    model_probe: Option<model_navigation_probe::Probe>,
-    #[cfg(debug_assertions)]
-    audio_repeat_probe: Option<audio_repeat_probe::Probe>,
-    #[cfg(debug_assertions)]
-    playback_session_probe: Option<playback_session_probe::Probe>,
-    #[cfg(debug_assertions)]
-    audio_remove_probe: Option<audio_remove_probe::Probe>,
-    #[cfg(debug_assertions)]
-    sentence_probe: Option<sentence_search_probe::Probe>,
-    #[cfg(debug_assertions)]
-    subtitle_probe: Option<subtitle_workbench_probe::Probe>,
     data: clarora_gpui::view_data::State,
     loads: data_controller::Loads,
     settings: app_state::SettingsState,
@@ -468,8 +453,6 @@ struct AppView {
     timer_remaining: u64,
     timer_retry: Option<Instant>,
     focus_mode: focus_mode_ui::Mode,
-    #[cfg(debug_assertions)]
-    focus_mode_probe: Option<focus_mode_probe::Probe>,
     pdf_path: Option<PathBuf>,
     pdf_image: Option<std::sync::Arc<RenderImage>>,
     pdf_page: u16,
@@ -570,23 +553,7 @@ impl AppView {
             };
         let mut this = Self {
             #[cfg(debug_assertions)]
-            assistant_latency_probe: None,
-            #[cfg(debug_assertions)]
-            probe: None,
-            #[cfg(debug_assertions)]
-            backup_probe: None,
-            #[cfg(debug_assertions)]
-            model_probe: None,
-            #[cfg(debug_assertions)]
-            audio_repeat_probe: None,
-            #[cfg(debug_assertions)]
-            playback_session_probe: None,
-            #[cfg(debug_assertions)]
-            audio_remove_probe: None,
-            #[cfg(debug_assertions)]
-            sentence_probe: None,
-            #[cfg(debug_assertions)]
-            subtitle_probe: None,
+            diagnostic: None,
             data: Default::default(),
             loads: Default::default(),
             settings: app_state::SettingsState::new(&lib),
@@ -649,8 +616,6 @@ impl AppView {
             timer,
             timer_retry: None,
             focus_mode: focus_mode_ui::Mode::default(),
-            #[cfg(debug_assertions)]
-            focus_mode_probe: None,
             pdf_path: None,
             pdf_image: None,
             pdf_page: 0,
@@ -2476,221 +2441,34 @@ impl Render for AppView {
 }
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
-    if let Some(index) = args.iter().position(|arg| arg == "--runtime-check") {
-        let path = PathBuf::from(
-            args.get(index + 1)
-                .context("--runtime-check 缺少报告路径")?,
-        );
-        let report = clarora_gpui::runtime::check(&path)?;
+    let startup = diagnostics::Startup::parse(&args)?;
+    if let Some(path) = &startup.catalogue {
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&diagnostics::Startup::catalogue())?,
+        )?;
+        return Ok(());
+    }
+    if let Some(path) = &startup.runtime {
+        let report = clarora_gpui::runtime::check(path)?;
         ensure!(report.passed, "运行环境检查失败，详情见 {}", path.display());
         return Ok(());
     }
-    let root = if let Some(index) = args.iter().position(|arg| arg == "--data-dir") {
-        PathBuf::from(args.get(index + 1).context("--data-dir 缺少目录")?)
-    } else {
-        dirs::data_local_dir()
+    let root = match startup.data_dir {
+        Some(path) => path,
+        None => dirs::data_local_dir()
             .context("找不到本机数据目录")?
-            .join("Clarora-GPUI")
+            .join("Clarora-GPUI"),
     };
     #[cfg(debug_assertions)]
-    let subtitle_probe_dir = args
-        .iter()
-        .position(|arg| arg == "--subtitle-workbench-check")
-        .map(|i| {
-            args.get(i + 1)
-                .context("--subtitle-workbench-check 缺少证据目录")
-                .map(PathBuf::from)
-        })
-        .transpose()?;
-    #[cfg(not(debug_assertions))]
-    ensure!(
-        !args.iter().any(|arg| arg == "--subtitle-workbench-check"),
-        "字幕工作台原生验收仅支持调试构建"
-    );
-    #[cfg(not(debug_assertions))]
-    let subtitle_probe_dir: Option<PathBuf> = None;
-    #[cfg(debug_assertions)]
-    let model_probe_dir = args
-        .iter()
-        .position(|a| a == "--model-navigation-check")
-        .map(|i| {
-            args.get(i + 1)
-                .context("--model-navigation-check 缺少证据目录")
-                .map(PathBuf::from)
-        })
-        .transpose()?;
-    #[cfg(not(debug_assertions))]
-    ensure!(
-        !args.iter().any(|a| a == "--model-navigation-check"),
-        "模型下载原生验收仅支持调试构建"
-    );
-    #[cfg(not(debug_assertions))]
-    let model_probe_dir: Option<PathBuf> = None;
-    #[cfg(debug_assertions)]
-    let sentence_probe_dir = args
-        .iter()
-        .position(|a| a == "--sentence-search-check")
-        .map(|i| {
-            args.get(i + 1)
-                .context("--sentence-search-check 缺少证据目录")
-                .map(PathBuf::from)
-        })
-        .transpose()?;
-    #[cfg(not(debug_assertions))]
-    ensure!(
-        !args.iter().any(|a| a == "--sentence-search-check"),
-        "句型搜索原生验收仅支持调试构建"
-    );
-    #[cfg(not(debug_assertions))]
-    let sentence_probe_dir: Option<PathBuf> = None;
-    #[cfg(debug_assertions)]
-    let assistant_latency_probe_dir = args
-        .iter()
-        .position(|a| a == "--assistant-latency-check")
-        .map(|i| {
-            args.get(i + 1)
-                .context("--assistant-latency-check 缺少证据目录")
-                .map(PathBuf::from)
-        })
-        .transpose()?;
-    #[cfg(not(debug_assertions))]
-    ensure!(
-        !args.iter().any(|a| a == "--assistant-latency-check"),
-        "助手输入性能验收仅支持调试构建"
-    );
-    #[cfg(not(debug_assertions))]
-    let assistant_latency_probe_dir: Option<PathBuf> = None;
-    #[cfg(debug_assertions)]
-    let audio_remove_probe_dir = args
-        .iter()
-        .position(|a| a == "--audio-remove-check")
-        .map(|i| {
-            args.get(i + 1)
-                .context("--audio-remove-check 缺少证据目录")
-                .map(PathBuf::from)
-        })
-        .transpose()?;
-    #[cfg(not(debug_assertions))]
-    ensure!(
-        !args.iter().any(|a| a == "--audio-remove-check"),
-        "音频移除原生验收仅支持调试构建"
-    );
-    #[cfg(not(debug_assertions))]
-    let audio_remove_probe_dir: Option<PathBuf> = None;
-    #[cfg(debug_assertions)]
-    let audio_repeat_probe_dir = args
-        .iter()
-        .position(|a| a == "--audio-repeat-check")
-        .map(|i| {
-            args.get(i + 1)
-                .context("--audio-repeat-check 缺少证据目录")
-                .map(PathBuf::from)
-        })
-        .transpose()?;
-    #[cfg(not(debug_assertions))]
-    ensure!(
-        !args.iter().any(|a| a == "--audio-repeat-check"),
-        "音频逐句重复原生验收仅支持调试构建"
-    );
-    #[cfg(not(debug_assertions))]
-    let audio_repeat_probe_dir: Option<PathBuf> = None;
-    #[cfg(debug_assertions)]
-    let playback_session_probe_dir = args
-        .iter()
-        .position(|a| a == "--playback-session-check")
-        .map(|index| {
-            args.get(index + 1)
-                .context("--playback-session-check 缺少证据目录")
-                .map(PathBuf::from)
-        })
-        .transpose()?;
-    #[cfg(not(debug_assertions))]
-    ensure!(
-        !args.iter().any(|a| a == "--playback-session-check"),
-        "播放会话诊断仅限开发构建"
-    );
-    #[cfg(not(debug_assertions))]
-    let playback_session_probe_dir: Option<PathBuf> = None;
-    #[cfg(debug_assertions)]
-    let backup_probe_dir = args
-        .iter()
-        .position(|arg| arg == "--backup-progress-check")
-        .map(|i| {
-            args.get(i + 1)
-                .context("--backup-progress-check 缺少证据目录")
-                .map(PathBuf::from)
-        })
-        .transpose()?;
-    #[cfg(not(debug_assertions))]
-    ensure!(
-        !args.iter().any(|arg| arg == "--backup-progress-check"),
-        "后台备份原生验收仅支持调试构建"
-    );
-    #[cfg(not(debug_assertions))]
-    let backup_probe_dir: Option<PathBuf> = None;
-    #[cfg(debug_assertions)]
-    let probe_dir = args
-        .iter()
-        .position(|arg| arg == "--ui-controller-check" || arg == "--ui-controller-quit-check")
-        .map(|i| {
-            args.get(i + 1)
-                .context("--ui-controller-check 缺少证据目录")
-                .map(PathBuf::from)
-        })
-        .transpose()?;
-    #[cfg(not(debug_assertions))]
-    ensure!(
-        !args
-            .iter()
-            .any(|arg| arg == "--ui-controller-check" || arg == "--ui-controller-quit-check"),
-        "原生协调验收仅支持调试构建"
-    );
-    #[cfg(not(debug_assertions))]
-    let probe_dir: Option<PathBuf> = None;
-    #[cfg(debug_assertions)]
-    let focus_probe_dir = args
-        .iter()
-        .position(|a| a == "--focus-mode-check")
-        .map(|i| {
-            args.get(i + 1)
-                .context("--focus-mode-check 缺少证据目录")
-                .map(PathBuf::from)
-        })
-        .transpose()?;
-    #[cfg(not(debug_assertions))]
-    ensure!(
-        !args.iter().any(|a| a == "--focus-mode-check"),
-        "专注原生验收仅支持调试构建"
-    );
-    #[cfg(not(debug_assertions))]
-    let focus_probe_dir: Option<PathBuf> = None;
-    #[cfg(debug_assertions)]
-    let library = if let Some(out) = &focus_probe_dir {
-        fs::create_dir_all(out)?;
-        Library::open(out.join("library"))?
-    } else if let Some(out) = &subtitle_probe_dir {
-        subtitle_workbench_probe::prepare(out)?
-    } else if let Some(out) = &sentence_probe_dir {
-        sentence_search_probe::prepare(out)?
-    } else if let Some(out) = &assistant_latency_probe_dir {
-        assistant_latency_probe::prepare(out)?
-    } else if let Some(out) = &audio_remove_probe_dir {
-        audio_remove_probe::prepare(out)?
-    } else if let Some(out) = &playback_session_probe_dir {
-        playback_session_probe::prepare(out)?
-    } else if let Some(out) = &audio_repeat_probe_dir {
-        audio_repeat_probe::prepare(out)?
-    } else if let Some(out) = &model_probe_dir {
-        model_navigation_probe::prepare(out)?
-    } else if let Some(out) = &backup_probe_dir {
-        backup_progress_probe::prepare(out)?
-    } else if let Some(out) = &probe_dir {
-        ui_controller_probe::prepare(out)?
+    let library = if let Some(launch) = &startup.diagnostic {
+        launch.prepare()?
     } else {
         Library::open(root)?
     };
     #[cfg(not(debug_assertions))]
     let library = Library::open(root)?;
+    let interactive = startup.diagnostic.is_none();
     let panic_path = library.root.join("last-panic.log");
     std::panic::set_hook(Box::new(move |info| {
         use std::io::Write;
@@ -2820,26 +2598,8 @@ fn main() -> Result<()> {
             let main = cx
                 .open_window(
                     WindowOptions {
-                        show: probe_dir.is_none()
-                            && backup_probe_dir.is_none()
-                            && model_probe_dir.is_none()
-                            && audio_repeat_probe_dir.is_none()
-                            && playback_session_probe_dir.is_none()
-                            && audio_remove_probe_dir.is_none()
-                            && assistant_latency_probe_dir.is_none()
-                            && sentence_probe_dir.is_none()
-                            && subtitle_probe_dir.is_none()
-                            && focus_probe_dir.is_none(),
-                        focus: probe_dir.is_none()
-                            && backup_probe_dir.is_none()
-                            && model_probe_dir.is_none()
-                            && audio_repeat_probe_dir.is_none()
-                            && playback_session_probe_dir.is_none()
-                            && audio_remove_probe_dir.is_none()
-                            && assistant_latency_probe_dir.is_none()
-                            && sentence_probe_dir.is_none()
-                            && subtitle_probe_dir.is_none()
-                            && focus_probe_dir.is_none(),
+                        show: interactive,
+                        focus: interactive,
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
                         titlebar: Some(TitlebarOptions {
                             title: Some("Clarora".into()),
@@ -2852,50 +2612,8 @@ fn main() -> Result<()> {
                             #[allow(unused_mut)]
                             let mut view = AppView::new(library, window, cx);
                             #[cfg(debug_assertions)]
-                            if let Some(out) = &probe_dir {
-                                view.probe =
-                                    Some(ui_controller_probe::Probe::new(out).with_global_quit(
-                                        args.iter().any(|arg| arg == "--ui-controller-quit-check"),
-                                    ));
-                            }
-                            #[cfg(debug_assertions)]
-                            if let Some(out) = &model_probe_dir {
-                                view.model_probe = Some(model_navigation_probe::Probe::new(out));
-                            }
-                            #[cfg(debug_assertions)]
-                            if let Some(out) = &sentence_probe_dir {
-                                view.sentence_probe = Some(sentence_search_probe::Probe::new(out));
-                            }
-                            #[cfg(debug_assertions)]
-                            if let Some(out) = &assistant_latency_probe_dir {
-                                view.assistant_latency_probe =
-                                    Some(assistant_latency_probe::Probe::new(out));
-                            }
-                            #[cfg(debug_assertions)]
-                            if let Some(out) = &audio_remove_probe_dir {
-                                view.audio_remove_probe = Some(audio_remove_probe::Probe::new(out));
-                            }
-                            #[cfg(debug_assertions)]
-                            if let Some(out) = &playback_session_probe_dir {
-                                view.playback_session_probe =
-                                    Some(playback_session_probe::Probe::new(out));
-                            }
-                            #[cfg(debug_assertions)]
-                            if let Some(out) = &audio_repeat_probe_dir {
-                                view.audio_repeat_probe = Some(audio_repeat_probe::Probe::new(out));
-                            }
-                            #[cfg(debug_assertions)]
-                            if let Some(out) = &backup_probe_dir {
-                                view.backup_probe = Some(backup_progress_probe::Probe::new(out));
-                            }
-                            #[cfg(debug_assertions)]
-                            if let Some(out) = &subtitle_probe_dir {
-                                view.subtitle_probe =
-                                    Some(subtitle_workbench_probe::Probe::new(out));
-                            }
-                            #[cfg(debug_assertions)]
-                            if let Some(out) = &focus_probe_dir {
-                                view.focus_mode_probe = Some(focus_mode_probe::Probe::new(out));
+                            if let Some(launch) = &startup.diagnostic {
+                                view.diagnostic = Some(launch.start());
                             }
                             view
                         });
@@ -2920,17 +2638,7 @@ fn main() -> Result<()> {
                 }
             })
             .detach();
-            if probe_dir.is_none()
-                && backup_probe_dir.is_none()
-                && model_probe_dir.is_none()
-                && audio_repeat_probe_dir.is_none()
-                && playback_session_probe_dir.is_none()
-                && audio_remove_probe_dir.is_none()
-                && assistant_latency_probe_dir.is_none()
-                && sentence_probe_dir.is_none()
-                && subtitle_probe_dir.is_none()
-                && focus_probe_dir.is_none()
-            {
+            if interactive {
                 cx.activate(true);
             }
         });

@@ -822,51 +822,40 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .probe
-            .as_ref()
-            .is_some_and(|p| p.stage == 25 && p.chatgpt_layout_result.is_none())
-        {
+        if self.diagnostic.as_ref().is_some_and(|d| d.needs_layouts()) {
             let result = Probe::chatgpt_layouts(self, window, cx).map_err(|e| format!("{e:#}"));
-            if let Some(probe) = &mut self.probe {
-                probe.chatgpt_layout_result = Some(result);
+            if let Some(diagnostic) = &mut self.diagnostic {
+                diagnostic.layouts_ready(result);
             }
         }
     }
-    /// The normal 50ms UI tick drives the probe even while its window is hidden.
-    pub(super) fn poll_ui_probe(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(mut probe) = self.probe.take() else {
-            return false;
-        };
-        if let Err(error) = probe.step(self, window, cx) {
-            let _ = probe.report(Some(false), Some(format!("{error:#}")));
-            window.remove_window();
-            return true;
-        }
-        if probe.finished {
-            window.remove_window();
-            return true;
-        }
-        self.probe = Some(probe);
-        false
-    }
 }
-
-/// Called by the real close acknowledgement immediately before remove_window.
-/// Read the actual SQLite rows after flush, without forcing a separate test flush.
-pub(super) fn close_verified(
-    app: &mut AppView,
-    _window: &mut Window,
-    _cx: &mut Context<AppView>,
-) -> bool {
-    let Some(mut probe) = app.probe.take() else {
-        return true;
-    };
-    let checked = (|| -> Result<()> {
-        ensure!(
-            probe.closing && probe.stage == 27,
-            "探针未完成所有检查即关闭"
-        );
+impl diagnostics::Probe for Probe {
+    fn tick(
+        &mut self,
+        app: &mut AppView,
+        window: &mut Window,
+        cx: &mut Context<AppView>,
+    ) -> Result<bool> {
+        self.step(app, window, cx)?;
+        Ok(self.finished)
+    }
+    fn failed(&mut self, error: String) -> Result<()> {
+        self.report(Some(false), Some(error))
+    }
+    fn cleanup(&mut self, _app: &mut AppView, _window: &mut Window, cx: &mut Context<AppView>) {
+        if let Some(previous) = self.clipboard_before.take() {
+            cx.write_to_clipboard(previous);
+        }
+    }
+    fn needs_layouts(&self) -> bool {
+        self.stage == 25 && self.chatgpt_layout_result.is_none()
+    }
+    fn layouts_ready(&mut self, result: Result<Vec<Value>, String>) {
+        self.chatgpt_layout_result = Some(result);
+    }
+    fn closing(&mut self, app: &mut AppView) -> Result<()> {
+        ensure!(self.closing && self.stage == 27, "探针未完成所有检查即关闭");
         ensure!(
             app.lib
                 .setting(&format!("chat_draft_{}", context(AUDIO_A)))?
@@ -879,18 +868,14 @@ pub(super) fn close_verified(
                 == DRAFT_B,
             "关闭写入覆盖了材料B草稿"
         );
-        probe.note(
-            if probe.global_quit {
+        self.note(
+            if self.global_quit {
                 "真实全局Quit action异步flush确认/SQLite保留最后输入"
             } else {
                 "真实原生关闭异步flush确认/SQLite保留最后输入"
             },
             app,
         )?;
-        probe.report(Some(true), None)
-    })();
-    if let Err(error) = checked {
-        let _ = probe.report(Some(false), Some(format!("{error:#}")));
+        self.report(Some(true), None)
     }
-    true
 }

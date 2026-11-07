@@ -28,6 +28,13 @@ impl Flow {
             word_request: 0,
         }
     }
+    pub(super) fn cleanup(&mut self, cx: &mut App) {
+        if let Some(previous) = self.clipboard.take() {
+            cx.write_to_clipboard(
+                previous.unwrap_or_else(|| ClipboardItem::new_string(String::new())),
+            );
+        }
+    }
     fn draw(window: &Window, cx: &mut Context<AppView>) {
         let handle = window.window_handle();
         cx.defer(move |cx| {
@@ -244,11 +251,7 @@ impl Flow {
         }
         let result = self.advance(app, window, cx, cases, observations);
         if result.is_err() || matches!(result, Ok(true)) {
-            if let Some(previous) = self.clipboard.take() {
-                cx.write_to_clipboard(
-                    previous.unwrap_or_else(|| ClipboardItem::new_string(String::new())),
-                );
-            }
+            self.cleanup(cx);
         }
         result
     }

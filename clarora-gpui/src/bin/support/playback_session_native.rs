@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::Path,
-    process::{Command, Stdio},
+    process::Command,
     time::{Duration, Instant},
 };
 
@@ -37,25 +37,10 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             "uses_isolated_fixture":true,"physical_audio_verified":false
         }))?,
     )?;
-    let mut child = Command::new(&exe)
-        .arg("--playback-session-check")
-        .arg(&out)
-        .stdin(Stdio::null())
-        .stdout(fs::File::create(out.join("stdout.log"))?)
-        .stderr(fs::File::create(out.join("stderr.log"))?)
-        .spawn()?;
+    let mut command = Command::new(&exe);
+    command.arg("--playback-session-check").arg(&out);
     let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if started.elapsed() > Duration::from_secs(90) {
-            let _ = child.kill();
-            let _ = child.wait();
-            anyhow::bail!("native playback session timeout: {}", out.display());
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    let status = super::native_diagnostic::run(command, &out, Duration::from_secs(90))?;
     let path = out.join("playback-session-native-report.json");
     let report: Value = serde_json::from_slice(
         &fs::read(&path).with_context(|| format!("missing report {}", path.display()))?,

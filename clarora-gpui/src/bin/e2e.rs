@@ -264,6 +264,8 @@ fn reliability(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
 fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = output.join(format!("run-{}", data::id()));
     fs::create_dir_all(&root)?;
+    diagnostic_entry::run(&root, results)?;
+    diagnostic_entry::native(&root, results)?;
     asr_models::run(&Library::open(root.join("asr-model-fixtures"))?, results)?;
     focus_timer::run(&root, results)?;
     focus_mode_native::run(&root, results)?;
@@ -945,6 +947,13 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     )?;
     Ok(())
 }
+#[path = "support/diagnostic_entry.rs"]
+mod diagnostic_entry;
+#[path = "support/native_diagnostic.rs"]
+mod native_diagnostic;
+#[path = "support/scenarios.rs"]
+mod scenarios;
+
 fn main() -> Result<()> {
     let args = std::env::args_os().collect::<Vec<_>>();
     if std::env::var_os("CLARORA_ASR_ROUTE_LOG").is_some()
@@ -962,236 +971,25 @@ fn main() -> Result<()> {
         .context("用法：cargo run --bin e2e -- <证据目录>")?;
     fs::create_dir_all(&output)?;
     let output = output.canonicalize()?;
-    if args.get(2).and_then(|s| s.to_str()) == Some("--asr-models-worker") {
-        return asr_models::worker(&output);
-    }
-    if args.get(2).and_then(|s| s.to_str()) == Some("--focus-timer-worker") {
-        return focus_timer::worker(&output);
-    }
-    if args.get(2).and_then(|s| s.to_str()) == Some("--runtime-stability-worker") {
-        return runtime_stability::worker(
-            &output,
-            args.get(3)
-                .and_then(|s| s.to_str())
-                .unwrap_or("32")
-                .parse()?,
-        );
-    }
-    if args.get(2).and_then(|s| s.to_str()) == Some("--gpu-memory-worker") {
-        return gpu_memory::worker(
-            &output,
-            args.get(3).and_then(|s| s.to_str()) == Some("--unbounded"),
-        );
+    if let Some(result) = scenarios::worker(&output, &args) {
+        return result;
     }
     let mut results = vec![];
-    let mode = match args.get(2).and_then(|arg| arg.to_str()) {
-        Some("--video-batch-translation-only") => "video-batch-translation-only",
-        Some("--ui-controller-only") => "ui-controller-only",
-        Some("--flashcard-keys-only") => "flashcard-keys-only",
-        Some("--subtitle-workbench-only") => "subtitle-workbench-only",
-        Some("--assistant-only") => "assistant-only",
-        Some("--network-proxy-only") => "network-proxy-only",
-        Some("--chat-controller-only") => "chat-controller-only",
-        Some("--data-loader-only") => "data-loader-only",
-        Some("--focus-timer-only") => "focus-timer-only",
-        Some("--focus-mode-only") => "focus-mode-only",
-        Some("--gpu-memory-only") => "gpu-memory-only",
-        Some("--runtime-stability-only") => "runtime-stability-only",
-        Some("--http-only") => "http-only",
-        Some("--model-navigation-only") => "model-navigation-only",
-        Some("--asr-models-only") => "asr-models-only",
-        Some("--reliability-only") => "reliability-only",
-        Some("--storage-config-only") => "storage-config-only",
-        Some("--storage-errors-only") => "storage-errors-only",
-        Some("--backup-progress-only") => "backup-progress-only",
-        Some("--cloud-v3-only") => "cloud-v3-only",
-        Some("--cloud-storage-only") => "cloud-storage-only",
-        Some("--backup-background-only") => "backup-background-only",
-        Some("--writing-only") => "writing-only",
-        Some("--ebook-only") => "ebook-only",
-        Some("--transcript-only") => "transcript-only",
-        Some("--state-only") => "state-only",
-        Some("--playback-session-only") => "playback-session-only",
-        Some("--playback-session-native-only") => "playback-session-native-only",
-        Some("--video-repeat-only") => "video-repeat-only",
-        Some("--backup-library-only") => "backup-library-only",
-        Some("--video-render-only") => "video-render-only",
-        Some("--command-import-only") => "command-import-only",
-        Some("--audio-merge-only") => "audio-merge-only",
-        Some("--audio-repeat-only") => "audio-repeat-only",
-        Some("--assistant-latency-only") => "assistant-latency-only",
-        #[cfg(debug_assertions)]
-        Some("--chatgpt-only") => "chatgpt-only",
-        Some("--audio-remove-only") => "audio-remove-only",
-        Some("--sentence-search-only") => "sentence-search-only",
-        Some("--audio-background-only") => "audio-background-only",
-        Some("--audio-batch-only") => "audio-batch-only",
-        Some("--clip-marks-only") => "clip-marks-only",
-        Some("--subtitle-selection-only") => "subtitle-selection-only",
-        Some("--timer-chimes-only") => "timer-chimes-only",
-        Some("--timer-chimes-audible") => "timer-chimes-audible",
-        _ => "full",
-    };
-    let result = if mode == "network-proxy-only" {
-        network_proxy::run(&output, &mut results)
-    } else if mode == "video-batch-translation-only" {
-        Library::open(output.join("batch-translate-source"))
-            .and_then(|lib| video_batch_translation::run(&lib, &mut results))
-    } else if mode == "assistant-only" {
-        Library::open(output.join("assistant-source"))
-            .and_then(|lib| assistant::run(&lib, &mut results))
-    } else if mode == "ui-controller-only" {
-        ui_controller::run(&output, &mut results)
-    } else if mode == "flashcard-keys-only" {
-        ui_controller::flashcard(&output, &mut results)
-    } else if mode == "subtitle-workbench-only" {
-        Library::open(output.join("subtitle-workbench-source")).and_then(|lib| {
-            transcript::run(&lib, &mut results)?;
-            subtitle_workbench_native::run(&output, &mut results)
+    let mode = args
+        .get(2)
+        .map(|v| v.to_string_lossy().trim_start_matches("--").to_owned())
+        .unwrap_or_else(|| "full".into());
+    let started = Instant::now();
+    let result = scenarios::execute(&output, &args, &mut results);
+    let skipped = results
+        .iter()
+        .filter(|r| {
+            r.get("skipped")
+                .is_some_and(|v| v != &Value::Bool(false) && !v.is_null())
         })
-    } else if mode == "chat-controller-only" {
-        Library::open(output.join("chat-controller-source"))
-            .and_then(|lib| chat_controller::run(&lib, &mut results))
-    } else if mode == "data-loader-only" {
-        data_loader::run(&output, &mut results)
-    } else if mode == "focus-timer-only" {
-        focus_timer::run(&output, &mut results)
-    } else if mode == "runtime-stability-only" {
-        runtime_stability::run(
-            &output,
-            &mut results,
-            args.get(3)
-                .and_then(|s| s.to_str())
-                .unwrap_or("32")
-                .parse()?,
-        )
-    } else if mode == "gpu-memory-only" {
-        gpu_memory::run(&output, &mut results)
-    } else if mode == "subtitle-selection-only" {
-        let lib = Library::open(output.join(format!("subtitle-selection-{}", data::id())))?;
-        subtitle_selection::run(&lib, &mut results)
-    } else if mode == "timer-chimes-audible" {
-        let lib = Library::open(output.join(format!("timer-chimes-device-{}", data::id())))?;
-        timer_chimes::audible(&lib, &mut results)
-    } else if mode == "timer-chimes-only" {
-        let lib = Library::open(output.join(format!("timer-chimes-{}", data::id())))?;
-        timer_chimes::run(&lib, &mut results)
-    } else if mode == "clip-marks-only" {
-        let lib = Library::open(output.join(format!("clip-marks-{}", data::id())))?;
-        clip_marks::run(
-            &lib,
-            &PathBuf::from(args.get(3).context("缺少媒体夹具")?),
-            &mut results,
-        )
-    } else if mode == "audio-merge-only" {
-        audio_merge::run(&output, &mut results)
-            .and_then(|()| model_navigation_native::run(&output, &mut results))
-    } else if mode == "sentence-search-only" {
-        sentence_search::run(&output, &mut results)
-            .and_then(|()| sentence_search_native::run(&output, &mut results))
-    } else if mode == "audio-repeat-only" {
-        audio_repeat_native::run(&output, &mut results)
-    } else if mode == "chatgpt-only" {
-        #[cfg(debug_assertions)]
-        {
-            Library::open(output.join("chatgpt-source"))
-                .and_then(|lib| chatgpt::run(&lib, &mut results))
-                .and_then(|_| ui_controller::chatgpt(&output, &mut results))
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            anyhow::bail!("ChatGPT fixture requires a debug build")
-        }
-    } else if mode == "assistant-latency-only" {
-        assistant_latency_native::run(&output, &mut results)
-    } else if mode == "audio-remove-only" {
-        audio_remove_native::run(&output, &mut results)
-    } else if mode == "audio-background-only" {
-        model_navigation_native::run(&output, &mut results)
-    } else if mode == "audio-batch-only" {
-        let lib = Library::open(output.join(format!("audio-batch-{}", data::id())))?;
-        audio_batch::run(&lib, &mut results)
-    } else if mode == "command-import-only" {
-        let lib = Library::open(output.join(format!("command-import-{}", data::id())))?;
-        command_import::run(&lib, &mut results)
-    } else if mode == "http-only" {
-        let lib = Library::open(output.join(format!("http-{}", data::id())))?;
-        protocol::run(
-            &lib,
-            &PathBuf::from(args.get(3).context("缺少媒体夹具")?),
-            &PathBuf::from(args.get(4).context("缺少图片夹具")?),
-            &mut results,
-        )
-    } else if mode == "backup-library-only" {
-        let lib = Library::open(output.join(format!("backup-library-{}", data::id())))?;
-        backup_library::run(
-            &lib,
-            &PathBuf::from(
-                args.get(3)
-                    .context("缺少媒体夹具：--backup-library-only <video.mp4>")?,
-            ),
-            &mut results,
-        )
-    } else if mode == "video-render-only" {
-        let lib = Library::open(output.join(format!("video-render-{}", data::id())))?;
-        video_render::run(&lib, &mut results)
-    } else if mode == "transcript-only" {
-        let lib = Library::open(output.join(format!("transcript-{}", data::id())))?;
-        transcript::run(&lib, &mut results)
-    } else if mode == "ebook-only" {
-        let lib = Library::open(output.join(format!("ebook-{}", data::id())))?;
-        ebook::run(&lib, &mut results).and_then(|_| {
-            if let Some(path) = args.get(3) {
-                ebook::external_file(&lib, &PathBuf::from(path), &mut results)?;
-            }
-            Ok(())
-        })
-    } else if mode == "state-only" {
-        let lib = Library::open(output.join(format!("state-{}", data::id())))?;
-        chat_store::run(&lib, &mut results)
-            .and_then(|_| view_data::run(&lib, &mut results))
-            .and_then(|_| playback_state::run(&lib, &mut results))
-    } else if mode == "playback-session-only" {
-        playback_session::run(&output, &mut results)
-    } else if mode == "playback-session-native-only" {
-        playback_session_native::run(&output, &mut results)
-    } else if mode == "video-repeat-only" {
-        let lib = Library::open(output.join(format!("video-repeat-{}", data::id())))?;
-        video_repeat::run(&lib, &mut results)
-    } else if mode == "writing-only" {
-        let lib = Library::open(output.join(format!("writing-{}", data::id())))?;
-        writing::run(&lib, &mut results)
-    } else if mode == "storage-config-only" {
-        let lib = Library::open(output.join(format!("storage-config-{}", data::id())))?;
-        backup_cancel::config_messages(&lib, &mut results)
-    } else if mode == "storage-errors-only" {
-        let lib = Library::open(output.join(format!("storage-errors-{}", data::id())))?;
-        storage_errors::run(&lib, &mut results)
-    } else if mode == "model-navigation-only" {
-        let lib = Library::open(output.join(format!("model-navigation-{}", data::id())))?;
-        model_progress::run(&lib, &mut results)
-            .and_then(|()| model_navigation_native::run(&output, &mut results))
-    } else if mode == "asr-models-only" {
-        asr_models::run(&Library::open(output.join("library"))?, &mut results)
-    } else if mode == "focus-mode-only" {
-        focus_timer::run(&output, &mut results)
-            .and_then(|()| focus_mode_native::run(&output, &mut results))
-    } else if matches!(mode, "cloud-v3-only" | "cloud-storage-only") {
-        let lib = Library::open(output.join(format!("cloud-v3-{}", data::id())))?;
-        cloud_v3::run(&lib, &mut results)
-    } else if mode == "backup-progress-only" {
-        let lib = Library::open(output.join(format!("backup-progress-{}", data::id())))?;
-        backup_progress::run(&lib, &mut results)
-            .and_then(|()| backup_progress_native::run(&lib.root, &mut results))
-    } else if mode == "backup-background-only" {
-        backup_progress_native::run(&output, &mut results)
-    } else if mode == "reliability-only" {
-        let lib = Library::open(output.join(format!("reliability-{}", data::id())))?;
-        reliability(&lib, &mut results)
-    } else {
-        run(&output, &mut results)
-    };
-    let report = json!({"mode":mode,"date":chrono::Local::now().to_rfc3339(),"passed":result.is_ok(),"workflows":results,"error":result.as_ref().err().map(|e|format!("{e:#}"))});
+        .count();
+    let report = json!({"mode":mode,"date":chrono::Local::now().to_rfc3339(),"passed":result.is_ok(),"seconds":started.elapsed().as_secs_f64(),
+        "summary":{"executed":results.len()-skipped,"skipped":skipped},"workflows":results,"error":result.as_ref().err().map(|e|format!("{e:#}"))});
     fs::write(
         output.join("e2e-report.json"),
         serde_json::to_vec_pretty(&report)?,

@@ -4,8 +4,7 @@ use serde_json::{Value, json};
 use std::{
     fs,
     path::Path,
-    process::{Command, Stdio},
-    thread,
+    process::Command,
     time::{Duration, Instant},
 };
 
@@ -28,26 +27,12 @@ pub fn flashcard(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         .parent()
         .context("executable directory")?
         .join("clarora-gpui");
-    let mut child = Command::new(exe)
+    let mut command = Command::new(exe);
+    command
         .arg("--ui-controller-check")
         .arg(&out)
-        .env("CLARORA_FLASHCARD_KEYS_CHECK", "1")
-        .stdin(Stdio::null())
-        .stdout(fs::File::create(out.join("stdout.log"))?)
-        .stderr(fs::File::create(out.join("stderr.log"))?)
-        .spawn()?;
-    let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if start.elapsed() > Duration::from_secs(45) {
-            let _ = child.kill();
-            let _ = child.wait();
-            anyhow::bail!("flashcard keys diagnostic timeout: {}", out.display());
-        }
-        thread::sleep(Duration::from_millis(20));
-    };
+        .env("CLARORA_FLASHCARD_KEYS_CHECK", "1");
+    let status = super::native_diagnostic::run(command, &out, Duration::from_secs(45))?;
     let report: Value =
         serde_json::from_slice(&fs::read(out.join("flashcard-shortcut-report.json"))?)?;
     let controller: Value =
@@ -83,26 +68,12 @@ pub fn chatgpt(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         .parent()
         .context("executable directory")?
         .join("clarora-gpui");
-    let mut child = Command::new(exe)
+    let mut command = Command::new(exe);
+    command
         .arg("--ui-controller-check")
         .arg(&out)
-        .env("CLARORA_CHATGPT_SETTINGS_CHECK", "1")
-        .stdin(Stdio::null())
-        .stdout(fs::File::create(out.join("stdout.log"))?)
-        .stderr(fs::File::create(out.join("stderr.log"))?)
-        .spawn()?;
-    let start = Instant::now();
-    let status = loop {
-        if let Some(s) = child.try_wait()? {
-            break s;
-        }
-        if start.elapsed() > Duration::from_secs(30) {
-            let _ = child.kill();
-            let _ = child.wait();
-            anyhow::bail!("ChatGPT settings diagnostic timeout: {}", out.display());
-        }
-        thread::sleep(Duration::from_millis(20));
-    };
+        .env("CLARORA_CHATGPT_SETTINGS_CHECK", "1");
+    let status = super::native_diagnostic::run(command, &out, Duration::from_secs(30))?;
     let report: Value = serde_json::from_slice(&fs::read(out.join("ui-controller-report.json"))?)?;
     let layouts: Value =
         serde_json::from_slice(&fs::read(out.join("chatgpt-settings-layouts.json"))?)?;
@@ -156,27 +127,14 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         if report_path.exists() {
             fs::remove_file(&report_path)?;
         }
-        let mut child = Command::new(&executable)
+        let mut command = Command::new(&executable);
+        command
             .arg(flag)
             .arg(&out)
             .arg("--data-dir")
-            .arg(out.join("library"))
-            .stdin(Stdio::null())
-            .stdout(fs::File::create(out.join("stdout.log"))?)
-            .stderr(fs::File::create(out.join("stderr.log"))?)
-            .spawn()?;
+            .arg(out.join("library"));
         let started = Instant::now();
-        let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
-            }
-            if started.elapsed() > Duration::from_secs(60) {
-                let _ = child.kill();
-                let _ = child.wait();
-                anyhow::bail!("原生协调验收超时：{}", out.display());
-            }
-            thread::sleep(Duration::from_millis(20));
-        };
+        let status = super::native_diagnostic::run(command, &out, Duration::from_secs(60))?;
         let report: Value = serde_json::from_slice(
             &fs::read(&report_path)
                 .with_context(|| format!("原生协调验收缺少报告：{}", out.display()))?,

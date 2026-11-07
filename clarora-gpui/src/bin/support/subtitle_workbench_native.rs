@@ -4,8 +4,7 @@ use serde_json::{Value, json};
 use std::{
     fs,
     path::Path,
-    process::{Command, Stdio},
-    thread,
+    process::Command,
     time::{Duration, Instant},
 };
 
@@ -29,27 +28,14 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         clarora_gpui::data::id()
     ));
     fs::create_dir_all(&out)?;
-    let mut child = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .arg("--subtitle-workbench-check")
         .arg(&out)
         .arg("--data-dir")
-        .arg(out.join("library"))
-        .stdin(Stdio::null())
-        .stdout(fs::File::create(out.join("stdout.log"))?)
-        .stderr(fs::File::create(out.join("stderr.log"))?)
-        .spawn()?;
+        .arg(out.join("library"));
     let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if started.elapsed() > Duration::from_secs(60) {
-            let _ = child.kill();
-            let _ = child.wait();
-            anyhow::bail!("字幕工作台原生验收超时：{}", out.display());
-        }
-        thread::sleep(Duration::from_millis(20));
-    };
+    let status = super::native_diagnostic::run(command, &out, Duration::from_secs(60))?;
     let report_path = out.join("subtitle-workbench-report.json");
     let report: Value = serde_json::from_slice(
         &fs::read(&report_path).with_context(|| format!("缺少原生验收报告：{}", out.display()))?,

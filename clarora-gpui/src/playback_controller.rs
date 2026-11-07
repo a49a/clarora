@@ -15,43 +15,7 @@ impl AppView {
             return;
         }
         #[cfg(debug_assertions)]
-        if self.poll_assistant_latency_probe(window, cx) {
-            return;
-        }
-        #[cfg(debug_assertions)]
-        if self.poll_ui_probe(window, cx) {
-            return;
-        }
-        #[cfg(debug_assertions)]
-        if self.poll_sentence_search_probe(window, cx) {
-            return;
-        }
-        #[cfg(debug_assertions)]
-        if self.poll_audio_remove_probe(window, cx) {
-            return;
-        }
-        #[cfg(debug_assertions)]
-        if self.poll_playback_session_probe(window, cx) {
-            return;
-        }
-        #[cfg(debug_assertions)]
-        if self.poll_audio_repeat_probe(window, cx) {
-            return;
-        }
-        #[cfg(debug_assertions)]
-        if self.poll_model_probe(window, cx) {
-            return;
-        }
-        #[cfg(debug_assertions)]
-        if self.poll_backup_probe(window, cx) {
-            return;
-        }
-        #[cfg(debug_assertions)]
-        if self.poll_subtitle_probe(window, cx) {
-            return;
-        }
-        #[cfg(debug_assertions)]
-        if self.poll_focus_probe(window, cx) {
+        if self.poll_diagnostic(window, cx) {
             return;
         }
         if let Some(rx) = &self.audio.waveform_rx {

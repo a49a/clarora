@@ -1003,28 +1003,20 @@ impl Probe {
         Ok(false)
     }
 }
-impl AppView {
-    pub(super) fn poll_audio_repeat_probe(
+impl diagnostics::Probe for Probe {
+    fn cleanup(&mut self, _app: &mut AppView, _window: &mut Window, cx: &mut Context<AppView>) {
+        self.audio_selection.cleanup(cx);
+    }
+
+    fn tick(
         &mut self,
+        app: &mut AppView,
         window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(mut probe) = self.audio_repeat_probe.take() else {
-            return false;
-        };
-        match probe.step(self, window, cx) {
-            Ok(true) => {
-                window.remove_window();
-                return true;
-            }
-            Err(error) => {
-                let _ = probe.report(false, Some(format!("{error:#}")));
-                window.remove_window();
-                return true;
-            }
-            Ok(false) => {}
-        }
-        self.audio_repeat_probe = Some(probe);
-        false
+        cx: &mut Context<AppView>,
+    ) -> Result<bool> {
+        self.step(app, window, cx)
+    }
+    fn failed(&mut self, error: String) -> Result<()> {
+        self.report(false, Some(error))
     }
 }
