@@ -1,23 +1,25 @@
-import { StudyOptions } from "../ui/StudyOptions";
-import { PopoverRoot } from "../ui/PopoverRoot";
-import { resolveStudySettingsMaskTap, type StudySettingsTrigger } from "../ui/studySettingsMask";
-import { StudySubtitleToolbar } from "../ui/StudySubtitleToolbar";
-import { BlindListeningPanel, type RevealDisabledReason } from "../ui/BlindListeningPanel";
+import { nextRepeatAudio } from '../services/listeningPlayback';
+import { captureBlindPlayback, revealListeningCue } from '../services/blindPlayback';
+import { useListeningPlayback } from '../ui/useListeningPlayback';
+import { makeListeningStyles } from '../ui/listeningStyles';
+import { useListeningLibrary, type ListeningSelection } from '../ui/useListeningLibrary';
+import { useListeningSubtitles } from '../ui/useListeningSubtitles';
+import { StudyOptions } from '../ui/StudyOptions';
+import { PopoverRoot } from '../ui/PopoverRoot';
+import { resolveStudySettingsMaskTap, type StudySettingsTrigger } from '../ui/studySettingsMask';
+import { StudySubtitleToolbar } from '../ui/StudySubtitleToolbar';
+import { BlindListeningPanel, type RevealDisabledReason } from '../ui/BlindListeningPanel';
 import {
   createBlindListeningMachine,
   resolveCueAtPosition,
   useBlindListening,
   type BlindCue,
   type BlindListeningMachine,
-} from "../ui/blindListening";
-import { LibraryActionMenu } from "../ui/LibraryActionMenu";
-import { AudioLibraryManager } from "../ui/AudioLibraryManager";
-import { NativeSelectableSubtitleView } from "../ui/NativeSelectableSubtitle";
-import { learningDesign } from "../ui/learningDesign";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+} from '../ui/blindListening';
+import { NativeSelectableSubtitleView } from '../ui/NativeSelectableSubtitle';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   AppState,
   BackHandler,
   NativeModules,
@@ -30,65 +32,15 @@ import {
   StatusBar,
   StyleSheet,
   Text,
-  TextInput,
   View,
-} from "react-native";
-import {
-  Audio,
-  audioRecorder,
-  AVPlaybackStatus,
-  copyToClipboard,
-  DocumentPicker,
-  FileSystem,
-  mergeAudios,
-  runShellCommand,
-  type SoundLike,
-} from "../services/platform";
+} from 'react-native';
+import { audioRecorder, FileSystem } from '../services/platform';
 
-import {
-  ListeningPractice,
-  ListeningAudio,
-  listListeningPractices,
-  createListeningPractice,
-  addAudioToPractice,
-  renameListeningPractice,
-  renameListeningAudio,
-  updateAudioSubtitle,
-  deleteListeningPractice,
-  deleteListeningAudio,
-  getSetting,
-  setSetting,
-  saveClipCard,
-  recordListenSeconds,
-} from "../data/database";
-import { mergeSubtitleLanguage, serializeSubtitleCues, classifySubtitleLanguage, parseSubtitleCues, SubtitleCue, type SubtitleLanguage } from "../data/subtitles";
-import {
-  transcribeAudio,
-  waitForSubtitles,
-  translateSubtitlesFile,
-  waitForTranslation,
-  deleteJob,
-  askAboutPassage,
-  getActiveAsrEngine,
-  listAsrEngines,
-  updateAsrEngine,
-  speakingAttempt,
-  waitForSpeaking,
-  type AsrEngineInfo,
-  type SpeakingScore,
-} from "../services/ai";
-import { useAppTheme } from "../ui/ThemeContext";
-import { AIChatInlineButton, useAIChat, useAIChatEntry } from "../ui/AIChatProvider";
-
-const ASR_ENGINE_LABELS: Record<string, string> = {
-  local: "端侧转写",
-  compatible: "自定义转写 API",
-  qwen3_asr: "Qwen3-ASR",
-  moss: "MOSS",
-  sensevoice: "SenseVoice",
-  faster_whisper: "Whisper",
-};
-
+import { ListeningPractice, ListeningAudio, getSetting, setSetting, saveClipCard } from '../data/database';
+import { classifySubtitleLanguage, parseSubtitleCues, SubtitleCue } from '../data/subtitles';
+import { askAboutPassage, speakingAttempt, waitForSpeaking, type SpeakingScore } from '../services/ai';
+import { useAppTheme } from '../ui/ThemeContext';
+import { AIChatInlineButton, useAIChat, useAIChatEntry } from '../ui/AIChatProvider';
 type CueToken = { text: string; isWord: boolean; offset: number };
 type TranscriptWord = { token: CueToken; start: number; length: number };
 type TranscriptCue = {
@@ -99,17 +51,11 @@ type TranscriptCue = {
   words: TranscriptWord[];
 };
 
-type ListeningScreenProps = {
-  mode?: "study" | "manage";
-  initialPracticeId?: string | null;
-  initialAudioId?: string | null;
-  onSelectionChange?: (practiceId: string | null, audioId: string | null) => void;
-  onStartStudy?: (practiceId: string, audioId: string) => void;
+type ListeningScreenProps = ListeningSelection & {
   onExitStudy?: () => void;
   studySidebarStatus?: ReactNode;
 };
 
-const LAST_LISTENING_SELECTION_SETTING = "last_listening_selection";
 const AI_QUESTION_TIMEOUT_MS = 60_000;
 
 // RCTViewManager's custom NSColor props receive an already processed native
@@ -118,12 +64,6 @@ const AI_QUESTION_TIMEOUT_MS = 60_000;
 function toNativeColor(color: string): number | null {
   const processed = processColor(color);
   return typeof processed === "number" ? processed : null;
-}
-
-function getFileNameFromUri(uri: string): string {
-  const parts = uri.split(/[\\/]/);
-  const name = parts[parts.length - 1] || uri;
-  return decodeURIComponent(name);
 }
 
 // AI 标重点：让模型只返回 JSON，客户端把短语匹配回转写文本的字符区间。
@@ -184,29 +124,6 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-function formatSrtTimestamp(totalSeconds: number): string {
-  const clamped = Math.max(0, totalSeconds);
-  const hours = Math.floor(clamped / 3600);
-  const minutes = Math.floor((clamped % 3600) / 60);
-  const seconds = Math.floor(clamped % 60);
-  const millis = Math.round((clamped - Math.floor(clamped)) * 1000);
-  const pad = (value: number, width = 2) => value.toString().padStart(width, "0");
-  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)},${pad(millis, 3)}`;
-}
-
-/** Serialize cues (times in seconds) into an SRT document. */
-function serializeSrt(cues: SubtitleCue[]): string {
-  return (
-    cues
-      .map(
-        (cue, index) =>
-          `${index + 1}\n${formatSrtTimestamp(cue.start)} --> ${formatSrtTimestamp(cue.end)}\n${cue.text}\n`
-      )
-      .join("\n") + "\n"
-  );
-}
-
-/** Draggable A/B timeline: drag the ▶/◀ handles to set the loop range. */
 function ABTimelineBar(props: {
   durationMs: number;
   startMs: number;
@@ -260,7 +177,7 @@ function ABTimelineBar(props: {
     })
   ).current;
 
-  const styles = makeStyles(theme);
+  const styles = makeListeningStyles(theme);
   const aPct = props.durationMs > 0 ? Math.min(100, (props.startMs / props.durationMs) * 100) : 0;
   const bPct = props.durationMs > 0 ? Math.min(100, (props.endMs / props.durationMs) * 100) : 100;
 
@@ -315,56 +232,12 @@ function tokenizeCue(text: string): CueToken[] {
   return tokens;
 }
 
-export default function ListeningScreen({
-  mode = "study",
-  initialPracticeId = null,
-  initialAudioId = null,
-  onSelectionChange,
-  onStartStudy,
-  onExitStudy,
-  studySidebarStatus,
-}: ListeningScreenProps = {}) {
+export default function ListeningScreen({ onExitStudy, studySidebarStatus, ...selection }: ListeningScreenProps = {}) {
   const { theme, scheme } = useAppTheme();
-  const isManageMode = mode === "manage";
-
-  const [practices, setPractices] = useState<ListeningPractice[]>([]);
-  const [libraryLoaded, setLibraryLoaded] = useState(false);
-  const [selectedPracticeId, setSelectedPracticeId] = useState<string | null>(initialPracticeId);
-  const [selectedAudioId, setSelectedAudioId] = useState<string | null>(initialAudioId);
-  const [selectionRestored, setSelectionRestored] = useState(
-    initialPracticeId !== null || initialAudioId !== null
-  );
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [aiStatus, setAiStatus] = useState<string | null>(null);
-  const subtitleTaskRef = useRef(false);
-  const [scanImporting, setScanImporting] = useState(false);
-  const [scanFiles, setScanFiles] = useState<Array<{ path: string; name: string }>>([]);
-  const [scanPreviewVisible, setScanPreviewVisible] = useState(false);
-  const canUseCommandImport = Platform.OS === "macos";
-  const [activeAsrModel, setActiveAsrModel] = useState("");
-  const [asrEngines, setAsrEngines] = useState<AsrEngineInfo[]>([]);
-  const [activeAsrBackend, setActiveAsrBackend] = useState<string>("");
-  const [asrEnginesLoading, setAsrEnginesLoading] = useState(false);
-  const [showEnginePicker, setShowEnginePicker] = useState(false);
-
-  const refreshCommandImportAccess = useCallback(async () => {
-    void getActiveAsrEngine().then((engine) => {
-      if (engine) {
-        setActiveAsrModel(
-          `${ASR_ENGINE_LABELS[engine.backend] ?? engine.backend} ${engine.model}`.trim()
-        );
-      }
-    });
-  }, []);
-
-  useEffect(() => {
-    void refreshCommandImportAccess();
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") void refreshCommandImportAccess();
-    });
-    return () => subscription.remove();
-  }, [refreshCommandImportAccess]);
+  const { practices, selectedPractice, selectedAudio, selectedPracticeId, selectedAudioId,
+    setSelectedPracticeId, setSelectedAudioId, refreshPractices } = useListeningLibrary(selection, setError);
 
   // Segment loop (选段循环) state — range in milliseconds, draggable on the
   // AB timeline and adjustable word-by-word in the subtitle list.
@@ -374,34 +247,6 @@ export default function ListeningScreen({
   const [loopEndMs, setLoopEndMs] = useState<number | null>(null);
   const progressBarWidthRef = useRef(0);
 
-  // Audio state
-  const soundRef = useRef<SoundLike | null>(null);
-  const audioOperationRef = useRef<Promise<void>>(Promise.resolve());
-  const audioGenerationRef = useRef(0);
-  const enqueueAudioOperation = useCallback((operation: () => Promise<void>) => {
-    const result = audioOperationRef.current.then(operation, operation);
-    audioOperationRef.current = result.then(() => {}, () => {});
-    return result;
-  }, []);
-  // 听力时长统计：播放中按轮询间隔累计真实秒数，攒够 5 秒落一次库。
-  const listenAccumRef = useRef(0);
-  const listenLastTickRef = useRef<number | null>(null);
-  const mountedRef = useRef(true);
-  const loadedAudioIdRef = useRef<string | null>(null);
-  const loadingAudioIdRef = useRef<string | null>(null);
-  const [readyAudioId, setReadyAudioId] = useState<string | null>(null);
-  // React may run the selected-audio effect while a group transition is still
-  // loading the same item. Keep an auto-play request through that overlap so
-  // the effect's ordinary load cannot turn a group transition into a pause.
-  const pendingAutoPlayAudioIdRef = useRef<string | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [positionMs, setPositionMs] = useState(0);
-  const [durationMs, setDurationMs] = useState(0);
-  const [playbackRate, setPlaybackRate] = useState(1);
-  const [pendingRate, setPendingRate] = useState<number | null>(null);
-  const positionMsRef = useRef(0);
-  const isPlayingRef = useRef(false);
-
   // ── 盲听(先听后核对)───────────────────────────────────────────────────
   // 呈现模式与揭晓快照集中在状态机;播放位置/倍速/播放状态以播放器为权威。
   const blindMachineRef = useRef<BlindListeningMachine | null>(null);
@@ -410,12 +255,13 @@ export default function ListeningScreen({
   const blind = useBlindListening(blindMachine);
   const [blindEnded, setBlindEnded] = useState(false);
 
-  // Repeat playback: off → single audio → whole practice group.
-  const [repeatMode, setRepeatMode] = useState<"off" | "one" | "practice" | "pass">("off");
-  const repeatModeRef = useRef(repeatMode);
-  const repeatAdvanceRef = useRef<(() => void) | null>(null);
-  const repeatAdvancingRef = useRef(false);
-  const lastRepeatAtRef = useRef(0);
+  const {
+    playback, enqueueAudioOperation, mountedRef, loadedAudioIdRef, loadingAudioIdRef,
+    readyAudioId, clearReadyAudio, isPlaying,
+    positionMs, positionMsRef, durationMs, playbackRate, pendingRate, isPlayingRef,
+    repeatMode, repeatModeRef, repeatAdvanceRef, cycleRepeatMode, rateApplying, changeRate: applyRate,
+    resetPlayback, prepareAudio, flushListeningTime,
+  } = useListeningPlayback(blindMachine, setBlindEnded, setError);
 
   // Subtitle font size — scales the English words and Chinese translation
   // lines together; persisted in app_settings.
@@ -446,7 +292,7 @@ export default function ListeningScreen({
   const subtitleStateRef = useRef(subtitleState);
   const subtitleReadRef = useRef(0);
   const subtitleCues = subtitleState.cues;
-  const setSubtitleCues = useCallback((cues: SubtitleCue[], audioId: string | null = null, generation = audioGenerationRef.current) => {
+  const setSubtitleCues = useCallback((cues: SubtitleCue[], audioId: string | null = null, generation = playback.generation) => {
     const next = { audioId, generation, revision: subtitleStateRef.current.revision + 1, cues };
     subtitleStateRef.current = next;
     blindMachine.invalidate();
@@ -499,10 +345,9 @@ export default function ListeningScreen({
   const practiceTriggerRef = useRef<View | null>(null);
   const audioTriggerRef = useRef<View | null>(null);
   const exitTriggerRef = useRef<View | null>(null);
-  // 最新期望倍速:加载新音频与异步改速都从这里读取,避免闭包拿到旧值。
-  const desiredRateRef = useRef(1);
-  const rateApplyingRef = useRef(false);
-  const [rateApplying, setRateApplying] = useState(false);
+  const changeRate = async (rate: number) => {
+    if (await applyRate(rate, !!selectedAudioId)) setActiveSettings(null);
+  };
 
   // ── 听力跟读：录下当前句的朗读，AI 服务转写对齐打分 ────────────────────────
   const [shadowing, setShadowing] = useState(false);
@@ -526,60 +371,6 @@ export default function ListeningScreen({
   const keyRequestIdRef = useRef(0);
 
   // Batch management state
-  const [batchMode, setBatchMode] = useState(false);
-  const [batchSelected, setBatchSelected] = useState<string[]>([]);
-
-  // Batch audio management
-  const [batchAudioMode, setBatchAudioMode] = useState(false);
-  const [batchAudioSelected, setBatchAudioSelected] = useState<string[]>([]);
-  const [mergingAudios, setMergingAudios] = useState(false);
-
-  // Prompt dialog state (cross-platform replacement for Alert.prompt)
-  const [promptVisible, setPromptVisible] = useState(false);
-  const [libraryMenu, setLibraryMenu] = useState<"audio" | "practice" | null>(null);
-  const [promptTitle, setPromptTitle] = useState("");
-  // 字幕查看器：生成或导入后可以直接翻看转录结果。
-  const [subtitleViewerVisible, setSubtitleViewerVisible] = useState(false);
-  const [subtitleViewerLoading, setSubtitleViewerLoading] = useState(false);
-  const [subtitleViewerCues, setSubtitleViewerCues] = useState<SubtitleCue[]>([]);
-  const [promptValue, setPromptValue] = useState("");
-  const promptResolveRef = useRef<((value: string | null) => void) | null>(null);
-
-  const showPrompt = useCallback((title: string, defaultValue = ""): Promise<string | null> => {
-    return new Promise((resolve) => {
-      setPromptTitle(title);
-      setPromptValue(defaultValue);
-      promptResolveRef.current = resolve;
-      setPromptVisible(true);
-    });
-  }, []);
-
-  const handlePromptConfirm = useCallback(() => {
-    setPromptVisible(false);
-    promptResolveRef.current?.(promptValue);
-    promptResolveRef.current = null;
-  }, [promptValue]);
-
-  const handlePromptCancel = useCallback(() => {
-    setPromptVisible(false);
-    promptResolveRef.current?.(null);
-    promptResolveRef.current = null;
-  }, []);
-
-  // NOTE: no programmatic focus here. react-native-macos's focus command
-  // crashes in AppKit (NSWindow first-responder exception), so the user
-  // clicks into the input manually.
-
-  const selectedPractice = useMemo(
-    () => practices.find((p) => p.id === selectedPracticeId) ?? null,
-    [practices, selectedPracticeId]
-  );
-
-  const selectedAudio = useMemo(() => {
-    if (!selectedPractice) return null;
-    return selectedPractice.audios.find((a) => a.id === selectedAudioId) ?? null;
-  }, [selectedPractice, selectedAudioId]);
-
   // Keep the selectable surface as one native NSTextView, rather than Fabric
   // Text (which currently cannot form a mouse-drag selection on macOS).
   const subtitleTranscript = useMemo(() => {
@@ -660,70 +451,6 @@ export default function ListeningScreen({
     };
   }, [activeCueIndex, activeWordIndex, loopEndMs, loopMode, loopStartMs, subtitleCues]);
 
-  // Restore the last audio before persisting anything new. Without this gate,
-  // the first null render after an app restart would overwrite the saved IDs.
-  useEffect(() => {
-    let cancelled = false;
-
-    if (initialPracticeId !== null || initialAudioId !== null) {
-      setSelectionRestored(true);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    void (async () => {
-      try {
-        const raw = await getSetting(LAST_LISTENING_SELECTION_SETTING);
-        if (!raw || cancelled) return;
-        const saved: unknown = JSON.parse(raw);
-        if (!saved || typeof saved !== "object") return;
-        const record = saved as { practiceId?: unknown; audioId?: unknown };
-        const practiceId = typeof record.practiceId === "string" ? record.practiceId : null;
-        const audioId = practiceId && typeof record.audioId === "string" ? record.audioId : null;
-        if (!cancelled) {
-          setSelectedPracticeId(practiceId);
-          setSelectedAudioId(audioId);
-        }
-      } catch {
-        // A malformed or unavailable setting should not block the library.
-      } finally {
-        if (!cancelled) setSelectionRestored(true);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [initialAudioId, initialPracticeId]);
-
-  useEffect(() => {
-    onSelectionChange?.(selectedPracticeId, selectedAudioId);
-    if (!selectionRestored) return;
-    void setSetting(
-      LAST_LISTENING_SELECTION_SETTING,
-      JSON.stringify({ practiceId: selectedPracticeId, audioId: selectedAudioId })
-    ).catch(() => {});
-  }, [onSelectionChange, selectedAudioId, selectedPracticeId, selectionRestored]);
-
-  useEffect(() => {
-    if (!libraryLoaded) return;
-    if (selectedPracticeId && !selectedPractice) {
-      setSelectedPracticeId(null);
-      setSelectedAudioId(null);
-      return;
-    }
-    if (selectedAudioId && selectedPractice && !selectedAudio) {
-      setSelectedAudioId(null);
-    }
-  }, [
-    libraryLoaded,
-    selectedAudio,
-    selectedAudioId,
-    selectedPractice,
-    selectedPracticeId,
-  ]);
-
   const showToast = useCallback(
     (msg: string) => {
       setToast(msg);
@@ -732,42 +459,10 @@ export default function ListeningScreen({
     []
   );
 
-  const loadAsrEngines = useCallback(async () => {
-    setAsrEnginesLoading(true);
-    try {
-      const list = await listAsrEngines();
-      setAsrEngines(list.backends);
-      setActiveAsrBackend(list.config.backend ?? "");
-    } catch (e: any) {
-      setError(`读取转写引擎失败：${e?.message ?? e}`);
-      setShowEnginePicker(false);
-    } finally {
-      setAsrEnginesLoading(false);
-    }
-  }, []);
-
-  const selectAsrEngine = useCallback(
-    async (engine: AsrEngineInfo) => {
-      if (!engine.available || engine.backend === activeAsrBackend) return;
-      setAsrEnginesLoading(true);
-      try {
-        const updated = await updateAsrEngine(engine.backend);
-        setActiveAsrBackend(updated.backend);
-        showToast(`转写模型已切换为 ${updated.label}`);
-        await loadAsrEngines();
-      } catch (e: any) {
-        setError(`切换失败：${e?.message ?? e}`);
-      } finally {
-        setAsrEnginesLoading(false);
-      }
-    },
-    [activeAsrBackend, loadAsrEngines, showToast]
-  );
-
   const openChatWithSelection = useCallback((text: string) => {
     // 盲听中字幕视图已卸载,不存在选区;防御旧回调迟到注入。
     if (blindMachineRef.current?.isBlind()) return;
-    void soundRef.current?.pauseAsync().catch(() => {});
+    void playback.sound?.pauseAsync().catch(() => {});
     setActiveSettings(null); // AI 面板成为前景前先收起设置
     openChat({ text, source: selectedAudio?.name || "音频学习" });
   }, [openChat, selectedAudio?.name]);
@@ -799,7 +494,7 @@ export default function ListeningScreen({
       ? blindRevealed?.text ?? ''
       : subtitleCues.length ? (subtitleCues[activeCueIndex >= 0 ? activeCueIndex : 0]?.text || subtitleTranscript.text) : "",
     selectedAudio?.name || "音频学习",
-    () => { setActiveSettings(null); void soundRef.current?.pauseAsync().catch(() => {}); },
+    () => { setActiveSettings(null); void playback.sound?.pauseAsync().catch(() => {}); },
     // 盲听入口优先于重新选文;隐藏态新建对话,查看态只使用已揭晓引用。
     { isolateReference: blind.presentation === 'blind' }
   );
@@ -825,7 +520,7 @@ export default function ListeningScreen({
     setError(null);
     // 录音时暂停参考音频，避免播放声混进麦克风。
     try {
-      await soundRef.current?.pauseAsync();
+      await playback.sound?.pauseAsync();
     } catch {}
     if (Platform.OS === "android") {
       const granted = await PermissionsAndroid.request(
@@ -968,7 +663,6 @@ export default function ListeningScreen({
       if (shadowingRef.current) return;
     }
     setActiveSettings(null);
-    setSubtitleViewerVisible(false);
     resetChatContext();
     // 仅设 A、尚未设 B 的截取:取消未完成选段;完整 A/B 范围保留。
     if (loopStartMs != null && loopEndMs == null) {
@@ -985,46 +679,33 @@ export default function ListeningScreen({
     blindMachine.exitBlind();
   }, [blindMachine]);
 
-  const getBlindPlaybackContext = useCallback(() => {
-    const sound = soundRef.current;
-    const source = subtitleStateRef.current;
-    const generation = audioGenerationRef.current;
-    const audioId = selectedAudio?.id;
-    const isCurrent = () => !!audioId && mountedRef.current && blindMachine.isBlind()
-      && sound != null && soundRef.current === sound
-      && audioGenerationRef.current === generation
-      && loadingAudioIdRef.current == null && loadedAudioIdRef.current === audioId
-      && !subtitleTaskRef.current && subtitleStateRef.current === source
-      && source.audioId === audioId && source.generation === generation
-      && source.cues === subtitleCues;
-    return isCurrent() ? { sound: sound!, source, generation, isCurrent } : null;
-  }, [selectedAudio?.id, subtitleCues, blindMachine]);
+  const getBlindPlaybackContext = useCallback(() =>
+    captureBlindPlayback(selectedAudio?.id, subtitleCues, () => ({
+      sound: playback.sound,
+      source: subtitleStateRef.current,
+      generation: playback.generation,
+      active: mountedRef.current && blindMachine.isBlind()
+        && loadingAudioIdRef.current == null && loadedAudioIdRef.current === selectedAudio?.id
+        && !subtitleTaskRef.current,
+    })), [selectedAudio?.id, subtitleCues, blindMachine, playback, mountedRef, loadingAudioIdRef, loadedAudioIdRef]);
 
   const handleBlindReveal = useCallback(async () => {
     const context = getBlindPlaybackContext();
     if (!context || !selectedAudio) return;
-    const outcome = await blindMachine.requestReveal({
-      audioId: selectedAudio.id,
-      cues: context.source.cues.map(cue => ({ id: cue.id, startMs: cue.start * 1000, endMs: cue.end * 1000, text: cue.text })),
+    const outcome = await revealListeningCue(blindMachine, context, selectedAudio.id, {
       positionMs: positionMsRef.current,
       durationMs,
       isPlaying: isPlayingRef.current,
-      isCurrent: context.isCurrent,
-      pause: requestIsCurrent => enqueueAudioOperation(async () => {
-        // A queued reveal must not pause after a seek, switch or mode change.
-        if (!requestIsCurrent() || !context.isCurrent()) return;
-        if (isPlayingRef.current) await context.sound.pauseAsync();
-      }),
-    });
+    }, enqueueAudioOperation, () => isPlayingRef.current);
     if (!outcome.ok && outcome.reason === 'pause-failed') showToast('暂停失败，请重试');
-  }, [selectedAudio, blindMachine, durationMs, showToast, getBlindPlaybackContext, enqueueAudioOperation]);
+  }, [selectedAudio, blindMachine, durationMs, showToast, getBlindPlaybackContext, enqueueAudioOperation, isPlayingRef, positionMsRef]);
 
   const playBlindAudio = useCallback(async (restart: boolean) => {
-    const sound = soundRef.current;
-    const generation = audioGenerationRef.current;
+    const sound = playback.sound;
+    const generation = playback.generation;
     const audioId = selectedAudio?.id;
     const current = () => mountedRef.current && blindMachine.isBlind()
-      && sound != null && soundRef.current === sound && generation === audioGenerationRef.current
+      && sound != null && playback.sound === sound && generation === playback.generation
       && loadedAudioIdRef.current === audioId && loadingAudioIdRef.current == null;
     if (!current()) return;
     blindMachine.clearReveal();
@@ -1069,46 +750,26 @@ export default function ListeningScreen({
 
   // ── Audio playback ──────────────────────────────────────────────────────────
 
-  const unloadSoundNow = useCallback(async () => {
-    if (soundRef.current) {
-      await soundRef.current.unloadAsync();
-      soundRef.current = null;
-    }
-    loadedAudioIdRef.current = null;
-    isPlayingRef.current = false;
-    positionMsRef.current = 0;
-    if (mountedRef.current) {
-      setIsPlaying(false);
-      setPositionMs(0);
-      setDurationMs(0);
-    }
-  }, []);
   const unloadSound = useCallback(async () => {
-    ++audioGenerationRef.current;
-    loadingAudioIdRef.current = null;
+    const pending = playback.unload();
+    resetPlayback();
     blindMachine.invalidate();
-    setReadyAudioId(null);
+    clearReadyAudio();
     setSubtitleCues([]);
-    await enqueueAudioOperation(unloadSoundNow);
-  }, [enqueueAudioOperation, unloadSoundNow, blindMachine, setSubtitleCues]);
+    await pending;
+  }, [playback, resetPlayback, blindMachine, clearReadyAudio, setSubtitleCues]);
 
   const handleExitStudy = useCallback(async () => {
     // 退出学习:回到默认字幕模式,清空揭晓状态(§4.1,重进不保留盲听)。
     blindMachine.exitBlind();
     setBlindEnded(false);
-    if (listenAccumRef.current > 0) {
-      const flushed = listenAccumRef.current;
-      listenAccumRef.current = 0;
-      try {
-        await recordListenSeconds(flushed);
-      } catch {}
-    }
+    await flushListeningTime();
     try {
       await unloadSound();
     } finally {
       onExitStudy?.();
     }
-  }, [blindMachine, onExitStudy, unloadSound]);
+  }, [blindMachine, onExitStudy, unloadSound, flushListeningTime]);
 
   // Keep Android swipe-to-exit inside the transcript so horizontal player
   // tools and A/B handles can own their gestures. The exit button remains visible.
@@ -1127,127 +788,20 @@ export default function ListeningScreen({
   );
 
   useEffect(() => {
-    if (Platform.OS !== "android" || isManageMode) return;
+    if (Platform.OS !== "android") return;
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
       if (activeSettings) { setActiveSettings(null); return true; }
       void handleExitStudy();
       return true;
     });
     return () => subscription.remove();
-  }, [activeSettings, handleExitStudy, isManageMode]);
+  }, [activeSettings, handleExitStudy]);
 
-  const onPlaybackStatusUpdate = useCallback(
-    async (status: AVPlaybackStatus) => {
-      if (!status.isLoaded) return;
-      // 听力时长：只在播放中累计，暂停/结束不计；跳变 >5s 视为 seek 丢弃。
-      if (status.isPlaying) {
-        const now = Date.now();
-        const last = listenLastTickRef.current;
-        if (last != null) {
-          const delta = (now - last) / 1000;
-          if (delta > 0 && delta < 5) listenAccumRef.current += delta;
-        }
-        listenLastTickRef.current = now;
-        if (listenAccumRef.current >= 5) {
-          const flushed = listenAccumRef.current;
-          listenAccumRef.current = 0;
-          void recordListenSeconds(flushed).catch(() => {});
-        }
-      } else {
-        listenLastTickRef.current = null;
-      }
-      positionMsRef.current = status.positionMillis;
-      setPositionMs(status.positionMillis);
-      setDurationMs(status.durationMillis ?? 0);
-      isPlayingRef.current = !!status.isPlaying;
-      setIsPlaying(status.isPlaying);
-
-      // Repeat handling. The status callback is registered once per loaded
-      // sound, so the current repeat mode and queue step are read through refs.
-      if (status.didJustFinish) {
-        // 盲听到末尾:保持隐藏,由面板提供「从头再听/查看全文」。
-        if (blindMachineRef.current?.isBlind()) setBlindEnded(true);
-        const now = Date.now();
-        if (repeatAdvancingRef.current || now - lastRepeatAtRef.current < 800) return;
-        lastRepeatAtRef.current = now;
-        repeatAdvancingRef.current = true;
-        if (repeatModeRef.current === "one") {
-          const sound = soundRef.current;
-          if (sound) {
-            try {
-              await sound.setPositionAsync(0);
-              await sound.playAsync();
-            } finally {
-              repeatAdvancingRef.current = false;
-            }
-          } else {
-            repeatAdvancingRef.current = false;
-          }
-        } else if (repeatModeRef.current === "practice" || repeatModeRef.current === "pass") {
-          try {
-            await repeatAdvanceRef.current?.();
-          } finally {
-            repeatAdvancingRef.current = false;
-          }
-        } else {
-          repeatAdvancingRef.current = false;
-        }
-      }
-    },
-    []
-  );
-
-  const loadAudio = useCallback(
-    async (audio: ListeningAudio) => {
-      const generation = ++audioGenerationRef.current;
-      let loaded = false;
-      await enqueueAudioOperation(async () => {
-        let sound: SoundLike | null = null;
-        try {
-          if (generation !== audioGenerationRef.current) return;
-          await unloadSoundNow();
-          if (generation !== audioGenerationRef.current) return;
-          if (mountedRef.current) setPendingRate(desiredRateRef.current);
-          ({ sound } = await Audio.Sound.createAsync(
-            { uri: audio.audio_uri },
-            { rate: desiredRateRef.current, progressUpdateIntervalMillis: 100 },
-            onPlaybackStatusUpdate
-          ));
-          if (!mountedRef.current || generation !== audioGenerationRef.current) {
-            await sound.unloadAsync().catch(() => {});
-            return;
-          }
-          soundRef.current = sound;
-          await sound.setRateAsync(desiredRateRef.current, true);
-          if (!mountedRef.current || generation !== audioGenerationRef.current) {
-            await sound.unloadAsync().catch(() => {});
-            soundRef.current = null;
-            return;
-          }
-          setPlaybackRate(desiredRateRef.current);
-          setPendingRate(null);
-          loaded = true;
-        } catch (error: any) {
-          if (sound) {
-            await sound.unloadAsync().catch(() => {});
-            if (soundRef.current === sound) soundRef.current = null;
-          }
-          if (mountedRef.current && generation === audioGenerationRef.current) {
-            setPendingRate(null); // 加载失败时清除待应用标记,避免徽标长期驻留
-            setError(`加载音频失败：${error?.message ?? error}`);
-          }
-        }
-      });
-      return loaded ? generation : null;
-    },
-    [enqueueAudioOperation, unloadSoundNow, onPlaybackStatusUpdate]
-  );
-
-  const loadSubtitle = useCallback(async (audio: ListeningAudio, generation = audioGenerationRef.current) => {
-    if (generation !== audioGenerationRef.current) return;
+  const loadSubtitle = useCallback(async (audio: ListeningAudio, generation = playback.generation) => {
+    if (generation !== playback.generation) return;
     const read = ++subtitleReadRef.current;
     setSubtitleCues([]);
-    const current = () => mountedRef.current && generation === audioGenerationRef.current && read === subtitleReadRef.current;
+    const current = () => mountedRef.current && generation === playback.generation && read === subtitleReadRef.current;
     try {
       const cues = audio.subtitle_uri
         ? parseSubtitleCues(await FileSystem.readAsStringAsync(audio.subtitle_uri)) : [];
@@ -1260,46 +814,16 @@ export default function ListeningScreen({
     }
   }, [setSubtitleCues]);
 
-  const prepareAudioForStudy = useCallback(
-    async (audio: ListeningAudio, autoPlay = false) => {
-      if (loadedAudioIdRef.current === audio.id && loadingAudioIdRef.current == null) {
-        if (autoPlay) await soundRef.current?.playAsync();
-        return;
-      }
-      // 兜底清理(selectAudioItem 已清理;直接调用本函数的路径也覆盖)。
-      blindMachine.invalidate();
-      setBlindEnded(false);
-      if (loadingAudioIdRef.current === audio.id) {
-        if (autoPlay) pendingAutoPlayAudioIdRef.current = audio.id;
-        return;
-      }
-      loadingAudioIdRef.current = audio.id;
-      setReadyAudioId(null);
-      setSubtitleCues([]);
-      const expectedGeneration = audioGenerationRef.current + 1;
-      try {
-        const generation = await loadAudio(audio);
-        if (generation == null) return;
-        await loadSubtitle(audio, generation);
-        if (generation !== audioGenerationRef.current) return;
-        loadedAudioIdRef.current = audio.id;
-        if (autoPlay || pendingAutoPlayAudioIdRef.current === audio.id) {
-          await enqueueAudioOperation(async () => {
-            if (generation === audioGenerationRef.current) await soundRef.current?.playAsync();
-          });
-        }
-      } finally {
-        if (pendingAutoPlayAudioIdRef.current === audio.id) {
-          pendingAutoPlayAudioIdRef.current = null;
-        }
-        if (audioGenerationRef.current === expectedGeneration && loadingAudioIdRef.current === audio.id) {
-          loadingAudioIdRef.current = null;
-          if (mountedRef.current) setReadyAudioId(loadedAudioIdRef.current === audio.id ? audio.id : null);
-        }
-      }
-    },
-    [enqueueAudioOperation, loadAudio, loadSubtitle, blindMachine, setSubtitleCues]
-  );
+  const onSubtitleSaved = useCallback(async (audio: ListeningAudio) => {
+    await loadSubtitle(audio);
+    clearKeyPoints();
+  }, [loadSubtitle, clearKeyPoints]);
+  const { aiStatus, subtitleTaskRef, handleUploadSubtitle, handleAiSubtitle, runTranslate } =
+    useListeningSubtitles({ selectedAudio, refreshPractices, showToast, setError, onSaved: onSubtitleSaved });
+
+  const prepareAudioForStudy = useCallback((audio: ListeningAudio, autoPlay = false) =>
+    prepareAudio(audio, autoPlay, loadSubtitle, () => setSubtitleCues([])),
+    [prepareAudio, loadSubtitle, setSubtitleCues]);
 
   const selectAudioItem = useCallback(
     async (practice: ListeningPractice, audio: ListeningAudio, autoPlay = false) => {
@@ -1315,13 +839,9 @@ export default function ListeningScreen({
       setLoopStage(null);
       // 换音频后旧的重点标记不再对应新转写，直接清掉。
       clearKeyPoints();
-      if (mode === "study") {
-        await prepareAudioForStudy(audio, autoPlay);
-      } else {
-        setSubtitleCues([]);
-      }
+      await prepareAudioForStudy(audio, autoPlay);
     },
-    [mode, prepareAudioForStudy, clearKeyPoints, blindMachine, setSubtitleCues]
+    [prepareAudioForStudy, clearKeyPoints, blindMachine]
   );
 
   // Android 端的转写是普通 Text，把重点区间切成嵌套 Text 段落渲染下划线。
@@ -1346,55 +866,35 @@ export default function ListeningScreen({
   // entering study, restore the last selected audio after its database row is
   // available, then load it exactly once for the focused session.
   useEffect(() => {
-    if (mode !== "study" || !selectedAudio) return;
-    void prepareAudioForStudy(selectedAudio);
-  }, [mode, prepareAudioForStudy, selectedAudio]);
-
-  // Keep the repeat refs in sync with the latest mode and practice queue.
-  useEffect(() => {
-    repeatModeRef.current = repeatMode;
-  }, [repeatMode]);
+    if (selectedAudio) void prepareAudioForStudy(selectedAudio);
+    else if (loadedAudioIdRef.current || loadingAudioIdRef.current) void unloadSound().catch(() => {});
+  }, [prepareAudioForStudy, selectedAudio, unloadSound, loadedAudioIdRef, loadingAudioIdRef]);
 
   useEffect(() => {
     repeatAdvanceRef.current = async () => {
-      const practice = selectedPractice;
-      if (!practice || practice.audios.length === 0) return;
-      const index = practice.audios.findIndex((audio) => audio.id === selectedAudioId);
-      // 单次连播：整组按顺序过一遍，最后一篇播完即停，不回卷。
-      if (repeatModeRef.current === "pass" && index >= practice.audios.length - 1) {
-        setIsPlaying(false);
-        return;
-      }
-      const next = practice.audios[(index + 1) % practice.audios.length];
-      // Continue straight into the next audio without waiting for a tap —
-      // that's the whole point of 组循环 for chaining short recordings.
-      await selectAudioItem(practice, next, true);
+      if (!selectedPractice) return;
+      const next = nextRepeatAudio(selectedPractice.audios, selectedAudioId, repeatModeRef.current);
+      if (next) await selectAudioItem(selectedPractice, next, true);
     };
-  }, [selectAudioItem, selectedAudioId, selectedPractice]);
-
-  const cycleRepeatMode = useCallback(() => {
-    setRepeatMode((current) =>
-      current === "off" ? "one" : current === "one" ? "practice" : current === "practice" ? "pass" : "off"
-    );
-  }, []);
+  }, [repeatAdvanceRef, repeatModeRef, selectAudioItem, selectedAudioId, selectedPractice]);
 
   const togglePlayback = useCallback(async () => {
-    if (!soundRef.current) return;
+    if (!playback.sound) return;
     if (isPlaying) {
-      await soundRef.current.pauseAsync();
+      await playback.sound.pauseAsync();
     } else {
       // 盲听:任何播放入口恢复播放前先隐藏答案(§4.1)。
       if (blindMachine.getSnapshot().presentation === 'blind') {
         blindMachine.clearReveal();
         setBlindEnded(false);
       }
-      await soundRef.current.playAsync();
+      await playback.sound.playAsync();
     }
   }, [isPlaying, blindMachine]);
 
   const seekTo = useCallback(async (ms: number) => {
-    const sound = soundRef.current;
-    const generation = audioGenerationRef.current;
+    const sound = playback.sound;
+    const generation = playback.generation;
     if (!sound) return;
     if (blindMachine.isBlind()) {
       blindMachine.invalidate();
@@ -1402,7 +902,7 @@ export default function ListeningScreen({
     }
     positionMsRef.current = ms;
     await enqueueAudioOperation(async () => {
-      if (generation !== audioGenerationRef.current || soundRef.current !== sound || !mountedRef.current) return;
+      if (generation !== playback.generation || playback.sound !== sound || !mountedRef.current) return;
       await sound.setPositionAsync(ms);
     });
   }, [blindMachine, enqueueAudioOperation]);
@@ -1428,9 +928,7 @@ export default function ListeningScreen({
   // In the focused macOS listening view: Space plays/pauses, and ←/→ move
   // through the passage in five-second steps without changing playback state.
   useEffect(() => {
-    // A React Native management prompt is an editable field, so it must own
-    // Space and arrow keys instead of the player monitor consuming them.
-    if (mode !== "study" || !selectedAudio || promptVisible || libraryMenu || chatOpen || activeSettings) return;
+    if ((Platform.OS !== "macos" && Platform.OS !== "windows") || !selectedAudio || chatOpen || activeSettings) return;
     const keyboard = NativeModules.RNKeyboard as
       | {
           startPlaybackListening?: () => void;
@@ -1471,15 +969,15 @@ export default function ListeningScreen({
       cancelled = true;
       keyboard.stopListening?.();
     };
-  }, [activeSettings, chatOpen, libraryMenu, mode, promptVisible, seekBy, selectedAudio, togglePlayback]);
+  }, [activeSettings, chatOpen, seekBy, selectedAudio, togglePlayback]);
 
   const seekToCue = useCallback(
     async (cueIndex: number) => {
       if (cueIndex < 0 || cueIndex >= subtitleCues.length) return;
       const cue = subtitleCues[cueIndex];
       await seekTo(cue.start * 1000);
-      if (!isPlaying && soundRef.current) {
-        await soundRef.current.playAsync();
+      if (!isPlaying && playback.sound) {
+        await playback.sound.playAsync();
       }
     },
     [subtitleCues, seekTo, isPlaying]
@@ -1497,8 +995,8 @@ export default function ListeningScreen({
       const progress = Math.min(1, Math.max(0, charOffset / total));
       const ms = Math.round((cue.start + (cue.end - cue.start) * progress) * 1000);
       await seekTo(ms);
-      if (!isPlaying && soundRef.current) {
-        await soundRef.current.playAsync();
+      if (!isPlaying && playback.sound) {
+        await playback.sound.playAsync();
       }
     },
     [seekTo, isPlaying]
@@ -1516,45 +1014,6 @@ export default function ListeningScreen({
     },
     [subtitleTranscript, seekToCue]
   );
-
-  const changeRate = useCallback(
-    async (rate: number) => {
-      if (rateApplyingRef.current) return; // 快速连点:忽略重复提交
-      rateApplyingRef.current = true;
-      setRateApplying(true);
-      try {
-        await enqueueAudioOperation(async () => {
-          const sound = soundRef.current;
-          if (!sound) {
-            if (!selectedAudioId) throw new Error("请先选择音频");
-            desiredRateRef.current = rate;
-            if (mountedRef.current) {
-              setPendingRate(rate);
-              setActiveSettings(null);
-            }
-            return;
-          }
-          await sound.setRateAsync(rate, true);
-          // 只在当前播放器确认成功后提交期望速度和显示档位。
-          desiredRateRef.current = rate;
-          if (mountedRef.current) {
-            setPlaybackRate(rate);
-            setPendingRate(null);
-            setActiveSettings(null);
-          }
-        });
-      } catch (error: any) {
-        // 失败保留旧档,提示原因并允许重试。
-        if (mountedRef.current) setError(`设置播放速度失败：${error?.message ?? error}`);
-      } finally {
-        rateApplyingRef.current = false;
-        if (mountedRef.current) setRateApplying(false);
-      }
-    },
-    [enqueueAudioOperation, selectedAudioId]
-  );
-
-  // ── Segment loop (选段循环) ────────────────────────────────────────────────
 
   const loopRange = useMemo(() => {
     if (loopStartMs == null || loopEndMs == null) return null;
@@ -1586,8 +1045,8 @@ export default function ListeningScreen({
         setLoopStartMs(Math.round(cue.start * 1000));
         setLoopStage("B");
         seekTo(cue.start * 1000);
-        if (!isPlaying && soundRef.current) {
-          soundRef.current.playAsync();
+        if (!isPlaying && playback.sound) {
+          playback.sound.playAsync();
         }
         return;
       }
@@ -1618,8 +1077,8 @@ export default function ListeningScreen({
         setLoopStartMs(left);
         setLoopStage("B");
         seekTo(left);
-        if (!isPlaying && soundRef.current) {
-          soundRef.current.playAsync();
+        if (!isPlaying && playback.sound) {
+          playback.sound.playAsync();
         }
         return;
       }
@@ -1722,15 +1181,6 @@ export default function ListeningScreen({
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      mountedRef.current = false;
-      const sound = soundRef.current;
-      soundRef.current = null;
-      void sound?.unloadAsync();
-      if (listenAccumRef.current > 0) {
-        const flushed = listenAccumRef.current;
-        listenAccumRef.current = 0;
-        void recordListenSeconds(flushed).catch(() => {});
-      }
       // 正在跟读录音时直接退出：丢弃未提交的录音，避免泄漏麦克风。
       if (shadowTimerRef.current) clearInterval(shadowTimerRef.current);
       if (shadowingRef.current) {
@@ -1739,603 +1189,6 @@ export default function ListeningScreen({
       }
     };
   }, []);
-
-  // ── Practice management ─────────────────────────────────────────────────────
-
-  // 字幕语言形态（双语/中文/仅原文）：管理页按 audioId 展示徽标与筛选。
-  const [subtitleKinds, setSubtitleKinds] = useState<Record<string, SubtitleLanguage>>({});
-  const subtitleKindCache = useRef<Record<string, SubtitleLanguage | "unknown">>({});
-
-  useEffect(() => {
-    // 缓存键为 id:uri，翻译/更换字幕后自动重新判定。
-    if (mode !== "manage") return;
-    let cancelled = false;
-    const run = async () => {
-      for (const practice of practices) {
-        for (const audio of practice.audios) {
-          const cacheKey = `${audio.id}:${audio.subtitle_uri}`;
-          if (!audio.subtitle_uri || subtitleKindCache.current[cacheKey]) continue;
-          try {
-            const content = await FileSystem.readAsStringAsync(audio.subtitle_uri);
-            const kind = classifySubtitleLanguage(parseSubtitleCues(content));
-            subtitleKindCache.current[cacheKey] = kind;
-            if (cancelled) return;
-            setSubtitleKinds(prev => ({ ...prev, [audio.id]: kind }));
-          } catch {
-            // 读取失败保持未知，列表回退显示「字幕就绪」。
-            subtitleKindCache.current[cacheKey] = "unknown";
-          }
-        }
-      }
-    };
-    void run();
-    return () => { cancelled = true; };
-  }, [mode, practices]);
-
-  const refreshPractices = useCallback(async () => {
-    try {
-      const list = await listListeningPractices();
-      setPractices(list);
-      setLibraryLoaded(true);
-    } catch (e: any) {
-      setError(`加载练习列表失败：${e?.message ?? e}`);
-    }
-  }, []);
-
-  useEffect(() => {
-    refreshPractices();
-  }, [refreshPractices]);
-
-  const handleCreatePractice = useCallback(async () => {
-    const name = await showPrompt(
-      "请输入练习组名称",
-      `我的听力练习 ${new Date().toLocaleDateString()}`
-    );
-    if (!name?.trim()) return;
-    try {
-      const created = await createListeningPractice(name.trim());
-      await refreshPractices();
-      setSelectedPracticeId(created.id);
-      setSelectedAudioId(null);
-      showToast(`练习已创建：${created.name}`);
-    } catch (e: any) {
-      setError(`创建失败：${e?.message ?? e}`);
-    }
-  }, [refreshPractices, showToast, showPrompt]);
-
-  const handleAddAudio = useCallback(async () => {
-    if (!selectedPracticeId) return;
-    setError(null);
-    try {
-      // Pick audio file
-      const audioResult = await DocumentPicker.getDocumentAsync({
-        type: "audio/*",
-        copyToCacheDirectory: true,
-      });
-      if (audioResult.canceled || !audioResult.assets?.length) return;
-      const audioAsset = audioResult.assets[0];
-
-      const defaultName = audioAsset.name.replace(/\.[^.]+$/, "");
-
-      const inputName = await showPrompt("请输入音频名称", defaultName);
-      const name = inputName?.trim() || defaultName;
-      try {
-        const created = await addAudioToPractice(selectedPracticeId, name, audioAsset.uri, "");
-        await refreshPractices();
-        setSelectedAudioId(created.id);
-        showToast(`音频已添加：${name}`);
-      } catch (e: any) {
-        setError(`添加音频失败：${e?.message ?? e}`);
-      }
-    } catch (e: any) {
-      setError(`添加音频失败：${e?.message ?? e}`);
-    }
-  }, [selectedPracticeId, refreshPractices, showToast]);
-
-  const handleUploadSubtitle = useCallback(async (language?: "en" | "zh") => {
-    if (!selectedAudio || subtitleTaskRef.current) return;
-    subtitleTaskRef.current = true;
-    setError(null);
-    setAiStatus("请选择字幕文件…");
-    try {
-      const result = await DocumentPicker.getDocumentAsync({ type: "text/*", copyToCacheDirectory: true });
-      if (result.canceled || !result.assets?.length) return;
-      setAiStatus("正在导入字幕…");
-      const content = await FileSystem.readAsStringAsync(result.assets[0].uri);
-      const imported = parseSubtitleCues(content);
-      if (!imported.length) throw new Error("没有找到带时间轴的字幕，请选择 SRT 或 VTT 文件。");
-      const existing = language && selectedAudio.subtitle_uri
-        ? parseSubtitleCues(await FileSystem.readAsStringAsync(selectedAudio.subtitle_uri)) : [];
-      const cues = language ? mergeSubtitleLanguage(existing, imported, language) : imported;
-      const dir = (await FileSystem.getDocumentDirectoryAsync()) + "listening/";
-      await FileSystem.makeDirectoryAsync(dir);
-      const uri = `${dir}${Date.now()}_import.srt`;
-      await FileSystem.writeFileAsync(uri, serializeSubtitleCues(cues));
-      await updateAudioSubtitle(selectedAudio.id, uri);
-      await loadSubtitle({ ...selectedAudio, subtitle_uri: uri });
-      clearKeyPoints();
-      await refreshPractices();
-      showToast(language ? `${language === "zh" ? "中文" : "英文"}字幕已导入` : "字幕已更新");
-    } catch (e: any) {
-      setError(`添加字幕失败：${e?.message ?? e}`);
-    } finally {
-      subtitleTaskRef.current = false;
-      setAiStatus(null);
-    }
-  }, [selectedAudio, loadSubtitle, clearKeyPoints, refreshPractices, showToast]);
-
-  // Run the configured shell command locally (client machine) and import the
-  // audio files whose paths it prints, e.g. `find ~/Music -name "*.mp3"`.
-  const handleScanImport = useCallback(async () => {
-    if (!selectedPractice) return;
-    const command = (await getSetting("import_command"))?.trim();
-    if (!command) {
-      Alert.alert("未配置导入命令", "请先到「设置 → 命令行导入」填写命令");
-      return;
-    }
-    setScanImporting(true);
-    setError(null);
-    try {
-      const output = await runShellCommand(command);
-      const audioExtensions = new Set([
-        ".mp3", ".m4a", ".wav", ".aac", ".aiff", ".flac", ".ogg", ".mp4", ".mov",
-      ]);
-      const files: Array<{ path: string; name: string }> = [];
-      for (const rawLine of output.split("\n")) {
-        const line = rawLine.trim().replace(/^["']|["']$/g, "");
-        if (!line || line.endsWith("(deleted)")) continue;
-        const dot = line.lastIndexOf(".");
-        const ext = dot === -1 ? "" : line.slice(dot).toLowerCase();
-        if (!audioExtensions.has(ext)) continue;
-        const name = (line.split("/").pop() ?? line).replace(/\.[^.]+$/, "");
-        if (!name) continue;
-        files.push({ path: line, name });
-      }
-      if (files.length === 0) {
-        showToast("命令没有返回音频文件");
-        return;
-      }
-      setScanFiles(files);
-      setScanPreviewVisible(true);
-    } catch (e: any) {
-      setError(`命令导入失败：${e?.message ?? e}`);
-    } finally {
-      setScanImporting(false);
-    }
-  }, [selectedPractice, showToast]);
-
-  // Actually import the previewed files after the user confirms.
-  const confirmScanImport = useCallback(async () => {
-    if (!selectedPractice || scanFiles.length === 0) return;
-    setScanPreviewVisible(false);
-    let imported = 0;
-    let skipped = 0;
-    let lastImportedId: string | null = null;
-    for (const file of scanFiles) {
-      const name = file.name.trim();
-      if (!name) {
-        skipped += 1; // empty name
-        continue;
-      }
-      try {
-        const created = await addAudioToPractice(selectedPractice.id, name, file.path, "");
-        lastImportedId = created.id;
-        imported += 1;
-      } catch {
-        skipped += 1; // duplicate name etc.
-      }
-    }
-    await refreshPractices();
-    setScanFiles([]);
-    if (lastImportedId) setSelectedAudioId(lastImportedId);
-    showToast(
-      skipped > 0
-        ? `已导入 ${imported} 个音频，跳过 ${skipped} 个（重名）`
-        : `已导入 ${imported} 个音频`
-    );
-  }, [selectedPractice, scanFiles, refreshPractices, showToast]);
-
-  // Generate subtitles directly through the configured transcription API.
-  const handleAiSubtitle = useCallback(async () => {
-    if (!selectedAudio || subtitleTaskRef.current) return;
-    subtitleTaskRef.current = true;
-    setError(null);
-    const jobIdRef: { current: string | null } = { current: null };
-    try {
-      const ext = (selectedAudio.audio_uri.split(".").pop() ?? "mp3").toLowerCase();
-      const fileName = `${selectedAudio.name}.${ext}`;
-      setAiStatus("正在准备转写…");
-      const { jobId } = await transcribeAudio(selectedAudio.audio_uri, fileName);
-      jobIdRef.current = jobId;
-      const engine = await getActiveAsrEngine();
-      const engineLabel = engine
-        ? `${ASR_ENGINE_LABELS[engine.backend] ?? engine.backend} ${engine.model}`.trim()
-        : "";
-      setAiStatus(engineLabel ? `正在转写（${engineLabel}）…` : "正在转写…");
-      const srt = await waitForSubtitles(jobId, (progress) => {
-        setAiStatus(`正在转写（${engineLabel}）… ${Math.round(progress * 100)}%`);
-      });
-      const dir = (await FileSystem.getDocumentDirectoryAsync()) + "listening/";
-      await FileSystem.makeDirectoryAsync(dir);
-      const srtUri = `${dir}${Date.now()}_ai.srt`;
-      await FileSystem.writeFileAsync(srtUri, srt);
-      await updateAudioSubtitle(selectedAudio.id, srtUri);
-      await loadSubtitle({ ...selectedAudio, subtitle_uri: srtUri });
-      clearKeyPoints();
-      await refreshPractices();
-      setAiStatus(null);
-      showToast("字幕已生成");
-      // 生成完直接把结果摆到用户面前。
-      setSubtitleViewerCues(parseSubtitleCues(srt));
-      setSubtitleViewerLoading(false);
-      if (isManageMode) setSubtitleViewerVisible(true);
-    } catch (e: any) {
-      setAiStatus(null);
-      setError(`AI 生成字幕失败：${e?.message ?? e}`);
-    } finally {
-      subtitleTaskRef.current = false;
-      if (jobIdRef.current) {
-        deleteJob(jobIdRef.current);
-      }
-    }
-  }, [isManageMode, selectedAudio, loadSubtitle, clearKeyPoints, refreshPractices, showToast]);
-
-  // Actually run the translate-then-swap flow.
-  const runTranslate = useCallback(async () => {
-    if (!selectedAudio || subtitleTaskRef.current) return;
-    subtitleTaskRef.current = true;
-    setError(null);
-    const jobIdRef: { current: string | null } = { current: null };
-    try {
-      const fileName = getFileNameFromUri(selectedAudio.subtitle_uri ?? "");
-      setAiStatus("正在上传字幕…");
-      const { jobId } = await translateSubtitlesFile(
-        selectedAudio.subtitle_uri,
-        fileName,
-        { lang: "zh", mode: "bilingual" }
-      );
-      jobIdRef.current = jobId;
-      const srt = await waitForTranslation(jobId, (message) => setAiStatus(message));
-      const dir = (await FileSystem.getDocumentDirectoryAsync()) + "listening/";
-      await FileSystem.makeDirectoryAsync(dir);
-      const srtUri = `${dir}${Date.now()}_zh.srt`;
-      await FileSystem.writeFileAsync(srtUri, srt);
-      await updateAudioSubtitle(selectedAudio.id, srtUri);
-      await loadSubtitle({ ...selectedAudio, subtitle_uri: srtUri });
-      clearKeyPoints();
-      await refreshPractices();
-      setAiStatus(null);
-      showToast("已生成中英双语字幕");
-      setSubtitleViewerCues(parseSubtitleCues(srt));
-      setSubtitleViewerLoading(false);
-      if (isManageMode) setSubtitleViewerVisible(true);
-    } catch (e: any) {
-      setAiStatus(null);
-      setError(`翻译字幕失败：${e?.message ?? e}`);
-    } finally {
-      subtitleTaskRef.current = false;
-      if (jobIdRef.current) {
-        deleteJob(jobIdRef.current);
-      }
-    }
-  }, [isManageMode, selectedAudio, loadSubtitle, clearKeyPoints, refreshPractices, showToast]);
-
-  // 直接翻看当前音频的字幕转录结果（生成/导入后均可查看）。
-  const openSubtitleViewer = useCallback(async () => {
-    if (!selectedAudio?.subtitle_uri) return;
-    // 盲听中字幕查看器不得打开(§4.1);入口在管理模式,防御性拦截。
-    if (blindMachineRef.current?.isBlind()) return;
-    setSubtitleViewerVisible(true);
-    setSubtitleViewerLoading(true);
-    try {
-      const content = await FileSystem.readAsStringAsync(selectedAudio.subtitle_uri);
-      setSubtitleViewerCues(parseSubtitleCues(content));
-    } catch (e: any) {
-      setSubtitleViewerCues([]);
-      setError(`读取字幕失败：${e?.message ?? e}`);
-    } finally {
-      setSubtitleViewerLoading(false);
-    }
-  }, [selectedAudio]);
-
-  const copySubtitleViewerText = useCallback(() => {
-    const text = subtitleViewerCues.map((cue) => cue.text).join("\n");
-    if (!text) {
-      showToast("字幕内容为空");
-      return;
-    }
-    if (!copyToClipboard(text)) {
-      showToast("当前设备暂不支持复制");
-      return;
-    }
-    showToast("已复制字幕文本");
-  }, [subtitleViewerCues, showToast]);
-
-  // Translate the current subtitle through the configured model API.
-  // Provider credentials belong to this device.
-  // If the current subtitle is already a generated translation, confirm  // before overwriting the old one.
-  const handleTranslateSubtitle = useCallback(async () => {
-    if (!selectedAudio?.subtitle_uri) return;
-    const currentName = getFileNameFromUri(selectedAudio.subtitle_uri);
-    if (/_zh\.srt$/i.test(currentName)) {
-      Alert.alert(
-        "重新翻译",
-        "当前字幕已是翻译版本，重新翻译会覆盖旧的中文翻译。继续吗？",
-        [
-          { text: "取消", style: "cancel" },
-          { text: "重新翻译", onPress: () => void runTranslate() },
-        ]
-      );
-      return;
-    }
-    await runTranslate();
-  }, [selectedAudio, runTranslate]);
-
-  const handleRenamePractice = useCallback(async (name: string) => {
-    if (!selectedPractice || !name.trim() || name.trim() === selectedPractice.name) return;
-    await renameListeningPractice(selectedPractice.id, name.trim());
-    await refreshPractices();
-    showToast("练习组已重命名");
-  }, [selectedPractice, refreshPractices, showToast]);
-
-  const handleRenameAudio = useCallback(async (name: string) => {
-    if (!selectedAudio || !name.trim() || name.trim() === selectedAudio.name) return;
-    await renameListeningAudio(selectedAudio.id, name.trim());
-    await refreshPractices();
-    showToast("音频已重命名");
-  }, [selectedAudio, refreshPractices, showToast]);
-
-  // Best-effort removal of copied audio/subtitle files inside the app data dir.
-  const cleanupFiles = useCallback(async (uris: string[]) => {
-    if (uris.length === 0) return;
-    try {
-      const base = await FileSystem.getDocumentDirectoryAsync();
-      for (const uri of uris) {
-        if (uri && uri.startsWith(base)) {
-          try {
-            await FileSystem.deleteAsync(uri);
-          } catch {
-            // file already gone — ignore
-          }
-        }
-      }
-    } catch {
-      // base dir unavailable — skip cleanup
-    }
-  }, []);
-
-  const handleDeletePractice = useCallback(async () => {
-    if (!selectedPractice) return;
-    await unloadSound();
-    const files = await deleteListeningPractice(selectedPractice.id);
-    await cleanupFiles(files);
-    setSelectedPracticeId(null);
-    setSelectedAudioId(null);
-    setSubtitleCues([]);
-    await refreshPractices();
-    showToast("练习组已删除");
-  }, [selectedPractice, unloadSound, refreshPractices, showToast, cleanupFiles, setSubtitleCues]);
-
-  const handleDeleteAudio = useCallback(async () => {
-    if (!selectedAudio) return;
-    await unloadSound();
-    const files = await deleteListeningAudio(selectedAudio.id);
-    await cleanupFiles(files);
-    setSelectedAudioId(null);
-    setSubtitleCues([]);
-    await refreshPractices();
-    showToast("音频已删除");
-  }, [selectedAudio, unloadSound, refreshPractices, showToast, cleanupFiles, setSubtitleCues]);
-
-  // ── Batch practice management ───────────────────────────────────────────────
-
-  const allBatchSelected = practices.length > 0 && batchSelected.length === practices.length;
-
-  const toggleBatchMode = useCallback(() => {
-    setBatchMode((v) => !v);
-    setBatchSelected([]);
-  }, []);
-
-  const toggleBatchItem = useCallback((id: string) => {
-    setBatchSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  }, []);
-
-  const toggleBatchAll = useCallback(() => {
-    setBatchSelected(allBatchSelected ? [] : practices.map((p) => p.id));
-  }, [allBatchSelected, practices]);
-
-  const handleBatchDelete = useCallback(() => {
-    if (batchSelected.length === 0) return;
-    Alert.alert(
-      "删除练习组",
-      `确认删除所选 ${batchSelected.length} 个练习组及其全部音频？`,
-      [
-        { text: "取消", style: "cancel" },
-        {
-          text: "删除",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              if (selectedPracticeId && batchSelected.includes(selectedPracticeId)) {
-                await unloadSound();
-                setSelectedPracticeId(null);
-                setSelectedAudioId(null);
-                setSubtitleCues([]);
-              }
-              const deletedFiles: string[] = [];
-              for (const id of batchSelected) {
-                deletedFiles.push(...(await deleteListeningPractice(id)));
-              }
-              await cleanupFiles(deletedFiles);
-              await refreshPractices();
-              setBatchSelected([]);
-              setBatchMode(false);
-              showToast(`已删除 ${batchSelected.length} 个练习组`);
-            } catch (e: any) {
-              setError(`批量删除失败：${e?.message ?? e}`);
-            }
-          },
-        },
-      ]
-    );
-  }, [batchSelected, selectedPracticeId, unloadSound, refreshPractices, showToast, cleanupFiles, setSubtitleCues]);
-
-  // ── Batch audio management ──────────────────────────────────────────────
-
-  const allBatchAudioSelected =
-    !!selectedPractice &&
-    selectedPractice.audios.length > 0 &&
-    batchAudioSelected.length === selectedPractice.audios.length;
-
-  const toggleBatchAudioMode = useCallback(() => {
-    setBatchAudioMode((visible) => !visible);
-    setBatchAudioSelected([]);
-  }, []);
-
-  const toggleBatchAudioItem = useCallback((id: string) => {
-    setBatchAudioSelected((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    );
-  }, []);
-
-  const toggleBatchAudioAll = useCallback(() => {
-    const audios = selectedPractice?.audios ?? [];
-    setBatchAudioSelected(allBatchAudioSelected ? [] : audios.map((audio) => audio.id));
-  }, [allBatchAudioSelected, selectedPractice]);
-
-  const handleBatchAudioDelete = useCallback(() => {
-    if (batchAudioSelected.length === 0) return;
-    Alert.alert(
-      "删除音频",
-      `确认删除所选 ${batchAudioSelected.length} 个音频及其字幕文件？`,
-      [
-        { text: "取消", style: "cancel" },
-        {
-          text: "删除",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              if (selectedAudioId && batchAudioSelected.includes(selectedAudioId)) {
-                await unloadSound();
-                setSelectedAudioId(null);
-                setSubtitleCues([]);
-              }
-              const deletedFiles: string[] = [];
-              for (const id of batchAudioSelected) {
-                deletedFiles.push(...(await deleteListeningAudio(id)));
-              }
-              await cleanupFiles(deletedFiles);
-              await refreshPractices();
-              setBatchAudioSelected([]);
-              setBatchAudioMode(false);
-              showToast(`已删除 ${batchAudioSelected.length} 个音频`);
-            } catch (e: any) {
-              setError(`批量删除失败：${e?.message ?? e}`);
-            }
-          },
-        },
-      ]
-    );
-  }, [batchAudioSelected, selectedAudioId, unloadSound, cleanupFiles, refreshPractices, showToast, setSubtitleCues]);
-
-  // Concatenate the selected audios (in practice order) into one new audio so
-  // short recordings can be studied as a single continuous item. Subtitles are
-  // re-based on each segment's real duration and stored as one SRT file.
-  const mergeSelectedAudios = useCallback(
-    async (chosen: ListeningAudio[], name: string) => {
-      if (!selectedPractice) return;
-      setMergingAudios(true);
-      setError(null);
-      try {
-        const documentDir = await FileSystem.getDocumentDirectoryAsync();
-        const directory = `${documentDir}Clarora/Merged`;
-        await FileSystem.makeDirectoryAsync(directory);
-        const base = `${directory}/merged_${Date.now()}`;
-        const audioUri = `${base}.m4a`;
-        const merged = await mergeAudios(
-          chosen.map((audio) => audio.audio_uri),
-          audioUri
-        );
-
-        let subtitleUri = "";
-        const cues: SubtitleCue[] = [];
-        let offsetMs = 0;
-        for (let index = 0; index < chosen.length; index++) {
-          const audio = chosen[index];
-          if (audio.subtitle_uri) {
-            try {
-              const content = await FileSystem.readAsStringAsync(audio.subtitle_uri);
-              for (const cue of parseSubtitleCues(content)) {
-                cues.push({
-                  ...cue,
-                  start: (cue.start * 1000 + offsetMs) / 1000,
-                  end: (cue.end * 1000 + offsetMs) / 1000,
-                });
-              }
-            } catch {
-              // One unreadable subtitle should not fail the whole merge.
-            }
-          }
-          offsetMs += merged.segmentDurationMs[index] ?? 0;
-        }
-        if (cues.length > 0) {
-          subtitleUri = `${base}.srt`;
-          await FileSystem.writeFileAsync(subtitleUri, serializeSrt(cues));
-        }
-
-        const created = await addAudioToPractice(selectedPractice.id, name, audioUri, subtitleUri);
-        await refreshPractices();
-        setBatchAudioSelected([]);
-        setBatchAudioMode(false);
-        setSelectedAudioId(created.id);
-        showToast(`已合并为「${name}」`);
-      } catch (e: any) {
-        setError(`合并失败：${e?.message ?? e}`);
-      } finally {
-        setMergingAudios(false);
-      }
-    },
-    [selectedPractice, refreshPractices, showToast]
-  );
-
-  const handleBatchAudioMerge = useCallback(() => {
-    if (Platform.OS !== "macos" && Platform.OS !== "windows") {
-      showToast("合并音频请在桌面端操作");
-      return;
-    }
-    if (!selectedPractice || mergingAudios) return;
-    // Practice order (导入顺序) — the order shown in the list is the order
-    // that will play in the merged audio.
-    const chosen = selectedPractice.audios.filter((audio) =>
-      batchAudioSelected.includes(audio.id)
-    );
-    if (chosen.length < 2) {
-      showToast("请至少选择两个音频");
-      return;
-    }
-    const defaultName = `合并 · ${chosen[0].name} 等${chosen.length}篇`;
-    void (async () => {
-      const name = await showPrompt("请输入合并后的音频名称", defaultName);
-      if (!name?.trim()) return;
-      Alert.alert(
-        "合并音频",
-        `将按以下顺序拼接成一个音频（原音频保留）：\n${chosen
-          .map((audio, index) => `${index + 1}. ${audio.name}`)
-          .join("\n")}`,
-        [
-          { text: "取消", style: "cancel" },
-          { text: "开始合并", onPress: () => void mergeSelectedAudios(chosen, name.trim()) },
-        ]
-      );
-    })();
-  }, [selectedPractice, batchAudioSelected, mergingAudios, mergeSelectedAudios, showPrompt, showToast]);
-
-  const showPracticeMenu = useCallback(() => {
-    if (selectedPractice) setLibraryMenu("practice");
-  }, [selectedPractice]);
-  const showAudioMenu = useCallback(() => {
-    if (selectedAudio) setLibraryMenu("audio");
-  }, [selectedAudio]);
 
   // Save the current loop segment as a review flashcard.
   const saveLoopToFlashcards = useCallback(async () => {
@@ -2393,24 +1246,10 @@ export default function ListeningScreen({
     catch (error: any) { setError(`切换音频失败：${error?.message ?? error}`); }
     finally { setSwitchingAudio(false); }
   };
-  const selectLibraryItem = async (practice: ListeningPractice, audio?: ListeningAudio) => {
-    if (switchingAudio || aiStatus || scanImporting) return;
-    setSwitchingAudio(true);
-    try {
-      if (audio) await selectAudioItem(practice, audio);
-      else {
-        setSelectedPracticeId(practice.id);
-        setSelectedAudioId(null);
-        await unloadSound();
-        setSubtitleCues([]);
-      }
-    } catch (error: any) { setError(`切换音频失败：${error?.message ?? error}`); }
-    finally { setSwitchingAudio(false); }
-  };
   const [studyWidth, setStudyWidth] = useState(1000);
   const [showCurrentCue, setShowCurrentCue] = useState(false);
   const compactStudy = studyWidth < 760;
-  const styles = makeStyles(theme, subtitleSize);
+  const styles = makeListeningStyles(theme, subtitleSize);
   const hitTrigger = (ref: { current: View | null }, pageX: number, pageY: number) =>
     new Promise<boolean>(resolve => {
       if (!ref.current) { resolve(false); return; }
@@ -2472,12 +1311,11 @@ export default function ListeningScreen({
       onLayout={event => setStudyWidth(event.nativeEvent.layout.width)}
     >
       <StatusBar barStyle={scheme === "dark" ? "light-content" : "dark-content"} />
-      <View style={[styles.screenBody, !isManageMode && styles.studyScreenBody]}>
-        {!isManageMode && (showPracticePicker || showAudioPicker) && <Pressable
+      <View style={[styles.screenBody, styles.studyScreenBody]}>
+        {(showPracticePicker || showAudioPicker) && <Pressable
           accessibilityRole="button" accessibilityLabel="关闭音频选择列表"
           style={[StyleSheet.absoluteFill, { zIndex: 5 }]}
           onPress={() => { setShowPracticePicker(false); setShowAudioPicker(false); setActiveSettings(null); }} />}
-        {!isManageMode && (
           <View style={styles.focusSidebar}>
             <View style={[styles.focusSelectorRow, compactStudy && styles.focusSelectorRowCompact]}>
               <View style={styles.focusSelectorSection}>
@@ -2636,147 +1474,15 @@ export default function ListeningScreen({
               </View>
             </View>
           </View>
-        )}
 
-        <View style={[styles.container, !isManageMode && styles.studyContainer]}>
-          {/* Management header stays above the management workspace. */}
-          {isManageMode && (
-            <View style={styles.header}>
-              <View style={styles.headerCopy}>
-                <Text style={styles.title}>音频管理</Text>
-                <Text style={styles.subtitle}>
-                  {Platform.OS === "android"
-                    ? "浏览同步的练习组与音频，直接开始学习。"
-                    : "整理练习组、导入音频，并集中处理字幕。"}
-                </Text>
-              </View>
-            </View>
-          )}
-
+        <View style={[styles.container, styles.studyContainer]}>
           {error && (
             <View style={styles.errorBanner}>
               <Text style={styles.errorText}>{error}</Text>
             </View>
           )}
 
-          {isManageMode && <AudioLibraryManager
-            subtitleKinds={subtitleKinds}
-            practices={practices} practice={selectedPractice} audio={selectedAudio}
-            busy={switchingAudio || !!aiStatus || scanImporting} status={aiStatus}
-            onSelectPractice={practice => { void selectLibraryItem(practice, practice.audios[0]); }}
-            onSelectAudio={audio => { if (selectedPractice) void selectLibraryItem(selectedPractice, audio); }}
-            onStart={selectedPractice && selectedAudio && onStartStudy ? () => onStartStudy(selectedPractice.id, selectedAudio.id) : undefined}
-            onCreate={handleCreatePractice} onAdd={handleAddAudio}
-            onPracticeMenu={showPracticeMenu} onAudioMenu={showAudioMenu}
-            onBatch={toggleBatchAudioMode}
-            onGenerate={handleAiSubtitle} onView={() => { void openSubtitleViewer(); }}
-            onTranslate={handleTranslateSubtitle} onUploadSubtitle={() => void handleUploadSubtitle()}
-            advanced={<View style={{ gap: 10 }}>
-              {!!activeAsrModel && <Text style={styles.toolRowCaption}>当前模型：{activeAsrModel.split(/[\\/]/).pop()}</Text>}
-              {Platform.OS === 'macos' && canUseCommandImport && <Pressable
-                accessibilityRole="button" disabled={!selectedPractice || scanImporting || !!aiStatus}
-                style={[styles.toolRow, (!selectedPractice || scanImporting || !!aiStatus) && styles.toolBtnDisabled]}
-                onPress={handleScanImport}>
-                <Text style={styles.toolRowTitle}>{scanImporting ? '导入中…' : '从命令导入音频'}</Text>
-                <Text style={styles.toolRowCaption}>导入到当前练习组</Text>
-              </Pressable>}
-              {<Pressable accessibilityRole="button" accessibilityState={{ expanded: showEnginePicker }}
-                disabled={!!aiStatus || asrEnginesLoading} style={[styles.toolRow, (!!aiStatus || asrEnginesLoading) && styles.toolBtnDisabled]}
-                onPress={() => { setShowEnginePicker(value => !value); if (!showEnginePicker) void loadAsrEngines(); }}>
-                <Text style={styles.toolRowTitle}>转写引擎</Text>
-                <Text style={styles.toolRowCaption}>{asrEnginesLoading ? '读取中…' : ASR_ENGINE_LABELS[activeAsrBackend ?? ''] ?? '选择引擎'}</Text>
-              </Pressable>}
-        {/* 转写 API 状态：模型与地址在设置中配置。 */}
-        {isManageMode && showEnginePicker && (
-          <View style={styles.dropdown}>
-            {asrEngines.map((engine) => (
-              <Pressable
-                key={engine.backend}
-                style={[
-                  styles.dropdownItem,
-                  engine.backend === activeAsrBackend && styles.dropdownItemActive,
-                  !engine.available && styles.toolBtnDisabled,
-                ]}
-                onPress={() => {
-                  void selectAsrEngine(engine);
-                  setShowEnginePicker(false);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.dropdownItemText,
-                    engine.backend === activeAsrBackend && styles.dropdownItemTextActive,
-                  ]}
-                >
-                  {engine.label || engine.backend}
-                  {engine.backend === activeAsrBackend ? " ✓" : ""}
-                </Text>
-                <Text style={styles.dropdownEngineMeta}>
-                  {engine.available
-                    ? `${engine.model}（${engine.device}）`
-                    : engine.reason || "当前环境不可用"}
-                </Text>
-              </Pressable>
-            ))}
-            {asrEngines.length === 0 && (
-              <Text style={styles.dropdownEmpty}>
-                {asrEnginesLoading ? "读取中…" : "暂无可用的转写引擎"}
-              </Text>
-            )}
-          </View>
-        )}
 
-
-            </View>}
-          />}
-
-        {/* 字幕查看器：生成/导入的结果就地翻看，点空白处关闭。 */}
-        {subtitleViewerVisible && (
-          <Pressable
-            style={styles.subtitleViewerScrim}
-            onPress={() => setSubtitleViewerVisible(false)}
-          >
-            <Pressable style={styles.subtitleViewerPanel} onPress={() => {}}>
-              <View style={styles.subtitleViewerHeader}>
-                <Text style={styles.subtitleViewerTitle} numberOfLines={1}>
-                  字幕内容{selectedAudio ? ` · ${selectedAudio.name}` : ""}
-                </Text>
-                <View style={styles.subtitleViewerActions}>
-                  <Pressable style={styles.subtitleViewerBtn} onPress={copySubtitleViewerText}>
-                    <Text style={styles.subtitleViewerBtnText}>复制</Text>
-                  </Pressable>
-                  <Pressable
-                    style={styles.subtitleViewerBtn}
-                    onPress={() => setSubtitleViewerVisible(false)}
-                  >
-                    <Text style={styles.subtitleViewerBtnText}>关闭</Text>
-                  </Pressable>
-                </View>
-              </View>
-              {subtitleViewerLoading ? (
-                <Text style={styles.subtitleViewerLoading}>加载中…</Text>
-              ) : (
-                <ScrollView style={styles.subtitleViewerScroll} nestedScrollEnabled>
-                  {subtitleViewerCues.map((cue, index) => (
-                    <View key={`${index}-${cue.start}`} style={styles.subtitleViewerCue}>
-                      <Text style={styles.subtitleViewerTime}>
-                        {formatTime(cue.start)} → {formatTime(cue.end)}
-                      </Text>
-                      <Text style={styles.subtitleViewerText}>{cue.text}</Text>
-                    </View>
-                  ))}
-                  {subtitleViewerCues.length === 0 && (
-                    <Text style={styles.subtitleViewerLoading}>字幕内容为空</Text>
-                  )}
-                </ScrollView>
-              )}
-            </Pressable>
-          </Pressable>
-        )}
-
-
-        {!isManageMode && (
-          <>
           {selectedAudio && (
           <View style={styles.presentationToggleRow} accessibilityRole="tablist">
             <Pressable accessibilityRole="tab" accessibilityState={{ selected: blind.presentation === 'subtitles' }}
@@ -3197,218 +1903,6 @@ export default function ListeningScreen({
             )}
           </View>
           )}
-          </>
-        )}
-
-        {/* Batch management overlay */}
-        {isManageMode && batchMode && (
-          <View style={styles.batchOverlay}>
-            <View style={styles.batchBox}>
-              <Text style={styles.batchTitle}>批量管理练习组</Text>
-              <Text style={styles.batchSubtitle}>
-                共 {practices.length} 组 · 已选 {batchSelected.length} 组
-              </Text>
-              <ScrollView style={styles.batchList}>
-                {practices.map((p) => {
-                  const checked = batchSelected.includes(p.id);
-                  return (
-                    <Pressable
-                      key={p.id}
-                      style={styles.batchItem}
-                      onPress={() => toggleBatchItem(p.id)}
-                    >
-                      <View style={[styles.batchCheckbox, checked && styles.batchCheckboxChecked]}>
-                        {checked ? <Text style={styles.batchCheckMark}>✓</Text> : null}
-                      </View>
-                      <Text style={styles.batchItemName} numberOfLines={1}>
-                        {p.name}
-                      </Text>
-                      <Text style={styles.batchItemCount}>{p.audios.length} 音频</Text>
-                    </Pressable>
-                  );
-                })}
-                {practices.length === 0 && (
-                  <Text style={styles.dropdownEmpty}>暂无练习组</Text>
-                )}
-              </ScrollView>
-              <View style={styles.batchActions}>
-                <Pressable style={styles.batchBtnGhost} onPress={toggleBatchAll}>
-                  <Text style={styles.batchBtnGhostText}>{allBatchSelected ? "全不选" : "全选"}</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.batchBtnDanger, batchSelected.length === 0 && styles.batchBtnDisabled]}
-                  onPress={handleBatchDelete}
-                  disabled={batchSelected.length === 0}
-                >
-                  <Text style={styles.batchBtnDangerText}>删除所选</Text>
-                </Pressable>
-                <Pressable style={styles.batchBtnPrimary} onPress={toggleBatchMode}>
-                  <Text style={styles.batchBtnPrimaryText}>完成</Text>
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        )}
-
-        {/* Batch audio management overlay */}
-        {isManageMode && batchAudioMode && selectedPractice && (
-          <View style={styles.batchOverlay}>
-            <View style={styles.batchBox}>
-              <Text style={styles.batchTitle}>批量管理音频</Text>
-              <Text style={styles.batchSubtitle}>
-                「{selectedPractice.name}」共 {selectedPractice.audios.length} 个 · 已选{" "}
-                {batchAudioSelected.length} 个
-              </Text>
-              <ScrollView style={styles.batchList}>
-                {selectedPractice.audios.map((audio) => {
-                  const checked = batchAudioSelected.includes(audio.id);
-                  return (
-                    <Pressable
-                      key={audio.id}
-                      style={styles.batchItem}
-                      onPress={() => toggleBatchAudioItem(audio.id)}
-                    >
-                      <View
-                        style={[styles.batchCheckbox, checked && styles.batchCheckboxChecked]}
-                      >
-                        {checked ? <Text style={styles.batchCheckMark}>✓</Text> : null}
-                      </View>
-                      <Text style={styles.batchItemName} numberOfLines={1}>
-                        {audio.name}
-                      </Text>
-                      <Text style={styles.batchItemCount}>
-                        {audio.subtitle_uri ? "有字幕" : "无字幕"}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-                {selectedPractice.audios.length === 0 && (
-                  <Text style={styles.dropdownEmpty}>该组暂无音频</Text>
-                )}
-              </ScrollView>
-              <View style={styles.batchActions}>
-                <Pressable style={styles.batchBtnGhost} onPress={toggleBatchAudioAll}>
-                  <Text style={styles.batchBtnGhostText}>
-                    {allBatchAudioSelected ? "全不选" : "全选"}
-                  </Text>
-                </Pressable>
-                {Platform.OS === "macos" && (
-                  <Pressable
-                    style={[
-                      styles.batchBtnPrimary,
-                      (batchAudioSelected.length < 2 || mergingAudios) && styles.batchBtnDisabled,
-                    ]}
-                    onPress={handleBatchAudioMerge}
-                    disabled={batchAudioSelected.length < 2 || mergingAudios}
-                  >
-                    <Text style={styles.batchBtnPrimaryText}>
-                      {mergingAudios ? "合并中…" : "合并所选"}
-                    </Text>
-                  </Pressable>
-                )}
-                <Pressable
-                  style={[
-                    styles.batchBtnDanger,
-                    batchAudioSelected.length === 0 && styles.batchBtnDisabled,
-                  ]}
-                  onPress={handleBatchAudioDelete}
-                  disabled={batchAudioSelected.length === 0}
-                >
-                  <Text style={styles.batchBtnDangerText}>删除所选</Text>
-                </Pressable>
-                <Pressable style={styles.batchBtnPrimary} onPress={toggleBatchAudioMode}>
-                  <Text style={styles.batchBtnPrimaryText}>完成</Text>
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        )}
-
-        {/* Scan import confirmation */}
-        {isManageMode && scanPreviewVisible && (
-          <View style={styles.batchOverlay}>
-            <View style={styles.batchBox}>
-              <Text style={styles.batchTitle}>确认导入音频</Text>
-              <Text style={styles.batchSubtitle}>
-                命令返回 {scanFiles.length} 个音频 · 导入到「{selectedPractice?.name}」
-              </Text>
-              <ScrollView style={styles.batchList}>
-                {scanFiles.map((file, idx) => (
-                  <View key={file.path} style={styles.scanFileItem}>
-                    <Text style={styles.scanFileLabel}>音频名称</Text>
-                    <TextInput
-                      style={styles.scanNameInput}
-                      value={file.name}
-                      onChangeText={(text) =>
-                        setScanFiles((prev) =>
-                          prev.map((f, i) => (i === idx ? { ...f, name: text } : f))
-                        )
-                      }
-                      placeholder="音频名称"
-                      placeholderTextColor={theme.textMuted}
-                    />
-                    <Text
-                      style={styles.scanFilePath}
-                      numberOfLines={2}
-                      ellipsizeMode="middle"
-                    >
-                      {file.path}
-                    </Text>
-                  </View>
-                ))}
-              </ScrollView>
-              <View style={styles.batchActions}>
-                <Pressable
-                  style={[styles.batchBtnPrimary, { flex: 1 }]}
-                  onPress={confirmScanImport}
-                >
-                  <Text style={styles.batchBtnPrimaryText}>确认导入</Text>
-                </Pressable>
-                <Pressable style={styles.batchBtnGhost} onPress={() => setScanPreviewVisible(false)}>
-                  <Text style={styles.batchBtnGhostText}>取消</Text>
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        )}
-
-        {libraryMenu && (
-          <LibraryActionMenu
-            key={libraryMenu}
-            kind={libraryMenu}
-            name={(libraryMenu === "audio" ? selectedAudio?.name : selectedPractice?.name) || ""}
-            onClose={() => setLibraryMenu(null)}
-            onRename={libraryMenu === "audio" ? handleRenameAudio : handleRenamePractice}
-            onDelete={libraryMenu === "audio" ? handleDeleteAudio : handleDeletePractice}
-            onBatch={libraryMenu === "audio" ? toggleBatchAudioMode : toggleBatchMode}
-          />
-        )}
-
-        {/* Prompt */}
-        {promptVisible && (
-          <View style={styles.modalOverlay}>
-            <Pressable style={styles.modalDismissArea} onPress={handlePromptCancel} />
-            <View style={styles.modalBox}>
-              <Text style={styles.modalTitle}>{promptTitle}</Text>
-              <TextInput
-                style={styles.modalInput}
-                value={promptValue}
-                onChangeText={setPromptValue}
-                onSubmitEditing={handlePromptConfirm}
-                placeholderTextColor={theme.textSecondary}
-              />
-              <View style={styles.modalActions}>
-                <Pressable style={styles.modalBtnPrimary} onPress={handlePromptConfirm}>
-                  <Text style={styles.modalBtnPrimaryText}>确定</Text>
-                </Pressable>
-                <Pressable style={styles.modalBtnGhost} onPress={handlePromptCancel}>
-                  <Text style={styles.modalBtnGhostText}>取消</Text>
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        )}
-
         {/* Toast */}
         {toast && (
           <View style={styles.toast}>
@@ -3420,816 +1914,4 @@ export default function ListeningScreen({
     </View>
     </PopoverRoot>
   );
-}
-
-function makeStyles(
-  theme: ReturnType<typeof useAppTheme>["theme"],
-  subtitleSize = 14
-) {
-  const ui = learningDesign(theme);
-  return StyleSheet.create({
-    safeArea: { flex: 1, backgroundColor: theme.bg },
-    screenBody: { flex: 1 },
-    studyScreenBody: { flexDirection: 'column' },
-    container: {
-      flex: 1,
-      paddingHorizontal: 18,
-      paddingTop: 18,
-    },
-    studyContainer: { paddingTop: 8, paddingBottom: 6, minHeight: 0 },
-    focusSidebar: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: theme.surface, borderBottomWidth: 1, borderBottomColor: theme.border, zIndex: 30 },
-    focusSelectorRow: { flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 220, gap: 8, zIndex: 2 },
-    focusSelectorRowCompact: { flexBasis: '100%' },
-    focusSelectorSection: { flex: 1, minWidth: 0, position: 'relative' },
-    studyHeaderActions: { flexDirection: 'row', flexGrow: 1, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
-    studyHeadingActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginLeft: 'auto' },
-    studySkipRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-    studySkipBtn: { minWidth: 34, minHeight: Platform.OS === 'ios' || Platform.OS === 'android' ? 44 : 34, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
-    studySkipText: { color: theme.accent, fontSize: 22, fontWeight: '600' },
-    studyPageText: { color: theme.textMuted, fontSize: 11, fontVariant: ['tabular-nums'] },
-    studyExitBtn: { minHeight: Platform.OS === 'ios' || Platform.OS === 'android' ? 44 : 34, justifyContent: 'center', paddingHorizontal: 8, borderRadius: 8 },
-    studyExitText: { color: theme.textSecondary, fontSize: 12 },
-    studyStatus: { color: theme.accent, fontSize: 12, paddingVertical: 4 },
-    subtitleSettingRow: { minHeight: Platform.OS === 'android' ? 48 : 44, justifyContent: 'center' },
-    focusSelectorBtn: { flexDirection: 'row', alignItems: 'center', minHeight: Platform.OS === 'android' ? 48 : Platform.OS === 'ios' ? 44 : 34, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, backgroundColor: theme.surfaceHover },
-    focusSelectorBtnDisabled: { opacity: 0.52 },
-    focusSelectorBtnText: {
-      flex: 1,
-      color: theme.text,
-      fontSize: 13,
-      fontWeight: "600",
-    },
-    focusSelectorArrow: { color: theme.textMuted, fontSize: 12, marginLeft: 6 },
-    focusDropdown: {
-      position: 'absolute',
-      top: '100%',
-      left: 0,
-      right: 0,
-      maxHeight: 220,
-      marginTop: 6,
-      zIndex: 20,
-      elevation: 8,
-      borderRadius: 12,
-      borderWidth: 1,
-      borderColor: theme.border,
-      backgroundColor: theme.surface,
-    },
-    focusDropdownItem: {
-      paddingVertical: 10,
-      paddingHorizontal: 11,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: theme.border,
-    },
-    focusDropdownItemActive: { backgroundColor: theme.surfaceHover },
-    focusDropdownItemText: { color: theme.text, fontSize: 13 },
-    focusDropdownItemTextActive: { color: theme.accent, fontWeight: "700" },
-    focusDropdownEmpty: {
-      color: theme.textMuted,
-      fontSize: 12,
-      textAlign: "center",
-      paddingVertical: 14,
-    },
-    header: {
-      flexDirection: "row",
-      alignItems: "flex-start",
-      justifyContent: "space-between",
-      gap: 20,
-      ...ui.header,
-    },
-    headerCopy: { flex: 1, alignItems: "flex-start" },
-    eyebrow: {
-      color: theme.accent,
-      fontSize: 11,
-      fontWeight: "700",
-      marginBottom: 7,
-      ...ui.eyebrow,
-    },
-    title: {
-      ...ui.title,
-    },
-    subtitle: {
-      ...ui.subtitle,
-    },
-    exitStudyBtn: {
-      alignItems: "center",
-      paddingVertical: 8,
-      paddingHorizontal: 14,
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: theme.border,
-      backgroundColor: theme.sidebarActive,
-    },
-    exitStudyBtnText: { color: theme.sidebarText, fontSize: 13, fontWeight: "600" },
-    buttonPressed: { opacity: 0.72 },
-    errorBanner: {
-      backgroundColor: `${theme.danger}14`,
-      borderRadius: 10,
-      paddingVertical: 8,
-      paddingHorizontal: 14,
-      marginBottom: 10,
-    },
-    errorText: { color: theme.danger, fontSize: 13, textAlign: "center" },
-
-    // Batch management
-    manageBtn: {
-      paddingVertical: 9,
-      paddingHorizontal: 12,
-      borderWidth: 1,
-      borderColor: theme.border,
-      backgroundColor: theme.surface,
-      ...ui.button,
-    },
-    manageBtnText: { color: theme.textSecondary, fontSize: 12, fontWeight: "600" },
-    aiStatus: {
-      alignItems: "center",
-      paddingVertical: 8,
-      marginBottom: 8,
-      borderRadius: 6,
-      backgroundColor: `${theme.accent}14`,
-    },
-    aiStatusText: { color: theme.accent, fontSize: 13, fontWeight: "600" },
-    batchOverlay: {
-      position: "absolute",
-      top: 0,
-      right: 0,
-      bottom: 0,
-      left: 0,
-      backgroundColor: "rgba(0,0,0,0.45)",
-      justifyContent: "center",
-      alignItems: "center",
-      padding: 32,
-    },
-    batchBox: {
-      width: "100%",
-      maxWidth: 480,
-      backgroundColor: theme.surface,
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: theme.border,
-      padding: 20,
-      ...theme.cardShadow,
-    },
-    batchTitle: { fontSize: 18, fontWeight: "700", color: theme.text },
-    batchSubtitle: { fontSize: 12, color: theme.textSecondary, marginTop: 4, marginBottom: 12 },
-    batchList: {
-      maxHeight: 320,
-      borderWidth: 1,
-      borderColor: theme.border,
-      borderRadius: 6,
-    },
-    batchItem: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 10,
-      paddingVertical: 10,
-      paddingHorizontal: 12,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: theme.border,
-    },
-    batchCheckbox: {
-      width: 20,
-      height: 20,
-      borderRadius: 4,
-      borderWidth: 1.5,
-      borderColor: theme.textMuted,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    batchCheckboxChecked: { backgroundColor: theme.accent, borderColor: theme.accent },
-    batchCheckMark: { color: "#fff", fontSize: 13, fontWeight: "700" },
-    batchItemName: { flex: 1, color: theme.text, fontSize: 14, fontWeight: "500" },
-    batchItemCount: { color: theme.textMuted, fontSize: 11 },
-    scanFileItem: {
-      paddingVertical: 10,
-      paddingHorizontal: 12,
-      gap: 6,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: theme.border,
-    },
-    scanFileLabel: {
-      color: theme.textMuted,
-      fontSize: 10,
-    },
-    scanNameInput: {
-      borderWidth: 1,
-      borderColor: theme.border,
-      borderRadius: 6,
-      backgroundColor: theme.bg,
-      color: theme.text,
-      fontSize: 13,
-      paddingVertical: 7,
-      paddingHorizontal: 10,
-    },
-    scanFilePath: {
-      color: theme.textSecondary,
-      fontSize: 12,
-      fontFamily: "Menlo",
-      lineHeight: 16,
-    },
-    batchActions: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 14 },
-    batchBtnGhost: {
-      paddingVertical: 8,
-      paddingHorizontal: 14,
-      borderRadius: 6,
-      borderWidth: 1,
-      borderColor: theme.border,
-    },
-    batchBtnGhostText: { color: theme.textSecondary, fontSize: 13, fontWeight: "500" },
-    batchBtnDanger: {
-      flex: 1,
-      alignItems: "center",
-      backgroundColor: theme.danger,
-      paddingVertical: 8,
-      paddingHorizontal: 14,
-      borderRadius: 6,
-    },
-    batchBtnDangerText: { color: "#fff", fontSize: 13, fontWeight: "600" },
-    batchBtnPrimary: {
-      backgroundColor: theme.accent,
-      paddingVertical: 8,
-      paddingHorizontal: 14,
-      borderRadius: 6,
-    },
-    batchBtnPrimaryText: { color: "#fff", fontSize: 13, fontWeight: "600" },
-    batchBtnDisabled: { opacity: 0.4 },
-
-    // Selectors
-    selectorRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 8,
-      marginBottom: 10,
-    },
-    toolsList: {
-      borderRadius: 14,
-      borderWidth: 1,
-      borderColor: theme.border,
-      backgroundColor: theme.surface,
-      overflow: "hidden",
-      marginBottom: 10,
-    },
-    toolRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 12,
-      paddingVertical: 12,
-      paddingHorizontal: 14,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: theme.border,
-    },
-    toolRowLast: { borderBottomWidth: 0 },
-    toolBtnDisabled: { opacity: 0.4 },
-    presentationToggleRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: 6,
-      marginBottom: 10,
-    },
-    presentationToggleBtn: {
-      flex: 1,
-      maxWidth: 180,
-      minHeight: 34,
-      alignItems: 'center',
-      justifyContent: 'center',
-      borderRadius: 10,
-      borderWidth: 1,
-      borderColor: theme.border,
-      backgroundColor: theme.surfaceHover,
-      paddingHorizontal: 14,
-      paddingVertical: 6,
-    },
-    presentationToggleBtnActive: {
-      borderColor: theme.accent,
-      backgroundColor: `${theme.accent}22`,
-    },
-    presentationToggleText: {
-      color: theme.textSecondary,
-      fontSize: 13,
-      fontWeight: '600',
-    },
-    presentationToggleTextActive: {
-      color: theme.accent,
-    },
-    toolRowTitle: { color: theme.text, fontSize: 14, fontWeight: "600" },
-    toolRowCaption: { color: theme.textMuted, fontSize: 12, flexShrink: 1, textAlign: "right" },
-    selectorBtn: {
-      flexDirection: "row",
-      alignItems: "center",
-      backgroundColor: theme.surface,
-      paddingVertical: 10,
-      paddingHorizontal: 14,
-      ...theme.cardShadow,
-      shadowRadius: 2,
-      ...ui.button,
-    },
-    selectorBtnMain: { flex: 1 },
-    selectorBtnText: {
-      flex: 1,
-      color: theme.text,
-      fontSize: 14,
-      fontWeight: "500",
-    },
-    selectorArrow: { color: theme.textSecondary, fontSize: 12, marginLeft: 6 },
-    iconBtn: {
-      width: 38,
-      height: 38,
-      borderRadius: 10,
-      backgroundColor: theme.surface,
-      alignItems: "center",
-      justifyContent: "center",
-      ...theme.cardShadow,
-      shadowOpacity: 0.05,
-      elevation: 1,
-    },
-    iconBtnText: { fontSize: 18, color: theme.text },
-
-    // Audio management workspace
-    managementPanel: {
-      flex: 1,
-      minHeight: 220,
-      marginTop: 8,
-      marginBottom: 24,
-      ...theme.cardShadow,
-      ...ui.panel,
-    },
-    managementTitleRow: {
-      flexDirection: "row",
-      alignItems: "flex-start",
-      justifyContent: "space-between",
-      gap: 16,
-    },
-    managementTitleCopy: { flex: 1 },
-    managementName: { color: theme.text, fontSize: 22, fontWeight: "700" },
-    managementMeta: { color: theme.textSecondary, fontSize: 13, marginTop: 5 },
-    managementPath: {
-      color: theme.textMuted,
-      fontSize: 12,
-      lineHeight: 17,
-      fontFamily: "Menlo",
-      marginTop: 18,
-    },
-    subtitleBadge: {
-      paddingVertical: 5,
-      paddingHorizontal: 9,
-      borderRadius: 100,
-      backgroundColor: `${theme.textMuted}18`,
-    },
-    subtitleBadgeReady: { backgroundColor: `${theme.accent}18` },
-    subtitleBadgeText: { color: theme.textMuted, fontSize: 11, fontWeight: "700" },
-    subtitleBadgeTextReady: { color: theme.accent },
-    startStudyBtn: {
-      alignSelf: "flex-start",
-      marginTop: 24,
-      paddingVertical: 10,
-      paddingHorizontal: 18,
-      borderRadius: 8,
-      backgroundColor: theme.accent,
-    },
-    startStudyBtnText: { color: "#fff", fontSize: 14, fontWeight: "700" },
-    managementEmpty: { flex: 1, alignItems: "center", justifyContent: "center" },
-    managementEmptyTitle: { color: theme.text, fontSize: 18, fontWeight: "700" },
-    managementEmptyText: {
-      color: theme.textSecondary,
-      fontSize: 13,
-      lineHeight: 20,
-      textAlign: "center",
-      marginTop: 8,
-    },
-
-    // Dropdown
-    dropdown: {
-      backgroundColor: theme.surface,
-      borderRadius: 10,
-      marginBottom: 10,
-      ...theme.cardShadow,
-      overflow: "hidden",
-    },
-    dropdownItem: {
-      paddingVertical: 12,
-      paddingHorizontal: 16,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: theme.border,
-    },
-    dropdownItemActive: { backgroundColor: `${theme.accent}18` },
-    dropdownItemText: { color: theme.text, fontSize: 14 },
-    dropdownItemTextActive: { color: theme.accent, fontWeight: "600" },
-    dropdownEmpty: {
-      color: theme.textSecondary,
-      fontSize: 13,
-      textAlign: "center",
-      paddingVertical: 16,
-    },
-
-    // Subtitle
-    subtitleContainer: { flex: 1, minHeight: 0 },
-    selectableSubtitleHint: { color: theme.textSecondary, fontSize: 12, marginTop: 8, marginBottom: 6 },
-    nativeSelectableSubtitle: {
-      flex: 1,
-      minHeight: 60,
-      borderWidth: 1,
-      borderColor: theme.border,
-      borderRadius: 12,
-      backgroundColor: theme.surface,
-      overflow: "hidden",
-      paddingVertical: 8,
-    },
-    // A regular RN View owns the rounded mask; the embedded AppKit scroll
-    // view stays inset so its background and scrollbar cannot expose corners.
-    subtitleScrollSurface: { flex: 1 },
-    androidSubtitleContent: { paddingHorizontal: 14, paddingVertical: 12 },
-    androidSubtitleText: {
-      color: theme.textSecondary,
-      fontSize: subtitleSize,
-      lineHeight: subtitleSize + 7,
-    },
-    selectableCueItem: { color: theme.textSecondary, fontSize: subtitleSize, lineHeight: subtitleSize + 7 },
-    aiAnswerLabel: { color: theme.accent, fontSize: 11, fontWeight: "800", marginBottom: 5 },
-    aiAnswerPanel: {
-      maxHeight: 230,
-      marginTop: 8,
-      padding: 12,
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: theme.border,
-      backgroundColor: theme.surface,
-    },
-    aiAnswerPanelHeader: { flexDirection: "row", justifyContent: "space-between" },
-    aiAnswerClose: { color: theme.textSecondary, fontSize: 12 },
-    aiAnswerActions: { flexDirection: "row", alignItems: "center", gap: 14 },
-    aiAnswerCopy: { color: theme.accent, fontSize: 12, fontWeight: "700" },
-    aiAnswerPanelBody: { maxHeight: 132 },
-    aiLoadingRow: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 34 },
-    aiLoadingText: { color: theme.textSecondary, fontSize: 13 },
-    // 跟读面板：录音提示与评分结果
-    shadowBtnActive: { backgroundColor: theme.danger, borderColor: theme.danger },
-    shadowBtnTextActive: { color: "#fff" },
-    shadowRecordingBody: { minHeight: 34 },
-    shadowRecordingHint: { color: theme.textSecondary, fontSize: 11, fontWeight: "700" },
-    shadowRecordingText: { color: theme.text, fontSize: 15, lineHeight: 22, marginTop: 4 },
-    shadowScoreRow: { flexDirection: "row", gap: 10 },
-    shadowScoreChip: {
-      alignItems: "center",
-      paddingVertical: 6,
-      paddingHorizontal: 12,
-      borderRadius: 8,
-      backgroundColor: theme.bg,
-      borderWidth: 1,
-      borderColor: theme.border,
-    },
-    shadowScoreChipValue: { color: theme.accent, fontSize: 15, fontWeight: "700" },
-    shadowScoreChipLabel: { color: theme.textMuted, fontSize: 10, marginTop: 2 },
-    shadowSectionLabel: { color: theme.textMuted, fontSize: 11, fontWeight: "700", marginTop: 8 },
-    shadowBodyText: { color: theme.text, fontSize: 13, lineHeight: 19 },
-    shadowDiffLine: { fontSize: 12, lineHeight: 18, marginTop: 4 },
-    shadowDiffLabel: { color: theme.textMuted },
-    shadowDiffMissed: { color: theme.danger, fontWeight: "600" },
-    shadowDiffWrong: { color: "#b8860b", fontWeight: "600" },
-    shadowDiffExtra: { color: theme.textSecondary },
-    // AI 重点标记：字幕里的下划线短语与重点列表
-    keyMarkText: { color: KEY_MARK_COLOR, textDecorationLine: "underline" },
-    keyPointItem: { paddingVertical: 6, gap: 2 },
-    keyPointPhrase: { color: KEY_MARK_COLOR, fontSize: 13, fontWeight: "700" },
-    keyPointNote: { color: theme.textSecondary, fontSize: 12, lineHeight: 17 },
-    currentCue: {
-      backgroundColor: theme.surface,
-      borderRadius: 12,
-      paddingVertical: 14,
-      paddingHorizontal: 18,
-      marginBottom: 10,
-      ...theme.cardShadow,
-      alignItems: "center",
-    },
-    subtitleSizeRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 8,
-      paddingVertical: 4,
-    },
-    subtitleSizeLabel: {
-      fontSize: 11,
-      color: theme.textMuted,
-    },
-    subtitleSizeBtn: {
-      minHeight: Platform.OS === 'android' ? 48 : 44, minWidth: Platform.OS === 'android' ? 48 : 44, justifyContent: "center", alignItems: "center",
-      paddingHorizontal: 8,
-      paddingVertical: 2,
-      borderRadius: 6,
-      borderWidth: 1,
-      borderColor: theme.border,
-      backgroundColor: theme.surface,
-    },
-    subtitleSizeBtnText: {
-      fontSize: 12,
-      color: theme.textSecondary,
-      fontWeight: "600",
-    },
-    subtitleSizeVal: {
-      fontSize: 12,
-      color: theme.textSecondary,
-      fontVariant: ["tabular-nums"],
-      minWidth: 18,
-      textAlign: "center",
-    },
-    currentCueText: {
-      color: theme.text,
-      fontSize: subtitleSize + 2,
-      lineHeight: subtitleSize + 8,
-      fontWeight: "600",
-      textAlign: "center",
-    },
-    cueLine: {
-      color: theme.textSecondary,
-    },
-    cueTranslation: {
-      color: theme.textSecondary,
-      fontSize: Math.max(11, subtitleSize - 2),
-      lineHeight: Math.max(15, subtitleSize + 2),
-      marginTop: 2,
-    },
-    cueTranslationActive: {
-      color: theme.text,
-    },
-    cueWord: {
-      color: theme.textSecondary,
-      fontSize: subtitleSize,
-      lineHeight: subtitleSize + 6,
-    },
-    cueItemActive: { backgroundColor: `${theme.accent}12` },
-    cueWordInActiveCue: { color: theme.text },
-    cueWordPlaying: {
-      color: "#fff",
-      backgroundColor: theme.accent,
-      borderRadius: 4,
-      paddingVertical: 1,
-      paddingHorizontal: 3,
-    },
-    cueTextActive: { color: theme.accent, fontWeight: "600" },
-    cueTextPast: { opacity: 0.5 },
-    cueTime: {
-      color: theme.textSecondary,
-      fontSize: 11,
-      marginLeft: 8,
-      marginTop: 2,
-      fontVariant: ["tabular-nums"],
-    },
-    cueItemLoop: { backgroundColor: `${theme.accent}10` },
-    loopBadge: { color: theme.accent, fontWeight: "700" },
-    loopArrow: { color: theme.accent, fontWeight: "700" },
-    loopLineLeft: {
-      borderLeftWidth: 2,
-      borderLeftColor: theme.accent,
-      paddingLeft: 1,
-    },
-    loopLineRight: {
-      borderRightWidth: 2,
-      borderRightColor: theme.accent,
-      paddingRight: 1,
-    },
-    loopBtn: { alignItems: 'center', justifyContent: 'center', minHeight: Platform.OS === 'ios' || Platform.OS === 'android' ? 44 : 34, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 8, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.surface },
-    loopBtnActive: { backgroundColor: theme.accent, borderColor: theme.accent },
-    loopBtnText: { color: theme.text, fontSize: 12, fontWeight: "600" },
-    loopBtnTextActive: { color: "#fff" },
-    loopStatus: {
-      flexWrap: "wrap", gap: 8,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      marginTop: 6,
-      paddingHorizontal: 4,
-    },
-    loopStatusText: { color: theme.accent, fontSize: 12, fontWeight: "600" },
-    loopClear: { color: theme.textMuted, fontSize: 12 },
-    abTrack: {
-      height: 26,
-      borderRadius: 6,
-      backgroundColor: theme.bg,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: theme.border,
-    },
-    abRange: {
-      position: "absolute",
-      top: 0,
-      bottom: 0,
-      backgroundColor: `${theme.accent}22`,
-    },
-    abHandle: {
-      position: "absolute",
-      top: -4,
-      bottom: -4,
-      width: 20,
-      marginLeft: -10,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    abLine: {
-      width: 2,
-      height: "100%",
-    },
-    abHandleB: {
-      position: "absolute",
-      top: -4,
-      bottom: -4,
-      width: 20,
-      marginLeft: -10,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    abArrow: {
-      fontSize: 12,
-      fontWeight: "700",
-      paddingHorizontal: 2,
-    },
-
-    // Empty
-    emptyState: {
-      flex: 1,
-      justifyContent: "center",
-      alignItems: "center",
-      paddingVertical: 60,
-    },
-    emptyText: {
-      fontSize: 15,
-      color: theme.textSecondary,
-      textAlign: "center",
-      lineHeight: 22,
-    },
-
-    // Player
-    playerArea: { paddingTop: 4, paddingBottom: Platform.OS === 'android' ? 6 : 0 },
-    progressRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-    progressBarTrack: { flex: 1, height: 28, justifyContent: 'center' },
-    progressBarRail: {
-      height: 5,
-      backgroundColor: theme.border,
-      borderRadius: 2.5,
-      overflow: "hidden",
-    },
-    progressBarFill: {
-      height: "100%",
-      backgroundColor: theme.accent,
-    },
-    progressBarPlayhead: {
-      position: "absolute",
-      top: 8,
-      width: 2,
-      height: 12,
-      borderRadius: 1,
-      marginLeft: -1,
-      backgroundColor: theme.text,
-    },
-    timeText: {
-      color: theme.textSecondary,
-      fontSize: 11,
-      fontVariant: ["tabular-nums"],
-    },
-    controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 2, zIndex: 30 },
-    playerTools: { flex: 1 },
-    playerToolsFixed: { zIndex: 30 },
-    playerToolsContent: { flexGrow: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
-    speedOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-    speedBtn: { minWidth: 58, minHeight: Platform.OS === 'android' ? 48 : 44, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: theme.surfaceHover },
-    speedBtnActive: { backgroundColor: theme.accent },
-    speedBtnText: { color: theme.text, fontSize: 12, fontWeight: "500" },
-    speedBtnTextActive: { color: "#fff" },
-    playBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: theme.accent, alignItems: 'center', justifyContent: 'center' },
-    playBtnText: { color: '#fff', fontSize: 18 },
-
-    // Toast
-    toast: {
-      position: "absolute",
-      bottom: 24,
-      alignSelf: "center",
-      backgroundColor: theme.toastBg,
-      paddingVertical: 10,
-      paddingHorizontal: 22,
-      borderRadius: 100,
-      shadowColor: "#000",
-      shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.18,
-      shadowRadius: 16,
-      elevation: 8,
-    },
-    toastText: { color: theme.toastText, fontSize: 14, fontWeight: "500" },
-
-    // Modal
-    modalOverlay: {
-      position: "absolute",
-      top: 0,
-      right: 0,
-      bottom: 0,
-      left: 0,
-      backgroundColor: "rgba(0,0,0,0.4)",
-      justifyContent: "center",
-      alignItems: "center",
-      padding: 32,
-    },
-    modalDismissArea: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 },
-    modalBox: {
-      width: "100%",
-      maxWidth: 340,
-      backgroundColor: theme.surface,
-      borderRadius: 16,
-      padding: 24,
-      ...theme.cardShadow,
-    },
-    modalTitle: {
-      fontSize: 17,
-      fontWeight: "600",
-      color: theme.text,
-      marginBottom: 14,
-      textAlign: "center",
-    },
-    modalInput: {
-      backgroundColor: theme.bg,
-      borderRadius: 10,
-      paddingVertical: 10,
-      paddingHorizontal: 14,
-      fontSize: 15,
-      color: theme.text,
-      borderWidth: 1,
-      borderColor: theme.border,
-      marginBottom: 18,
-    },
-    modalActions: {
-      flexDirection: "row",
-      justifyContent: "center",
-      gap: 10,
-    },
-    modalBtnPrimary: {
-      backgroundColor: theme.accent,
-      borderRadius: 10,
-      paddingVertical: 10,
-      paddingHorizontal: 28,
-    },
-    modalBtnPrimaryText: { color: "#fff", fontSize: 15, fontWeight: "600" },
-    modalBtnGhost: {
-      borderRadius: 10,
-      paddingVertical: 10,
-      paddingHorizontal: 28,
-    },
-    modalBtnGhostText: { color: theme.accent, fontSize: 15, fontWeight: "500" },
-
-    subtitleViewerScrim: {
-      position: "absolute",
-      left: 0,
-      right: 0,
-      top: 0,
-      bottom: 0,
-      backgroundColor: "rgba(0,0,0,0.55)",
-      alignItems: "center",
-      justifyContent: "center",
-      zIndex: 60,
-    },
-    subtitleViewerPanel: {
-      width: "88%",
-      maxHeight: "80%",
-      borderRadius: 12,
-      borderWidth: 1,
-      borderColor: theme.border,
-      backgroundColor: theme.surface,
-      padding: 16,
-      gap: 10,
-    },
-    subtitleViewerHeader: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 10,
-    },
-    subtitleViewerTitle: { color: theme.text, fontSize: 15, fontWeight: "700", flexShrink: 1 },
-    subtitleViewerActions: { flexDirection: "row", gap: 8 },
-    subtitleViewerBtn: {
-      borderWidth: 1,
-      borderColor: theme.border,
-      borderRadius: 8,
-      paddingVertical: 6,
-      paddingHorizontal: 12,
-    },
-    subtitleViewerBtnText: { color: theme.textSecondary, fontSize: 12 },
-    subtitleViewerLoading: { color: theme.textMuted, fontSize: 13 },
-    subtitleViewerScroll: { maxHeight: 420 },
-    subtitleViewerCue: {
-      paddingBottom: 10,
-      marginBottom: 4,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: theme.border,
-    },
-    subtitleViewerTime: {
-      color: theme.textMuted,
-      fontSize: 11,
-      fontVariant: ["tabular-nums"],
-      marginBottom: 2,
-    },
-    subtitleViewerText: { color: theme.text, fontSize: 14, lineHeight: 21 },
-
-    dropdownEngineMeta: {
-      color: theme.textMuted,
-      fontSize: 11,
-      marginTop: 2,
-    },
-  });
 }

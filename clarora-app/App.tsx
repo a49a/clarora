@@ -4,6 +4,7 @@ import { Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextIn
 import HomeScreen from "./shared/screens/index";
 import DiscoverScreen from "./shared/screens/discover";
 import ListeningScreen from "./shared/screens/listening";
+import AudioManagerScreen from "./shared/screens/audioManager";
 import GraphScreen from "./shared/screens/graph";
 import MeditationScreen from "./shared/screens/meditation";
 import OcrScreen from "./shared/screens/ocr";
@@ -127,7 +128,6 @@ function Shell() {
       <RootView style={styles.focusRoot}>
         <ListeningScreen
           key="listening-study"
-          mode="study"
           initialPracticeId={listeningSelection.practiceId}
           initialAudioId={listeningSelection.audioId}
           onSelectionChange={rememberListeningSelection}
@@ -152,8 +152,7 @@ function Shell() {
       break;
     case "audio-manager":
       activeContent = (
-        <ListeningScreen
-          mode="manage"
+        <AudioManagerScreen
           initialPracticeId={listeningSelection.practiceId}
           initialAudioId={listeningSelection.audioId}
           onSelectionChange={rememberListeningSelection}

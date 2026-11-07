@@ -56,61 +56,56 @@ test('fresh and resetContext end collecting while retaining history', () => {
   }
 });
 
+const { captureBlindPlayback, revealListeningCue } = load(path.join(__dirname, '../shared/services/blindPlayback.ts'));
+
 function context() {
   const machine = createBlindListeningMachine(); machine.enterBlind();
   const cues = [{ id: 'cue', start: 0, end: 2, text: 'correct' }];
   const source = { audioId: 'B', generation: 4, revision: 1, cues };
-  return {
-    blindMachine: machine, selectedAudio: { id: 'B' }, mountedRef: { current: true },
-    soundRef: { current: { pauseAsync: async () => {} } },
-    audioGenerationRef: { current: 4 }, loadedAudioIdRef: { current: 'B' },
-    loadingAudioIdRef: { current: null }, subtitleStateRef: { current: source },
-    subtitleCues: cues, subtitleTaskRef: { current: false },
-  };
+  return { machine, cues, live: { sound: { pauseAsync: async () => {} }, source, generation: 4, active: true } };
 }
-test('page rejects loading, mismatched audio/cues/generation and missing sound', () => {
+test('blind playback rejects loading, mismatched audio/cues/generation and missing sound', () => {
   const mutations = [
-    x => { x.loadingAudioIdRef.current = 'B'; },
-    x => { x.loadedAudioIdRef.current = 'A'; },
-    x => { x.subtitleStateRef.current = { ...x.subtitleStateRef.current, audioId: 'A' }; },
-    x => { x.subtitleStateRef.current = { ...x.subtitleStateRef.current, generation: 3 }; },
-    x => { x.soundRef.current = null; },
-    x => { x.subtitleCues = []; },
+    x => { x.live.active = false; },
+    x => { x.live.source = { ...x.live.source, audioId: 'A' }; },
+    x => { x.live.source = { ...x.live.source, generation: 3 }; },
+    x => { x.live.source = { ...x.live.source, cues: [] }; },
+    x => { x.live.sound = null; },
   ];
   for (const mutate of mutations) {
     const env = context(); mutate(env);
-    assert.equal(callback('screens/listening.tsx', 'getBlindPlaybackContext', env)(), null);
+    assert.equal(captureBlindPlayback('B', env.cues, () => env.live), null);
   }
 });
 test('captured playback context expires on subtitle replacement and audio switching', () => {
   for (const mutate of [
-    x => { x.subtitleStateRef.current = { ...x.subtitleStateRef.current, revision: 2 }; },
-    x => { x.audioGenerationRef.current++; },
-    x => { x.loadingAudioIdRef.current = 'C'; },
+    x => { x.live.source = { ...x.live.source, revision: 2 }; },
+    x => { x.live.generation++; },
+    x => { x.live.active = false; },
   ]) {
     const env = context();
-    const captured = callback('screens/listening.tsx', 'getBlindPlaybackContext', env)();
+    const captured = captureBlindPlayback('B', env.cues, () => env.live);
     assert.equal(captured.isCurrent(), true);
     mutate(env);
     assert.equal(captured.isCurrent(), false);
   }
 });
-test('actual reveal callback skips an invalidated queued pause and can reveal normally afterward', async () => {
+test('a reveal skips an invalidated queued pause and can reveal normally afterward', async () => {
   const env = context(); let pauses = 0, runQueued;
-  env.soundRef.current.pauseAsync = async () => { pauses++; };
-  env.getBlindPlaybackContext = callback('screens/listening.tsx', 'getBlindPlaybackContext', env);
-  env.positionMsRef = { current: 1000 }; env.durationMs = 5000;
-  env.isPlayingRef = { current: true }; env.showToast = () => {};
-  env.enqueueAudioOperation = operation => new Promise((resolve, reject) => {
+  env.live.sound.pauseAsync = async () => { pauses++; };
+  const enqueue = operation => new Promise((resolve, reject) => {
     runQueued = () => Promise.resolve().then(operation).then(resolve, reject);
   });
-  const reveal = callback('screens/listening.tsx', 'handleBlindReveal', env);
+  const reveal = () => revealListeningCue(
+    env.machine, captureBlindPlayback('B', env.cues, () => env.live), 'B',
+    { positionMs: 1000, durationMs: 5000, isPlaying: true }, enqueue, () => true,
+  );
   const pending = reveal();
-  env.blindMachine.invalidate();
+  env.machine.invalidate();
   await runQueued(); await pending;
   assert.equal(pauses, 0);
-  assert.equal(env.blindMachine.getSnapshot().revealed, null);
+  assert.equal(env.machine.getSnapshot().revealed, null);
   const valid = reveal(); await runQueued(); await valid;
   assert.equal(pauses, 1);
-  assert.equal(env.blindMachine.getSnapshot().revealed.text, 'correct');
+  assert.equal(env.machine.getSnapshot().revealed.text, 'correct');
 });
