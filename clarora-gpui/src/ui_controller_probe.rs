@@ -322,7 +322,9 @@ impl Probe {
                     app,
                 )?;
                 self.note("音频字幕接受与真实播放器暂停确认", app)?;
+                let status = app.status.clone();
                 app.handle(Action::AudioBlind(true), window, cx);
+                ensure!(app.status == status, "开启盲听重复弹出提示");
                 let cue = app.audio.cues[0].clone();
                 app.handle(Action::AudioBlindRevealCue(AUDIO_A.into(), cue), window, cx);
                 self.advance();
@@ -340,6 +342,14 @@ impl Probe {
                     "盲听揭示错材料"
                 );
                 self.note("盲听handler确认暂停后揭示", app)?;
+                let status = app.status.clone();
+                let cue = app.audio.cues[0].clone();
+                app.handle(Action::AudioBlindRow(AUDIO_A.into(), cue, None), window, cx);
+                ensure!(
+                    app.status == status && app.audio.blind.revealed.is_none(),
+                    "盲听点击定位应隐藏文字且无需提示"
+                );
+                self.note("盲听模式切换及点击定位不重复提示", app)?;
                 for id in [AUDIO_B, AUDIO_A, AUDIO_B] {
                     app.handle(Action::Audio(id.into()), window, cx);
                 }

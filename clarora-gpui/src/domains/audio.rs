@@ -161,10 +161,8 @@ impl Command {
                         }
                     }
                     app.audio.tools_open = false;
-                    app.report_status(FeedbackKind::Info, "盲听已开启，字幕已隐藏".into());
                 } else {
                     app.media.player.set("pause", "yes");
-                    app.report_status(FeedbackKind::Info, "已切回字幕模式，保持暂停".into());
                 }
                 app.sync_chat(window, cx);
                 window.focus(&app.focus);
@@ -182,15 +180,6 @@ impl Command {
                 app.assistant_open = false;
                 app.sync_chat(window, cx);
                 window.focus(&app.focus);
-                app.report_status(
-                    FeedbackKind::Info,
-                    if enabled {
-                        "查看时仅显示中文；平时中英文均遮挡"
-                    } else {
-                        "查看时显示中英字幕；平时均遮挡"
-                    }
-                    .into(),
-                );
             }
 
             action @ (Command::AudioBlindReveal | Command::AudioBlindRevealCue(..)) => {
@@ -259,7 +248,6 @@ impl Command {
                     app.media.player.command(["seek", "0", "absolute+exact"]);
                 }
                 app.media.player.set("pause", "no");
-                app.report_status(FeedbackKind::Info, "正在盲听，字幕已隐藏".into());
                 app.audio.blind_settle_until = Some(Instant::now() + Duration::from_millis(200));
                 app.sync_chat(window, cx);
                 window.focus(&app.focus);
@@ -319,15 +307,9 @@ impl Command {
                 ]);
                 app.media.player.set("pause", "no");
                 app.audio.blind_settle_until = Some(Instant::now() + Duration::from_millis(250));
-                app.report_status(
-                    FeedbackKind::Info,
-                    if outside_loop {
-                        "已退出 A–B 循环，从所选句开始盲听"
-                    } else {
-                        "已从所选位置开始盲听，字幕保持遮挡"
-                    }
-                    .into(),
-                );
+                if outside_loop {
+                    app.report_status(FeedbackKind::Info, "已退出 A–B 循环".into());
+                }
                 app.sync_chat(window, cx);
                 window.focus(&app.focus);
             }
@@ -384,15 +366,6 @@ impl Command {
                 ]);
                 app.media.player.set("pause", "no");
                 app.audio.blind_settle_until = Some(Instant::now() + Duration::from_millis(250));
-                app.report_status(
-                    FeedbackKind::Info,
-                    match direction {
-                        -1 => "已从上一句开始盲听",
-                        1 => "已从下一句开始盲听",
-                        _ => "已隐藏文字，从句首重听",
-                    }
-                    .into(),
-                );
                 app.sync_chat(window, cx);
                 window.focus(&app.focus);
             }
