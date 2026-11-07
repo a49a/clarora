@@ -7,28 +7,23 @@ pub(super) struct Target {
     pub mode: Mode,
     pub name: String,
 }
-enum Event {
-    Progress(String),
-    Done(std::result::Result<Report, String>),
-}
 #[derive(Default)]
 pub(super) struct State {
-    pub cancel: Option<Cancel>,
+    pub lane: task_runtime::Lane<String, Report>,
     pub notice: Option<TaskNotice>,
     target: Option<Target>,
-    events: Option<mpsc::Receiver<Event>>,
 }
 impl State {
     pub(super) fn working(&self, audio: &str, mode: Mode) -> bool {
-        self.cancel.is_some()
+        self.lane.is_running()
             && self
                 .target
                 .as_ref()
                 .is_some_and(|t| t.audio.as_deref() == Some(audio) && t.mode == mode)
     }
     pub(super) fn cancel(&mut self) {
-        if let Some(token) = &self.cancel {
-            token.store(true, Ordering::SeqCst);
+        if self.lane.is_running() {
+            self.lane.cancel();
             if let Some(n) = &mut self.notice {
                 n.state = TaskState::Cancelling;
                 n.detail = "正在停止字幕处理，已保存的结果会保留…".into();
@@ -36,17 +31,10 @@ impl State {
         }
     }
 }
-impl Drop for State {
-    fn drop(&mut self) {
-        if let Some(token) = &self.cancel {
-            token.store(true, Ordering::SeqCst);
-        }
-    }
-}
 impl AppView {
     pub(super) fn begin_audio_subtitles(&mut self, plan: Plan, target: Target) -> Result<()> {
         ensure!(
-            self.tasks.audio_subtitles.cancel.is_none(),
+            !self.tasks.audio_subtitles.lane.is_running(),
             "已有音频字幕任务正在处理，可继续切换音频；请等待完成或在顶部取消后再生成"
         );
         let title = if target.audio.is_some() {
@@ -58,45 +46,33 @@ impl AppView {
             target.mode.label()
         };
         let title = format!("{title} · {}", target.name);
-        let (tx, rx) = mpsc::channel();
-        let cancel = process::cancel_token();
         let lib = self.lib.clone();
-        self.tasks.audio_subtitles.cancel = Some(cancel.clone());
-        self.tasks.audio_subtitles.events = Some(rx);
+        self.tasks
+            .audio_subtitles
+            .lane
+            .spawn(TaskScope::Application, move |cancel, report| {
+                Ok(plan.run(&lib, &cancel, |stage| {
+                    let _ = report.send(stage.into());
+                }))
+            })?;
         self.tasks.audio_subtitles.target = Some(target);
         self.tasks.audio_subtitles.notice = Some(TaskNotice::new(
             &title,
             "正在准备字幕处理，可继续学习其它音频；完成后自动保存。",
         ));
-        std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                plan.run(&lib, &cancel, |stage| {
-                    let _ = tx.send(Event::Progress(stage.into()));
-                })
-            }))
-            .map_err(|_| "字幕处理异常结束，请重试；已保存的结果会保留".into());
-            let _ = tx.send(Event::Done(result));
-        });
         Ok(())
     }
     pub(super) fn poll_audio_subtitles(&mut self) -> bool {
         let state = &mut self.tasks.audio_subtitles;
         let mut changed = false;
         if let Some(n) = &mut state.notice {
-            if n.active() && n.elapsed != n.started.elapsed().as_secs() {
-                n.elapsed = n.started.elapsed().as_secs();
-                changed = true;
-            }
+            changed |= n.tick();
         }
-        let Some(rx) = &state.events else {
-            return changed;
-        };
-        let events = rx.try_iter().collect::<Vec<_>>();
         let mut completed = false;
-        for event in events {
+        while let Some(event) = state.lane.poll() {
             changed = true;
             match event {
-                Event::Progress(stage) => {
+                task_runtime::Event::Progress { value: stage, .. } => {
                     if let Some(n) = state
                         .notice
                         .as_mut()
@@ -105,7 +81,8 @@ impl AppView {
                         n.detail = stage;
                     }
                 }
-                Event::Done(result) => {
+                task_runtime::Event::Completed(done) => {
+                    let result = done.result;
                     if let Some(n) = &mut state.notice {
                         n.elapsed = n.started.elapsed().as_secs();
                         (n.state, n.detail) = match result {
@@ -137,8 +114,6 @@ impl AppView {
                             Err(error) => (TaskState::Failed, error),
                         };
                     }
-                    state.cancel = None;
-                    state.events = None;
                     completed = true;
                 }
             }

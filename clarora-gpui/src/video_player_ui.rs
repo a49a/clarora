@@ -732,7 +732,7 @@ impl AppView {
                                         Action::Clip,
                                         cx,
                                     )
-                                    .disabled(!valid_loop || self.tasks.cancel.is_some()),
+                                    .disabled(!valid_loop || self.tasks.foreground.is_running()),
                                 ),
                         )
                         .child(

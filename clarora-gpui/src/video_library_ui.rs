@@ -36,7 +36,7 @@ impl AppView {
         Ok(true)
     }
     pub(super) fn video_collection_panel(&self, cx: &Context<Self>) -> AnyElement {
-        let busy = self.tasks.cancel.is_some();
+        let busy = self.tasks.foreground.is_running();
         let mut body = div()
             .id("video-collection")
             .flex_1()

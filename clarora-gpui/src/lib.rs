@@ -15,6 +15,7 @@ pub mod process;
 pub mod recording;
 pub mod runtime;
 pub mod subtitles;
+pub mod task_runtime;
 pub mod view_data;
 
 pub mod waveform;

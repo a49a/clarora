@@ -192,7 +192,7 @@ impl AppView {
     }
     pub(super) fn blind_panel(&self, cx: &Context<Self>) -> AnyElement {
         let ready = !self.audio.current_id.is_empty()
-            && self.tasks.cancel.is_none()
+            && !self.tasks.foreground.is_running()
             && self.audio.blind_pending.is_none()
             && self
                 .audio
@@ -348,7 +348,7 @@ impl AppView {
                     .child(
                         self.button("blind-full", "查看全文", Action::AudioBlind(false), cx)
                             .ghost()
-                            .disabled(self.tasks.cancel.is_some()),
+                            .disabled(self.tasks.foreground.is_running()),
                     ),
             )
             .child(
@@ -400,7 +400,7 @@ impl AppView {
                     text(r, "name"),
                     Action::AudioPractice(key.clone()),
                     key == self.audio.practice_id,
-                    self.tasks.cancel.is_some(),
+                    self.tasks.foreground.is_running(),
                 )
             })
             .collect();
@@ -412,7 +412,7 @@ impl AppView {
                     format!("{}  {}", i + 1, text(r, "name")),
                     Action::Audio(text(r, "id")),
                     Some(i) == index,
-                    self.tasks.cancel.is_some(),
+                    self.tasks.foreground.is_running(),
                 )
             })
             .collect();
@@ -436,12 +436,12 @@ impl AppView {
             .child(
                 self.button("audio-subtitle-mode", "字幕", Action::AudioBlind(false), cx)
                     .selected(!self.audio.blind.enabled)
-                    .disabled(self.tasks.cancel.is_some()),
+                    .disabled(self.tasks.foreground.is_running()),
             )
             .child(
                 self.button("audio-blind-mode", "盲听", Action::AudioBlind(true), cx)
                     .selected(self.audio.blind.enabled)
-                    .disabled(self.tasks.cancel.is_some()),
+                    .disabled(self.tasks.foreground.is_running()),
             )
             .child(self.player_menu(
                 "audio-practice-picker",
@@ -468,7 +468,7 @@ impl AppView {
                     Action::Audio(previous.clone().unwrap_or_default()),
                     cx,
                 )
-                .disabled(previous.is_none() || self.tasks.cancel.is_some()),
+                .disabled(previous.is_none() || self.tasks.foreground.is_running()),
             )
             .child(
                 self.button(
@@ -477,7 +477,7 @@ impl AppView {
                     Action::Audio(next.clone().unwrap_or_default()),
                     cx,
                 )
-                .disabled(next.is_none() || self.tasks.cancel.is_some()),
+                .disabled(next.is_none() || self.tasks.foreground.is_running()),
             )
             .child(div().flex_1())
             .child(
@@ -502,7 +502,7 @@ impl AppView {
                         cx,
                     )
                     .ghost()
-                    .disabled(self.tasks.cancel.is_some()),
+                    .disabled(self.tasks.foreground.is_running()),
                 )
             })
             .child(
@@ -730,7 +730,8 @@ impl AppView {
                             )
                             .ghost()
                             .disabled(
-                                this.tasks.cancel.is_some() || this.audio.blind_pending.is_some(),
+                                this.tasks.foreground.is_running()
+                                    || this.audio.blind_pending.is_some(),
                             ),
                         )
                         .when(revealed.is_some(), |v| {
@@ -1118,7 +1119,7 @@ impl AppView {
                         )
                         .ghost()
                         .disabled(
-                            self.tasks.cancel.is_some()
+                            self.tasks.foreground.is_running()
                                 || self.audio.cues.is_empty()
                                 || self.audio.blind.enabled,
                         ),
@@ -1199,7 +1200,7 @@ impl AppView {
                     .child(
                         self.button("audio-save-clip", "保存为闪卡", Action::Clip, cx)
                             .primary()
-                            .disabled(!valid || self.tasks.cancel.is_some()),
+                            .disabled(!valid || self.tasks.foreground.is_running()),
                     ),
             );
             if self.audio.tools_open {
@@ -1345,7 +1346,7 @@ impl AppView {
                             Action::Clip,
                             cx,
                         )
-                        .disabled(self.tasks.cancel.is_some()),
+                        .disabled(self.tasks.foreground.is_running()),
                     ),
             )
             .into_any_element()
@@ -1418,7 +1419,7 @@ impl AppView {
                             Action::TtsDownload,
                             cx,
                         )
-                        .disabled(ready || self.tasks.models.cancel.is_some()),
+                        .disabled(ready || self.tasks.models.lane.is_running()),
                     )
                     .child(
                         self.button("tts-generate", "生成并保存音频", Action::TtsGenerate, cx)
@@ -1426,7 +1427,7 @@ impl AppView {
                             .disabled(
                                 !ready
                                     || self.audio.practice_id.is_empty()
-                                    || self.tasks.cancel.is_some(),
+                                    || self.tasks.foreground.is_running(),
                             ),
                     ),
             );
@@ -1439,7 +1440,7 @@ impl AppView {
                 )
                 .child(
                     self.button("tts-play", "试听 / 开始学习", Action::TtsPlay, cx)
-                        .disabled(self.tasks.cancel.is_some()),
+                        .disabled(self.tasks.foreground.is_running()),
                 );
         }
         content.into_any_element()

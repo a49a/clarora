@@ -18,7 +18,7 @@ impl AppView {
     }
     pub(super) fn start_part_from(&mut self, index: usize, from_end: bool) {
         self.video.part_confirmation = None;
-        if self.tasks.cancel.is_some() {
+        if self.tasks.foreground.is_running() {
             self.report_status(FeedbackKind::Error, "请先完成或取消当前前台任务".into());
             return;
         }
@@ -686,7 +686,7 @@ impl AppView {
             );
             return;
         };
-        if self.tasks.cancel.is_some() {
+        if self.tasks.foreground.is_running() {
             self.video.part_confirmation = None;
             self.report_status(
                 FeedbackKind::Info,

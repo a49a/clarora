@@ -231,7 +231,7 @@ impl Flow {
             "audio selection not attached to assistant exactly"
         );
         ensure!(
-            app.tasks.cancel.is_none() && !app.chat.running,
+            !app.tasks.foreground.is_running() && !app.chat.running,
             "quoting audio sent an unsolicited AI request"
         );
         Ok(())

@@ -489,15 +489,15 @@ impl AppView {
                             .child(
                                 self.button("download", "下载并导入", Action::Download, cx)
                                     .primary()
-                                    .disabled(self.tasks.cancel.is_some()),
+                                    .disabled(self.tasks.foreground.is_running()),
                             )
                             .child(
                                 self.button("read-parts", "读取分P / 选集", Action::ReadParts, cx)
-                                    .disabled(self.tasks.cancel.is_some()),
+                                    .disabled(self.tasks.foreground.is_running()),
                             )
                             .child(
                                 self.button("cancel-download", "取消下载", Action::Cancel, cx)
-                                    .disabled(self.tasks.cancel.is_none()),
+                                    .disabled(!self.tasks.foreground.is_running()),
                             ),
                     )
                     .child(
@@ -574,7 +574,7 @@ impl AppView {
                                             cx,
                                         )
                                         .tooltip("上一 P")
-                                        .disabled(self.tasks.cancel.is_some() || i == 0),
+                                        .disabled(self.tasks.foreground.is_running() || i == 0),
                                     )
                                     .child(
                                         self.button(
@@ -584,7 +584,9 @@ impl AppView {
                                             cx,
                                         )
                                         .tooltip("下一 P")
-                                        .disabled(self.tasks.cancel.is_some() || i + 1 >= count),
+                                        .disabled(
+                                            self.tasks.foreground.is_running() || i + 1 >= count,
+                                        ),
                                     )
                                 },
                             )
@@ -622,7 +624,7 @@ impl AppView {
                                                 Action::VideoSelect(v.id.clone()),
                                                 self.video.collection.selected.as_ref()
                                                     == Some(&v.id),
-                                                self.tasks.cancel.is_some()
+                                                self.tasks.foreground.is_running()
                                                     || (v.playable_path().is_none()
                                                         && v.series.is_none()),
                                             )
@@ -922,7 +924,9 @@ impl AppView {
                                                 )
                                                 .on_click(cx.listener(
                                                     move |this, _, window, cx| {
-                                                        if this.tasks.cancel.is_none() {
+                                                        if this.tasks.foreground.is_running()
+                                                            == false
+                                                        {
                                                             this.handle(
                                                                 Action::SelectPart(i),
                                                                 window,
@@ -942,8 +946,8 @@ impl AppView {
                             .pr_3();
                             study = study
                                 .child(div().px_3().py_2().flex().flex_col().gap_1()
-                                    .child(self.button("parts-translate-all", "全部P翻译中文",Action::VideoTranslateAll,cx).outline().disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.video.series.is_none()))
-                                    .child(self.button("parts-transcribe-all", "全部P生成字幕",Action::VideoTranscribeAll,cx).primary().disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||!self.media.session.is_video()||self.media.session.path.is_none()))
+                                    .child(self.button("parts-translate-all", "全部P翻译中文",Action::VideoTranslateAll,cx).outline().disabled(self.tasks.foreground.is_running()||self.tasks.video_job.is_some()||self.video.series.is_none()))
+                                    .child(self.button("parts-transcribe-all", "全部P生成字幕",Action::VideoTranscribeAll,cx).primary().disabled(self.tasks.foreground.is_running()||self.tasks.video_job.is_some()||!self.media.session.is_video()||self.media.session.path.is_none()))
                                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child("已有字幕跳过 · 未下载的P先下载 · 可切换播放，退出应用会停止任务")))
                                 .child(
                                     div()
@@ -963,7 +967,7 @@ impl AppView {
                                                 cx,
                                             )
                                             .disabled(
-                                                self.tasks.cancel.is_some()
+                                                self.tasks.foreground.is_running()
                                                     || current.is_none_or(|i| i == 0),
                                             ),
                                         )
@@ -975,7 +979,7 @@ impl AppView {
                                                 cx,
                                             )
                                             .disabled(
-                                                self.tasks.cancel.is_some()
+                                                self.tasks.foreground.is_running()
                                                     || current.is_none_or(|i| i + 1 >= count),
                                             ),
                                         )
@@ -1182,7 +1186,7 @@ impl AppView {
                             ))
                             .child(
                                 self.button("score-record", "转写并对齐评分", Action::Score, cx)
-                                    .disabled(self.tasks.cancel.is_some()),
+                                    .disabled(self.tasks.foreground.is_running()),
                             ),
                     );
                 if let Some(path) = &self.recorded {
@@ -1240,7 +1244,7 @@ impl AppView {
                         cx,
                     )
                     .primary()
-                    .disabled(self.tasks.cancel.is_some()),
+                    .disabled(self.tasks.foreground.is_running()),
                 );
                 if !self.output.is_empty() {
                     content = content.child(

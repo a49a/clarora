@@ -5,7 +5,7 @@ impl AppView {
             self.tasks.video_job.is_none(),
             "已有后台视频字幕任务，可先取消或等待完成"
         );
-        ensure!(self.tasks.cancel.is_none(), "请先完成当前前台任务");
+        ensure!(!self.tasks.foreground.is_running(), "请先完成当前前台任务");
         ensure!(self.page == "video", "请先进入视频学习");
         let path = self.video.path.clone().context("请先选择视频")?;
         let videos = &self.video.collection;
@@ -48,7 +48,7 @@ impl AppView {
             self.tasks.video_job.is_none(),
             "已有后台视频字幕任务，可先取消或等待完成"
         );
-        ensure!(self.tasks.cancel.is_none(), "请先完成当前前台任务");
+        ensure!(!self.tasks.foreground.is_running(), "请先完成当前前台任务");
         ensure!(self.page == "video", "请先进入视频学习");
         let path = self.video.path.as_ref().context("请先选择视频")?;
         let source = self

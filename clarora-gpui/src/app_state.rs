@@ -285,15 +285,14 @@ impl PlaybackState {
 }
 
 pub(super) struct TasksState {
-    pub(super) cancel: Option<Cancel>,
-    pub(super) scope: TaskScope,
+    pub(super) foreground: task_runtime::Lane<TaskUpdate, Outcome>,
+    pub(super) chat_request: Option<clarora_gpui::chat_store::Request>,
     pub(super) models: model_controller::State,
     pub(super) audio_subtitles: audio_subtitles_controller::State,
     pub(super) backup_progress: Option<backup::UploadProgress>,
     #[cfg(debug_assertions)]
     pub(super) backup_fixture: Option<std::net::SocketAddr>,
     pub(super) progress_label: String,
-    pub(super) started: Option<Instant>,
     pub(super) progress_elapsed: u64,
     pub(super) retry: Option<feedback_ui::Retry>,
     pub(super) notice: Option<TaskNotice>,
@@ -301,21 +300,19 @@ pub(super) struct TasksState {
     pub(super) video_job: Option<video_jobs::Job>,
     pub(super) video_error: String,
     pub(super) downloads: video_jobs::Downloads,
-    pub(super) events: Option<mpsc::Receiver<Event>>,
     pub(super) title_events: Option<mpsc::Receiver<(String, String)>>,
 }
 impl TasksState {
     pub(super) fn new() -> Self {
         Self {
-            cancel: None,
-            scope: TaskScope::Material,
+            foreground: Default::default(),
+            chat_request: None,
             models: Default::default(),
             audio_subtitles: Default::default(),
             backup_progress: None,
             #[cfg(debug_assertions)]
             backup_fixture: None,
             progress_label: String::new(),
-            started: None,
             progress_elapsed: 0,
             retry: None,
             notice: None,
@@ -323,7 +320,6 @@ impl TasksState {
             video_job: None,
             video_error: String::new(),
             downloads: Default::default(),
-            events: None,
             title_events: None,
         }
     }
@@ -343,9 +339,7 @@ impl SettingsState {
 }
 impl Drop for TasksState {
     fn drop(&mut self) {
-        if let Some(cancel) = &self.cancel {
-            cancel.store(true, Ordering::SeqCst);
-        }
+        self.foreground.cancel();
         if let Some(job) = &self.video_job {
             job.cancel.store(true, Ordering::SeqCst);
         }

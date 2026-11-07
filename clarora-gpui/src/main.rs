@@ -31,6 +31,7 @@ mod cloud_ui;
 mod data_controller;
 mod design;
 mod diagnostics;
+mod domains;
 mod feedback_ui;
 #[cfg(debug_assertions)]
 mod flashcard_shortcut_probe;
@@ -60,6 +61,9 @@ mod subtitle_text_ui;
 #[cfg(debug_assertions)]
 mod subtitle_workbench_probe;
 mod task_controller;
+#[cfg(debug_assertions)]
+mod task_lifecycle_probe;
+mod task_status;
 mod task_ui;
 #[cfg(debug_assertions)]
 mod ui_controller_probe;
@@ -73,6 +77,7 @@ mod video_transcript_ui;
 mod writing_ui;
 use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::playback_session::{Mode as PlaybackMode, Owner as PlaybackOwner};
+use clarora_gpui::task_runtime::{self, Scope as TaskScope};
 use clarora_gpui::{
     ai, audio_library, backup, bilibili, blind_listening, clip_marks, credentials,
     data::{Card, Library, Row, id, now, text},
@@ -109,7 +114,7 @@ use std::{
     time::{Duration, Instant},
 };
 use subtitle_follow_ui::centered_list;
-use task_ui::{TaskNotice, TaskState};
+use task_status::{TaskNotice, TaskState};
 actions!(
     clarora_gpui_actions,
     [
@@ -172,229 +177,9 @@ const PAGES: &[(&str, &str, &str)] = &[
     ("settings", "设置", "AI 与存储"),
     ("sentences", "句型搜索", "搜遍音视频，逐句对照听"),
 ];
-#[derive(Clone)]
-enum Action {
-    ChatGpt(chatgpt_ui::Command),
-    Sentence(sentence_search_ui::Command),
-    Page(String),
-    Pick(String),
-    Audio(String),
-    Practice(String),
-    AudioPractice(String),
-    AudioBlind(bool),
-    AudioBlindChinese(bool),
-    AudioBlindReveal,
-    AudioBlindRevealCue(String, Cue),
-    AudioBlindHide,
-    AudioBlindResume(bool),
-    AudioBlindSentence(i8),
-    AudioBlindRow(String, Cue, Option<usize>),
-    AudioClipMode,
-    AudioTools,
-    AudioFont(u8),
-    AudioCurrent,
-    AudioFollow,
-    CopySelectedSubtitle,
-    CopySelection(String),
-    AudioCopySubtitle(String, Option<Cue>),
-    SavedClips(Vec<clip_marks::Saved>),
-    AudioRepeat(usize),
-    AudioSentence(i8),
-    LibrarySelect { id: String, reveal: bool },
-    LibraryRenameAudio(String),
-    LibraryCommitRename,
-    LibraryCancelRename,
-    LibraryTool(String),
-    LibrarySaveName,
-    LibraryFilter(u8),
-    LibrarySort(u8),
-    LibraryBatch,
-    LibraryShowSources,
-    LibrarySelectAll,
-    LibraryReset,
-    LibraryMove(String),
-    LibraryDelete(Vec<String>),
-    LibraryConfirmDelete(String),
-    LibraryStudy(bool),
-    Flip,
-    ReplayCard,
-    Next,
-    Previous,
-    Grade(String),
-    ReviewMode(bool),
-    Saved(bool),
-    Filter(String),
-    SaveSentence,
-    EditCard,
-    Composer,
-    SaveEditedCard,
-    Play,
-    Seek(f64),
-    SeekTo(f64),
-    VideoTimelineSeek(f64),
-    Boundary(f64, bool),
-    Word(f64, f64, String, bool),
-    Score,
-    Assistant,
-    Navigation,
-    Rate(f64),
-    Volume(f64),
-    Mark(bool),
-    Repeat,
-    VideoFullscreen,
-    VideoExitFullscreen,
-    VideoPrecision,
-    VideoSubtitleSize(u8),
-    VideoCaptions,
-    VideoTranslate,
-    VideoClearLoop,
-    VideoRepeatCue,
-    VideoSentenceRepeat(Option<usize>, bool),
-    VideoStopSentenceRepeat,
-    VideoSentence(bool),
-    VideoArrow(bool, bool),
-    VideoCancelPart,
-    VideoPlayCue(usize),
-    VideoCopySubtitle(Option<usize>),
-    LoopMode(usize),
-    Mute,
-    Subtitle(i64, bool),
-    SubtitleImport(bool),
-    Download,
-    ReadParts,
-    SelectPart(usize),
-    SelectPartAtEnd(usize),
-    AutoNextPart,
-    Cancel,
-    DismissTaskNotice,
-    CancelModel,
-    CancelAudioSubtitles,
-    DismissAudioSubtitles,
-    DismissModelNotice,
-    DismissFeedback(bool),
-    RetryFeedback,
-    Clip,
-    Chat,
-    AssistantQuote(clarora_gpui::assistant::Reference),
-    AssistantCurrent,
-    AssistantRemove(usize),
-    AssistantReferenceDetails,
-    AssistantTurnReference(usize),
-    AssistantSessions,
-    AssistantWide,
-    AssistantLegacy,
-    AssistantCopy(String),
-    AssistantPrompt(String),
-    SaveAnswer,
-    ChatSession(String),
-    ToggleReasoning,
-    PdfOpen(PathBuf),
-    Favorite,
-    Transcribe,
-    VideoTranscribe,
-    VideoTranscribeAll,
-    VideoTranslateAll,
-    CancelVideoSubtitles,
-    DismissVideoSubtitles,
-    VideoAsk(video_qa::Scope),
-    VideoFollow,
-    VideoPanel(usize),
-    VideoTools,
-    VideoTranscriptMode(bool),
-    VideoCopyTranscript,
-    VideoAskTranscript,
-    VideoSelect(String),
-    VideoEpisodes(String),
-    VideoRemove(String),
-    VideoConfirmRemove,
-    VideoSubtitleExport,
-    Translate,
-    Record,
-    StopRecord,
-    Timer(u64),
-    TimerPause,
-    TimerReset,
-    FocusStart(u64),
-    FocusResume,
-    FocusEmergency,
-    FocusKeep,
-    SaveAi,
-    CredentialMode(bool),
-    ImportLegacyCredentials,
-    SaveStorage,
-    Models(String),
-    SelectModel(String),
-    CloudList,
-    CloudBackup,
-    CloudRestore(String),
-    CloudSync,
-    CloudAutoSync,
-    CloudRetention(u8, usize),
-    CloudCleanupPreview,
-    CloudCleanup,
-    PdfPage(i32),
-    PdfZoom(i32),
-    DocumentCopy,
-    Theme,
-    Highlight,
-    ClearHighlights,
-    TtsDownload,
-    TtsGenerate,
-    TtsVoice(i32),
-    TtsSpeed(f32),
-    TtsPlay,
-    MergeAudios,
-    CheckAudio(String),
-    Suspend(bool),
-    CommandImport,
-    AudioGroupSubtitles(clarora_gpui::audio_batch::Mode),
-    ConfigureCommandImport,
-    SaveCommandImport,
-    FloatingImport,
-    NameImportedAudio,
-    CloseFloatingNames,
-    Refresh,
-    GraphSelect(String),
-    GraphList(i64),
-}
-enum Outcome {
-    CredentialMode(bool),
-    LibraryRestored(usize, video_library::Collection),
-    Message(String),
-    Issue(String),
-    Parts(bilibili::Series),
-    PartVideo(bilibili::Series, usize, PathBuf, bool, u64, bool),
-    Output(String),
-    VideoTranslated(PathBuf, String, Vec<Cue>, Vec<Cue>),
-    Pdf(PathBuf, i32, documents::PdfPage),
-    Ebook(ebook::Reading),
-    Ocr(String),
-    KeyPoints(String, Vec<ai::KeyPoint>),
-    BackupCreated(String, u32),
-    BackupFailed(String),
-    CloudVersions(Vec<backup::BackupVersion>),
-    CloudCleanupPlan(backup::CleanupPlan),
-    CloudCleaned(backup::CleanupResult, Vec<backup::BackupVersion>),
-    CloudSynced(backup::SyncResult, video_library::Collection),
-    Recording(PathBuf),
-    TtsReady(Row),
-    CommandImported(clarora_gpui::command_import::Report),
-    AudioMerged(clarora_gpui::audio_tools::Merged),
-}
-enum Event {
-    SubtitleProgress(String),
-    Done(
-        Option<clarora_gpui::chat_store::Request>,
-        std::result::Result<Outcome, String>,
-    ),
-    Chunk(clarora_gpui::chat_store::Request, ai::ChatReply),
-    BackupProgress(backup::UploadProgress),
-}
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TaskScope {
-    Material,
-    Application,
-}
+use domains::Action;
+
+use task_controller::{Outcome, TaskUpdate};
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum VideoCaptionSource {
     Transcript,
@@ -1156,7 +941,7 @@ impl AppView {
             "video" => {
                 let result = (|| -> Result<()> {
                     ensure!(
-                        self.tasks.cancel.is_none(),
+                        !self.tasks.foreground.is_running(),
                         "请完成或取消当前任务后再导入视频"
                     );
                     let mut videos = video_library::Collection::load(&self.lib)?;
@@ -1276,7 +1061,7 @@ impl AppView {
                 });
             }
             "pdf" => {
-                if self.tasks.cancel.is_some() {
+                if self.tasks.foreground.is_running() {
                     self.report_status(
                         FeedbackKind::Error,
                         "已有任务正在执行，请完成或取消后重试".into(),
@@ -1339,7 +1124,7 @@ impl AppView {
         });
     }
     fn render_pdf(&mut self) {
-        if self.tasks.cancel.is_some() {
+        if self.tasks.foreground.is_running() {
             self.report_status(
                 FeedbackKind::Error,
                 "已有任务正在执行，请完成或取消后重试".into(),
@@ -2091,9 +1876,9 @@ impl Render for AppView {
             }))
             .on_action(cx.listener(|this, _: &CancelTask, window, cx| {
                 this.handle(
-                    if this.tasks.cancel.is_some() {
+                    if this.tasks.foreground.is_running() {
                         Action::Cancel
-                    } else if this.tasks.audio_subtitles.cancel.is_some() {
+                    } else if this.tasks.audio_subtitles.lane.is_running() {
                         Action::CancelAudioSubtitles
                     } else {
                         Action::CancelModel
@@ -2647,7 +2432,7 @@ fn main() -> Result<()> {
 
 impl Drop for AppView {
     fn drop(&mut self) {
-        if let Some(cancel) = &self.tasks.cancel {
+        if let Some(cancel) = self.tasks.foreground.cancel_token() {
             cancel.store(true, Ordering::SeqCst);
         }
         if let Some(cancel) = &self.audio.waveform_cancel {

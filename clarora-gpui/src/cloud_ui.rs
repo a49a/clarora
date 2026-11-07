@@ -27,7 +27,7 @@ impl State {
 impl AppView {
     pub(super) fn cloud_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<()> {
         ensure!(
-            self.tasks.cancel.is_none() && !self.chat.running,
+            !self.tasks.foreground.is_running() && !self.chat.running,
             "请先完成当前任务再同步"
         );
         self.flush_writing(cx)?;
@@ -47,7 +47,7 @@ impl AppView {
                 #[cfg(not(debug_assertions))]
                 let storage = backup::Storage::load(&lib)?;
                 let result = storage.synchronize(&lib, &cancel, move |progress| {
-                    let _ = tx.send(Event::BackupProgress(progress));
+                    let _ = tx.send(TaskUpdate::BackupProgress(progress));
                 })?;
                 let videos = video_library::Collection::load(&lib)?;
                 Ok(Outcome::CloudSynced(result, videos))
@@ -69,7 +69,7 @@ impl AppView {
     pub(super) fn poll_auto_cloud_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.cloud.automatic
             || self.cloud.last_attempt.elapsed() < Duration::from_secs(300)
-            || self.tasks.cancel.is_some()
+            || self.tasks.foreground.is_running()
             || self.chat.running
             || self.assistant_open
             || self.composer_open
@@ -91,7 +91,7 @@ impl AppView {
         }
     }
     pub(super) fn cloud_sync_settings(&self, cx: &Context<Self>) -> AnyElement {
-        let busy = self.tasks.cancel.is_some();
+        let busy = self.tasks.foreground.is_running();
         let menu = |which: u8, values: &[usize], unit: &str, current: usize| {
             values
                 .iter()

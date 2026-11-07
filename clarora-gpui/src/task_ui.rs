@@ -1,39 +1,10 @@
 use super::*;
 use gpui_component::spinner::Spinner;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum TaskState {
-    Running,
-    Cancelling,
-    Succeeded,
-    Failed,
-    Cancelled,
-}
-pub(super) struct TaskNotice {
-    pub title: String,
-    pub detail: String,
-    pub state: TaskState,
-    pub started: Instant,
-    pub elapsed: u64,
-}
-impl TaskNotice {
-    pub fn new(title: &str, detail: &str) -> Self {
-        Self {
-            title: title.into(),
-            detail: detail.into(),
-            state: TaskState::Running,
-            started: Instant::now(),
-            elapsed: 0,
-        }
-    }
-    pub fn active(&self) -> bool {
-        matches!(self.state, TaskState::Running | TaskState::Cancelling)
-    }
-}
 impl AppView {
     pub(super) fn subtitle_task_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let foreground =
-            self.tasks.cancel.is_some() && self.tasks.notice.is_none() && !self.chat.running;
+            self.tasks.foreground.is_running() && self.tasks.notice.is_none() && !self.chat.running;
         if self.tasks.notice.is_none()
             && self.tasks.video_notice.is_none()
             && self.tasks.models.notice.is_none()
@@ -66,14 +37,14 @@ impl AppView {
                     )
                 }))
                 .children(foreground.then(|| {
-                    let started = self.tasks.started.unwrap_or_else(Instant::now);
+                    let started = self.tasks.foreground.started().unwrap_or_else(Instant::now);
                     let notice = TaskNotice {
                         title: "处理任务".into(),
                         detail: self.tasks.progress_label.clone(),
                         state: if self
                             .tasks
-                            .cancel
-                            .as_ref()
+                            .foreground
+                            .cancel_token()
                             .is_some_and(|token| token.load(Ordering::SeqCst))
                         {
                             TaskState::Cancelling

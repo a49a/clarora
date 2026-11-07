@@ -11,10 +11,12 @@ struct Scenario {
 macro_rules! scenarios {
     ($table:ident; $output:ident,$args:ident,$results:ident; $($flag:literal, $min:literal, $max:literal => $body:block),* $(,)?) => {
         const $table: &[Scenario]=&[$(Scenario {flag:$flag,min:$min,max:$max,
-            run: |$output,$args,$results| {let _=&$args; $body}}),*];
+            run: |$output,$args,$results| {let _=(&$output,&$args,&$results); $body}}),*];
     };
 }
 scenarios! {ENTRIES; output,args,results;
+    "--task-lifecycle-native-only",0,0 => {task_lifecycle_native::run(output,results)},
+    "--task-runtime-only",0,0 => {task_runtime::run(output,results)},
     "--full",0,0 => { super::run(output,results) },
     "--list-scenarios",0,0 => {
         fs::write(output.join("scenario-catalog.json"),serde_json::to_vec_pretty(&catalogue())?)?;

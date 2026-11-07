@@ -271,7 +271,7 @@ impl Probe {
                 app.set("question", "读取中不应发送", window, cx);
                 app.handle(Action::Chat, window, cx);
                 ensure!(
-                    !app.chat.running && app.tasks.cancel.is_none(),
+                    !app.chat.running && !app.tasks.foreground.is_running(),
                     "读取中发送handler启动了旧材料请求"
                 );
                 self.note("会话读取中发送handler保护", app)?;
@@ -497,8 +497,8 @@ impl Probe {
                 app.handle(Action::Page("pdf".into()), window, cx);
                 ensure!(
                     app.tasks
-                        .cancel
-                        .as_ref()
+                        .foreground
+                        .cancel_token()
                         .is_some_and(|cancel| !cancel.load(Ordering::SeqCst)),
                     "切页取消了全局问答"
                 );

@@ -264,6 +264,8 @@ fn reliability(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
 fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = output.join(format!("run-{}", data::id()));
     fs::create_dir_all(&root)?;
+    task_runtime::run(&root, results)?;
+    task_lifecycle_native::run(&root, results)?;
     diagnostic_entry::run(&root, results)?;
     diagnostic_entry::native(&root, results)?;
     asr_models::run(&Library::open(root.join("asr-model-fixtures"))?, results)?;
@@ -953,6 +955,10 @@ mod diagnostic_entry;
 mod native_diagnostic;
 #[path = "support/scenarios.rs"]
 mod scenarios;
+#[path = "support/task_lifecycle_native.rs"]
+mod task_lifecycle_native;
+#[path = "support/task_runtime.rs"]
+mod task_runtime;
 
 fn main() -> Result<()> {
     let args = std::env::args_os().collect::<Vec<_>>();

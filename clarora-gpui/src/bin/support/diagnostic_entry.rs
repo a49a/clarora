@@ -72,6 +72,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             .as_array()
             .context("diagnostic catalogue missing")?;
         let flags = [
+            "--task-lifecycle-check",
             "--assistant-latency-check",
             "--audio-remove-check",
             "--audio-repeat-check",

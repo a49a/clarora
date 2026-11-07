@@ -69,8 +69,8 @@ impl AppView {
         );
         ensure!(
             !self.chat.running
-                && self.tasks.cancel.is_none()
-                && self.tasks.audio_subtitles.cancel.is_none()
+                && !self.tasks.foreground.is_running()
+                && !self.tasks.audio_subtitles.lane.is_running()
                 && self.tasks.video_job.is_none(),
             "请先完成或取消正在使用 AI 的任务，再更改服务或账户"
         );
@@ -212,8 +212,8 @@ impl AppView {
         let busy = self.chatgpt.busy();
         let locked = busy
             || self.chat.running
-            || self.tasks.cancel.is_some()
-            || self.tasks.audio_subtitles.cancel.is_some()
+            || self.tasks.foreground.is_running()
+            || self.tasks.audio_subtitles.lane.is_running()
             || self.tasks.video_job.is_some();
         let action = |c| Action::ChatGpt(c);
         let mut panel=panel(cx)
@@ -441,7 +441,7 @@ impl AppView {
                     .child(
                         self.button("save-ai", "保存 AI 与学习设置", Action::SaveAi, cx)
                             .primary()
-                            .disabled(self.tasks.cancel.is_some()),
+                            .disabled(self.tasks.foreground.is_running()),
                     ),
             )
             .into_any_element()

@@ -8,7 +8,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> Result<()> {
         ensure!(self.page == "library", "请在音频管理中选择要移除的音频");
-        ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
+        ensure!(!self.tasks.foreground.is_running(), "请等待当前任务完成");
         ensure!(!ids.is_empty(), "请先选择音频");
         ensure!(
             ids.iter().collect::<std::collections::BTreeSet<_>>().len() == ids.len(),

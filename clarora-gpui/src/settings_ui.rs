@@ -16,7 +16,7 @@ impl AppView {
                 .child("仅在点击导入时执行。命令每行输出一个本机音频文件的完整路径，音频保存到点击时选择的练习组。"))
             .child(div().flex().gap_2()
                 .child(self.button("save-import-command", "保存导入命令", Action::SaveCommandImport, cx)
-                    .primary().disabled(self.tasks.cancel.is_some()))
+                    .primary().disabled(self.tasks.foreground.is_running()))
                 .child(self.button("settings-floating-import", "显示 / 隐藏悬浮窗", Action::FloatingImport, cx))));
         let mut runtime = panel(cx)
             .child(div().text_lg().child("运行环境"))
@@ -58,9 +58,9 @@ impl AppView {
                 .child(self.button("theme", "切换深浅主题", Action::Theme, cx))
                 .child(self.field("daily_limit", "每日新卡上限")),
         );
-        let credential_locked = self.tasks.cancel.is_some()
+        let credential_locked = self.tasks.foreground.is_running()
             || self.tasks.video_job.is_some()
-            || self.tasks.audio_subtitles.cancel.is_some()
+            || self.tasks.audio_subtitles.lane.is_running()
             || self.chat.running
             || self.chatgpt.busy();
         content=content.child(panel(cx)
@@ -194,7 +194,7 @@ impl AppView {
                                     Action::Models(model.into()),
                                     cx,
                                 )
-                                .disabled(present || self.tasks.models.cancel.is_some()),
+                                .disabled(present || self.tasks.models.lane.is_running()),
                             )
                             .child(
                                 self.button(
@@ -212,7 +212,9 @@ impl AppView {
                                     cx,
                                 )
                                 .selected(selected)
-                                .disabled(!present || self.tasks.cancel.is_some() || selected),
+                                .disabled(
+                                    !present || self.tasks.foreground.is_running() || selected,
+                                ),
                             ),
                     ),
             );
@@ -224,7 +226,7 @@ impl AppView {
                     .child(
                         self.button("save-asr-settings", "保存 AI 与学习设置", Action::SaveAi, cx)
                             .primary()
-                            .disabled(self.tasks.cancel.is_some()),
+                            .disabled(self.tasks.foreground.is_running()),
                     );
         content = content.child(models);
 
@@ -246,7 +248,7 @@ impl AppView {
                 .child(self.field("path_style", "S3 路径模式 true / false"))
                 .child(
                     self.button("save-storage", "保存存储配置", Action::SaveStorage, cx)
-                        .disabled(self.tasks.cancel.is_some()),
+                        .disabled(self.tasks.foreground.is_running()),
                 )
                 .child(
                     div()
@@ -255,11 +257,11 @@ impl AppView {
                         .flex_wrap()
                         .child(
                             self.button("cloud-backup", "备份本机资料", Action::CloudBackup, cx)
-                                .disabled(self.tasks.cancel.is_some()),
+                                .disabled(self.tasks.foreground.is_running()),
                         )
                         .child(
                             self.button("cloud-list", "读取备份版本", Action::CloudList, cx)
-                                .disabled(self.tasks.cancel.is_some()),
+                                .disabled(self.tasks.foreground.is_running()),
                         ),
                 ),
         );
@@ -286,7 +288,7 @@ impl AppView {
                     Action::CloudRestore(version.key.clone()),
                     cx,
                 )
-                .disabled(self.tasks.cancel.is_some()),
+                .disabled(self.tasks.foreground.is_running()),
             );
         }
         content = content.child(

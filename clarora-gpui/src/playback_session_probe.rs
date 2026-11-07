@@ -538,19 +538,15 @@ impl Probe {
                 };
                 let revision = app.media.session.revision();
                 let request = sentence.request_id;
-                let (tx, rx) = mpsc::channel();
-                tx.send(Event::Done(
-                    None,
-                    Ok(Outcome::PartVideo(
-                        series,
-                        0,
-                        late,
-                        false,
-                        self.old_revision,
-                        false,
-                    )),
-                ))?;
-                app.tasks.events = Some(rx);
+                let task = app.tasks.foreground.begin(TaskScope::Material)?;
+                task.complete(Ok(Outcome::PartVideo(
+                    series,
+                    0,
+                    late,
+                    false,
+                    self.old_revision,
+                    false,
+                )));
                 app.poll_tasks(window, cx);
                 ensure!(
                     app.media.session.revision() == revision

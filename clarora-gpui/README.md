@@ -121,6 +121,10 @@ HTTP 请求读取系统 HTTP/HTTPS 代理及代理环境变量；系统浏览器
 
 先构建两个可执行文件：`cargo build --manifest-path clarora-gpui/Cargo.toml --locked --bins`，再运行 E2E。原生子进程统一输出 `native-invocation.json`、`native-process.json`、`diagnostic-run.json` 和原场景报告，保留耗时、退出和清理状态；超时会终止并回收子进程。跳过的环境与实际失败分别计数。可用 `--diagnostic-entry-only` 定向验证目录登记、参数拒绝与目录隔离；设置 `CLARORA_GUI_MEMORY_CHECK=1` 时额外验证故意失败、超时回收及后续场景独立完成。默认 E2E 和 macOS CI 同样收集这些验收。
 
+动作由 `action_router` 统一接收，`domains/` 按模块处理动作、界面效果与任务完成结果。切换栏目时，导航依次调用离开与进入逻辑，保存学习进度，并只取消绑定当前材料的前台任务。前台处理、模型下载和音频字幕队列共用 `task_runtime` 管理任务身份、进度和取消；是否保留已写入的结果由所属模块判断。
+
+任务生命周期可用 `--task-runtime-only` 定向验证。macOS 设置 `CLARORA_GUI_MEMORY_CHECK=1` 后，可用 `--task-lifecycle-native-only` 运行隔离窗口中的切页、全局进度、聊天关联及异常恢复验收。两项均由默认 E2E 收集，并在证据目录保留 JSON 报告。
+
 ## 冥想与计时提示音
 
 计时状态保存在本机资料库，不进入云端／ZIP 备份。恢复已到期的一轮与完成统计使用同一事务，重复打开不会重复统计；保存失败会提示并保留原状态。可用 `--focus-timer-only` 定向运行跨进程、暂停继续、离线到期、事务失败和损坏记录恢复 E2E，默认完整 E2E 同时收集，保留 SQLite 和 JSON 证据。

@@ -90,11 +90,11 @@ impl ImportSnapshot {
             .find(|r| text(r, "id") == app.audio.practice_id)
             .map(|r| text(r, "name"));
         let command_ready = !app.import_command.trim().is_empty();
-        let busy = app.tasks.cancel.is_some();
+        let busy = app.tasks.foreground.is_running();
         let cancelling = app
             .tasks
-            .cancel
-            .as_ref()
+            .foreground
+            .cancel_token()
             .is_some_and(|t| t.load(Ordering::SeqCst));
         let notice = app
             .tasks
@@ -616,7 +616,7 @@ impl ImportNames {
         if self
             .owner
             .upgrade()
-            .is_none_or(|owner| owner.read(cx).tasks.cancel.is_some())
+            .is_none_or(|owner| owner.read(cx).tasks.foreground.is_running())
         {
             self.error = "请等待当前任务完成后保存".into();
         } else {

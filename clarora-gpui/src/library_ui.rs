@@ -18,7 +18,7 @@ impl AppView {
             .find(|r| text(r, "id") == self.audio.practice_id)
             .map(|r| text(r, "name"))
             .unwrap_or_else(|| "还没有练习组".into());
-        let busy = self.tasks.cancel.is_some();
+        let busy = self.tasks.foreground.is_running();
         let hidden_sources = self
             .audio
             .audios
@@ -620,7 +620,7 @@ impl AppView {
         root.child(board).into_any_element()
     }
     fn library_detail(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let busy = self.tasks.cancel.is_some();
+        let busy = self.tasks.foreground.is_running();
         let mut detail = div()
             .id("library-detail")
             .flex()

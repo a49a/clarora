@@ -59,7 +59,7 @@ impl AppView {
             if let Some((started, audio, target)) = self.audio.blind_pending.clone() {
                 let valid = self.page == "listening"
                     && audio == self.audio.current_id
-                    && self.tasks.cancel.is_none()
+                    && !self.tasks.foreground.is_running()
                     && self
                         .media
                         .session
@@ -201,7 +201,7 @@ impl AppView {
                 && self.media.snapshot.error.is_empty()
                 && self.media.snapshot.eof
                 && !self.media.session.end_handled
-                && self.tasks.cancel.is_none()
+                && !self.tasks.foreground.is_running()
                 && self
                     .media
                     .session
@@ -247,8 +247,8 @@ impl AppView {
         let previous_error = self.chat.error.clone();
         self.sync_assistant(window, cx);
         changed |= previous_context != self.chat.context || previous_error != self.chat.error;
-        if self.tasks.cancel.is_some() {
-            if let Some(started) = self.tasks.started {
+        if self.tasks.foreground.is_running() {
+            if let Some(started) = self.tasks.foreground.started() {
                 let elapsed = started.elapsed().as_secs();
                 if elapsed != self.tasks.progress_elapsed {
                     self.tasks.progress_elapsed = elapsed;

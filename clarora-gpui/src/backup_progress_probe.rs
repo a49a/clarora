@@ -304,7 +304,7 @@ impl Probe {
         Ok(())
     }
     fn note(&mut self, name: &str, app: &AppView, cx: &Context<AppView>) -> Result<()> {
-        self.cases.push(json!({"case":name,"passed":true,"page":app.page,"status":app.status,"scope_application":app.tasks.scope==TaskScope::Application,"banner_present":app.subtitle_task_banner(cx).is_some(),"progress":app.tasks.backup_progress,"elapsed_ms":self.started.elapsed().as_millis()}));
+        self.cases.push(json!({"case":name,"passed":true,"page":app.page,"status":app.status,"scope_application":app.tasks.foreground.scope()==TaskScope::Application,"banner_present":app.subtitle_task_banner(cx).is_some(),"progress":app.tasks.backup_progress,"elapsed_ms":self.started.elapsed().as_millis()}));
         self.report(None, None)
     }
     fn advance(&mut self) {
@@ -323,7 +323,7 @@ impl Probe {
         json!({"page":app.page,"audio":app.audio.current_id,"video":app.video.path,"chat_context":app.chat.context,"chat_session":app.chat.id,"draft":app.value("question",cx),"data_revision":app.data.revision})
     }
     fn running(&mut self, app: &AppView, cx: &Context<AppView>) -> Result<()> {
-        let cancel = app.tasks.cancel.as_ref().with_context(|| {
+        let cancel = app.tasks.foreground.cancel_token().with_context(|| {
             format!(
                 "cloud operation stopped during page navigation: {}",
                 app.status
@@ -340,7 +340,7 @@ impl Probe {
             "page navigation replaced backup task"
         );
         ensure!(
-            app.tasks.scope == TaskScope::Application,
+            app.tasks.foreground.scope() == TaskScope::Application,
             "cloud backup did not use application scope"
         );
         ensure!(
@@ -388,7 +388,7 @@ impl Probe {
         file.sync_all()?;
         app.tasks.backup_fixture = Some(fixture.address);
         app.handle(Action::CloudBackup, window, cx);
-        self.active_token = app.tasks.cancel.clone();
+        self.active_token = app.tasks.foreground.cancel_token().cloned();
         ensure!(
             self.active_token.is_some(),
             "real CloudBackup action did not start a task"
@@ -518,7 +518,7 @@ impl Probe {
                 self.advance();
             }
             6 => {
-                if app.tasks.cancel.is_some() {
+                if app.tasks.foreground.is_running() {
                     return Ok(false);
                 }
                 ensure!(
@@ -592,7 +592,7 @@ impl Probe {
                 self.advance();
             }
             8 => {
-                if app.tasks.cancel.is_some() {
+                if app.tasks.foreground.is_running() {
                     return Ok(false);
                 }
                 ensure!(
@@ -640,7 +640,7 @@ impl Probe {
                 self.advance();
             }
             10 => {
-                if app.tasks.cancel.is_some() {
+                if app.tasks.foreground.is_running() {
                     return Ok(false);
                 }
                 ensure!(
@@ -676,7 +676,7 @@ impl Probe {
                 )?;
                 self.fixture.as_ref().unwrap().reset(false);
                 app.handle(Action::CloudSync, window, cx);
-                self.active_token = app.tasks.cancel.clone();
+                self.active_token = app.tasks.foreground.cancel_token().cloned();
                 ensure!(
                     self.active_token.is_some(),
                     "real CloudSync action did not start"
@@ -730,7 +730,7 @@ impl Probe {
                 self.advance();
             }
             12 => {
-                if app.tasks.cancel.is_some() {
+                if app.tasks.foreground.is_running() {
                     return Ok(false);
                 }
                 ensure!(

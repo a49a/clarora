@@ -77,9 +77,7 @@ impl AppView {
             return;
         }
         if self.chat.running && self.chat.requested_context() != context {
-            if let Some(cancel) = &self.tasks.cancel {
-                cancel.store(true, Ordering::SeqCst);
-            }
+            self.cancel_chat_task();
         }
         let draft = self.value("question", cx);
         match self.chat.switch_context(&context, &draft) {

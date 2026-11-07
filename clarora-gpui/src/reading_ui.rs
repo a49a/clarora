@@ -8,7 +8,7 @@ fn escaped(text: &str) -> String {
 
 impl AppView {
     pub(super) fn document_view(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let busy = self.tasks.cancel.is_some();
+        let busy = self.tasks.foreground.is_running();
         let mut shelf = div().flex().gap_2().flex_wrap();
         for (i, path) in self.data.document_files.iter().enumerate() {
             let label = ebook::display_name(path);
@@ -131,7 +131,7 @@ impl AppView {
                                                         ),
                                                         cx,
                                                     )
-                                                    .disabled(this.tasks.cancel.is_some()),
+                                                    .disabled(this.tasks.foreground.is_running()),
                                                 ),
                                             )
                                         })

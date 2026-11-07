@@ -7,6 +7,7 @@ enum Kind {
     AudioRemove,
     AudioRepeat,
     Playback,
+    Tasks,
     Models,
     Backup,
     Sentences,
@@ -21,6 +22,11 @@ struct Entry {
     kind: Kind,
 }
 const ENTRIES: &[Entry] = &[
+    Entry {
+        flag: "--task-lifecycle-check",
+        name: "task-lifecycle",
+        kind: Kind::Tasks,
+    },
     Entry {
         flag: "--assistant-latency-check",
         name: "assistant-latency",
@@ -223,6 +229,7 @@ mod running {
                 Kind::AudioRemove => audio_remove_probe::prepare(&self.out),
                 Kind::AudioRepeat => audio_repeat_probe::prepare(&self.out),
                 Kind::Playback => playback_session_probe::prepare(&self.out),
+                Kind::Tasks => task_lifecycle_probe::prepare(&self.out),
                 Kind::Models => model_navigation_probe::prepare(&self.out),
                 Kind::Backup => backup_progress_probe::prepare(&self.out),
                 Kind::Sentences => sentence_search_probe::prepare(&self.out),
@@ -237,6 +244,7 @@ mod running {
                 Kind::AudioRemove => Box::new(audio_remove_probe::Probe::new(&self.out)),
                 Kind::AudioRepeat => Box::new(audio_repeat_probe::Probe::new(&self.out)),
                 Kind::Playback => Box::new(playback_session_probe::Probe::new(&self.out)),
+                Kind::Tasks => Box::new(task_lifecycle_probe::Probe::new(&self.out)),
                 Kind::Models => Box::new(model_navigation_probe::Probe::new(&self.out)),
                 Kind::Backup => Box::new(backup_progress_probe::Probe::new(&self.out)),
                 Kind::Sentences => Box::new(sentence_search_probe::Probe::new(&self.out)),

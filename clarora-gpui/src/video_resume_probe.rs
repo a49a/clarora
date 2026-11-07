@@ -394,10 +394,11 @@ impl Probe {
                 ensure!(app.video.part_confirmation.is_none(), "无字幕误确认");
                 app.video.set_cues(cues);
                 app.handle(Action::VideoSentenceRepeat(Some(2), true), window, cx);
-                app.tasks.cancel = Some(process::cancel_token());
+                let busy_task = app.tasks.foreground.begin(TaskScope::Material)?;
                 app.handle_video_arrow_key(&Self::key("right", false), window, cx);
                 ensure!(app.video.part_confirmation.is_none(), "任务忙仍弹切P确认");
-                app.tasks.cancel = None;
+                app.tasks.foreground.abort();
+                drop(busy_task);
                 app.handle_video_arrow_key(&Self::key("right", false), window, cx);
                 ensure!(app.video.part_confirmation.is_some(), "忙碌结束后未可确认");
                 app.handle(Action::Page("settings".into()), window, cx);
@@ -619,7 +620,7 @@ impl Probe {
             }
             21 => {
                 let state = app.media.player.snapshot();
-                if app.tasks.cancel.is_some()
+                if app.tasks.foreground.is_running()
                     || state.path != path.to_string_lossy()
                     || !app
                         .media
@@ -641,14 +642,14 @@ impl Probe {
                     Ok(Outcome::PartVideo(series, 1, target, false, origin, false))
                 });
                 app.tasks
-                    .cancel
-                    .as_ref()
+                    .foreground
+                    .cancel_token()
                     .unwrap()
                     .store(true, Ordering::SeqCst);
                 self.advance();
             }
             22 => {
-                if app.tasks.cancel.is_some() {
+                if app.tasks.foreground.is_running() {
                     return Ok(false);
                 }
                 ensure!(
@@ -667,7 +668,7 @@ impl Probe {
             }
             23 => {
                 let state = app.media.player.snapshot();
-                if app.tasks.cancel.is_some()
+                if app.tasks.foreground.is_running()
                     || state.path != other_video(&app.lib).to_string_lossy()
                     || !self.stable()
                 {
@@ -718,10 +719,11 @@ impl Probe {
                     "普通左键误弹跨P确认"
                 );
                 self.record(app, "上一P确认反向取消/非首句左键仍切上一句")?;
-                app.tasks.cancel = Some(process::cancel_token());
+                let busy_task = app.tasks.foreground.begin(TaskScope::Material)?;
                 app.handle_video_arrow_key(&Self::key("left", false), window, cx);
                 ensure!(app.video.part_confirmation.is_none(), "任务忙仍弹上一P确认");
-                app.tasks.cancel = None;
+                app.tasks.foreground.abort();
+                drop(busy_task);
                 app.handle(Action::SeekTo(0.), window, cx);
                 app.media.player.set("pause", "yes");
                 self.advance();
@@ -812,7 +814,7 @@ impl Probe {
             }
             28 => {
                 let state = app.media.player.snapshot();
-                if app.tasks.cancel.is_some()
+                if app.tasks.foreground.is_running()
                     || state.path != other_video(&app.lib).to_string_lossy()
                     || !app
                         .media
@@ -838,7 +840,7 @@ impl Probe {
             }
             29 => {
                 let state = app.media.player.snapshot();
-                if app.tasks.cancel.is_some()
+                if app.tasks.foreground.is_running()
                     || state.path != path.to_string_lossy()
                     || !self.stable()
                 {
@@ -1362,7 +1364,7 @@ impl Probe {
                     "无字幕开启没有保留模式和当前播放位置"
                 );
                 self.record(app, "无字幕可先开启三次模式并等待字幕/不启动ASR")?;
-                ensure!(app.tasks.cancel.is_none(), "选择模式误触发后台任务");
+                ensure!(!app.tasks.foreground.is_running(), "选择模式误触发后台任务");
                 app.handle(Action::VideoStopSentenceRepeat, window, cx);
                 app.video.set_cues(vec![Cue {
                     start: 6.,

@@ -8,8 +8,8 @@ impl AppView {
         total: usize,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let disabled = self.tasks.cancel.is_some()
-            || self.tasks.audio_subtitles.cancel.is_some()
+        let disabled = self.tasks.foreground.is_running()
+            || self.tasks.audio_subtitles.lane.is_running()
             || self.audio.practice_id.is_empty()
             || total == 0;
         div()
@@ -61,7 +61,8 @@ impl AppView {
 
     pub(super) fn audio_subtitle_toolbar(&self, cx: &Context<Self>) -> impl IntoElement {
         let available = !self.audio.current_id.is_empty();
-        let busy = self.tasks.cancel.is_some() || self.tasks.audio_subtitles.cancel.is_some();
+        let busy =
+            self.tasks.foreground.is_running() || self.tasks.audio_subtitles.lane.is_running();
         let has_cues = !self.audio.cues.is_empty();
         let generating = self.tasks.audio_subtitles.working(
             &self.audio.current_id,

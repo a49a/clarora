@@ -501,7 +501,7 @@ impl AppView {
                     .child(
                         self.assistant_button("ask", "发送问题", Action::Chat, cx)
                             .primary()
-                            .disabled(self.tasks.cancel.is_some() || self.chat.is_loading()),
+                            .disabled(self.tasks.foreground.is_running() || self.chat.is_loading()),
                     )
                     .child(
                         self.assistant_button("cancel-ai", "停止回答", Action::Cancel, cx)

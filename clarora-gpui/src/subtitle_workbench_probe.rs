@@ -393,7 +393,7 @@ impl Probe {
     }
     fn no_request(&self, app: &AppView) -> Result<()> {
         ensure!(
-            app.tasks.cancel.is_none() && !app.chat.running,
+            !app.tasks.foreground.is_running() && !app.chat.running,
             "preparing a transcript started an app task"
         );
         ensure!(
@@ -780,7 +780,7 @@ impl Probe {
                 app.set("question", QUESTION, window, cx);
                 app.handle(Action::Chat, window, cx);
                 ensure!(
-                    app.tasks.cancel.is_some() && app.chat.running,
+                    app.tasks.foreground.is_running() && app.chat.running,
                     "actual chat action did not start"
                 );
                 self.note(
@@ -790,7 +790,7 @@ impl Probe {
                 self.advance();
             }
             11 => {
-                if app.tasks.cancel.is_some() || app.chat.running || app.chat.is_loading() {
+                if app.tasks.foreground.is_running() || app.chat.running || app.chat.is_loading() {
                     return Ok(false);
                 }
                 ensure!(

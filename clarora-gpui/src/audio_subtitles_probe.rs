@@ -191,7 +191,7 @@ impl Flow {
             .store(true, Ordering::SeqCst);
     }
     fn note(&mut self, label: &str, app: &AppView) {
-        self.cases.push(json!({"case":label,"passed":true,"page":app.page,"audio":app.audio.current_id,"foreground":app.tasks.cancel.is_some(),"background_audio":app.tasks.audio_subtitles.cancel.is_some()}));
+        self.cases.push(json!({"case":label,"passed":true,"page":app.page,"audio":app.audio.current_id,"foreground":app.tasks.foreground.is_running(),"background_audio":app.tasks.audio_subtitles.lane.is_running()}));
     }
     fn foreground(app: &mut AppView) {
         app.begin_scoped(
@@ -223,7 +223,7 @@ impl Flow {
         fs::write(
             app.lib.root.join("audio-subtitles-progress.json"),
             serde_json::to_vec_pretty(
-                &json!({"stage":self.stage,"detail":detail,"audio":app.audio.current_id,"running":app.tasks.audio_subtitles.cancel.is_some(),"cases":self.cases}),
+                &json!({"stage":self.stage,"detail":detail,"audio":app.audio.current_id,"running":app.tasks.audio_subtitles.lane.is_running(),"cases":self.cases}),
             )?,
         )?;
         if let Some(error) = self
@@ -238,7 +238,7 @@ impl Flow {
             "audio background flow stage {} timed out: {detail}",
             self.stage
         );
-        if [1, 4, 6, 8, 10].contains(&self.stage) && app.tasks.audio_subtitles.cancel.is_none() {
+        if [1, 4, 6, 8, 10].contains(&self.stage) && !app.tasks.audio_subtitles.lane.is_running() {
             anyhow::bail!(
                 "audio task ended before fixture request at stage {}: {detail}",
                 self.stage
@@ -251,9 +251,9 @@ impl Flow {
                 self.other_before = Self::source(app, "probe-audio-b")?;
                 self.fixture(app)?;
                 app.handle(Action::Transcribe, window, cx);
-                self.token = app.tasks.audio_subtitles.cancel.clone();
+                self.token = app.tasks.audio_subtitles.lane.cancel_token().cloned();
                 ensure!(
-                    self.token.is_some() && app.tasks.cancel.is_none(),
+                    self.token.is_some() && !app.tasks.foreground.is_running(),
                     "audio ASR occupies foreground lane"
                 );
                 self.note("single ASR uses independent background lane", app);
@@ -291,8 +291,8 @@ impl Flow {
                 self.release();
             }
             2 => {
-                if app.tasks.audio_subtitles.cancel.is_some()
-                    || app.tasks.cancel.is_some()
+                if app.tasks.audio_subtitles.lane.is_running()
+                    || app.tasks.foreground.is_running()
                     || app.loads.restore_pending
                 {
                     return Ok(None);
@@ -327,7 +327,7 @@ impl Flow {
                 }
                 self.fixture(app)?;
                 app.handle(Action::Translate, window, cx);
-                self.token = app.tasks.audio_subtitles.cancel.clone();
+                self.token = app.tasks.audio_subtitles.lane.cancel_token().cloned();
                 ensure!(self.token.is_some(), "translation did not start");
             }
             4 => {
@@ -336,7 +336,12 @@ impl Flow {
                 }
                 app.handle(Action::AudioPractice("probe-group-b".into()), window, cx);
                 Self::foreground(app);
-                let foreground = app.tasks.cancel.clone().context("foreground token")?;
+                let foreground = app
+                    .tasks
+                    .foreground
+                    .cancel_token()
+                    .cloned()
+                    .context("foreground token")?;
                 app.handle(Action::CancelAudioSubtitles, window, cx);
                 ensure!(
                     self.token.as_ref().unwrap().load(Ordering::SeqCst)
@@ -350,7 +355,8 @@ impl Flow {
                 );
             }
             5 => {
-                if app.tasks.audio_subtitles.cancel.is_some() || app.tasks.cancel.is_some() {
+                if app.tasks.audio_subtitles.lane.is_running() || app.tasks.foreground.is_running()
+                {
                     return Ok(None);
                 }
                 ensure!(
@@ -372,7 +378,7 @@ impl Flow {
                 )?;
                 self.fixture(app)?;
                 app.handle(Action::AudioGroupSubtitles(Mode::English), window, cx);
-                self.token = app.tasks.audio_subtitles.cancel.clone();
+                self.token = app.tasks.audio_subtitles.lane.cancel_token().cloned();
                 ensure!(
                     self.token.is_some(),
                     "group task did not use audio background lane"
@@ -395,7 +401,7 @@ impl Flow {
                 );
             }
             7 => {
-                if app.tasks.audio_subtitles.cancel.is_some() {
+                if app.tasks.audio_subtitles.lane.is_running() {
                     return Ok(None);
                 }
                 ensure!(
@@ -421,7 +427,7 @@ impl Flow {
                 self.release();
             }
             9 => {
-                if app.tasks.audio_subtitles.cancel.is_some() {
+                if app.tasks.audio_subtitles.lane.is_running() {
                     return Ok(None);
                 }
                 ensure!(
@@ -449,8 +455,9 @@ impl Flow {
                 let token = app
                     .tasks
                     .audio_subtitles
-                    .cancel
-                    .clone()
+                    .lane
+                    .cancel_token()
+                    .cloned()
                     .context("close cancel token")?;
                 drop(std::mem::take(&mut app.tasks.audio_subtitles));
                 ensure!(

@@ -123,7 +123,7 @@ impl Probe {
         Ok(())
     }
     fn note(&mut self, name: &str, app: &AppView) {
-        self.cases.push(json!({"case":name,"passed":true,"page":app.page,"audio":app.audio.current_id,"group":app.audio.practice_id,"video":app.video.path,"model_progress":app.tasks.models.progress,"foreground_active":app.tasks.cancel.is_some()}));
+        self.cases.push(json!({"case":name,"passed":true,"page":app.page,"audio":app.audio.current_id,"group":app.audio.practice_id,"video":app.video.path,"model_progress":app.tasks.models.progress,"foreground_active":app.tasks.foreground.is_running()}));
     }
     fn start(
         &mut self,
@@ -135,7 +135,7 @@ impl Probe {
         self.fixture = Some(Fixture::new(fail)?);
         app.tasks.models.fixture = Some(self.fixture.as_ref().unwrap().host.clone());
         app.handle(Action::Models("medium.en".into()), window, cx);
-        self.token = app.tasks.models.cancel.clone();
+        self.token = app.tasks.models.lane.cancel_token().cloned();
         ensure!(
             self.token.is_some(),
             "Models action did not start background download"
@@ -144,7 +144,7 @@ impl Probe {
     }
     fn active(&self, app: &AppView, cx: &Context<AppView>) -> Result<()> {
         ensure!(
-            app.tasks.models.cancel.is_some()
+            app.tasks.models.lane.is_running()
                 && !self.token.as_ref().unwrap().load(Ordering::SeqCst),
             "navigation cancelled model download"
         );
@@ -170,7 +170,7 @@ impl Probe {
                 app.media.player = Player::without_audio_device();
                 self.start(app, window, cx, false)?;
                 ensure!(
-                    app.tasks.cancel.is_none(),
+                    !app.tasks.foreground.is_running(),
                     "model download occupies foreground lane"
                 );
                 self.note("model download has independent task lane", app);
@@ -186,10 +186,10 @@ impl Probe {
                     return Ok(false);
                 }
                 self.active(app, cx)?;
-                let token = app.tasks.models.cancel.clone().unwrap();
+                let token = app.tasks.models.lane.cancel_token().cloned().unwrap();
                 app.handle(Action::TtsDownload, window, cx);
                 ensure!(
-                    Arc::ptr_eq(&token, app.tasks.models.cancel.as_ref().unwrap()),
+                    Arc::ptr_eq(&token, app.tasks.models.lane.cancel_token().unwrap()),
                     "duplicate model download started"
                 );
                 self.note(
@@ -262,7 +262,7 @@ impl Probe {
                         anyhow::bail!("已取消")
                     },
                 );
-                self.foreground = app.tasks.cancel.clone();
+                self.foreground = app.tasks.foreground.cancel_token().cloned();
                 ensure!(
                     self.foreground.is_some(),
                     "foreground task cannot start while downloading"
@@ -287,7 +287,7 @@ impl Probe {
                 );
             }
             3 => {
-                if app.tasks.cancel.is_some() {
+                if app.tasks.foreground.is_running() {
                     return Ok(false);
                 }
                 self.active(app, cx)?;
@@ -298,7 +298,7 @@ impl Probe {
                     .store(true, Ordering::SeqCst);
             }
             4 => {
-                if app.tasks.models.cancel.is_some() {
+                if app.tasks.models.lane.is_running() {
                     return Ok(false);
                 }
                 ensure!(
@@ -366,7 +366,7 @@ impl Probe {
                         anyhow::bail!("已取消")
                     },
                 );
-                self.foreground = app.tasks.cancel.clone();
+                self.foreground = app.tasks.foreground.cancel_token().cloned();
                 app.handle(Action::CancelModel, window, cx);
                 ensure!(
                     self.token.as_ref().unwrap().load(Ordering::SeqCst)
@@ -376,7 +376,7 @@ impl Probe {
                 self.note("model cancel leaves foreground task running", app);
             }
             6 => {
-                if app.tasks.models.cancel.is_some() {
+                if app.tasks.models.lane.is_running() {
                     return Ok(false);
                 }
                 ensure!(
@@ -404,13 +404,13 @@ impl Probe {
                 app.handle(Action::Cancel, window, cx);
             }
             7 => {
-                if app.tasks.cancel.is_some() {
+                if app.tasks.foreground.is_running() {
                     return Ok(false);
                 }
                 self.start(app, window, cx, true)?;
             }
             8 => {
-                if app.tasks.models.cancel.is_some() {
+                if app.tasks.models.lane.is_running() {
                     return Ok(false);
                 }
                 ensure!(
@@ -436,7 +436,7 @@ impl Probe {
                 if app.tasks.models.progress.is_none() {
                     return Ok(false);
                 }
-                let token = app.tasks.models.cancel.clone().unwrap();
+                let token = app.tasks.models.lane.cancel_token().cloned().unwrap();
                 let models = std::mem::take(&mut app.tasks.models);
                 drop(models);
                 ensure!(
@@ -459,16 +459,17 @@ impl Probe {
                 ]);
                 app.handle(Action::MergeAudios, window, cx);
                 ensure!(
-                    app.tasks.cancel.is_some() && app.tasks.scope == TaskScope::Application,
+                    app.tasks.foreground.is_running()
+                        && app.tasks.foreground.scope() == TaskScope::Application,
                     "actual merge action did not start application task"
                 );
-                let token = app.tasks.cancel.clone().unwrap();
+                let token = app.tasks.foreground.cancel_token().cloned().unwrap();
                 app.handle(Action::Page("settings".into()), window, cx);
                 ensure!(!token.load(Ordering::SeqCst), "page switch cancelled merge");
                 self.note("actual selected-audio merge continues across modules", app);
             }
             11 => {
-                if app.tasks.cancel.is_some() || app.audio.audios.len() != 4 {
+                if app.tasks.foreground.is_running() || app.audio.audios.len() != 4 {
                     return Ok(false);
                 }
                 self.merged_id = app.audio.library.selected.clone();
