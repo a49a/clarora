@@ -145,7 +145,11 @@ impl AppView {
         let selecting = audio && self.audio.clip_mode && !self.audio.blind.enabled;
         let edges = selecting
             .then(|| {
-                subtitles::selection_edges(&self.audio.cues, self.media.loop_a, self.media.loop_b)
+                subtitles::selection_edges(
+                    &self.audio.cues,
+                    self.media.session.loop_a,
+                    self.media.session.loop_b,
+                )
             })
             .flatten();
         let mut line = div()
@@ -175,8 +179,9 @@ impl AppView {
                         selecting
                             && self
                                 .media
+                                .session
                                 .loop_a
-                                .zip(self.media.loop_b)
+                                .zip(self.media.session.loop_b)
                                 .is_some_and(|(a, b)| word.start < b && word.end > a),
                         |v| v.bg(cx.theme().accent).rounded_sm(),
                     )

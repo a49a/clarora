@@ -118,7 +118,7 @@ impl Flow {
             "click": [f32::from(position.x), f32::from(position.y)],
             "expected": self.expected, "fixture": doc.text,
             "position": self.position, "paused": app.media.snapshot.paused,
-            "mode": app.audio.repeat_mode,
+            "mode": app.audio.repeat_mode.index(),
         }));
         let mut events = vec![];
         if surface == Surface::Focus {
@@ -190,7 +190,7 @@ impl Flow {
             "audio selection did not offer the same text to AI"
         );
         ensure!(
-            app.audio.repeat_mode == 6
+            app.audio.repeat_mode == PlaybackMode::SentenceThree
                 && app.media.snapshot.paused
                 && (app.media.snapshot.position - self.position).abs() < 0.15,
             "drag changed playback position or three-repeat mode"
@@ -237,7 +237,7 @@ impl Flow {
         cases: &mut Vec<Value>,
         observations: &mut Vec<Value>,
     ) -> Result<bool> {
-        let observed = json!({"audio_selection_stage":self.stage,"audio":app.audio.current_id,"cues":app.audio.cues.iter().map(|c|c.text.clone()).collect::<Vec<_>>(),"restore_pending":app.loads.restore_pending,"position":app.media.snapshot.position,"paused":app.media.snapshot.paused,"mode":app.audio.repeat_mode});
+        let observed = json!({"audio_selection_stage":self.stage,"audio":app.audio.current_id,"cues":app.audio.cues.iter().map(|c|c.text.clone()).collect::<Vec<_>>(),"restore_pending":app.loads.restore_pending,"position":app.media.snapshot.position,"paused":app.media.snapshot.paused,"mode":app.audio.repeat_mode.index()});
         if observed != self.last_observation {
             observations.push(observed.clone());
             self.last_observation = observed;
@@ -428,11 +428,17 @@ impl Flow {
                 )?;
             }
             13 => {
-                if !app.audio.sentence_repeat.is_some_and(|s| s.index == 1) {
+                if !app
+                    .media
+                    .session
+                    .audio_sentence()
+                    .is_some_and(|s| s.index == 1)
+                {
                     return Ok(false);
                 }
                 ensure!(
-                    app.audio.repeat_mode == 6 && !app.has_subtitle_selection(),
+                    app.audio.repeat_mode == PlaybackMode::SentenceThree
+                        && !app.has_subtitle_selection(),
                     "single click stopped selecting a sentence or changed repeat mode"
                 );
                 cases.push(json!({"case":"audio subtitle single click still seeks and retains triple repeat","passed":true}));
@@ -482,12 +488,12 @@ impl Flow {
                 );
                 ensure!(
                     app.media.snapshot.paused
-                        && app.audio.repeat_mode == 6
+                        && app.audio.repeat_mode == PlaybackMode::SentenceThree
                         && (app.media.snapshot.position - self.position).abs() < 0.15,
                     "full copy changed audio playback"
                 );
                 fs::write(app.lib.root.join("audio-transcript-copied.txt"), &actual)?;
-                observations.push(json!({"full_audio_copy":actual,"button_bounds":format!("{:?}",app.subtitle_text.borrow().probe_audio_copy),"paused":app.media.snapshot.paused,"mode":app.audio.repeat_mode}));
+                observations.push(json!({"full_audio_copy":actual,"button_bounds":format!("{:?}",app.subtitle_text.borrow().probe_audio_copy),"paused":app.media.snapshot.paused,"mode":app.audio.repeat_mode.index()}));
                 cases.push(json!({"case":"visible audio copy full button copies complete bilingual transcript without changing playback","passed":true}));
                 app.handle(Action::Audio("repeat-other".into()), window, cx);
                 self.focus_drawn = false;
@@ -605,7 +611,7 @@ impl Flow {
                     "expected": self.expected, "selected": app.subtitle_text.borrow().selection_text(),
                     "offer": app.assistant.offer.as_ref().map(|(r, _)| r.text.clone()),
                     "position": app.media.snapshot.position, "paused": app.media.snapshot.paused,
-                    "mode": app.audio.repeat_mode,
+                    "mode": app.audio.repeat_mode.index(),
                 }));
                 self.selected(app)?;
                 if self.stage == 25 {
@@ -644,8 +650,9 @@ impl Flow {
                 } else {
                     cases.push(json!({"case":"audio transcript double clicked word keyboard copy writes exact OS clipboard text","passed":true}));
                     self.word_request = app
-                        .audio
-                        .sentence_repeat
+                        .media
+                        .session
+                        .audio_sentence()
                         .context("word double-click sentence request")?
                         .request_id;
                     let doc = Self::document(app);
@@ -672,8 +679,9 @@ impl Flow {
             30 => {
                 if app.media.snapshot.paused
                     || !app
-                        .audio
-                        .sentence_repeat
+                        .media
+                        .session
+                        .audio_sentence()
                         .is_some_and(|session| session.request_id != self.word_request)
                 {
                     ensure!(
@@ -683,15 +691,16 @@ impl Flow {
                     return Ok(false);
                 }
                 ensure!(
-                    app.audio.repeat_mode == 6 && !app.has_subtitle_selection(),
+                    app.audio.repeat_mode == PlaybackMode::SentenceThree
+                        && !app.has_subtitle_selection(),
                     "ordinary subtitle single click after double click retained selection or changed mode"
                 );
                 cases.push(json!({"case":"audio ordinary subtitle single click still seeks after double-click copy","passed":true}));
                 observations.push(json!({"event":"native ordinary single click after double-click result",
-                    "request":app.audio.sentence_repeat.map(|session|session.request_id),
+                    "request":app.media.session.audio_sentence().map(|session|session.request_id),
                     "previous_request":self.word_request,"position":app.media.snapshot.position,
                     "paused":app.media.snapshot.paused,"selected":app.subtitle_text.borrow().selection_text(),
-                    "mode":app.audio.repeat_mode}));
+                    "mode":app.audio.repeat_mode.index()}));
                 app.handle(Action::Audio("repeat-audio".into()), window, cx);
                 app.media.player.set("pause", "yes");
                 if app.audio.show_current != self.show_current {

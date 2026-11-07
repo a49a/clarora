@@ -693,6 +693,7 @@ impl Probe {
                     || app.media.snapshot.path
                         != app
                             .media
+                            .session
                             .path
                             .as_ref()
                             .context("audio path")?

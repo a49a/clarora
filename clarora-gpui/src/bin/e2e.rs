@@ -66,6 +66,10 @@ mod model_navigation_native;
 mod model_progress;
 #[path = "support/network_proxy.rs"]
 mod network_proxy;
+#[path = "support/playback_session.rs"]
+mod playback_session;
+#[path = "support/playback_session_native.rs"]
+mod playback_session_native;
 #[path = "support/playback_state.rs"]
 mod playback_state;
 #[path = "support/protocol.rs"]
@@ -263,6 +267,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     asr_models::run(&Library::open(root.join("asr-model-fixtures"))?, results)?;
     focus_timer::run(&root, results)?;
     focus_mode_native::run(&root, results)?;
+    playback_session_native::run(&root, results)?;
     ui_controller::chatgpt(&root, results)?;
     gpu_memory::run(&root, results)?;
     runtime_stability::run(&root, results, 32)?;
@@ -281,6 +286,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     chat_store::run(&lib, results)?;
     view_data::run(&lib, results)?;
     playback_state::run(&lib, results)?;
+    playback_session::run(&root, results)?;
     video_repeat::run(&lib, results)?;
     writing::run(&lib, results)?;
     reliability(&lib, results)?;
@@ -1005,6 +1011,8 @@ fn main() -> Result<()> {
         Some("--ebook-only") => "ebook-only",
         Some("--transcript-only") => "transcript-only",
         Some("--state-only") => "state-only",
+        Some("--playback-session-only") => "playback-session-only",
+        Some("--playback-session-native-only") => "playback-session-native-only",
         Some("--video-repeat-only") => "video-repeat-only",
         Some("--backup-library-only") => "backup-library-only",
         Some("--video-render-only") => "video-render-only",
@@ -1143,6 +1151,10 @@ fn main() -> Result<()> {
         chat_store::run(&lib, &mut results)
             .and_then(|_| view_data::run(&lib, &mut results))
             .and_then(|_| playback_state::run(&lib, &mut results))
+    } else if mode == "playback-session-only" {
+        playback_session::run(&output, &mut results)
+    } else if mode == "playback-session-native-only" {
+        playback_session_native::run(&output, &mut results)
     } else if mode == "video-repeat-only" {
         let lib = Library::open(output.join(format!("video-repeat-{}", data::id())))?;
         video_repeat::run(&lib, &mut results)

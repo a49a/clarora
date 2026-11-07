@@ -32,14 +32,14 @@ impl Retry {
             action: action.clone(),
             page: app.page.clone(),
             audio: app.audio.current_id.clone(),
-            media: app.media.path.clone(),
+            media: app.media.session.path.clone(),
             document: app.pdf_path.clone(),
         })
     }
     fn matches(&self, app: &AppView) -> bool {
         self.page == app.page
             && self.audio == app.audio.current_id
-            && self.media == app.media.path
+            && self.media == app.media.session.path
             && self.document == app.pdf_path
     }
 }

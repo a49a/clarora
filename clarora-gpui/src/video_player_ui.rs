@@ -13,16 +13,22 @@ impl AppView {
             0.
         };
         let listening = self.page == "listening";
-        let sentence_range = self.video.sentence_repeat.map(|session| session.range);
+        let sentence_range = if listening {
+            self.media.session.audio_sentence()
+        } else {
+            self.media.session.video_sentence()
+        }
+        .map(|session| session.range);
         let loop_range = sentence_range.or_else(|| {
             self.media
+                .session
                 .loop_a
-                .zip(self.media.loop_b)
+                .zip(self.media.session.loop_b)
                 .filter(|(a, b)| b > a)
         });
         let markers = loop_range
             .map(|(a, b)| [Some(a), Some(b)])
-            .unwrap_or([self.media.loop_a, self.media.loop_b]);
+            .unwrap_or([self.media.session.loop_a, self.media.session.loop_b]);
         let color: Hsla = if self.page == "listening" {
             cx.theme().primary
         } else {
@@ -157,14 +163,18 @@ impl AppView {
             )
     }
     pub(super) fn video_frame_path(&self) -> Option<PathBuf> {
-        let path = self.media.path.as_ref()?;
-        let visible = if self.page == "video" {
-            self.video.path.as_ref() == Some(path)
-        } else if self.page == "flashcard" || self.page == "discover" {
-            self.current_card()
-                .is_some_and(|card| card.kind == "video" && Path::new(&card.media) == path)
-        } else {
-            false
+        let path = self.media.session.path.as_ref()?;
+        let visible = match (self.page.as_str(), self.media.session.owner()?) {
+            ("video", PlaybackOwner::Video) => self.video.path.as_ref() == Some(path),
+            ("flashcard" | "discover", PlaybackOwner::Card { kind, id }) => {
+                kind == "video"
+                    && self.current_card().is_some_and(|card| {
+                        card.kind == kind.as_str()
+                            && card.id == id.as_str()
+                            && Path::new(&card.media) == path
+                    })
+            }
+            _ => false,
         };
         visible.then(|| path.clone())
     }
@@ -196,9 +206,11 @@ impl AppView {
         height: Option<Pixels>,
         cx: &Context<Self>,
     ) -> impl IntoElement {
-        let active = self.video.path.as_ref().is_some_and(|p| {
-            self.media.path.as_ref() == Some(p) && self.media.snapshot.path == p.to_string_lossy()
-        });
+        let active = self.media.session.owner() == Some(&PlaybackOwner::Video)
+            && self.video.path.as_ref().is_some_and(|p| {
+                self.media.session.path.as_ref() == Some(p)
+                    && self.media.snapshot.path == p.to_string_lossy()
+            });
         let frame = self.media.snapshot.frame.clone().filter(|_| active);
         let active_caption = if !active
             || !self.video.captions_enabled
@@ -274,7 +286,8 @@ impl AppView {
                     return;
                 }
                 let Some(path) = this.video.path.clone().filter(|path| {
-                    this.media.path.as_ref() == Some(path)
+                    this.media.session.owner() == Some(&PlaybackOwner::Video)
+                        && this.media.session.path.as_ref() == Some(path)
                         && this.media.player.snapshot().path == path.to_string_lossy()
                 }) else {
                     this.video.picture_click = None;
@@ -398,6 +411,7 @@ impl AppView {
                     .child(
                         div().flex_1().min_w_0().text_xs().truncate().child(
                             self.media
+                                .session
                                 .path
                                 .as_ref()
                                 .and_then(|p| p.file_name())
@@ -428,11 +442,12 @@ impl AppView {
     pub(super) fn video_controls(&self, cx: &Context<Self>) -> AnyElement {
         let valid_loop = self
             .media
+            .session
             .loop_a
-            .zip(self.media.loop_b)
+            .zip(self.media.session.loop_b)
             .is_some_and(|(a, b)| b > a);
         let current_cue = self.video_repeat_cue();
-        let repeat_label = if let Some(session) = self.video.sentence_repeat {
+        let repeat_label = if let Some(session) = self.media.session.video_sentence() {
             if session.three {
                 match self
                     .media
@@ -455,9 +470,9 @@ impl AppView {
                 "每句三遍 · 准备中 ▾".into()
             }
         } else {
-            let mode = match self.media.repeat {
-                1 => "单集循环",
-                2 => "A–B 循环",
+            let mode = match self.media.session.mode {
+                PlaybackMode::Track => "单集循环",
+                PlaybackMode::Ab => "A–B 循环",
                 _ => "正常播放",
             };
             if self.video.pending_start.is_some() {
@@ -470,7 +485,10 @@ impl AppView {
             (
                 "单句循环 · 重播当前句".into(),
                 Action::VideoSentenceRepeat(None, false),
-                self.video.sentence_repeat.is_some_and(|s| !s.three),
+                self.media
+                    .session
+                    .video_sentence()
+                    .is_some_and(|s| !s.three),
                 current_cue.is_none(),
             ),
             (
@@ -483,7 +501,7 @@ impl AppView {
                 "退出单句练习".into(),
                 Action::VideoStopSentenceRepeat,
                 false,
-                self.video.sentence_repeat.is_none()
+                self.media.session.video_sentence().is_none()
                     && !self.video.repeat_three
                     && self.video.pending_start.is_none(),
             ),
@@ -517,7 +535,7 @@ impl AppView {
                     (
                         label.into(),
                         Action::LoopMode(mode),
-                        self.media.repeat == mode,
+                        self.media.session.mode == PlaybackMode::from_index(mode),
                         mode == 2 && !valid_loop,
                     )
                 }),
@@ -641,7 +659,7 @@ impl AppView {
                             Action::VideoFullscreen,
                             cx,
                         )
-                        .disabled(self.media.path.is_none()),
+                        .disabled(self.media.session.path.is_none()),
                     ),
             )
             .when(self.video.precision, |v| {
@@ -666,6 +684,7 @@ impl AppView {
                                         format!(
                                             "A  {}",
                                             self.media
+                                                .session
                                                 .loop_a
                                                 .map(clip_clock)
                                                 .unwrap_or("设起点".into())
@@ -681,6 +700,7 @@ impl AppView {
                                         format!(
                                             "B  {}",
                                             self.media
+                                                .session
                                                 .loop_b
                                                 .map(clip_clock)
                                                 .unwrap_or("设终点".into())
@@ -688,7 +708,7 @@ impl AppView {
                                         Action::Mark(false),
                                         cx,
                                     )
-                                    .disabled(self.media.loop_a.is_none())
+                                    .disabled(self.media.session.loop_a.is_none())
                                     .tooltip("将当前位置设为 B 点，自动循环此片段"),
                                 )
                                 .child(
@@ -699,9 +719,9 @@ impl AppView {
                                         cx,
                                     )
                                     .disabled(
-                                        self.media.loop_a.is_none()
-                                            && self.media.loop_b.is_none()
-                                            && self.video.sentence_repeat.is_none(),
+                                        self.media.session.loop_a.is_none()
+                                            && self.media.session.loop_b.is_none()
+                                            && self.media.session.video_sentence().is_none(),
                                     ),
                                 )
                                 .child(div().flex_1())

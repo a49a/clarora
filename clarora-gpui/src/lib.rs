@@ -19,6 +19,7 @@ pub mod view_data;
 
 pub mod waveform;
 
+pub mod playback_session;
 pub mod video_repeat;
 pub mod video_subtitles;
 pub mod video_transcript;

@@ -13,8 +13,9 @@ pub(super) const MODES: [&str; 7] = [
 ];
 impl AppView {
     pub(super) fn reset_audio_sentence_request(&mut self) {
-        if self.audio.sentence_repeat.take().is_some() {
+        if self.media.session.audio_sentence().is_some() {
             self.media.player.clear_sentence_repeat();
+            self.media.session.set_audio_sentence(None);
         }
     }
     fn audio_repeat_ready(&self) -> Result<(PathBuf, Playback)> {
@@ -23,7 +24,11 @@ impl AppView {
             self.page == "listening" && !self.audio.current_id.is_empty(),
             "请先选择音频"
         );
-        let path = self.media.path.clone().context("请先选择音频")?;
+        ensure!(
+            self.media.session.is_audio(&self.audio.current_id),
+            "当前播放器不是所选音频"
+        );
+        let path = self.media.session.path.clone().context("请先选择音频")?;
         ensure!(
             self.selected()
                 .is_some_and(|row| Path::new(&text(&row, "audio_uri")) == path),
@@ -31,7 +36,8 @@ impl AppView {
         );
         let state = self.media.player.snapshot();
         ensure!(
-            state.path == path.to_string_lossy()
+            self.media.matches_snapshot(&state)
+                && state.path == path.to_string_lossy()
                 && state.duration.is_finite()
                 && state.duration > 0.,
             "音频正在切换，请稍候"
@@ -45,16 +51,19 @@ impl AppView {
             &path,
             &self.audio.cues,
             index,
-            self.audio.repeat_mode == 6,
+            self.audio.repeat_mode == PlaybackMode::SentenceThree,
             state.duration,
         )?;
-        self.audio.sentence_repeat = Some(session);
+        ensure!(
+            self.media.session.set_audio_sentence(Some(session)),
+            "当前播放器不是所选音频"
+        );
         self.audio.pending_repeat_pause = None;
         self.audio.pending_repeat_position = None;
-        self.media.loop_a = None;
-        self.media.loop_b = None;
-        self.media.repeat = self.audio.repeat_mode;
-        self.media.end_handled = true;
+        self.media.session.loop_a = None;
+        self.media.session.loop_b = None;
+        self.media.session.mode = self.audio.repeat_mode;
+        self.media.session.end_handled = true;
         self.audio.active = Some(index);
         self.invalidate_blind();
         if self.audio.follow {
@@ -67,7 +76,8 @@ impl AppView {
     }
     pub(super) fn set_audio_repeat_mode(&mut self, mode: usize) -> Result<()> {
         ensure!(mode < MODES.len(), "无效循环方式");
-        let index = if mode >= 5 {
+        let mode = PlaybackMode::from_index(mode);
+        let index = if mode.is_sentence() {
             let (_, state) = self.audio_repeat_ready()?;
             Some(
                 video_repeat::at_or_next(&self.audio.cues, state.position, state.duration)
@@ -76,11 +86,16 @@ impl AppView {
         } else {
             None
         };
-        if mode == 2 {
+        if mode == PlaybackMode::Ab {
+            ensure!(
+                self.media.session.is_audio(&self.audio.current_id),
+                "当前播放器不是所选音频"
+            );
             ensure!(
                 self.media
+                    .session
                     .loop_a
-                    .zip(self.media.loop_b)
+                    .zip(self.media.session.loop_b)
                     .is_some_and(|(a, b)| b > a),
                 "先截取有效片段"
             );
@@ -88,11 +103,19 @@ impl AppView {
         // A/B bounds are per file and intentionally are not restored as a preference.
         self.lib.set_setting(
             "audio_repeat_mode",
-            &if mode == 2 { 0 } else { mode }.to_string(),
+            &if mode == PlaybackMode::Ab {
+                PlaybackMode::Normal
+            } else {
+                mode
+            }
+            .index()
+            .to_string(),
         )?;
         self.reset_audio_sentence_request();
         self.audio.repeat_mode = mode;
-        self.media.repeat = mode;
+        if self.media.session.is_audio(&self.audio.current_id) {
+            self.media.session.mode = mode;
+        }
         self.audio.pending_repeat_pause = None;
         self.audio.pending_repeat_position = None;
         if let Some(index) = index {
@@ -103,7 +126,7 @@ impl AppView {
     }
     pub(super) fn audio_sentence(&mut self, direction: i8) -> Result<()> {
         let (_, state) = self.audio_repeat_ready()?;
-        let index = if let Some(session) = self.audio.sentence_repeat {
+        let index = if let Some(session) = self.media.session.audio_sentence() {
             if direction == 0 {
                 Some(session.index)
             } else {
@@ -126,21 +149,22 @@ impl AppView {
             );
             return Ok(());
         };
-        if self.audio.repeat_mode >= 5 {
+        if self.audio.repeat_mode.is_sentence() {
             self.start_audio_sentence(index, false)?;
         } else {
             self.invalidate_blind();
             let time = self.audio.cues[index].start;
-            if self.media.repeat == 2
+            if self.media.session.mode == PlaybackMode::Ab
                 && !self
                     .media
+                    .session
                     .loop_a
-                    .zip(self.media.loop_b)
+                    .zip(self.media.session.loop_b)
                     .is_some_and(|(a, b)| time >= a && time < b)
             {
                 self.set_audio_repeat_mode(0)?;
-                self.media.loop_a = None;
-                self.media.loop_b = None;
+                self.media.session.loop_a = None;
+                self.media.session.loop_b = None;
             }
             self.media
                 .player
@@ -154,26 +178,34 @@ impl AppView {
         Ok(())
     }
     pub(super) fn seek_audio_repeat(&mut self, time: f64, subtitle: bool) -> Result<bool> {
-        if self.page != "listening" || self.audio.repeat_mode < 5 {
+        if self.page != "listening" || !self.audio.repeat_mode.is_sentence() {
             return Ok(false);
         }
         ensure!(time.is_finite(), "播放位置无效");
         let (path, state) = self.audio_repeat_ready()?;
         if subtitle
-            || self.audio.sentence_repeat.is_none()
+            || self.media.session.audio_sentence().is_none()
             || state.sentence_repeat.as_ref().is_some_and(|r| r.finished)
         {
             let index = if !subtitle {
-                self.audio.sentence_repeat.map(|s| s.index).or_else(|| {
-                    video_repeat::at_or_next(&self.audio.cues, time.max(0.), state.duration)
-                })
+                self.media
+                    .session
+                    .audio_sentence()
+                    .map(|s| s.index)
+                    .or_else(|| {
+                        video_repeat::at_or_next(&self.audio.cues, time.max(0.), state.duration)
+                    })
             } else {
                 video_repeat::at_or_next(&self.audio.cues, time.max(0.), state.duration)
             }
             .context("请先生成或导入带时间轴的字幕")?;
             self.start_audio_sentence(index, !subtitle && state.paused)?;
         }
-        let session = self.audio.sentence_repeat.context("请先选择字幕句")?;
+        let session = self
+            .media
+            .session
+            .audio_sentence()
+            .context("请先选择字幕句")?;
         session.seek(
             &self.media.player,
             &path,
@@ -189,7 +221,7 @@ impl AppView {
     }
     pub(super) fn restart_finished_audio_track(&mut self) -> Result<bool> {
         if self.page != "listening"
-            || self.audio.repeat_mode >= 5
+            || self.audio.repeat_mode.is_sentence()
             || !self.media.player.snapshot().eof
         {
             return Ok(false);
@@ -198,10 +230,11 @@ impl AppView {
         if !state.eof {
             return Ok(false);
         }
-        let start = if self.media.repeat == 2 {
+        let start = if self.media.session.mode == PlaybackMode::Ab {
             self.media
+                .session
                 .loop_a
-                .zip(self.media.loop_b)
+                .zip(self.media.session.loop_b)
                 .filter(|(a, b)| {
                     a.is_finite() && b.is_finite() && *a >= 0. && *a < state.duration && b > a
                 })
@@ -220,10 +253,10 @@ impl AppView {
         Ok(true)
     }
     pub(super) fn restart_finished_audio_sentence(&mut self) -> Result<bool> {
-        if self.page != "listening" || self.audio.repeat_mode < 5 {
+        if self.page != "listening" || !self.audio.repeat_mode.is_sentence() {
             return Ok(false);
         }
-        if let Some(session) = self.audio.sentence_repeat {
+        if let Some(session) = self.media.session.audio_sentence() {
             if self
                 .media
                 .player
@@ -239,7 +272,7 @@ impl AppView {
         Ok(false)
     }
     pub(super) fn poll_audio_sentence_repeat(&mut self) -> bool {
-        if self.page != "listening" || self.audio.repeat_mode < 5 {
+        if self.page != "listening" || !self.audio.repeat_mode.is_sentence() {
             return false;
         }
         let Ok((path, state)) = self.audio_repeat_ready() else {
@@ -247,10 +280,13 @@ impl AppView {
         };
         let position = self.audio.pending_repeat_position.unwrap_or(state.position);
         let result = (|| -> Result<bool> {
-            if let Some(mut session) = self.audio.sentence_repeat {
+            if let Some(mut session) = self.media.session.audio_sentence() {
                 let transition =
                     session.poll(&self.media.player, &path, &self.audio.cues, &state)?;
-                self.audio.sentence_repeat = Some(session);
+                ensure!(
+                    self.media.session.set_audio_sentence(Some(session)),
+                    "当前播放器不是所选音频"
+                );
                 if transition == Transition::Advanced {
                     self.audio.active = Some(session.index);
                     self.invalidate_blind();
@@ -266,8 +302,9 @@ impl AppView {
                 self.start_audio_sentence(index, paused)?;
                 if paused {
                     if let Some(session) = self
-                        .audio
-                        .sentence_repeat
+                        .media
+                        .session
+                        .audio_sentence()
                         .filter(|s| position >= s.range.0 && position < s.range.1)
                     {
                         session.seek(
@@ -298,13 +335,24 @@ impl AppView {
     }
     pub(super) fn audio_saved_position(&self) -> f64 {
         let state = self.media.player.snapshot();
-        self.audio
-            .sentence_repeat
+        let ready = self.media.matches_snapshot(&state);
+        let position = if ready && state.position.is_finite() && state.position >= 0. {
+            state.position
+        } else {
+            self.audio
+                .pending_repeat_position
+                .filter(|p| p.is_finite() && *p >= 0.)
+                .unwrap_or(self.media.snapshot.position)
+        };
+        self.media
+            .session
+            .audio_sentence()
             .map(|s| {
-                if state
-                    .sentence_repeat
-                    .as_ref()
-                    .is_some_and(|r| r.request_id == s.request_id)
+                if ready
+                    && state
+                        .sentence_repeat
+                        .as_ref()
+                        .is_some_and(|r| r.request_id == s.request_id)
                 {
                     state
                         .position
@@ -313,18 +361,14 @@ impl AppView {
                     s.range.0
                 }
             })
-            .unwrap_or_else(|| {
-                self.audio
-                    .pending_repeat_position
-                    .filter(|_| self.audio.repeat_mode >= 5)
-                    .unwrap_or(self.media.snapshot.position)
-            })
+            .unwrap_or(position)
     }
     pub(super) fn audio_repeat_label(&self) -> String {
-        if self.audio.repeat_mode == 6 {
+        if self.audio.repeat_mode == PlaybackMode::SentenceThree {
             let play = self
-                .audio
-                .sentence_repeat
+                .media
+                .session
+                .audio_sentence()
                 .and_then(|s| {
                     self.media
                         .snapshot
@@ -337,7 +381,7 @@ impl AppView {
             format!("每句三遍 · {}/3", play.clamp(1, 3))
         } else {
             MODES
-                .get(self.audio.repeat_mode)
+                .get(self.audio.repeat_mode.index())
                 .unwrap_or(&MODES[0])
                 .to_string()
         }

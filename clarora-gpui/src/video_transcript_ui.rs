@@ -4,7 +4,7 @@ use super::*;
 impl AppView {
     pub(super) fn video_subtitle_toolbar(&self, cx: &Context<Self>) -> AnyElement {
         let busy = self.tasks.cancel.is_some() || self.tasks.video_job.is_some();
-        let no_media = self.media.path.is_none();
+        let no_media = !self.media.session.is_video() || self.media.session.path.is_none();
         let no_cues = self.video.cues.is_empty();
         let no_english = self.video.transcript.text.is_empty();
         let scope = self

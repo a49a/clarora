@@ -31,6 +31,10 @@ impl AppView {
             return;
         }
         #[cfg(debug_assertions)]
+        if self.poll_playback_session_probe(window, cx) {
+            return;
+        }
+        #[cfg(debug_assertions)]
         if self.poll_audio_repeat_probe(window, cx) {
             return;
         }
@@ -94,6 +98,7 @@ impl AppView {
                     && self.tasks.cancel.is_none()
                     && self
                         .media
+                        .session
                         .path
                         .as_ref()
                         .is_some_and(|p| p.to_string_lossy() == self.media.snapshot.path)
@@ -143,7 +148,7 @@ impl AppView {
         {
             self.media.stats_ticks += 0.05;
             if self.media.stats_ticks >= 30. {
-                if !self.audio.current_id.is_empty() {
+                if self.media.session.is_audio(&self.audio.current_id) {
                     let _ = self.lib.set_setting(
                         "last_listening_position",
                         &json!({"id":self.audio.current_id,"position":self.audio_saved_position()})
@@ -164,10 +169,9 @@ impl AppView {
         changed |= self.poll_pending_video_start();
         changed |= self.poll_video_sentence_repeat();
         changed |= self.poll_audio_sentence_repeat();
-        if let (Some(a), Some(b)) = (self.media.loop_a, self.media.loop_b) {
-            if self.video.sentence_repeat.is_none()
-                && self.audio.sentence_repeat.is_none()
-                && self.media.repeat == 2
+        if let (Some(a), Some(b)) = (self.media.session.loop_a, self.media.session.loop_b) {
+            if self.media.session.sentence().is_none()
+                && self.media.session.mode == PlaybackMode::Ab
                 && !self.media.snapshot.paused
                 && self.media.snapshot.position >= b
             {
@@ -176,19 +180,24 @@ impl AppView {
                     .command(["seek".into(), a.to_string(), "absolute+exact".into()]);
             }
         }
-        if self.video.sentence_repeat.is_none()
-            && self.audio.sentence_repeat.is_none()
-            && (self.page != "video" || self.media.repeat != 0)
+        if self.media.session.owner().is_some()
+            && self.media.session.sentence().is_none()
+            && (self.page != "video" || self.media.session.mode != PlaybackMode::Normal)
         {
             if self.media.snapshot.duration > 0.
                 && self.media.snapshot.position >= self.media.snapshot.duration - 0.1
             {
-                if !self.media.end_handled {
-                    self.media.end_handled = true;
-                    if self.media.repeat == 1 {
+                if !self.media.session.end_handled {
+                    self.media.session.end_handled = true;
+                    if self.media.session.mode == PlaybackMode::Track {
                         self.media.player.command(["seek", "0", "absolute"]);
                         self.media.player.set("pause", "no");
-                    } else if [3, 4].contains(&self.media.repeat) {
+                    } else if self.media.session.is_audio(&self.audio.current_id)
+                        && matches!(
+                            self.media.session.mode,
+                            PlaybackMode::Group | PlaybackMode::Continuous
+                        )
+                    {
                         let group = self
                             .audio
                             .library
@@ -200,7 +209,7 @@ impl AppView {
                         {
                             let next = if index + 1 < group.len() {
                                 Some(group[index + 1].clone())
-                            } else if self.media.repeat == 3 {
+                            } else if self.media.session.mode == PlaybackMode::Group {
                                 group.first().map(|r| (*r).clone())
                             } else {
                                 None
@@ -212,34 +221,36 @@ impl AppView {
                     }
                 }
             } else {
-                self.media.end_handled = false;
+                self.media.session.end_handled = false;
             }
         }
         if self.page == "video"
-            && self.media.repeat == 0
-            && self.video.sentence_repeat.is_none()
+            && self.media.session.is_video()
+            && self.media.session.mode == PlaybackMode::Normal
+            && self.media.session.video_sentence().is_none()
             && !self.video.repeat_three
         {
             if !self.media.snapshot.eof {
-                self.media.end_handled = false;
+                self.media.session.end_handled = false;
             }
             if self.video.auto_next_part
                 && self.media.snapshot.error.is_empty()
                 && self.media.snapshot.eof
-                && !self.media.end_handled
+                && !self.media.session.end_handled
                 && self.tasks.cancel.is_none()
                 && self
                     .media
+                    .session
                     .path
                     .as_ref()
                     .is_some_and(|p| p.to_string_lossy() == self.media.snapshot.path)
             {
-                self.media.end_handled = true;
+                self.media.session.end_handled = true;
                 if let Some(next) = self
                     .video
                     .series
                     .as_ref()
-                    .and_then(|s| self.media.path.as_ref().and_then(|p| s.next_for(p)))
+                    .and_then(|s| self.media.session.path.as_ref().and_then(|p| s.next_for(p)))
                 {
                     self.start_part(next);
                 }

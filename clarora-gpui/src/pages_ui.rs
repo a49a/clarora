@@ -545,8 +545,10 @@ impl AppView {
                             .child(
                                 div().flex_1().min_w_0().text_sm().truncate().child(
                                     self.media
+                                        .session
                                         .path
                                         .as_ref()
+                                        .filter(|_| self.media.session.is_video())
                                         .and_then(|p| p.file_name())
                                         .map(|v| v.to_string_lossy().to_string())
                                         .unwrap_or_else(|| "视频播放器".into()),
@@ -856,8 +858,10 @@ impl AppView {
                                         .map(|i| {
                                             let series = this.video.series.as_ref().unwrap();
                                             let part = &series.parts[i];
-                                            let playing = series.current == Some(i)
-                                                && part.path.as_ref() == this.media.path.as_ref();
+                                            let playing = this.media.session.is_video()
+                                                && series.current == Some(i)
+                                                && part.path.as_ref()
+                                                    == this.media.session.path.as_ref();
                                             div()
                                                 .id(("bili-part", i))
                                                 .h(px(64.))
@@ -939,7 +943,7 @@ impl AppView {
                             study = study
                                 .child(div().px_3().py_2().flex().flex_col().gap_1()
                                     .child(self.button("parts-translate-all", "全部P翻译中文",Action::VideoTranslateAll,cx).outline().disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.video.series.is_none()))
-                                    .child(self.button("parts-transcribe-all", "全部P生成字幕",Action::VideoTranscribeAll,cx).primary().disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||self.media.path.is_none()))
+                                    .child(self.button("parts-transcribe-all", "全部P生成字幕",Action::VideoTranscribeAll,cx).primary().disabled(self.tasks.cancel.is_some()||self.tasks.video_job.is_some()||!self.media.session.is_video()||self.media.session.path.is_none()))
                                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child("已有字幕跳过 · 未下载的P先下载 · 可切换播放，退出应用会停止任务")))
                                 .child(
                                     div()
@@ -1061,7 +1065,10 @@ impl AppView {
                         .when(!stacked, |v| v.child(divider))
                         .child(study),
                 );
-                if self.video.tools_open || self.media.path.is_none() {
+                if self.video.tools_open
+                    || !self.media.session.is_video()
+                    || self.media.session.path.is_none()
+                {
                     content = content.child(
                         div()
                             .flex()

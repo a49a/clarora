@@ -17,10 +17,11 @@ impl AppView {
         let duration = waveform.duration;
         let position = self.media.snapshot.position;
         let range = self
-            .audio
-            .sentence_repeat
+            .media
+            .session
+            .audio_sentence()
             .map(|s| s.range)
-            .or_else(|| self.media.loop_a.zip(self.media.loop_b));
+            .or_else(|| self.media.session.loop_a.zip(self.media.session.loop_b));
         let a = range.map(|(a, _)| a);
         let b = range.map(|(_, b)| b);
         let bounds_cell = self.audio.waveform_bounds.clone();
@@ -94,10 +95,10 @@ impl AppView {
                         )
                         .size_full(),
                     )
-                    .when_some(self.media.loop_a, |v, time| {
+                    .when_some(self.media.session.loop_a, |v, time| {
                         v.child(clip_selection_ui::waveform_edge(time, duration, true))
                     })
-                    .when_some(self.media.loop_b, |v, time| {
+                    .when_some(self.media.session.loop_b, |v, time| {
                         v.child(clip_selection_ui::waveform_edge(time, duration, false))
                     })
                     .on_mouse_down(
@@ -125,12 +126,14 @@ impl AppView {
                                 Some(false)
                             } else if this
                                 .media
+                                .session
                                 .loop_a
                                 .is_some_and(|a| (a - time).abs() < threshold)
                             {
                                 Some(true)
                             } else if this
                                 .media
+                                .session
                                 .loop_b
                                 .is_some_and(|b| (b - time).abs() < threshold)
                             {
@@ -197,6 +200,7 @@ impl AppView {
                 .is_none_or(|t| Instant::now() >= t)
             && self
                 .media
+                .session
                 .path
                 .as_ref()
                 .is_some_and(|p| p.to_string_lossy() == self.media.snapshot.path);
@@ -207,9 +211,10 @@ impl AppView {
         );
         let loop_range = self
             .media
+            .session
             .loop_a
-            .zip(self.media.loop_b)
-            .filter(|(a, b)| self.media.repeat == 2 && b > a);
+            .zip(self.media.session.loop_b)
+            .filter(|(a, b)| self.media.session.mode == PlaybackMode::Ab && b > a);
         let can_sentence = |direction| {
             ready
                 && blind_listening::sentence_target(
@@ -751,8 +756,8 @@ impl AppView {
                     .then(|| {
                         subtitles::selection_edges(
                             &this.audio.cues,
-                            this.media.loop_a,
-                            this.media.loop_b,
+                            this.media.session.loop_a,
+                            this.media.session.loop_b,
                         )
                     })
                     .flatten();
@@ -779,8 +784,9 @@ impl AppView {
                     let selected = this.audio.clip_mode
                         && this
                             .media
+                            .session
                             .loop_a
-                            .zip(this.media.loop_b)
+                            .zip(this.media.session.loop_b)
                             .is_some_and(|(a, b)| word.start < b && word.end > a);
                     line = line.child(
                         div()
@@ -945,8 +951,9 @@ impl AppView {
         };
         let valid = self
             .media
+            .session
             .loop_a
-            .zip(self.media.loop_b)
+            .zip(self.media.session.loop_b)
             .is_some_and(|(a, b)| b > a);
         let rates = [0.6, 0.7, 0.8, 0.9, 1., 1.2, 1.25, 1.5, 2.]
             .into_iter()
@@ -966,7 +973,7 @@ impl AppView {
                 (
                     n.into(),
                     Action::AudioRepeat(i),
-                    self.audio.repeat_mode == i,
+                    self.audio.repeat_mode.index() == i,
                     (i == 2 && !valid) || (i >= 5 && self.audio.cues.is_empty()),
                 )
             })
@@ -1142,6 +1149,7 @@ impl AppView {
                             format!(
                                 "A ▶ {}",
                                 self.media
+                                    .session
                                     .loop_a
                                     .map(clip_clock)
                                     .unwrap_or_else(|| "起点".into())
@@ -1157,6 +1165,7 @@ impl AppView {
                             format!(
                                 "◀ B {}",
                                 self.media
+                                    .session
                                     .loop_b
                                     .map(clip_clock)
                                     .unwrap_or_else(|| "终点".into())
@@ -1275,7 +1284,7 @@ impl AppView {
                     ))
                     .child(self.transport_button(
                         "repeat",
-                        audio_repeat_controller::MODES[self.media.repeat.min(6)],
+                        audio_repeat_controller::MODES[self.media.session.mode.index()],
                         Action::Repeat,
                         cx,
                     )),
@@ -1315,7 +1324,7 @@ impl AppView {
                         "point-a",
                         format!(
                             "A {}",
-                            self.media.loop_a.map(clock).unwrap_or("未设置".into())
+                            self.media.session.loop_a.map(clock).unwrap_or("未设置".into())
                         ),
                         Action::Mark(true),
                         cx,
@@ -1324,7 +1333,7 @@ impl AppView {
                         "point-b",
                         format!(
                             "B {}",
-                            self.media.loop_b.map(clock).unwrap_or("未设置".into())
+                            self.media.session.loop_b.map(clock).unwrap_or("未设置".into())
                         ),
                         Action::Mark(false),
                         cx,

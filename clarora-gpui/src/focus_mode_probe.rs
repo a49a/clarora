@@ -114,7 +114,7 @@ impl Probe {
             self.stage,
             app.media.player.snapshot().position,
             app.media.player.snapshot().paused,
-            app.video.sentence_repeat.map(|s| s.index),
+            app.media.session.video_sentence().map(|s| s.index),
             w.focused(cx) == Some(app.focus.clone()),
             app.status
         );
@@ -326,7 +326,11 @@ impl Probe {
                 let question_focus = app.inputs["question"].read(cx).focus_handle(cx);
                 ensure!(
                     w.focused(cx) == Some(question_focus.clone())
-                        && app.video.sentence_repeat.is_some_and(|s| s.index == 1),
+                        && app
+                            .media
+                            .session
+                            .video_sentence()
+                            .is_some_and(|s| s.index == 1),
                     "focus mode intercepted editor arrows/space"
                 );
                 app.poll_focus_mode(w, cx);
@@ -538,7 +542,7 @@ impl Probe {
     fn at_sentence(app: &AppView, index: usize) -> bool {
         let state = app.media.player.snapshot();
         app.video.repeat_three
-            && app.video.sentence_repeat.is_some_and(|s| {
+            && app.media.session.video_sentence().is_some_and(|s| {
                 s.index == index
                     && state.position >= s.range.0 - 0.05
                     && state.position < s.range.0 + 1.

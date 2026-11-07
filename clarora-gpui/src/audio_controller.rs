@@ -18,9 +18,18 @@ impl AppView {
         self.invalidate_blind();
         self.audio.blind_settle_until = Some(Instant::now() + Duration::from_millis(250));
         let path = PathBuf::from(text(row, "audio_uri"));
-        self.media.player.open(&path);
-        self.media.path = Some(path);
         self.audio.current_id = text(row, "id");
+        if self.audio.repeat_mode == PlaybackMode::Ab {
+            self.audio.repeat_mode = PlaybackMode::Normal;
+        }
+        self.media.open(
+            PlaybackOwner::Audio(self.audio.current_id.clone()),
+            path,
+            0.,
+            0.,
+            false,
+            self.audio.repeat_mode,
+        );
         let _ = self
             .lib
             .set_setting("last_listening_audio", &self.audio.current_id);
@@ -43,12 +52,12 @@ impl AppView {
         self.audio.current_scroll.set_offset(Point::default());
         self.audio.clip_mode = false;
         self.audio.tools_open = false;
-        if self.audio.repeat_mode == 2 {
-            self.audio.repeat_mode = 0;
+        if self.audio.repeat_mode == PlaybackMode::Ab {
+            self.audio.repeat_mode = PlaybackMode::Normal;
         }
-        self.media.repeat = self.audio.repeat_mode;
-        self.media.loop_a = None;
-        self.media.loop_b = None;
+        self.media.session.mode = self.audio.repeat_mode;
+        self.media.session.loop_a = None;
+        self.media.session.loop_b = None;
         self.refresh_saved_ranges();
         self.refresh();
     }
@@ -84,7 +93,7 @@ impl AppView {
         }
         self.audio.waveform = None;
         self.audio.waveform_rx = None;
-        if let Some(path) = self.media.path.clone() {
+        if let Some(path) = self.media.session.path.clone() {
             let lib = self.lib.clone();
             let cancel = process::cancel_token();
             self.audio.waveform_cancel = Some(cancel.clone());

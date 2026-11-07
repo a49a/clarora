@@ -39,8 +39,10 @@ impl AppView {
             }
             "video" => self
                 .media
+                .session
                 .path
                 .as_ref()
+                .filter(|_| self.media.session.is_video())
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
             "pdf" => self

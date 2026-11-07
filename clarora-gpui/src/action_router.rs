@@ -165,7 +165,7 @@ impl AppView {
         };
         if self.page == "video"
             && leaves_sentence
-            && (self.video.sentence_repeat.is_some()
+            && (self.media.session.video_sentence().is_some()
                 || self.video.repeat_three
                 || self.video.pending_start.is_some())
         {
@@ -201,8 +201,8 @@ impl AppView {
                     self.save_media_position();
                     if previous == "listening" && page != "listening" {
                         self.reset_audio_sentence_request();
-                        if self.media.repeat >= 5 {
-                            self.media.repeat = 0;
+                        if self.media.session.mode.is_sentence() {
+                            self.media.session.mode = PlaybackMode::Normal;
                         }
                     }
                     if previous == "video" && page != "video" {
@@ -218,6 +218,9 @@ impl AppView {
                     self.media.player.set("pause", "yes");
                     self.media.preloader.set("pause", "yes");
                     self.media.preloaded_index = None;
+                    if previous != page {
+                        self.media.release();
+                    }
                     self.page = page;
                     if self.page == "writing" {
                         if let Some(view) = &self.writing {
@@ -352,7 +355,7 @@ impl AppView {
                     } else {
                         self.media.player.set("pause", "yes");
                         self.audio.current_id.clear();
-                        self.media.path = None;
+                        self.media.release();
                         self.audio.cues.clear();
                         self.audio.scroll.reset(0);
                         self.audio.active = None;
@@ -363,11 +366,11 @@ impl AppView {
                         }
                         self.audio.waveform_rx = None;
                         self.lib.set_setting("last_listening_audio", "")?;
-                        if self.media.repeat == 2 {
-                            self.media.repeat = 0;
+                        if self.media.session.mode == PlaybackMode::Ab {
+                            self.media.session.mode = PlaybackMode::Normal;
                         }
-                        self.media.loop_a = None;
-                        self.media.loop_b = None;
+                        self.media.session.loop_a = None;
+                        self.media.session.loop_b = None;
                     }
                 }
                 Action::AudioBlind(enabled) => {
@@ -380,11 +383,13 @@ impl AppView {
                     self.output.clear();
                     self.chat.reasoning.clear();
                     if enabled {
-                        if self.media.loop_a.is_none() || self.media.loop_b.is_none() {
-                            self.media.loop_a = None;
-                            self.media.loop_b = None;
-                            if self.media.repeat == 2 {
-                                self.media.repeat = 0;
+                        if self.media.session.loop_a.is_none()
+                            || self.media.session.loop_b.is_none()
+                        {
+                            self.media.session.loop_a = None;
+                            self.media.session.loop_b = None;
+                            if self.media.session.mode == PlaybackMode::Ab {
+                                self.media.session.mode = PlaybackMode::Normal;
                             }
                         }
                         self.audio.tools_open = false;
@@ -440,6 +445,7 @@ impl AppView {
                         !self.audio.current_id.is_empty()
                             && self
                                 .media
+                                .session
                                 .path
                                 .as_ref()
                                 .is_some_and(|p| p.to_string_lossy() == playback.path),
@@ -505,6 +511,7 @@ impl AppView {
                             && !audio_id.is_empty()
                             && self
                                 .media
+                                .session
                                 .path
                                 .as_ref()
                                 .is_some_and(|p| p.to_string_lossy() == playback.path),
@@ -529,16 +536,17 @@ impl AppView {
                         window.focus(&self.focus);
                         return Ok(());
                     }
-                    let outside_loop = self.media.repeat == 2
+                    let outside_loop = self.media.session.mode == PlaybackMode::Ab
                         && self
                             .media
+                            .session
                             .loop_a
-                            .zip(self.media.loop_b)
+                            .zip(self.media.session.loop_b)
                             .is_some_and(|(a, b)| start < a || start >= b);
                     if outside_loop {
-                        self.media.repeat = 0;
-                        self.media.loop_a = None;
-                        self.media.loop_b = None;
+                        self.media.session.mode = PlaybackMode::Normal;
+                        self.media.session.loop_a = None;
+                        self.media.session.loop_b = None;
                     }
                     self.media.player.command([
                         "seek".into(),
@@ -561,7 +569,7 @@ impl AppView {
                     window.focus(&self.focus);
                 }
                 Action::AudioBlindSentence(direction) => {
-                    if self.audio.repeat_mode >= 5 {
+                    if self.audio.repeat_mode.is_sentence() {
                         self.audio_sentence(direction)?;
                         return Ok(());
                     }
@@ -584,6 +592,7 @@ impl AppView {
                         !self.audio.current_id.is_empty()
                             && self
                                 .media
+                                .session
                                 .path
                                 .as_ref()
                                 .is_some_and(|p| p.to_string_lossy() == playback.path),
@@ -596,9 +605,10 @@ impl AppView {
                         self.audio.blind.revealed.as_ref(),
                         direction,
                         self.media
+                            .session
                             .loop_a
-                            .zip(self.media.loop_b)
-                            .filter(|(a, b)| self.media.repeat == 2 && b > a),
+                            .zip(self.media.session.loop_b)
+                            .filter(|(a, b)| self.media.session.mode == PlaybackMode::Ab && b > a),
                     )
                     .context("当前范围内没有可播放的字幕句")?;
                     self.invalidate_blind();
@@ -625,15 +635,15 @@ impl AppView {
                 }
                 Action::AudioClipMode => {
                     ensure!(!self.audio.blind.enabled, "请先切回字幕模式");
-                    if self.audio.repeat_mode >= 5 {
+                    if self.audio.repeat_mode.is_sentence() {
                         self.set_audio_repeat_mode(0)?;
                     }
                     self.audio.clip_mode = !self.audio.clip_mode;
                     if !self.audio.clip_mode {
-                        self.media.loop_a = None;
-                        self.media.loop_b = None;
-                        if self.media.repeat == 2 {
-                            self.media.repeat = 0;
+                        self.media.session.loop_a = None;
+                        self.media.session.loop_b = None;
+                        if self.media.session.mode == PlaybackMode::Ab {
+                            self.media.session.mode = PlaybackMode::Normal;
                         }
                     }
                 }
@@ -1029,6 +1039,7 @@ impl AppView {
                     self.report_status(FeedbackKind::Info, "句子卡已保存".into());
                 }
                 Action::Play => {
+                    ensure!(self.media.session.owner().is_some(), "请先选择要播放的材料");
                     if self.restart_finished_audio_sentence()? {
                         return Ok(());
                     }
@@ -1081,18 +1092,18 @@ impl AppView {
                         self.media.player.set("pause", "no");
                     } else {
                         let start = if extend {
-                            self.media.loop_a.unwrap_or(start).min(start)
+                            self.media.session.loop_a.unwrap_or(start).min(start)
                         } else {
                             start
                         };
                         let end = if extend {
-                            self.media.loop_b.unwrap_or(end).max(end)
+                            self.media.session.loop_b.unwrap_or(end).max(end)
                         } else {
                             end
                         };
-                        self.media.loop_a = Some(start);
-                        self.media.loop_b = Some(end);
-                        self.media.repeat = 2;
+                        self.media.session.loop_a = Some(start);
+                        self.media.session.loop_b = Some(end);
+                        self.media.session.mode = PlaybackMode::Ab;
                         let (front, back) = subtitles::excerpt(&self.audio.cues, start, end);
                         self.set(
                             "front",
@@ -1115,20 +1126,23 @@ impl AppView {
                     }
                 }
                 Action::Boundary(time, start) => {
-                    if self.page == "listening" && self.audio.repeat_mode >= 5 {
+                    if self.page == "listening" && self.audio.repeat_mode.is_sentence() {
                         self.set_audio_repeat_mode(0)?;
                     }
                     let time = time.clamp(0., self.media.snapshot.duration.max(time));
                     if start {
-                        self.media.loop_a = Some(
-                            time.min(self.media.loop_b.unwrap_or(f64::MAX) - 0.02)
+                        self.media.session.loop_a = Some(
+                            time.min(self.media.session.loop_b.unwrap_or(f64::MAX) - 0.02)
                                 .max(0.),
                         );
                     } else {
-                        self.media.loop_b = Some(time.max(self.media.loop_a.unwrap_or(0.) + 0.02));
+                        self.media.session.loop_b =
+                            Some(time.max(self.media.session.loop_a.unwrap_or(0.) + 0.02));
                     }
-                    if let (Some(a), Some(b)) = (self.media.loop_a, self.media.loop_b) {
-                        self.media.repeat = 2;
+                    if let (Some(a), Some(b)) =
+                        (self.media.session.loop_a, self.media.session.loop_b)
+                    {
+                        self.media.session.mode = PlaybackMode::Ab;
                         if self.page == "listening" {
                             let (front, back) = subtitles::excerpt(&self.audio.cues, a, b);
                             self.set("front", front, window, cx);
@@ -1264,7 +1278,7 @@ impl AppView {
                 }
                 Action::VideoFullscreen => {
                     ensure!(
-                        self.page == "video" && self.media.path.is_some(),
+                        self.page == "video" && self.media.session.path.is_some(),
                         "请先打开视频"
                     );
                     if self.video.fullscreen {
@@ -1311,7 +1325,7 @@ impl AppView {
                     ensure!(self.tasks.video_job.is_none(), "请先完成后台字幕生成再翻译");
                     ensure!(self.page == "video", "请先进入视频学习");
                     ensure!(self.tasks.cancel.is_none(), "请等待当前任务完成");
-                    let video = self.media.path.clone().context("请先打开视频")?;
+                    let video = self.media.session.path.clone().context("请先打开视频")?;
                     video_subtitles::english_source(&self.video.cues)?;
                     let source = self.video.cues.clone();
                     self.begin_subtitle(
@@ -1339,10 +1353,10 @@ impl AppView {
                 }
                 Action::VideoPrecision => self.video.precision = !self.video.precision,
                 Action::VideoClearLoop => {
-                    self.media.loop_a = None;
-                    self.media.loop_b = None;
-                    if self.media.repeat == 2 {
-                        self.media.repeat = 0;
+                    self.media.session.loop_a = None;
+                    self.media.session.loop_b = None;
+                    if self.media.session.mode == PlaybackMode::Ab {
+                        self.media.session.mode = PlaybackMode::Normal;
                     }
                 }
                 Action::LoopMode(mode) => {
@@ -1354,13 +1368,14 @@ impl AppView {
                     if mode == 2 {
                         ensure!(
                             self.media
+                                .session
                                 .loop_a
-                                .zip(self.media.loop_b)
+                                .zip(self.media.session.loop_b)
                                 .is_some_and(|(a, b)| b > a),
                             "请先设置有效的 A/B 范围"
                         );
                     }
-                    self.media.repeat = mode;
+                    self.media.session.mode = PlaybackMode::from_index(mode);
                 }
                 Action::VideoRepeatCue => {
                     self.start_video_sentence_repeat(None, false)?;
@@ -1373,13 +1388,13 @@ impl AppView {
                 Action::VideoCancelPart => {}
                 Action::VideoPlayCue(index) => {
                     ensure!(
-                        self.page == "video" && self.media.path.is_some(),
+                        self.page == "video" && self.media.session.path.is_some(),
                         "请先打开视频"
                     );
                     let cue = self.video.cues.get(index).context("字幕行不存在")?;
                     let start = cue.start;
                     ensure!(start.is_finite() && start >= 0., "字幕时间无效");
-                    if self.video.repeat_three || self.video.sentence_repeat.is_some() {
+                    if self.video.repeat_three || self.media.session.video_sentence().is_some() {
                         // A subtitle click chooses a new sentence in the current
                         // repeat mode, restarting its play count from the beginning.
                         self.start_video_sentence_repeat(Some(index), self.video.repeat_three)?;
@@ -1387,8 +1402,8 @@ impl AppView {
                     }
                     self.reset_video_sentence_request();
                     // A previous sentence loop must not pull playback back to its B point.
-                    if self.media.repeat == 2 {
-                        self.media.repeat = 0;
+                    if self.media.session.mode == PlaybackMode::Ab {
+                        self.media.session.mode = PlaybackMode::Normal;
                     }
                     self.media.player.command([
                         "seek".into(),
@@ -1408,9 +1423,14 @@ impl AppView {
                             return Ok(());
                         }
                     }
-                    if let Some(mut session) = self.video.sentence_repeat.filter(|s| s.three) {
+                    if let Some(mut session) =
+                        self.media.session.video_sentence().filter(|s| s.three)
+                    {
                         let path = self.video.path.as_ref().context("请先打开视频")?;
-                        ensure!(self.media.path.as_ref() == Some(path), "视频正在切换");
+                        ensure!(
+                            self.media.session.path.as_ref() == Some(path),
+                            "视频正在切换"
+                        );
                         if session.step(
                             &self.media.player,
                             path,
@@ -1418,7 +1438,7 @@ impl AppView {
                             next,
                             self.media.snapshot.duration,
                         )? {
-                            self.video.sentence_repeat = Some(session);
+                            self.media.session.set_video_sentence(Some(session));
                             self.follow_video_repeat();
                         } else {
                             self.report_status(
@@ -1436,7 +1456,7 @@ impl AppView {
                     let path = self.video.path.as_ref().context("请先打开视频")?;
                     ensure!(
                         self.page == "video"
-                            && self.media.path.as_ref() == Some(path)
+                            && self.media.session.path.as_ref() == Some(path)
                             && self.media.snapshot.path == path.to_string_lossy(),
                         "视频正在切换，请稍候再切句"
                     );
@@ -1462,8 +1482,8 @@ impl AppView {
                     let target = self.video.cues[index].start;
                     self.clear_video_sentence_repeat();
                     // Moving to another sentence exits the previous A/B loop.
-                    if self.media.repeat == 2 {
-                        self.media.repeat = 0;
+                    if self.media.session.mode == PlaybackMode::Ab {
+                        self.media.session.mode = PlaybackMode::Normal;
                     }
                     self.media.player.command([
                         "seek".into(),
@@ -1481,47 +1501,51 @@ impl AppView {
                     self.media.player.set("volume", self.media.volume);
                 }
                 Action::Mark(start) => {
-                    if self.page == "listening" && self.audio.repeat_mode >= 5 {
+                    if self.page == "listening" && self.audio.repeat_mode.is_sentence() {
                         self.set_audio_repeat_mode(0)?;
                     }
                     if self.page == "video" || self.page == "listening" {
                         ensure!(
-                            self.media.path.is_some() && self.media.snapshot.duration > 0.,
+                            self.media.session.path.is_some() && self.media.snapshot.duration > 0.,
                             "请先打开可播放的媒体"
                         );
                         if start {
-                            self.media.loop_a = Some(self.media.snapshot.position);
+                            self.media.session.loop_a = Some(self.media.snapshot.position);
                             if self
                                 .media
+                                .session
                                 .loop_b
                                 .is_some_and(|b| b <= self.media.snapshot.position)
                             {
-                                self.media.loop_b = None;
-                                if self.media.repeat == 2 {
-                                    self.media.repeat = 0;
+                                self.media.session.loop_b = None;
+                                if self.media.session.mode == PlaybackMode::Ab {
+                                    self.media.session.mode = PlaybackMode::Normal;
                                 }
                             }
                         } else {
-                            let a = self.media.loop_a.context("请先设置 A 点")?;
+                            let a = self.media.session.loop_a.context("请先设置 A 点")?;
                             ensure!(self.media.snapshot.position > a, "B 点必须晚于 A 点");
-                            self.media.loop_b = Some(self.media.snapshot.position);
+                            self.media.session.loop_b = Some(self.media.snapshot.position);
                         }
                         if self
                             .media
+                            .session
                             .loop_a
-                            .zip(self.media.loop_b)
+                            .zip(self.media.session.loop_b)
                             .is_some_and(|(a, b)| b > a)
                         {
-                            self.media.repeat = 2;
+                            self.media.session.mode = PlaybackMode::Ab;
                         }
                     } else if start {
-                        self.media.loop_a = Some(self.media.snapshot.position);
+                        self.media.session.loop_a = Some(self.media.snapshot.position);
                     } else {
-                        self.media.loop_b = Some(self.media.snapshot.position);
+                        self.media.session.loop_b = Some(self.media.snapshot.position);
                     }
-                    if let (Some(a), Some(b)) = (self.media.loop_a, self.media.loop_b) {
+                    if let (Some(a), Some(b)) =
+                        (self.media.session.loop_a, self.media.session.loop_b)
+                    {
                         ensure!(b > a, "B 点必须晚于 A 点");
-                        self.media.repeat = 2;
+                        self.media.session.mode = PlaybackMode::Ab;
                         if self.page == "listening" {
                             let (front, back) = subtitles::excerpt(&self.audio.cues, a, b);
                             self.set("front", front, window, cx);
@@ -1532,12 +1556,13 @@ impl AppView {
                 Action::Repeat => {
                     if self.page == "listening" {
                         for offset in 1..=7 {
-                            let mode = (self.audio.repeat_mode + offset) % 7;
+                            let mode = (self.audio.repeat_mode.index() + offset) % 7;
                             if mode == 2
                                 && !self
                                     .media
+                                    .session
                                     .loop_a
-                                    .zip(self.media.loop_b)
+                                    .zip(self.media.session.loop_b)
                                     .is_some_and(|(a, b)| b > a)
                             {
                                 continue;
@@ -1549,8 +1574,10 @@ impl AppView {
                             break;
                         }
                     } else {
-                        self.media.repeat =
-                            (self.media.repeat + 1) % if self.page == "video" { 3 } else { 5 };
+                        self.media.session.mode = PlaybackMode::from_index(
+                            (self.media.session.mode.index() + 1)
+                                % if self.page == "video" { 3 } else { 5 },
+                        );
                     }
                 }
                 Action::Subtitle(key, secondary) => {
@@ -1602,13 +1629,13 @@ impl AppView {
                     self.lib
                         .set_setting("video_auto_next", if enabled { "true" } else { "false" })?;
                     self.video.auto_next_part = enabled;
-                    self.media.end_handled = false;
+                    self.media.session.end_handled = false;
                 }
                 Action::Download => {
                     let downloads = self.tasks.downloads.clone();
                     let link = self.value("bilibili", cx);
                     let previous = self.video.series.clone();
-                    let origin = self.media.path.clone();
+                    let origin = self.media.session.revision();
                     self.begin(
                         "正在识别分P并导入所选集…",
                         move |lib, cancel, _| {
@@ -1676,9 +1703,9 @@ impl AppView {
                         !(self.page == "listening" && self.audio.blind.enabled),
                         "请先切回字幕模式再保存片段"
                     );
-                    let path = self.media.path.clone().context("请先打开媒体")?;
-                    let a = self.media.loop_a.context("请先设置 A 点")?;
-                    let b = self.media.loop_b.context("请先设置 B 点")?;
+                    let path = self.media.session.path.clone().context("请先打开媒体")?;
+                    let a = self.media.session.loop_a.context("请先设置 A 点")?;
+                    let b = self.media.session.loop_b.context("请先设置 B 点")?;
                     let front = self.value("front", cx);
                     let back = self.value("back", cx);
                     let is_audio = self.page == "listening";
@@ -2061,7 +2088,7 @@ impl AppView {
                         self.leave_video_fullscreen(window, cx);
                         self.media.player.command(["stop"]);
                         self.media.snapshot = Playback::default();
-                        self.media.path = None;
+                        self.media.release();
                         self.video.path = None;
                         self.video.series = None;
                         self.video.set_cues(vec![]);
@@ -2069,10 +2096,10 @@ impl AppView {
                         self.video.active = None;
                         self.video.material = None;
                         self.video.material_error.clear();
-                        self.media.loop_a = None;
-                        self.media.loop_b = None;
-                        self.media.repeat = 0;
-                        self.media.end_handled = true;
+                        self.media.session.loop_a = None;
+                        self.media.session.loop_b = None;
+                        self.media.session.mode = PlaybackMode::Normal;
+                        self.media.session.end_handled = true;
                         self.output.clear();
                         self.chat.reasoning.clear();
                         self.lib.set_setting("bilibili_series", "")?;
@@ -2757,8 +2784,17 @@ impl AppView {
             }
             Ok(())
         })();
-        if sync_audio_mode && result.is_ok() {
-            self.audio.repeat_mode = self.media.repeat;
+        if sync_audio_mode && result.is_ok() && self.media.session.is_audio(&self.audio.current_id)
+        {
+            self.audio.repeat_mode = self.media.session.mode;
+        }
+        if result.is_ok() && self.page == "video" && self.media.session.is_video() {
+            // File-bound A/B is never a page preference.
+            self.video.repeat_mode = if self.media.session.mode == PlaybackMode::Track {
+                PlaybackMode::Track
+            } else {
+                PlaybackMode::Normal
+            };
         }
         if let Err(e) = result {
             self.report_status(FeedbackKind::Error, format!("{e:#}"));

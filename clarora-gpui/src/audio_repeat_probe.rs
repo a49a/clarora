@@ -86,7 +86,7 @@ impl Probe {
         }
     }
     fn note(&mut self, name: &str, app: &AppView) {
-        self.cases.push(json!({"case":name,"passed":true,"mode":app.audio.repeat_mode,"cue":app.audio.sentence_repeat.map(|s|s.index),"playback":app.media.snapshot.sentence_repeat.as_ref().map(|r|json!({"request":r.request_id,"current":r.current_play,"total":r.total_plays,"finished":r.finished}))}));
+        self.cases.push(json!({"case":name,"passed":true,"mode":app.audio.repeat_mode.index(),"cue":app.media.session.audio_sentence().map(|s|s.index),"playback":app.media.snapshot.sentence_repeat.as_ref().map(|r|json!({"request":r.request_id,"current":r.current_play,"total":r.total_plays,"finished":r.finished}))}));
     }
     fn report(&self, passed: bool, error: Option<String>) -> Result<()> {
         fs::write(
@@ -135,7 +135,7 @@ impl Probe {
             "position": state.position, "duration": state.duration,
             "paused": state.paused, "eof": state.eof,
             "path": state.path, "load_revision": state.load_revision,
-            "current_id": app.audio.current_id, "mode": app.audio.repeat_mode,
+            "current_id": app.audio.current_id, "mode": app.audio.repeat_mode.index(),
         }));
         Self::draw(window, cx);
         native_probe_input::send(
@@ -262,7 +262,7 @@ impl Probe {
             "eof_guard_stage": self.eof_guard_stage,
             "position": state.position, "duration": state.duration,
             "paused": state.paused, "eof": state.eof, "path": state.path,
-            "load_revision": state.load_revision, "mode": app.audio.repeat_mode,
+            "load_revision": state.load_revision, "mode": app.audio.repeat_mode.index(),
             "current_id": app.audio.current_id, "error": state.error,
             "mouse": [f32::from(mouse.x), f32::from(mouse.y)],
         });
@@ -280,8 +280,8 @@ impl Probe {
             ensure!(
                 (app.audio.current_id == "repeat-audio"
                     || (self.eof_stage == 6 && (1..=3).contains(&self.eof_guard_stage)))
-                    && app.audio.repeat_mode == 0
-                    && app.audio.sentence_repeat.is_none()
+                    && app.audio.repeat_mode == PlaybackMode::Normal
+                    && app.media.session.audio_sentence().is_none()
                     && state.path == self.eof_path
                     && state.load_revision == self.eof_load_revision,
                 "native audio play changed material, repeat mode or loaded file"
@@ -499,7 +499,7 @@ impl Probe {
                     app.audio.current_id == "repeat-audio"
                         && app.audio.cues.len() == 3
                         && app.media.snapshot.paused
-                        && app.audio.repeat_mode == 0,
+                        && app.audio.repeat_mode == PlaybackMode::Normal,
                     "closing the sentence card changed audio playback or subtitles"
                 );
                 self.note(
@@ -614,6 +614,7 @@ impl Probe {
                         || app.media.snapshot.path
                             != app
                                 .media
+                                .session
                                 .path
                                 .as_ref()
                                 .context("audio path")?
@@ -638,7 +639,7 @@ impl Probe {
                 }
                 app.handle(Action::AudioRepeat(5), window, cx);
                 ensure!(
-                    app.audio.sentence_repeat.is_some(),
+                    app.media.session.audio_sentence().is_some(),
                     "single cue mode did not start"
                 );
                 self.note("single sentence selected without selecting subtitle", app);
@@ -664,33 +665,49 @@ impl Probe {
                 }
                 self.note("infinite sentence loop supports precise paused seek", app);
                 ensure!(
-                    app.audio.sentence_repeat.context("loop")?.index == 0,
+                    app.media.session.audio_sentence().context("loop")?.index == 0,
                     "single loop advanced"
                 );
                 self.note("real infinite loop repeats only one cue", app);
                 app.handle(Action::AudioRepeat(6), window, cx);
                 let reopened = Library::open(app.lib.root.clone())?;
                 ensure!(
-                    app_state::AudioState::new(&reopened).repeat_mode == 6,
+                    app_state::AudioState::new(&reopened).repeat_mode
+                        == PlaybackMode::SentenceThree,
                     "repeat preference not persisted"
                 );
                 self.note("repeat preference survives SQLite reopen", app);
             }
             3 => {
-                if !app.audio.sentence_repeat.is_some_and(|s| s.index == 1) {
+                if !app
+                    .media
+                    .session
+                    .audio_sentence()
+                    .is_some_and(|s| s.index == 1)
+                {
                     return Ok(false);
                 }
                 self.note("three real plays advance to next cue", app);
                 app.handle(Action::AudioSentence(-1), window, cx);
                 ensure!(
-                    app.audio.sentence_repeat.context("previous")?.index == 0,
+                    app.media
+                        .session
+                        .audio_sentence()
+                        .context("previous")?
+                        .index
+                        == 0,
                     "previous cue failed"
                 );
                 app.handle(Action::AudioSentence(1), window, cx);
                 app.handle(Action::AudioSentence(1), window, cx);
                 ensure!(
-                    app.audio.sentence_repeat.context("rapid next")?.index == 2
-                        && app.audio.repeat_mode == 6,
+                    app.media
+                        .session
+                        .audio_sentence()
+                        .context("rapid next")?
+                        .index
+                        == 2
+                        && app.audio.repeat_mode == PlaybackMode::SentenceThree,
                     "rapid arrows used stale playback"
                 );
                 self.note(
@@ -703,7 +720,12 @@ impl Probe {
                 if !app.media.snapshot.paused {
                     return Ok(false);
                 }
-                self.request = app.audio.sentence_repeat.context("seek loop")?.request_id;
+                self.request = app
+                    .media
+                    .session
+                    .audio_sentence()
+                    .context("seek loop")?
+                    .request_id;
                 if !app
                     .media
                     .snapshot
@@ -722,12 +744,13 @@ impl Probe {
                     .current_play;
                 app.handle(Action::SeekTo(99.), window, cx);
                 ensure!(
-                    app.audio
-                        .sentence_repeat
+                    app.media
+                        .session
+                        .audio_sentence()
                         .context("seek preserves")?
                         .request_id
                         == self.request
-                        && app.audio.repeat_mode == 6,
+                        && app.audio.repeat_mode == PlaybackMode::SentenceThree,
                     "timeline changed request/mode"
                 );
             }
@@ -794,14 +817,19 @@ impl Probe {
                     "audio arrow not handled"
                 );
                 ensure!(
-                    app.audio.sentence_repeat.context("keyboard")?.index == 1,
+                    app.media
+                        .session
+                        .audio_sentence()
+                        .context("keyboard")?
+                        .index
+                        == 1,
                     "left did not select previous cue"
                 );
                 self.note("actual key handler respects editor focus", app);
                 app.handle(Action::Word(0.4, 0.5, "Alpha".into(), false), window, cx);
                 ensure!(
-                    app.audio.sentence_repeat.context("word")?.index == 0
-                        && app.audio.repeat_mode == 6,
+                    app.media.session.audio_sentence().context("word")?.index == 0
+                        && app.audio.repeat_mode == PlaybackMode::SentenceThree,
                     "subtitle click exited repetition"
                 );
                 self.note("subtitle selection retains three-play mode", app);
@@ -815,13 +843,14 @@ impl Probe {
                 self.note("paused in-sentence position observed before leaving", app);
                 app.handle(Action::Page("settings".into()), window, cx);
                 ensure!(
-                    app.audio.repeat_mode == 6 && app.audio.sentence_repeat.is_none(),
+                    app.audio.repeat_mode == PlaybackMode::SentenceThree
+                        && app.media.session.audio_sentence().is_none(),
                     "page lost preference or left native repeat active"
                 );
                 app.handle(Action::Page("listening".into()), window, cx);
             }
             7 => {
-                if !app.audio.sentence_repeat.is_some_and(|s| {
+                if !app.media.session.audio_sentence().is_some_and(|s| {
                     app.media.snapshot.paused
                         && app
                             .media
@@ -833,7 +862,7 @@ impl Probe {
                     return Ok(false);
                 }
                 ensure!(
-                    app.audio.sentence_repeat.unwrap().index == 0,
+                    app.media.session.audio_sentence().unwrap().index == 0,
                     "return restored stale player position instead of selected sentence"
                 );
                 if (app.media.snapshot.position - 0.55).abs() > 0.04 {
@@ -843,12 +872,18 @@ impl Probe {
                 app.handle(Action::Audio("repeat-other".into()), window, cx);
             }
             8 => {
-                if app.audio.current_id != "repeat-other" || app.audio.sentence_repeat.is_none() {
+                if app.audio.current_id != "repeat-other"
+                    || app.media.session.audio_sentence().is_none()
+                {
                     return Ok(false);
                 }
                 ensure!(
-                    app.audio.repeat_mode == 6
-                        && app.audio.sentence_repeat.is_some_and(|s| s.index == 0),
+                    app.audio.repeat_mode == PlaybackMode::SentenceThree
+                        && app
+                            .media
+                            .session
+                            .audio_sentence()
+                            .is_some_and(|s| s.index == 0),
                     "audio switch lost mode or started on old cue"
                 );
                 self.note("audio switch starts a new sentence request", app);
@@ -864,15 +899,16 @@ impl Probe {
                     .is_some_and(|s| {
                         s.finished
                             && app
-                                .audio
-                                .sentence_repeat
+                                .media
+                                .session
+                                .audio_sentence()
                                 .is_some_and(|session| session.request_id == s.request_id)
                     })
                 {
                     return Ok(false);
                 }
                 ensure!(
-                    app.audio.sentence_repeat.context("last")?.index == 2
+                    app.media.session.audio_sentence().context("last")?.index == 2
                         && app.audio.current_id == "repeat-other"
                         && app.media.snapshot.paused,
                     "last cue did not stop"
@@ -902,14 +938,16 @@ impl Probe {
                 self.note("play restarts finished sentence from first repetition", app);
                 app.handle(Action::AudioRepeat(0), window, cx);
                 ensure!(
-                    app.audio.sentence_repeat.is_none() && app.audio.repeat_mode == 0,
+                    app.media.session.audio_sentence().is_none()
+                        && app.audio.repeat_mode == PlaybackMode::Normal,
                     "exit repetition failed"
                 );
                 self.note("ordinary playback clears only audio sentence repeat", app);
                 let cues = std::mem::take(&mut app.audio.cues);
                 app.handle(Action::AudioRepeat(6), window, cx);
                 ensure!(
-                    app.audio.repeat_mode == 0 && app.audio.sentence_repeat.is_none(),
+                    app.audio.repeat_mode == PlaybackMode::Normal
+                        && app.media.session.audio_sentence().is_none(),
                     "invalid subtitle mode was accepted"
                 );
                 app.audio.cues = cues;
@@ -922,9 +960,9 @@ impl Probe {
                 app.handle(Action::Boundary(0.3, true), window, cx);
                 app.handle(Action::Boundary(0.7, false), window, cx);
                 ensure!(
-                    app.audio.repeat_mode == 2
-                        && app.media.repeat == 2
-                        && app.audio.sentence_repeat.is_none(),
+                    app.audio.repeat_mode == PlaybackMode::Ab
+                        && app.media.session.mode == PlaybackMode::Ab
+                        && app.media.session.audio_sentence().is_none(),
                     "A/B conflicts with sentence request"
                 );
                 self.note("A/B capture replaces sentence loop explicitly", app);
@@ -935,9 +973,9 @@ impl Probe {
                     "direct video open failed"
                 );
                 ensure!(
-                    app.audio.sentence_repeat.is_none()
-                        && app.audio.repeat_mode == 5
-                        && app.media.repeat == 0
+                    app.media.session.audio_sentence().is_none()
+                        && app.audio.repeat_mode == PlaybackMode::Sentence
+                        && app.media.session.mode == PlaybackMode::Normal
                         && !app.video.repeat_three,
                     "audio repetition leaked into video"
                 );

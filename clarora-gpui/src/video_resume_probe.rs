@@ -118,7 +118,7 @@ impl Probe {
     }
     fn record(&mut self, app: &AppView, name: &str) -> Result<()> {
         let state = app.media.player.snapshot();
-        self.cases.push(json!({"case":name,"passed":true,"path":state.path,"position":state.position,"duration":state.duration,"paused":state.paused,"error":state.error,"page":app.page,"bookmark":app.lib.setting("last_video_position")?,"part_confirmation":app.video.part_confirmation.is_some(),"series_current":app.video.series.as_ref().and_then(|s| s.current),"triple_sentence":app.video.sentence_repeat.filter(|s| s.three).map(|s| s.index),"repeat_three":app.video.repeat_three,"pending_video_start":app.video.pending_start.as_ref().map(|p|json!({"path":p.path,"paused":p.paused,"from_end":p.from_end,"selected_time":p.selected_time}))}));
+        self.cases.push(json!({"case":name,"passed":true,"path":state.path,"position":state.position,"duration":state.duration,"paused":state.paused,"error":state.error,"page":app.page,"bookmark":app.lib.setting("last_video_position")?,"part_confirmation":app.video.part_confirmation.is_some(),"series_current":app.video.series.as_ref().and_then(|s| s.current),"triple_sentence":app.media.session.video_sentence().filter(|s| s.three).map(|s| s.index),"repeat_three":app.video.repeat_three,"pending_video_start":app.video.pending_start.as_ref().map(|p|json!({"path":p.path,"paused":p.paused,"from_end":p.from_end,"selected_time":p.selected_time}))}));
         self.report(None, None)
     }
     fn report(&self, passed: Option<bool>, error: Option<String>) -> Result<()> {
@@ -217,6 +217,7 @@ impl Probe {
                     || !state.paused
                     || app
                         .media
+                        .session
                         .path
                         .as_ref()
                         .is_none_or(|p| p.to_string_lossy() != state.path)
@@ -350,8 +351,9 @@ impl Probe {
                     "首次右键未只提示"
                 );
                 ensure!(
-                    app.video
-                        .sentence_repeat
+                    app.media
+                        .session
+                        .video_sentence()
                         .is_some_and(|s| s.three && s.index == 2),
                     "确认前清掉三遍模式"
                 );
@@ -369,7 +371,11 @@ impl Probe {
                 app.handle_video_arrow_key(&Self::key("left", false), window, cx);
                 ensure!(
                     app.video.part_confirmation.is_none()
-                        && app.video.sentence_repeat.is_some_and(|s| s.index == 1),
+                        && app
+                            .media
+                            .session
+                            .video_sentence()
+                            .is_some_and(|s| s.index == 1),
                     "左键没有取消并继续三遍切句"
                 );
                 self.record(app, "普通右键切句/末句首次确认/长按不确认/Esc与左键取消")?;
@@ -398,7 +404,7 @@ impl Probe {
                 ensure!(app.video.part_confirmation.is_none(), "切栏目保留旧确认");
                 ensure!(
                     app.video.repeat_three
-                        && app.video.sentence_repeat.is_none()
+                        && app.media.session.video_sentence().is_none()
                         && app.video.pending_start.is_none(),
                     "切栏目应保留三次选择并停止当前视频请求"
                 );
@@ -459,7 +465,7 @@ impl Probe {
                     "第二次右键未切缓存下一P"
                 );
                 ensure!(
-                    app.video.sentence_repeat.is_none() && app.video.repeat_three,
+                    app.media.session.video_sentence().is_none() && app.video.repeat_three,
                     "切P未区分旧循环与三次模式"
                 );
                 self.advance();
@@ -469,8 +475,9 @@ impl Probe {
                 if state.path != other_video(&app.lib).to_string_lossy()
                     || state.duration < 11.9
                     || !app
-                        .video
-                        .sentence_repeat
+                        .media
+                        .session
+                        .video_sentence()
                         .is_some_and(|s| s.three && s.index == 0)
                     || !state
                         .sentence_repeat
@@ -480,8 +487,9 @@ impl Probe {
                     return Ok(false);
                 }
                 ensure!(
-                    app.video
-                        .sentence_repeat
+                    app.media
+                        .session
+                        .video_sentence()
                         .is_some_and(|s| s.range == (0.3, 0.34)),
                     "新P套用了上一P的范围或没有跳过无效首句"
                 );
@@ -516,8 +524,9 @@ impl Probe {
                 let state = app.media.player.snapshot();
                 if state.path != other_video(&app.lib).to_string_lossy()
                     || !app
-                        .video
-                        .sentence_repeat
+                        .media
+                        .session
+                        .video_sentence()
                         .is_some_and(|s| s.three && s.index == 0)
                     || !state
                         .sentence_repeat
@@ -544,7 +553,7 @@ impl Probe {
                     return Ok(false);
                 }
                 ensure!(
-                    !app.video.repeat_three && app.video.sentence_repeat.is_none(),
+                    !app.video.repeat_three && app.media.session.video_sentence().is_none(),
                     "关闭后切P重新打开三次"
                 );
                 self.record(app, "主动停止后切P不恢复三次")?;
@@ -559,7 +568,9 @@ impl Probe {
                     return Ok(false);
                 }
                 ensure!(
-                    app.video.repeat_three && app.video.sentence_repeat.is_none() && state.paused,
+                    app.video.repeat_three
+                        && app.media.session.video_sentence().is_none()
+                        && state.paused,
                     "无字幕没有保留等待模式/错误播放旧循环"
                 );
                 self.record(app, "无字幕下一视频暂停等待/模式保留")?;
@@ -586,8 +597,9 @@ impl Probe {
             20 => {
                 let state = app.media.player.snapshot();
                 if !app
-                    .video
-                    .sentence_repeat
+                    .media
+                    .session
+                    .video_sentence()
                     .is_some_and(|s| s.three && s.range == (0.4, 0.44))
                     || !state
                         .sentence_repeat
@@ -598,7 +610,7 @@ impl Probe {
                 }
                 self.record(app, "字幕稍后载入自动从首个有效句恢复三次")?;
                 let series = app.video.series.clone().context("异步夹具无选集")?;
-                let origin = app.media.path.clone();
+                let origin = app.media.session.revision();
                 let target = path.clone();
                 app.begin("本机异步切P夹具", move |_, _, _| {
                     Ok(Outcome::PartVideo(series, 0, target, false, origin, false))
@@ -610,8 +622,9 @@ impl Probe {
                 if app.tasks.cancel.is_some()
                     || state.path != path.to_string_lossy()
                     || !app
-                        .video
-                        .sentence_repeat
+                        .media
+                        .session
+                        .video_sentence()
                         .is_some_and(|s| s.three && s.index == 0)
                     || !state
                         .sentence_repeat
@@ -622,7 +635,7 @@ impl Probe {
                 }
                 self.record(app, "异步PartVideo结果到达后仍建立新视频三次循环")?;
                 let series = app.video.series.clone().unwrap();
-                let origin = app.media.path.clone();
+                let origin = app.media.session.revision();
                 let target = other_video(&app.lib);
                 app.begin("本机取消结果夹具", move |_, _, _| {
                     Ok(Outcome::PartVideo(series, 1, target, false, origin, false))
@@ -644,7 +657,7 @@ impl Probe {
                 );
                 self.record(app, "取消异步切P保留原视频和三次模式")?;
                 let series = app.video.series.clone().unwrap();
-                let origin = app.media.path.clone();
+                let origin = app.media.session.revision();
                 let target = other_video(&app.lib);
                 app.begin("本机迟到结果夹具", move |_, _, _| {
                     Ok(Outcome::PartVideo(series, 1, target, false, origin, false))
@@ -661,7 +674,7 @@ impl Probe {
                     return Ok(false);
                 }
                 ensure!(
-                    !app.video.repeat_three && app.video.sentence_repeat.is_none(),
+                    !app.video.repeat_three && app.media.session.video_sentence().is_none(),
                     "异步迟到结果恢复了用户关闭的模式"
                 );
                 self.record(app, "准备期间主动停止三次不被异步结果重新打开")?;
@@ -688,12 +701,19 @@ impl Probe {
                 app.handle_video_arrow_key(&Self::key("right", false), window, cx);
                 ensure!(
                     app.video.part_confirmation.is_none()
-                        && app.video.sentence_repeat.is_some_and(|s| s.index == 1),
+                        && app
+                            .media
+                            .session
+                            .video_sentence()
+                            .is_some_and(|s| s.index == 1),
                     "右键未取消上一P确认并切下一句"
                 );
                 app.handle_video_arrow_key(&Self::key("left", false), window, cx);
                 ensure!(
-                    app.video.sentence_repeat.is_some_and(|s| s.index == 0)
+                    app.media
+                        .session
+                        .video_sentence()
+                        .is_some_and(|s| s.index == 0)
                         && app.video.part_confirmation.is_none(),
                     "普通左键误弹跨P确认"
                 );
@@ -766,8 +786,9 @@ impl Probe {
                 let state = app.media.player.snapshot();
                 if state.path != path.to_string_lossy()
                     || !app
-                        .video
-                        .sentence_repeat
+                        .media
+                        .session
+                        .video_sentence()
                         .is_some_and(|s| s.three && s.index == 2 && s.range == (8., 12.))
                     || !state
                         .sentence_repeat
@@ -782,7 +803,7 @@ impl Probe {
                 );
                 self.record(app, "三次模式左键回上一P从末句建立三次循环")?;
                 let series = app.video.series.clone().unwrap();
-                let origin = app.media.path.clone();
+                let origin = app.media.session.revision();
                 let target = other_video(&app.lib);
                 app.begin("异步末句夹具", move |_, _, _| {
                     Ok(Outcome::PartVideo(series, 1, target, false, origin, true))
@@ -794,8 +815,9 @@ impl Probe {
                 if app.tasks.cancel.is_some()
                     || state.path != other_video(&app.lib).to_string_lossy()
                     || !app
-                        .video
-                        .sentence_repeat
+                        .media
+                        .session
+                        .video_sentence()
                         .is_some_and(|s| s.three && s.index == 1 && s.range == (1.2, 1.24))
                     || !state
                         .sentence_repeat
@@ -807,7 +829,7 @@ impl Probe {
                 self.record(app, "异步PartVideo结果携带末句意图/三次重新计数")?;
                 app.handle(Action::VideoStopSentenceRepeat, window, cx);
                 let series = app.video.series.clone().unwrap();
-                let origin = app.media.path.clone();
+                let origin = app.media.session.revision();
                 let target = path.clone();
                 app.begin("普通异步末句夹具", move |_, _, _| {
                     Ok(Outcome::PartVideo(series, 0, target, false, origin, true))
@@ -923,21 +945,24 @@ impl Probe {
                 app.video.seek_dragging = true;
                 app.video.seek_drag_target = None;
                 self.timeline_request = app
-                    .video
-                    .sentence_repeat
+                    .media
+                    .session
+                    .video_sentence()
                     .context("当前句请求缺失")?
                     .request_id;
                 app.handle(Action::VideoTimelineSeek(6.6), window, cx);
                 let request = app
-                    .video
-                    .sentence_repeat
+                    .media
+                    .session
+                    .video_sentence()
                     .context("音轨点击清掉三次")?
                     .request_id;
                 ensure!(
                     app.video.repeat_three
                         && app
-                            .video
-                            .sentence_repeat
+                            .media
+                            .session
+                            .video_sentence()
                             .is_some_and(|s| s.index == 1 && s.range == (4., 8.)),
                     "句内音轨定位改变了当前句或模式"
                 );
@@ -946,7 +971,7 @@ impl Probe {
                     app.handle(Action::VideoTimelineSeek(time), window, cx);
                 }
                 ensure!(
-                    app.video.sentence_repeat.unwrap().request_id == request,
+                    app.media.session.video_sentence().unwrap().request_id == request,
                     "同句拖动反复重置循环"
                 );
                 app.video.seek_dragging = false;
@@ -1053,8 +1078,9 @@ impl Probe {
                 ]);
                 app.handle(Action::VideoSentenceRepeat(Some(1), true), window, cx);
                 self.timeline_request = app
-                    .video
-                    .sentence_repeat
+                    .media
+                    .session
+                    .video_sentence()
                     .context("稀疏字幕请求缺失")?
                     .request_id;
                 app.media.player.set("pause", "yes");
@@ -1100,8 +1126,9 @@ impl Probe {
                 ensure!(
                     app.video.repeat_three
                         && app
-                            .video
-                            .sentence_repeat
+                            .media
+                            .session
+                            .video_sentence()
                             .is_some_and(|s| s.index == 2 && s.range == (7., 8.)),
                     "音轨仅句内定位后方向键不能正常切换字幕句"
                 );
@@ -1118,7 +1145,7 @@ impl Probe {
                     return Ok(false);
                 }
                 ensure!(
-                    !app.video.repeat_three && app.video.sentence_repeat.is_none(),
+                    !app.video.repeat_three && app.media.session.video_sentence().is_none(),
                     "普通音轨定位误启用三次"
                 );
                 self.record(app, "普通模式音轨仍精确定位到点击时间")?;
@@ -1175,7 +1202,7 @@ impl Probe {
                             && s.end == 7.
                             && s.total_plays == Some(3)
                             && s.current_play == 1
-                            && app.video.sentence_repeat.is_some_and(|session| {
+                            && app.media.session.video_sentence().is_some_and(|session| {
                                 session.index == 1 && session.request_id == s.request_id
                             })
                     })
@@ -1216,7 +1243,11 @@ impl Probe {
                 app.handle(Action::VideoSentenceRepeat(None, true), window, cx);
                 ensure!(
                     app.video.repeat_three
-                        && app.video.sentence_repeat.is_some_and(|s| s.index == 0),
+                        && app
+                            .media
+                            .session
+                            .video_sentence()
+                            .is_some_and(|s| s.index == 0),
                     "未选句时无法从首条字幕开启三次模式"
                 );
                 self.advance();
@@ -1244,7 +1275,10 @@ impl Probe {
                 app.video.active = None;
                 app.handle(Action::VideoSentenceRepeat(None, true), window, cx);
                 ensure!(
-                    app.video.sentence_repeat.is_some_and(|s| s.index == 1),
+                    app.media
+                        .session
+                        .video_sentence()
+                        .is_some_and(|s| s.index == 1),
                     "未按真实时钟选择当前句"
                 );
                 self.advance();
@@ -1319,7 +1353,7 @@ impl Probe {
                 app.handle(Action::VideoSentenceRepeat(None, true), window, cx);
                 ensure!(
                     app.video.repeat_three
-                        && app.video.sentence_repeat.is_none()
+                        && app.media.session.video_sentence().is_none()
                         && app.video.pending_start.as_ref().is_some_and(|p| {
                             p.path == path
                                 && p.selected_time.is_some_and(|t| (t - 6.4).abs() < 0.18)
@@ -1344,7 +1378,7 @@ impl Probe {
                 ensure!(
                     !app.video.repeat_three
                         && app.video.pending_start.is_none()
-                        && app.video.sentence_repeat.is_none(),
+                        && app.media.session.video_sentence().is_none(),
                     "停止后迟到字幕重新启用了三次"
                 );
                 self.record(app, "等待字幕期间可停止且迟到字幕不重启")?;
@@ -1398,8 +1432,9 @@ impl Probe {
                 let state = app.media.player.snapshot();
                 if state.path != other_video(&app.lib).to_string_lossy()
                     || !app
-                        .video
-                        .sentence_repeat
+                        .media
+                        .session
+                        .video_sentence()
                         .is_some_and(|s| s.three && s.range.1 < 2.)
                     || !state
                         .sentence_repeat
@@ -1412,7 +1447,7 @@ impl Probe {
                 app.handle(Action::Page("settings".into()), window, cx);
                 ensure!(
                     app.video.repeat_three
-                        && app.video.sentence_repeat.is_none()
+                        && app.media.session.video_sentence().is_none()
                         && app.video.pending_start.is_none(),
                     "离开视频没有保留三次偏好或留下运行请求"
                 );
@@ -1444,7 +1479,7 @@ impl Probe {
                 app.handle(Action::Page("settings".into()), window, cx);
                 ensure!(
                     app.video.repeat_three
-                        && app.video.sentence_repeat.is_none()
+                        && app.media.session.video_sentence().is_none()
                         && app.video.pending_start.is_none(),
                     "三次模式离开到设置后被关闭或继续控制播放器"
                 );
@@ -1485,7 +1520,7 @@ impl Probe {
                 }
                 ensure!(
                     app.video.repeat_three
-                        && app.video.sentence_repeat.is_none()
+                        && app.media.session.video_sentence().is_none()
                         && app.video.pending_start.is_none(),
                     "闪卡播放丢失视频偏好或被视频循环接管"
                 );
@@ -1510,6 +1545,7 @@ impl Probe {
                     || state.sentence_repeat.is_some()
                     || app
                         .media
+                        .session
                         .path
                         .as_ref()
                         .is_none_or(|p| p.to_string_lossy() != state.path)
@@ -1520,7 +1556,7 @@ impl Probe {
                 app.handle(Action::Repeat, window, cx);
                 ensure!(
                     app.video.repeat_three
-                        && app.video.sentence_repeat.is_none()
+                        && app.media.session.video_sentence().is_none()
                         && app.video.pending_start.is_none(),
                     "音频SeekTo/Repeat改变了视频三次偏好或启动视频循环"
                 );
@@ -1553,7 +1589,7 @@ impl Probe {
                 }
                 ensure!(
                     !app.video.repeat_three
-                        && app.video.sentence_repeat.is_none()
+                        && app.media.session.video_sentence().is_none()
                         && app.video.pending_start.is_none()
                         && state.sentence_repeat.is_none(),
                     "明确停止后页面往返恢复了旧三次模式"
@@ -1609,7 +1645,7 @@ impl Probe {
                 }
                 ensure!(
                     app.video.repeat_three
-                        && app.video.sentence_repeat.is_none()
+                        && app.media.session.video_sentence().is_none()
                         && app
                             .video
                             .pending_start
@@ -1753,8 +1789,9 @@ impl Probe {
                 let state = app.media.player.snapshot();
                 if state.paused
                     || !app
-                        .video
-                        .sentence_repeat
+                        .media
+                        .session
+                        .video_sentence()
                         .is_some_and(|s| s.three && s.index == 1)
                 {
                     return Ok(false);
@@ -1764,8 +1801,9 @@ impl Probe {
             }
             81 => {
                 if !app
-                    .video
-                    .sentence_repeat
+                    .media
+                    .session
+                    .video_sentence()
                     .is_some_and(|s| s.three && s.index == 2)
                 {
                     return Ok(false);
@@ -1922,7 +1960,7 @@ impl Probe {
             }
             89 => {
                 let state = app.media.player.snapshot();
-                let Some(session) = app.video.sentence_repeat else {
+                let Some(session) = app.media.session.video_sentence() else {
                     return Ok(false);
                 };
                 if !Self::at(app, &path, 0.)
@@ -1936,7 +1974,7 @@ impl Probe {
                 app.handle(Action::VideoPlayCue(1), window, cx);
                 ensure!(
                     app.video.repeat_three
-                        && app.video.sentence_repeat.is_some_and(|s| {
+                        && app.media.session.video_sentence().is_some_and(|s| {
                             s.three && s.index == 1 && s.request_id != self.timeline_request
                         }),
                     "点击字幕正文清除了三次模式或未切换到目标句"
@@ -1956,7 +1994,7 @@ impl Probe {
             }
             91 => {
                 let state = app.media.player.snapshot();
-                let Some(session) = app.video.sentence_repeat else {
+                let Some(session) = app.media.session.video_sentence() else {
                     return Ok(false);
                 };
                 if !Self::at(app, &path, 4.)
@@ -1976,7 +2014,7 @@ impl Probe {
                 app.handle(Action::VideoPlayCue(usize::MAX), window, cx);
                 ensure!(
                     app.video.repeat_three
-                        && app.video.sentence_repeat.is_some_and(|s| {
+                        && app.media.session.video_sentence().is_some_and(|s| {
                             s.index == 1 && s.request_id == session.request_id
                         }),
                     "无效字幕行清除了有效三次模式或替换了原请求"
@@ -1991,7 +2029,7 @@ impl Probe {
                     return Ok(false);
                 }
                 ensure!(
-                    app.video.sentence_repeat.unwrap().request_id != self.timeline_request,
+                    app.media.session.video_sentence().unwrap().request_id != self.timeline_request,
                     "点击同一句没有从第一遍重新建立重复"
                 );
                 self.record(app, "点击当前字幕句从句首和第一遍重新开始三次")?;
@@ -2001,8 +2039,9 @@ impl Probe {
             93 => {
                 let state = app.media.player.snapshot();
                 let Some(session) = app
-                    .video
-                    .sentence_repeat
+                    .media
+                    .session
+                    .video_sentence()
                     .filter(|s| s.three && s.index == 2)
                 else {
                     return Ok(false);
@@ -2022,8 +2061,9 @@ impl Probe {
             94 => {
                 let state = app.media.player.snapshot();
                 let Some(session) = app
-                    .video
-                    .sentence_repeat
+                    .media
+                    .session
+                    .video_sentence()
                     .filter(|s| !s.three && s.index == 0)
                 else {
                     return Ok(false);
@@ -2039,8 +2079,9 @@ impl Probe {
                 ensure!(
                     !app.video.repeat_three
                         && app
-                            .video
-                            .sentence_repeat
+                            .media
+                            .session
+                            .video_sentence()
                             .is_some_and(|s| !s.three && s.index == 1),
                     "点击字幕正文清除了无限重复模式"
                 );
@@ -2058,8 +2099,9 @@ impl Probe {
             96 => {
                 let state = app.media.player.snapshot();
                 let Some(session) = app
-                    .video
-                    .sentence_repeat
+                    .media
+                    .session
+                    .video_sentence()
                     .filter(|s| s.three && s.index == 2)
                 else {
                     return Ok(false);
@@ -2092,7 +2134,7 @@ impl Probe {
                 }
                 ensure!(
                     !app.video.repeat_three
-                        && app.video.sentence_repeat.is_none()
+                        && app.media.session.video_sentence().is_none()
                         && state.sentence_repeat.is_none(),
                     "普通模式点击字幕错误启用了句子重复"
                 );
@@ -2108,7 +2150,7 @@ impl Probe {
     }
     fn clicked_cue_playing(app: &AppView, path: &Path, index: usize, three: bool) -> bool {
         let state = app.media.player.snapshot();
-        let Some(session) = app.video.sentence_repeat else {
+        let Some(session) = app.media.session.video_sentence() else {
             return false;
         };
         state.path == path.to_string_lossy()
@@ -2134,11 +2176,12 @@ impl Probe {
             && state.paused
             && (state.position - 4.).abs() < 0.18
             && app.video.repeat_three
-            && app.media.repeat == 0
+            && app.media.session.mode == PlaybackMode::Normal
             && app.video.pending_start.is_none()
             && app
-                .video
-                .sentence_repeat
+                .media
+                .session
+                .video_sentence()
                 .is_some_and(|s| s.three && s.index == 1 && s.range == (4., 8.))
             && state.sentence_repeat.as_ref().is_some_and(|s| {
                 s.start == 4.
@@ -2146,8 +2189,9 @@ impl Probe {
                     && s.total_plays == Some(3)
                     && s.current_play == 1
                     && app
-                        .video
-                        .sentence_repeat
+                        .media
+                        .session
+                        .video_sentence()
                         .is_some_and(|session| session.request_id == s.request_id)
             })
     }

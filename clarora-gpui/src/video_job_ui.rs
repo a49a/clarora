@@ -149,8 +149,9 @@ impl AppView {
                     cues,
                 } => {
                     if self.page == "video"
+                        && self.media.session.is_video()
                         && self.video.path.as_ref() == Some(&path)
-                        && self.media.path.as_ref() == Some(&path)
+                        && self.media.session.path.as_ref() == Some(&path)
                         && self
                             .video
                             .collection

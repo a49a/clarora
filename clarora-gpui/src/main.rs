@@ -46,6 +46,8 @@ mod model_navigation_probe;
 mod native_probe_input;
 mod pages_ui;
 mod playback_controller;
+#[cfg(debug_assertions)]
+mod playback_session_probe;
 mod reading_ui;
 mod saved_clip_ui;
 #[cfg(debug_assertions)]
@@ -69,6 +71,7 @@ mod video_resume_probe;
 mod video_transcript_ui;
 mod writing_ui;
 use anyhow::{Context as _, Result, ensure};
+use clarora_gpui::playback_session::{Mode as PlaybackMode, Owner as PlaybackOwner};
 use clarora_gpui::{
     ai, audio_library, backup, bilibili, blind_listening, clip_marks, credentials,
     data::{Card, Library, Row, id, now, text},
@@ -359,14 +362,7 @@ enum Outcome {
     Message(String),
     Issue(String),
     Parts(bilibili::Series),
-    PartVideo(
-        bilibili::Series,
-        usize,
-        PathBuf,
-        bool,
-        Option<PathBuf>,
-        bool,
-    ),
+    PartVideo(bilibili::Series, usize, PathBuf, bool, u64, bool),
     Output(String),
     VideoTranslated(PathBuf, String, Vec<Cue>, Vec<Cue>),
     Pdf(PathBuf, i32, documents::PdfPage),
@@ -416,6 +412,8 @@ struct AppView {
     model_probe: Option<model_navigation_probe::Probe>,
     #[cfg(debug_assertions)]
     audio_repeat_probe: Option<audio_repeat_probe::Probe>,
+    #[cfg(debug_assertions)]
+    playback_session_probe: Option<playback_session_probe::Probe>,
     #[cfg(debug_assertions)]
     audio_remove_probe: Option<audio_remove_probe::Probe>,
     #[cfg(debug_assertions)]
@@ -582,6 +580,8 @@ impl AppView {
             #[cfg(debug_assertions)]
             audio_repeat_probe: None,
             #[cfg(debug_assertions)]
+            playback_session_probe: None,
+            #[cfg(debug_assertions)]
             audio_remove_probe: None,
             #[cfg(debug_assertions)]
             sentence_probe: None,
@@ -693,6 +693,9 @@ impl AppView {
                                 return;
                             }
                             let snapshot = this.media.player.snapshot();
+                            if !this.media.matches_snapshot(&snapshot) {
+                                return;
+                            }
                             this.media.snapshot.frame = snapshot.frame;
                             this.media.snapshot.frame_revision = snapshot.frame_revision;
                             this.media.snapshot.frame_width = snapshot.frame_width;
@@ -967,10 +970,16 @@ impl AppView {
                 .and_then(|v| v["position"].as_f64())
                 .filter(|v| v.is_finite() && *v >= 0.)
                 .unwrap_or(0.);
-            this.media
-                .player
-                .open_range(&video.path, position, 0., true);
-            this.media.path = Some(video.path.clone());
+            if this.page == "video" {
+                this.media.open(
+                    PlaybackOwner::Video,
+                    video.path.clone(),
+                    position,
+                    0.,
+                    true,
+                    PlaybackMode::Normal,
+                );
+            }
             this.video.path = Some(video.path.clone());
             this.load_video_subtitles(&video.path);
             this.video.tab = 3;
@@ -1042,7 +1051,7 @@ impl AppView {
         }
     }
     fn save_media_position(&self) {
-        if self.page == "listening" && !self.audio.current_id.is_empty() {
+        if self.page == "listening" && self.media.session.is_audio(&self.audio.current_id) {
             let _ = self.lib.set_setting(
                 "last_listening_position",
                 &json!({"id":self.audio.current_id,"position":self.audio_saved_position()})
@@ -1053,7 +1062,9 @@ impl AppView {
                 let playback = self.media.player.snapshot();
                 // A page switch can happen before the UI's next clock poll,
                 // or while the player still reports the previous audio/card.
-                if self.media.path.as_ref() == Some(path)
+                if self.media.session.is_video()
+                    && self.media.session.path.as_ref() == Some(path)
+                    && self.media.matches_snapshot(&playback)
                     && playback.path == path.to_string_lossy()
                     && playback.duration > 0.
                     && playback.position.is_finite()
@@ -1063,8 +1074,9 @@ impl AppView {
                     // the validated sentence start so loadfile's start cannot
                     // later overwrite its seek with a mid-sentence bookmark.
                     let position = self
-                        .video
-                        .sentence_repeat
+                        .media
+                        .session
+                        .video_sentence()
                         .filter(|session| {
                             let (a, b) = session.range;
                             session.three
@@ -1098,21 +1110,26 @@ impl AppView {
         self.media.player.set("volume", self.media.volume);
         self.media.player.set("speed", self.media.rate);
         self.media.player.set("pause", "yes");
-        if let Some(card) = self.current_card() {
-            if !card.media.is_empty() {
-                if self.media.preloaded_index == Some(self.index) {
-                    std::mem::swap(&mut self.media.player, &mut self.media.preloader);
-                    self.media.preloader.set_video_target(0, 0, false);
-                    self.media.player.set("pause", "no");
-                } else {
-                    self.media.player.open_range(
-                        &PathBuf::from(card.media),
-                        card.start,
-                        card.end,
-                        false,
-                    );
-                }
+        if let Some(card) = self.current_card().filter(|card| !card.media.is_empty()) {
+            let owner = PlaybackOwner::Card {
+                kind: card.kind,
+                id: card.id,
+            };
+            let path = PathBuf::from(card.media);
+            if self.media.preloaded_index == Some(self.index) {
+                self.media.play_preloaded(owner, path);
+            } else {
+                self.media.open(
+                    owner,
+                    path,
+                    card.start,
+                    card.end,
+                    false,
+                    PlaybackMode::Normal,
+                );
             }
+        } else {
+            self.media.release();
         }
         self.media.preloaded_index = None;
         if self.page == "discover" && !self.cards.is_empty() {
@@ -1125,14 +1142,13 @@ impl AppView {
                 &due,
                 &favorites,
             ) {
-                self.media.preloaded_index = Some(index);
                 let next = &self.cards[index];
                 if !next.media.is_empty() {
-                    self.media.preloader.open_range(
+                    self.media.preload_card(
+                        index,
                         &PathBuf::from(&next.media),
                         next.start,
                         next.end,
-                        true,
                     );
                 } else {
                     self.media.preloader.set("pause", "yes");
@@ -1203,7 +1219,7 @@ impl AppView {
                         self.tasks.video_job.is_none(),
                         "请先完成或取消后台字幕任务后再导入字幕"
                     );
-                    let video = self.media.path.as_ref().context("请先打开视频")?;
+                    let video = self.media.session.path.as_ref().context("请先打开视频")?;
                     let mut cues = subtitles::parse(&fs::read_to_string(&path)?);
                     ensure!(!cues.is_empty(), "请选择带时间轴的 UTF-8 SRT / VTT 字幕");
                     cues.sort_by(|a, b| a.start.total_cmp(&b.start));
@@ -1337,7 +1353,14 @@ impl AppView {
                 self.report_status(FeedbackKind::Info, "已选择录音".into());
             }
             "background" => {
-                self.media.player.open(&path);
+                self.media.open(
+                    PlaybackOwner::Background,
+                    path,
+                    0.,
+                    0.,
+                    false,
+                    PlaybackMode::Track,
+                );
                 self.media.player.set("loop-file", "inf");
             }
             _ => {}
@@ -1378,11 +1401,13 @@ impl AppView {
             "listening" if self.audio.blind.enabled => {
                 self.audio.blind.reference_for(self.audio.blind_chinese)
             }
-            "listening" if self.media.loop_a.is_some() && self.media.loop_b.is_some() => {
+            "listening"
+                if self.media.session.loop_a.is_some() && self.media.session.loop_b.is_some() =>
+            {
                 let (front, back) = subtitles::excerpt(
                     &self.audio.cues,
-                    self.media.loop_a.unwrap(),
-                    self.media.loop_b.unwrap(),
+                    self.media.session.loop_a.unwrap(),
+                    self.media.session.loop_b.unwrap(),
                 );
                 format!("选中内容：{front}\n翻译：{back}")
             }
@@ -2570,6 +2595,23 @@ fn main() -> Result<()> {
     #[cfg(not(debug_assertions))]
     let audio_repeat_probe_dir: Option<PathBuf> = None;
     #[cfg(debug_assertions)]
+    let playback_session_probe_dir = args
+        .iter()
+        .position(|a| a == "--playback-session-check")
+        .map(|index| {
+            args.get(index + 1)
+                .context("--playback-session-check 缺少证据目录")
+                .map(PathBuf::from)
+        })
+        .transpose()?;
+    #[cfg(not(debug_assertions))]
+    ensure!(
+        !args.iter().any(|a| a == "--playback-session-check"),
+        "播放会话诊断仅限开发构建"
+    );
+    #[cfg(not(debug_assertions))]
+    let playback_session_probe_dir: Option<PathBuf> = None;
+    #[cfg(debug_assertions)]
     let backup_probe_dir = args
         .iter()
         .position(|arg| arg == "--backup-progress-check")
@@ -2634,6 +2676,8 @@ fn main() -> Result<()> {
         assistant_latency_probe::prepare(out)?
     } else if let Some(out) = &audio_remove_probe_dir {
         audio_remove_probe::prepare(out)?
+    } else if let Some(out) = &playback_session_probe_dir {
+        playback_session_probe::prepare(out)?
     } else if let Some(out) = &audio_repeat_probe_dir {
         audio_repeat_probe::prepare(out)?
     } else if let Some(out) = &model_probe_dir {
@@ -2780,6 +2824,7 @@ fn main() -> Result<()> {
                             && backup_probe_dir.is_none()
                             && model_probe_dir.is_none()
                             && audio_repeat_probe_dir.is_none()
+                            && playback_session_probe_dir.is_none()
                             && audio_remove_probe_dir.is_none()
                             && assistant_latency_probe_dir.is_none()
                             && sentence_probe_dir.is_none()
@@ -2789,6 +2834,7 @@ fn main() -> Result<()> {
                             && backup_probe_dir.is_none()
                             && model_probe_dir.is_none()
                             && audio_repeat_probe_dir.is_none()
+                            && playback_session_probe_dir.is_none()
                             && audio_remove_probe_dir.is_none()
                             && assistant_latency_probe_dir.is_none()
                             && sentence_probe_dir.is_none()
@@ -2828,6 +2874,11 @@ fn main() -> Result<()> {
                             #[cfg(debug_assertions)]
                             if let Some(out) = &audio_remove_probe_dir {
                                 view.audio_remove_probe = Some(audio_remove_probe::Probe::new(out));
+                            }
+                            #[cfg(debug_assertions)]
+                            if let Some(out) = &playback_session_probe_dir {
+                                view.playback_session_probe =
+                                    Some(playback_session_probe::Probe::new(out));
                             }
                             #[cfg(debug_assertions)]
                             if let Some(out) = &audio_repeat_probe_dir {
@@ -2873,6 +2924,7 @@ fn main() -> Result<()> {
                 && backup_probe_dir.is_none()
                 && model_probe_dir.is_none()
                 && audio_repeat_probe_dir.is_none()
+                && playback_session_probe_dir.is_none()
                 && audio_remove_probe_dir.is_none()
                 && assistant_latency_probe_dir.is_none()
                 && sentence_probe_dir.is_none()

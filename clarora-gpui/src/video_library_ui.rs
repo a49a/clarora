@@ -19,7 +19,7 @@ impl AppView {
         series.save(&self.lib)?;
         self.reset_video_sentence_request();
         self.media.player.command(["stop"]);
-        self.media.path = None;
+        self.media.release();
         self.video.path = None;
         self.video.set_cues(vec![]);
         self.video.active = None;

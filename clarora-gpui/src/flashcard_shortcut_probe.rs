@@ -55,7 +55,7 @@ pub(super) struct Flow {
     paused_position: f64,
     paused_replay_started: Option<Instant>,
     original_rate: f64,
-    original_repeat: usize,
+    original_repeat: PlaybackMode,
 }
 impl Flow {
     pub(super) fn new(out: &Path) -> Self {
@@ -80,7 +80,7 @@ impl Flow {
             paused_position: 0.,
             paused_replay_started: None,
             original_rate: 1.,
-            original_repeat: 0,
+            original_repeat: PlaybackMode::Normal,
         }
     }
     pub(super) fn cases(&self) -> Vec<Value> {
@@ -134,7 +134,7 @@ impl Flow {
         app.media.player.set("pause", "yes");
         app.lib.delete("clip_cards", "native-replay-shortcut")?;
         app.media.rate = self.original_rate;
-        app.media.repeat = self.original_repeat;
+        app.media.session.mode = self.original_repeat;
         app.handle(Action::Page("flashcard".into()), window, cx);
         app.handle(Action::ReviewMode(self.due), window, cx);
         app.handle(Action::Filter(self.filter.clone()), window, cx);
@@ -229,7 +229,7 @@ impl Flow {
                 self.due = app.due;
                 self.filter = app.card_filter.clone();
                 self.original_rate = app.media.rate;
-                self.original_repeat = app.media.repeat;
+                self.original_repeat = app.media.session.mode;
                 app.handle(Action::Page("flashcard".into()), window, cx);
                 app.handle(Action::ReviewMode(false), window, cx);
                 app.handle(Action::Filter("sentence".into()), window, cx);
@@ -446,7 +446,7 @@ impl Flow {
                 self.replay_index = app.index;
                 self.replay_revealed = app.revealed;
                 app.media.rate = 1.;
-                app.media.repeat = 0;
+                app.media.session.mode = PlaybackMode::Normal;
                 app.media.preloaded_index = None;
                 app.play_card();
                 window.focus(&app.focus);

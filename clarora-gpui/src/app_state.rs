@@ -30,8 +30,7 @@ pub(super) struct AudioState {
     pub(super) current_scroll: ScrollHandle,
     pub(super) font_size: u8,
     pub(super) key_points: Vec<ai::KeyPoint>,
-    pub(super) sentence_repeat: Option<clarora_gpui::video_repeat::Session>,
-    pub(super) repeat_mode: usize,
+    pub(super) repeat_mode: PlaybackMode,
     pub(super) pending_repeat_pause: Option<bool>,
     pub(super) pending_repeat_position: Option<f64>,
 }
@@ -66,13 +65,13 @@ impl AudioState {
             current_scroll: ScrollHandle::new(),
             font_size: 18,
             key_points: vec![],
-            sentence_repeat: None,
             repeat_mode: lib
                 .setting("audio_repeat_mode")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .filter(|n| [0, 1, 3, 4, 5, 6].contains(n))
-                .unwrap_or(0),
+                .map(PlaybackMode::from_index)
+                .unwrap_or_default(),
             pending_repeat_pause: None,
             pending_repeat_position: None,
         }
@@ -80,6 +79,7 @@ impl AudioState {
 }
 
 pub(super) struct PendingVideoStart {
+    pub(super) revision: u64,
     pub(super) path: PathBuf,
     pub(super) paused: bool,
     pub(super) from_end: bool,
@@ -108,8 +108,8 @@ pub(super) struct VideoState {
     pub(super) resize: Option<(Pixels, f32)>,
     pub(super) parts_scroll: UniformListScrollHandle,
     pub(super) active: Option<usize>,
-    pub(super) sentence_repeat: Option<clarora_gpui::video_repeat::Session>,
     pub(super) repeat_three: bool,
+    pub(super) repeat_mode: PlaybackMode,
     pub(super) pending_start: Option<PendingVideoStart>,
     pub(super) part_confirmation: Option<video_controller::PartConfirmation>,
     pub(super) follow: bool,
@@ -158,8 +158,8 @@ impl VideoState {
             resize: None,
             parts_scroll: UniformListScrollHandle::new(),
             active: None,
-            sentence_repeat: None,
             repeat_three: false,
+            repeat_mode: PlaybackMode::Normal,
             pending_start: None,
             part_confirmation: None,
             follow: true,
@@ -183,22 +183,89 @@ pub(super) struct PlaybackState {
     pub(super) preloader: Player,
     pub(super) preloaded_index: Option<usize>,
     pub(super) snapshot: Playback,
-    pub(super) path: Option<PathBuf>,
-    pub(super) loop_a: Option<f64>,
-    pub(super) loop_b: Option<f64>,
-    pub(super) repeat: usize,
+    load_after: Option<u64>,
+    preloaded_after: Option<u64>,
+    pub(super) session: clarora_gpui::playback_session::Session,
     pub(super) rate: f64,
     pub(super) volume: f64,
     pub(super) volume_before_mute: f64,
-    pub(super) end_handled: bool,
     pub(super) stats_ticks: f64,
 }
 impl PlaybackState {
     pub(super) fn poll(&mut self) -> bool {
         let snapshot = self.player.snapshot();
+        let snapshot = if self.matches_snapshot(&snapshot) {
+            snapshot
+        } else {
+            // Failed loads never publish FILE_LOADED. Keep errors visible while
+            // withholding the previous material's position, EOF and video frame.
+            Playback {
+                error: if self.session.owner().is_some() {
+                    snapshot.error
+                } else {
+                    String::new()
+                },
+                ..Playback::default()
+            }
+        };
         let changed = clarora_gpui::media::controls_changed(&self.snapshot, &snapshot);
         self.snapshot = snapshot;
         changed
+    }
+    pub(super) fn matches_snapshot(&self, snapshot: &Playback) -> bool {
+        self.session
+            .path
+            .as_ref()
+            .is_some_and(|path| path.to_string_lossy() == snapshot.path)
+            && self
+                .load_after
+                .is_none_or(|revision| snapshot.load_revision > revision)
+    }
+    pub(super) fn activate(&mut self, owner: PlaybackOwner, path: PathBuf, mode: PlaybackMode) {
+        self.player.clear_sentence_repeat();
+        self.player.set("loop-file", "no");
+        self.session.claim(owner, path, mode);
+        self.load_after = None;
+        self.snapshot = Playback::default();
+    }
+    pub(super) fn open(
+        &mut self,
+        owner: PlaybackOwner,
+        path: PathBuf,
+        start: f64,
+        end: f64,
+        paused: bool,
+        mode: PlaybackMode,
+    ) {
+        self.activate(owner, path.clone(), mode);
+        self.load_after = Some(self.player.snapshot().load_revision);
+        self.player.open_range(&path, start, end, paused);
+    }
+    pub(super) fn preload_card(&mut self, index: usize, path: &Path, start: f64, end: f64) {
+        self.preloaded_index = Some(index);
+        self.preloaded_after = Some(self.preloader.snapshot().load_revision);
+        self.preloader.open_range(path, start, end, true);
+    }
+    pub(super) fn play_preloaded(&mut self, owner: PlaybackOwner, path: PathBuf) {
+        self.activate(owner, path, PlaybackMode::Normal);
+        std::mem::swap(&mut self.player, &mut self.preloader);
+        self.load_after = self.preloaded_after.take();
+        self.preloader.set_video_target(0, 0, false);
+        self.preloader.set("pause", "yes");
+        self.player.set("volume", self.volume);
+        self.player.set("speed", self.rate);
+        self.player.set("pause", "no");
+    }
+    pub(super) fn release(&mut self) {
+        self.player.clear_sentence_repeat();
+        self.player.set("loop-file", "no");
+        self.player.set("pause", "yes");
+        self.preloader.set("pause", "yes");
+        self.preloaded_index = None;
+        self.preloaded_after = None;
+        self.session.release();
+        self.load_after = None;
+        self.snapshot = Playback::default();
     }
     pub(super) fn new() -> Self {
         Self {
@@ -206,14 +273,12 @@ impl PlaybackState {
             preloader: Player::new(),
             preloaded_index: None,
             snapshot: Playback::default(),
-            path: None,
-            loop_a: None,
-            loop_b: None,
-            repeat: 0,
+            load_after: None,
+            preloaded_after: None,
+            session: Default::default(),
             rate: 1.,
             volume: 100.,
             volume_before_mute: 100.,
-            end_handled: false,
             stats_ticks: 0.,
         }
     }

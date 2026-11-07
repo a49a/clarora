@@ -538,8 +538,9 @@ impl Probe {
                 if !state.paused
                     || (state.position - 4.).abs() > 0.03
                     || app
-                        .video
-                        .sentence_repeat
+                        .media
+                        .session
+                        .video_sentence()
                         .as_ref()
                         .is_none_or(|session| session.request_id != repeat.request_id)
                 {

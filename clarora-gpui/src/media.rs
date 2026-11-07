@@ -1034,7 +1034,24 @@ fn worker(
             (api.option)(handle, CString::new(k)?.as_ptr(), CString::new(v)?.as_ptr());
         }
         if !audio_device {
-            (api.option)(handle, c"ao".as_ptr(), c"null".as_ptr());
+            // The null sink's default 200ms buffer shifts paused time-pos and
+            // prevents precise seek confirmation. Keep its clock near the
+            // decoded position; a smaller outburst also works with 8kHz WAV.
+            // Physical audio devices retain their normal buffering.
+            for (key, value) in [
+                ("ao", "null"),
+                ("ao-null-buffer", "0.02"),
+                ("ao-null-outburst", "64"),
+            ] {
+                ensure!(
+                    (api.option)(
+                        handle,
+                        CString::new(key)?.as_ptr(),
+                        CString::new(value)?.as_ptr()
+                    ) >= 0,
+                    "无声播放器设置失败：{key}"
+                );
+            }
         }
         ensure!((api.initialize)(handle) >= 0, "libmpv 初始化失败");
         (api.wakeup_callback)(handle, Some(wake_core), Arc::as_ptr(&core_wake) as *mut _);

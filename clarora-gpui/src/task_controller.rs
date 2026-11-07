@@ -263,8 +263,12 @@ impl AppView {
                                     self.report_status(FeedbackKind::Info, "已取消分P下载".into());
                                 } else {
                                     series.parts[index].path = Some(path.clone());
-                                    let activate =
-                                        self.page == "video" && self.media.path == origin;
+                                    // A downloaded part may complete after leaving and returning
+                                    // to the same file, or after selecting another empty source.
+                                    // Only the initiating playback generation may activate it;
+                                    // the shared cache and collection still keep completed files.
+                                    let activate = self.page == "video"
+                                        && self.media.session.revision() == origin;
                                     if activate {
                                         series.current = Some(index);
                                     }
@@ -321,7 +325,7 @@ impl AppView {
                                         a.start == b.start && a.end == b.end && a.text == b.text
                                     });
                                 if self.page == "video"
-                                    && self.media.path.as_ref() == Some(&video)
+                                    && self.media.session.path.as_ref() == Some(&video)
                                     && same_source
                                 {
                                     self.video.set_cues(cues);
