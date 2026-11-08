@@ -35,7 +35,7 @@ impl AppView {
             Request::Kokoro => "下载模型 · Kokoro 中英语音".into(),
         };
         let success = match &request {
-            Request::Asr(_) => "模型已安装。可在设置中选用并保存；当前学习内容保持不变。",
+            Request::Asr(_) => "模型已安装。可在设置中点击「选用」立即启用。",
             Request::Kokoro => "Kokoro 中英模型已安装，可离线生成音频；当前学习内容保持不变。",
         };
         let lib = self.lib.clone();

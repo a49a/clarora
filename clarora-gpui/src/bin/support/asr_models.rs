@@ -117,15 +117,7 @@ pub fn worker(root: &Path) -> Result<()> {
             events.iter().any(|p| p.phase == "文件完成"),
             "download completion absent"
         );
-        ai::save_shared(
-            &lib,
-            ai::Config {
-                engine: "local".into(),
-                local_model: id.into(),
-                ..Default::default()
-            },
-            "",
-        )?;
+        ai::select_local_model(&lib, id)?;
         let reopened = Library::open(lib.root.clone())?;
         let saved = ai::load_config(&reopened)?;
         ensure!(

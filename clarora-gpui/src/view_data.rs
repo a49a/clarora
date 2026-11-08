@@ -81,21 +81,8 @@ impl State {
                 .collect();
             let asr_models = ai::LOCAL_MODELS
                 .iter()
-                .map(|model| model.id)
-                .filter(|model| {
-                    if *model == "sense-voice" {
-                        lib.root
-                            .join("models/sense-voice/model.int8.onnx")
-                            .is_file()
-                            && lib.root.join("models/sense-voice/tokens.txt").is_file()
-                    } else {
-                        lib.root
-                            .join("models")
-                            .join(format!("ggml-{model}.bin"))
-                            .is_file()
-                    }
-                })
-                .map(str::to_string)
+                .filter(|model| model.installed(lib))
+                .map(|model| model.id.to_string())
                 .collect();
             Ok(Self {
                 speaking,

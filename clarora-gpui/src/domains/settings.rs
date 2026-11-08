@@ -125,13 +125,16 @@ impl Command {
             }
 
             Command::SelectModel(model) => {
-                let name = model.clone();
+                ensure!(
+                    !app.tasks.foreground.is_running(),
+                    "请先完成或取消当前任务再切换模型"
+                );
+                let config =
+                    ai::select_local_model(&app.lib, &model).context("无法保存模型选择")?;
                 app.set("local_model", model, window, cx);
                 app.set("engine", "local", window, cx);
-                app.report_status(
-                    FeedbackKind::Info,
-                    format!("已选择 {name} · 待保存；点击「保存 AI 与学习设置」后生效"),
-                );
+                app.data.saved_ai = Some(config);
+                app.refresh_view_data();
             }
 
             Command::Models(model) => {

@@ -76,32 +76,27 @@ impl AppView {
                         .child(div().text_sm().child("旧密钥还在钥匙串中。可重新输入后保存，或主动导入一次。"))
                         .child(self.button("import-legacy-credentials","导入旧钥匙串密钥（可能需一次授权）",Action::ImportLegacyCredentials,cx)
                             .disabled(credential_locked))));
-        // Read only the saved configuration, without accessing the credential store
-        // during rendering. Keep draft selection distinct from the active engine.
+        // The catalog reflects the saved configuration, without accessing credentials.
         let saved_ai = self.data.saved_ai.as_ref();
-        let draft_model = self.value("local_model", cx);
-        let draft_local = self.value("engine", cx) == "local";
         let active_model = saved_ai
-            .as_ref()
             .filter(|c| c.engine == "local")
             .map(|c| c.local_model.as_str());
-        let selection_summary = match saved_ai.as_ref() {
+        let selection_summary = match saved_ai {
             Some(c) if c.engine == "local" => {
                 format!("当前生效：本地模型 {}", c.local_model)
             }
             Some(_) => "当前生效：远端转写 API".into(),
             None => "无法读取已保存的模型设置".into(),
         };
-        let pending = draft_local && active_model != Some(draft_model.as_str());
         let mut models = panel(cx)
                     .child(div().text_lg().child("语音转写与本地模型"))
                     .child("用于音频、视频字幕及跟读转写。下载后可离线识别；聊天与图片识字仍使用 API。")
                     .child("中文视频请选择多语言 Whisper 或 SenseVoice；.en 仅英语。体积为下载量，不是运行内存。")
-                    .child("操作：下载 → 选用 → 点击下方「保存 AI 与学习设置」。已下载仅表示文件存在。 ")
+                    .child("已下载的模型，点击「选用」后立即生效。")
                     .child(div().font_weight(FontWeight::SEMIBOLD).child(selection_summary))
-                    .when(pending, |v| v.child(div().text_color(cx.theme().primary).child(format!("已选择：{draft_model} · 待保存，保存后生效"))))
+                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("手动修改转写引擎或模型 ID 时，请在下方保存。"))
                     .child(self.field("engine", "转写引擎：local = 本机；compatible = 远端 API"))
-                    .child(self.field("local_model", "本地语音模型 ID（local 引擎使用，选用后需保存）"));
+                    .child(self.field("local_model", "本地语音模型 ID"));
         if let Some(progress) = &self.tasks.models.progress {
             models = models.child(
                 div()
@@ -141,19 +136,18 @@ impl AppView {
         for spec in ai::LOCAL_MODELS {
             let (model, name, details) = (spec.id, spec.name, spec.details);
             let present = self.data.asr_models.contains(model);
-            let selected = draft_local && draft_model == model;
             let active = active_model == Some(model);
             models = models.child(
                 div()
                     .p_3()
                     .rounded_lg()
                     .border_1()
-                    .border_color(if selected {
+                    .border_color(if active {
                         cx.theme().primary
                     } else {
                         cx.theme().border
                     })
-                    .when(selected, |v| v.bg(cx.theme().accent))
+                    .when(active, |v| v.bg(cx.theme().accent))
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -163,14 +157,6 @@ impl AppView {
                                 .text_sm()
                                 .text_color(cx.theme().primary)
                                 .child("✓ 当前生效"),
-                        )
-                    })
-                    .when(selected && !active, |v| {
-                        v.child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().primary)
-                                .child("✓ 已选择 · 待保存"),
                         )
                     })
                     .child(
@@ -199,22 +185,12 @@ impl AppView {
                             .child(
                                 self.button(
                                     format!("select-model-{model}"),
-                                    if selected {
-                                        if active {
-                                            "✓ 已选用"
-                                        } else {
-                                            "✓ 已选择 · 待保存"
-                                        }
-                                    } else {
-                                        "选用"
-                                    },
+                                    if active { "使用中" } else { "选用" },
                                     Action::SelectModel(model.into()),
                                     cx,
                                 )
-                                .selected(selected)
-                                .disabled(
-                                    !present || self.tasks.foreground.is_running() || selected,
-                                ),
+                                .selected(active)
+                                .disabled(!present || self.tasks.foreground.is_running() || active),
                             ),
                     ),
             );
@@ -222,7 +198,7 @@ impl AppView {
         models = models
                     .child("运行要求：FFmpeg；Whisper 需 clarora-asr 或 whisper-cli，SenseVoice 需 clarora-asr + sherpa-onnx。下载模型不会安装推理程序。")
                     .child("本机已实测 Whisper tiny.en；其余模型尚未完成真实推理验收。详细来源、文件路径和安装方法见项目说明文档。 ")
-                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("此按钮统一保存本页的 AI 与学习设置。"))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("此按钮保存手动填写的 AI 与学习设置。"))
                     .child(
                         self.button("save-asr-settings", "保存 AI 与学习设置", Action::SaveAi, cx)
                             .primary()

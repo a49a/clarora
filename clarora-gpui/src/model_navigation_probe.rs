@@ -354,6 +354,76 @@ impl Probe {
                     "model availability refresh retains the learning selection",
                     app,
                 );
+                ensure!(
+                    ai::load_config(&app.lib)?.engine == "compatible",
+                    "download activated the local model"
+                );
+                let mut saved = ai::load_config(&app.lib)?;
+                saved.asr_base_url = "https://legacy-asr.example.invalid/v1".into();
+                saved.asr_model = "legacy-asr".into();
+                ai::save(&app.lib, saved, "fixture-chat-key", "fixture-asr-key")?;
+                let mut before: Value = serde_json::from_str(&app.lib.setting("ai_config")?)?;
+                before["legacy_marker"] = json!("retain");
+                app.lib.set_setting("ai_config", &before.to_string())?;
+                app.set("base_url", "unsaved-api-draft", window, cx);
+                app.set("daily_limit", "123", window, cx);
+                let limit = app.lib.setting("daily_limit")?;
+
+                app.handle(Action::SelectModel("sense-voice".into()), window, cx);
+                ensure!(
+                    app.lib.setting("ai_config")? == before.to_string()
+                        && app.value("engine", cx) == "compatible",
+                    "unavailable model changed configuration or draft"
+                );
+                app.lib.db()?.execute_batch(
+                    "CREATE TRIGGER reject_model_selection BEFORE UPDATE ON app_settings
+                     WHEN NEW.key='ai_config' BEGIN SELECT RAISE(ABORT,'fixture write failure'); END;",
+                )?;
+                app.handle(Action::SelectModel("medium.en".into()), window, cx);
+                ensure!(
+                    app.lib.setting("ai_config")? == before.to_string()
+                        && app.value("engine", cx) == "compatible"
+                        && app
+                            .data
+                            .saved_ai
+                            .as_ref()
+                            .is_some_and(|c| c.engine == "compatible"),
+                    "failed write changed active model or draft"
+                );
+                app.lib
+                    .db()?
+                    .execute_batch("DROP TRIGGER reject_model_selection")?;
+                self.note(
+                    "unavailable model and write failure retain the active settings",
+                    app,
+                );
+
+                app.refresh_view_data();
+                app.handle(Action::SelectModel("medium.en".into()), window, cx);
+                before["engine"] = json!("local");
+                before["local_model"] = json!("medium.en");
+                let reopened = Library::open(app.lib.root.clone())?;
+                let (active, chat, asr) = ai::load(&reopened)?;
+                ensure!(
+                    serde_json::from_str::<Value>(&reopened.setting("ai_config")?)? == before
+                        && active.engine == "local"
+                        && active.local_model == "medium.en"
+                        && chat == "fixture-chat-key"
+                        && asr == "fixture-asr-key"
+                        && app.data.saved_ai.as_ref().is_some_and(|c| {
+                            c.engine == "local" && c.local_model == "medium.en"
+                        })
+                        && app.value("engine", cx) == "local"
+                        && app.value("local_model", cx) == "medium.en"
+                        && app.value("base_url", cx) == "unsaved-api-draft"
+                        && app.value("daily_limit", cx) == "123"
+                        && reopened.setting("daily_limit")? == limit,
+                    "selection did not immediately persist only the model and engine"
+                );
+                self.note(
+                    "model choice activates immediately and preserves other settings",
+                    app,
+                );
                 app.begin_scoped(
                     TaskScope::Application,
                     "与取消模型并行",
@@ -379,6 +449,13 @@ impl Probe {
                 if app.tasks.models.lane.is_running() {
                     return Ok(false);
                 }
+                ensure!(
+                    app.data
+                        .saved_ai
+                        .as_ref()
+                        .is_some_and(|c| { c.engine == "local" && c.local_model == "medium.en" }),
+                    "background refresh reverted the active model"
+                );
                 ensure!(
                     app.tasks
                         .models

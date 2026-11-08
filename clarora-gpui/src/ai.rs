@@ -5,6 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use base64::Engine;
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -19,6 +20,17 @@ pub struct LocalModel {
     pub name: &'static str,
     pub details: &'static str,
     pub language: &'static str,
+}
+impl LocalModel {
+    pub(crate) fn installed(&self, lib: &Library) -> bool {
+        let models = lib.root.join("models");
+        if self.id == "sense-voice" {
+            models.join("sense-voice/model.int8.onnx").is_file()
+                && models.join("sense-voice/tokens.txt").is_file()
+        } else {
+            models.join(format!("ggml-{}.bin", self.id)).is_file()
+        }
+    }
 }
 pub const LOCAL_MODELS: &[LocalModel] = &[
     LocalModel {
@@ -132,6 +144,35 @@ pub fn load_config(lib: &Library) -> Result<Config> {
         });
     }
     Ok(serde_json::from_str(&raw)?)
+}
+/// Change only the transcription choice in one SQLite transaction, without resolving secrets.
+pub fn select_local_model(lib: &Library, model: &str) -> Result<Config> {
+    let model = local_model(model).context("请选择支持的本地语音模型")?;
+    ensure!(model.installed(lib), "模型文件尚未下载或不完整");
+    let mut db = lib.db()?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT value FROM app_settings WHERE key='ai_config'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let mut stored = match raw.as_deref().filter(|raw| !raw.is_empty()) {
+        Some(raw) => serde_json::from_str(raw)?,
+        None => json!({}),
+    };
+    let fields = stored.as_object_mut().context("转写配置格式无效")?;
+    fields.insert("engine".into(), json!("local"));
+    fields.insert("local_model".into(), json!(model.id));
+    let config = serde_json::from_value(stored.clone())?;
+    tx.execute(
+        "INSERT INTO app_settings(key,value) VALUES('ai_config',?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![serde_json::to_string(&stored)?],
+    )?;
+    tx.commit()?;
+    Ok(config)
 }
 fn credential(lib: &Library, config: &Config, role: CredentialSource) -> Result<String> {
     if config.credential_id.is_empty() {
