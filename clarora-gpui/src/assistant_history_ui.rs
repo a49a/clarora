@@ -120,6 +120,12 @@ impl HistoryView {
             .flex_col()
             .gap_2()
             .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(reference.kind.label()),
+            )
+            .child(
                 TextView::html(
                     SharedString::from(key),
                     format!(
@@ -204,6 +210,7 @@ impl Render for HistoryView {
                 if let Some(text) = message["reference"].as_str().filter(|s| !s.is_empty()) {
                     refs.push(Reference {
                         text: assistant::plain_reference(text),
+                        ..Default::default()
                     });
                 }
             }

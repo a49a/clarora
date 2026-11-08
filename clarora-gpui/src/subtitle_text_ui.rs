@@ -70,6 +70,13 @@ impl State {
     pub fn selection_text(&self) -> String {
         self.selection.text()
     }
+    pub fn selection_matches(&self, key: &str, text: &str) -> bool {
+        self.selection
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.key == key)
+            && self.selection_text() == text
+    }
     pub fn selection_from_press(&self, press: Option<Point<Pixels>>) -> bool {
         self.selection.has_selection() && press.is_some_and(|p| p == self.press)
     }

@@ -90,10 +90,14 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         "新消息仍保存来源名称"
     );
     let cancel = process::cancel_token();
+    let subtitle_refs: Vec<Reference> = serde_json::from_value(json!([
+        {"kind":"selected_subtitle","text":first.text},
+        {"kind":"transcript_background","text":"The bread is baked fresh every morning.\nWe open at eight."}
+    ]))?;
     let reply = assistant::ask(
         &lib,
         "fresh 在这里是什么意思？",
-        &[first.clone()],
+        &subtitle_refs,
         &[],
         &cancel,
         |_| {},
@@ -105,6 +109,7 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
     ];
     let picture = Reference {
         text: "I baked fresh bread this morning.\n这是鼠标选取的作答。".into(),
+        ..Default::default()
     };
     let second = assistant::ask(
         &lib,
@@ -146,6 +151,17 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         requests[0]["model"] == "text-model" && requests[1]["model"] == "text-model",
         "模型选择错误"
     );
+    let content = requests[0]["messages"][1]["content"]
+        .as_str()
+        .unwrap_or_default();
+    ensure!(
+        content
+            == format!(
+                "fresh 在这里是什么意思？\n\n<reference kind=\"selected_subtitle\">\n{}\n</reference>\n\n<reference kind=\"transcript_background\">\nThe bread is baked fresh every morning.\nWe open at eight.\n</reference>",
+                first.text
+            ),
+        "发送内容没有区分所选字幕与完整背景"
+    );
     let serialized = requests[1].to_string();
     ensure!(
         serialized.contains("fresh every morning") && serialized.contains("I baked fresh bread"),
@@ -164,7 +180,10 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         assistant::messages(
             "文件名是我选取的内容",
-            &[Reference { text: TITLE.into() }],
+            &[Reference {
+                text: TITLE.into(),
+                ..Default::default()
+            }],
             &[]
         )?
         .last()
@@ -185,6 +204,7 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         assistant::validate(&[Reference {
             text: "中".repeat(120001),
+            ..Default::default()
         }])
         .is_err(),
         "过长引用静默截断"

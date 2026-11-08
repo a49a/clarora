@@ -1,5 +1,6 @@
 //! Assistant commands own their action effects and execution.
 use super::*;
+use clarora_gpui::assistant::{Reference, ReferenceKind, plain_reference};
 pub(super) enum Command {
     Assistant,
     Chat,
@@ -40,17 +41,48 @@ impl Command {
             }
 
             Command::AssistantQuote(reference) => {
-                app.add_assistant_reference(reference, window, cx)?;
+                if reference.kind == ReferenceKind::SelectedSubtitle {
+                    let key = match app.page.as_str() {
+                        "video" => app
+                            .video
+                            .path
+                            .as_ref()
+                            .context("请先打开视频")?
+                            .to_string_lossy(),
+                        "listening" if !app.audio.blind.enabled => {
+                            app.audio.current_id.as_str().into()
+                        }
+                        _ => anyhow::bail!("请重新选择要提问的字幕"),
+                    };
+                    ensure!(
+                        app.subtitle_text
+                            .borrow()
+                            .selection_matches(&key, &reference.text),
+                        "字幕选区已变化，请重新选择"
+                    );
+                    app.add_subtitle_question(reference.text, window, cx)?;
+                } else {
+                    app.add_assistant_reference(reference, window, cx)?;
+                }
             }
 
             Command::AssistantCurrent => {
                 if app.page == "video" {
                     app.prepare_video_material(video_qa::Scope::Current)?;
                 }
-                let reference = clarora_gpui::assistant::Reference {
-                    text: clarora_gpui::assistant::plain_reference(&app.reference(cx)),
-                };
-                app.add_assistant_reference(reference, window, cx)?;
+                let text = plain_reference(&app.reference(cx));
+                if app.page == "video" {
+                    app.add_subtitle_question(text, window, cx)?;
+                } else {
+                    app.add_assistant_reference(
+                        Reference {
+                            text,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )?;
+                }
             }
 
             Command::AssistantRemove(index) => {

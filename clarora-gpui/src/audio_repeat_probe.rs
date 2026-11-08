@@ -591,6 +591,8 @@ impl Probe {
         }
         match self.stage {
             0 => {
+                app.media.player = Player::without_audio_device();
+                app.media.preloader = Player::without_audio_device();
                 app.handle(Action::Page("listening".into()), window, cx);
             }
             1 => {

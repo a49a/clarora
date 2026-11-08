@@ -497,6 +497,7 @@ impl Probe {
                 app.add_assistant_reference(
                     clarora_gpui::assistant::Reference {
                         text: "The bread is baked fresh every morning.".into(),
+                        ..Default::default()
                     },
                     window,
                     cx,

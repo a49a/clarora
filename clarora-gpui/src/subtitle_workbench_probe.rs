@@ -617,6 +617,33 @@ impl Probe {
                     "composer is not ready for user input"
                 );
                 app.set("question", DRAFT, window, cx);
+                app.handle(Action::VideoAsk(video_qa::Scope::Cue(0)), window, cx);
+                let all_cues = cues(false);
+                let transcript = format!("{}\n{}", all_cues[0].text, all_cues[1].text);
+                ensure!(
+                    app.assistant.references.len() == 2
+                        && app.assistant.references[0].text == all_cues[0].text
+                        && app.assistant.references[1].text == transcript
+                        && app.value("question", cx) == DRAFT,
+                    "video cue quote did not keep the exact sentence and full background"
+                );
+                app.handle(Action::VideoAsk(video_qa::Scope::Cue(0)), window, cx);
+                ensure!(
+                    app.assistant.references.len() == 2,
+                    "video quote was duplicated"
+                );
+                self.no_request(app)?;
+                app.handle(Action::AssistantRemove(1), window, cx);
+                ensure!(
+                    app.assistant.references.len() == 1
+                        && app.assistant.references[0].text == all_cues[0].text,
+                    "removing the background also removed the selected sentence"
+                );
+                app.handle(Action::AssistantRemove(0), window, cx);
+                self.note(
+                    "single video cue attaches removable full context without sending",
+                    app,
+                )?;
                 // Match a real sequence: enter a draft in the visible composer,
                 // close the sidebar, then quote the complete English transcript.
                 app.handle(Action::Assistant, window, cx);
@@ -716,11 +743,13 @@ impl Probe {
                 self.advance();
             }
             8 => {
-                app.video.set_cues(vec![Cue {
+                let mut oversized = cues(true);
+                oversized.push(Cue {
                     start: 0.,
                     end: 4.,
                     text: "Longword ".repeat(15010),
-                }]);
+                });
+                app.video.set_cues(oversized);
                 ensure!(
                     app.video.transcript.text.chars().count() > 120000,
                     "oversize fixture too small"
@@ -736,6 +765,19 @@ impl Probe {
                     "oversized transcript is rejected without truncating or changing the draft",
                     app,
                 )?;
+                app.handle(Action::VideoAsk(video_qa::Scope::Cue(0)), window, cx);
+                ensure!(
+                    app.assistant.references.len() == refs.len() + 1
+                        && app.assistant.references.starts_with(&refs)
+                        && app.assistant.references.last().unwrap().text == cues(true)[0].text,
+                    "over-limit background did not fall back to the selected subtitle"
+                );
+                app.handle(Action::AssistantRemove(refs.len()), window, cx);
+                self.no_request(app)?;
+                self.note(
+                    "over-limit background leaves the selected subtitle available",
+                    app,
+                )?;
                 self.advance();
             }
             9 => {
@@ -744,12 +786,15 @@ impl Probe {
                     self.reference.clone().unwrap(),
                     clarora_gpui::assistant::Reference {
                         text: "Reference two.".into(),
+                        ..Default::default()
                     },
                     clarora_gpui::assistant::Reference {
                         text: "Reference three.".into(),
+                        ..Default::default()
                     },
                     clarora_gpui::assistant::Reference {
                         text: "Reference four.".into(),
+                        ..Default::default()
                     },
                 ];
                 app.persist_assistant_references()?;

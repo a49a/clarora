@@ -65,7 +65,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
                 "audio ordinary subtitle single click still seeks after double-click copy",
                 "audio current card drag selects words without seeking or leaving triple repeat",
                 "audio selection floating copy button writes exact OS clipboard text",
-                "audio current card ask AI attaches only selected words without sending",
+                "audio current card ask AI attaches selected words and full context without sending",
                 "audio transcript selects across cues Chinese and emoji exactly",
                 "audio subtitle native keyboard copy preserves bilingual cross-cue selection",
                 "audio transcript ask AI preserves exact multilingual selection",

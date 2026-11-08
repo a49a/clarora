@@ -221,14 +221,19 @@ impl Flow {
         )
     }
     fn assert_quote(&self, app: &AppView) -> Result<()> {
+        let transcript = app
+            .audio
+            .cues
+            .iter()
+            .map(|cue| cue.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         ensure!(
             app.assistant_open
-                && app
-                    .assistant
-                    .references
-                    .last()
-                    .is_some_and(|r| r.text == self.expected),
-            "audio selection not attached to assistant exactly"
+                && app.assistant.references.len() == 2
+                && app.assistant.references[0].text == self.expected
+                && app.assistant.references[1].text == transcript,
+            "audio selection and full transcript were not attached exactly"
         );
         ensure!(
             !app.tasks.foreground.is_running() && !app.chat.running,
@@ -339,7 +344,8 @@ impl Flow {
             }
             6 => {
                 self.assert_quote(app)?;
-                cases.push(json!({"case":"audio current card ask AI attaches only selected words without sending","passed":true}));
+                cases.push(json!({"case":"audio current card ask AI attaches selected words and full context without sending","passed":true}));
+                app.handle(Action::AssistantRemove(1), window, cx);
                 app.handle(Action::AssistantRemove(0), window, cx);
                 app.handle(Action::Assistant, window, cx);
                 if app.audio.show_current {
@@ -376,6 +382,7 @@ impl Flow {
             10 => {
                 self.assert_quote(app)?;
                 cases.push(json!({"case":"audio transcript ask AI preserves exact multilingual selection","passed":true}));
+                app.handle(Action::AssistantRemove(1), window, cx);
                 app.handle(Action::AssistantRemove(0), window, cx);
                 app.handle(Action::Assistant, window, cx);
                 app.handle(Action::AudioBlind(true), window, cx);
@@ -600,10 +607,15 @@ impl Flow {
                 }
                 app.media.player.set("pause", "yes");
                 app.media.player.command(["seek", "0.4", "absolute+exact"]);
-                Self::draw(window, cx);
+                self.focus_drawn = false;
             }
             24 => {
                 if !app.media.snapshot.paused || (app.media.snapshot.position - 0.4).abs() > 0.05 {
+                    return Ok(false);
+                }
+                if !self.focus_drawn {
+                    self.focus_drawn = true;
+                    Self::draw(window, cx);
                     return Ok(false);
                 }
                 self.double_click_word(app, Surface::Focus, window, cx, observations)?;

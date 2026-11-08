@@ -1,6 +1,6 @@
 //! App-wide sidecar: explicit references, readable transcript and a fixed composer.
 use super::*;
-use clarora_gpui::assistant::{self, Reference};
+use clarora_gpui::assistant::{self, Reference, ReferenceKind};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -103,12 +103,65 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
+        self.add_assistant_references(reference, None, window, cx)
+    }
+    pub(super) fn add_subtitle_question(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        let cues = match self.page.as_str() {
+            "video" => &self.video.cues,
+            "listening" if !self.audio.blind.enabled => &self.audio.cues,
+            _ => anyhow::bail!("请在音视频字幕中选择要提问的文字"),
+        };
+        let transcript = cues
+            .iter()
+            .map(|cue| cue.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.add_assistant_references(
+            Reference {
+                text,
+                kind: ReferenceKind::SelectedSubtitle,
+            },
+            Some(transcript),
+            window,
+            cx,
+        )
+    }
+    fn add_assistant_references(
+        &mut self,
+        reference: Reference,
+        transcript: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
         ensure!(!reference.text.trim().is_empty(), "请先用鼠标选取文字");
         let mut next = self.assistant.references.clone();
         if !next.contains(&reference) {
             next.push(reference);
         }
         assistant::validate(&next)?;
+        let mut notice = None;
+        if let Some(text) = transcript {
+            if text.trim().is_empty() {
+                notice = Some("已添加选中字幕。生成或导入完整字幕后可附上全文背景。".into());
+            } else {
+                let background = Reference {
+                    text,
+                    kind: ReferenceKind::TranscriptBackground,
+                };
+                if !next.contains(&background) {
+                    next.push(background);
+                    if let Err(error) = assistant::validate(&next) {
+                        next.pop();
+                        notice = Some(format!("已添加选中字幕，全文背景未加入。{error}"));
+                    }
+                }
+            }
+        }
         self.lib
             .set_setting("assistant_reference_draft", &serde_json::to_string(&next)?)?;
         self.assistant.references = next;
@@ -117,6 +170,9 @@ impl AppView {
         self.assistant.offer = None;
         self.open_assistant(window, cx);
         self.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
+        if let Some(notice) = notice {
+            self.report_status(FeedbackKind::Info, notice);
+        }
         Ok(())
     }
     /// Called after an actual mouse drag, before another click can clear TextView's
@@ -146,7 +202,13 @@ impl AppView {
             String::new()
         };
         if matches!(self.page.as_str(), "video" | "listening") && !selected.is_empty() {
-            self.assistant.offer = Some((Reference { text: selected }, position));
+            self.assistant.offer = Some((
+                Reference {
+                    text: selected,
+                    kind: ReferenceKind::SelectedSubtitle,
+                },
+                position,
+            ));
             cx.notify();
             return;
         }
@@ -181,8 +243,13 @@ impl AppView {
                     {
                         let _ = view.update(cx, |this, cx| {
                             if this.page == page {
-                                this.assistant.offer =
-                                    Some((Reference { text: selected }, position));
+                                this.assistant.offer = Some((
+                                    Reference {
+                                        text: selected,
+                                        ..Default::default()
+                                    },
+                                    position,
+                                ));
                                 cx.notify();
                             }
                         });
@@ -318,7 +385,8 @@ impl AppView {
                     .items_center()
                     .gap_2()
                     .child(div().flex_1().min_w_0().text_xs().child(format!(
-                        "引用 {} · {} 字符",
+                        "{} {} · {} 字符",
+                        reference.kind.label(),
                         i + 1,
                         reference.text.chars().count()
                     )))

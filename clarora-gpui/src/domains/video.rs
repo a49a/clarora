@@ -359,15 +359,19 @@ impl Command {
                     app.media.player.set("pause", "yes");
                 }
                 let material = app.video.material.as_ref().context("请先选取字幕")?;
-                let reference = clarora_gpui::assistant::Reference {
-                    text: clarora_gpui::assistant::plain_reference(&material.text),
-                };
-                app.add_assistant_reference(reference, window, cx)?;
-                app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
-                app.report_status(
-                    FeedbackKind::Info,
-                    "已引用字幕；输入问题后发送给设置中的聊天模型".into(),
-                );
+                let text = clarora_gpui::assistant::plain_reference(&material.text);
+                if scope == video_qa::Scope::All {
+                    app.add_assistant_reference(
+                        clarora_gpui::assistant::Reference {
+                            text,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )?;
+                } else {
+                    app.add_subtitle_question(text, window, cx)?;
+                }
             }
 
             Command::VideoTranscribe => app.begin_background_subtitles(false)?,
@@ -594,6 +598,7 @@ impl Command {
                 app.add_assistant_reference(
                     clarora_gpui::assistant::Reference {
                         text: app.video.transcript.text.clone(),
+                        ..Default::default()
                     },
                     window,
                     cx,
