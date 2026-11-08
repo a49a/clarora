@@ -56,6 +56,7 @@ pub(super) struct Probe {
     clipboard: Option<ClipboardItem>,
     clipboard_touched: bool,
     flush: Option<mpsc::Receiver<std::result::Result<(), String>>>,
+    view_clicked: Option<Instant>,
 }
 impl Probe {
     pub(super) fn new(out: &Path) -> Self {
@@ -76,6 +77,7 @@ impl Probe {
             clipboard: None,
             clipboard_touched: false,
             flush: None,
+            view_clicked: None,
         }
     }
     fn sample(
@@ -114,6 +116,33 @@ impl Probe {
     fn note(&mut self, name: &str, details: Value) {
         self.cases
             .push(json!({"case":name,"passed":true,"details":details}));
+    }
+    fn click_answer_view(
+        &mut self,
+        app: &AppView,
+        conversation: bool,
+        window: &Window,
+        cx: &mut Context<AppView>,
+    ) -> Result<()> {
+        let controls = app
+            .assistant
+            .history_view
+            .as_ref()
+            .context("history view")?
+            .read(cx)
+            .mode_bounds()
+            .context("answer view controls not laid out")?;
+        let at = controls[usize::from(conversation)].center();
+        native_probe_input::send(
+            window,
+            cx,
+            vec![
+                native_probe_input::MouseEvent::Down(at),
+                native_probe_input::MouseEvent::Up(at),
+            ],
+        )?;
+        self.view_clicked = Some(Instant::now());
+        Ok(())
     }
     fn report(&self, passed: bool, error: Option<String>) -> Result<()> {
         let samples = self.samples.borrow();
@@ -163,6 +192,15 @@ impl Probe {
             app.status
         );
         if self.samples.borrow().len() < self.requested {
+            return Ok(false);
+        }
+        if let Some(clicked) = self.view_clicked {
+            // The native helper delivers down/up asynchronously.
+            if clicked.elapsed() < Duration::from_millis(120) {
+                return Ok(false);
+            }
+            self.view_clicked = None;
+            self.sample("answer_view_after_click", Edit::Frame, app, window, cx);
             return Ok(false);
         }
         match self.stage {
@@ -395,6 +433,108 @@ impl Probe {
                     "asynchronous draft flush saves exact editor contents",
                     json!({"bytes":expected.len()}),
                 );
+                app.chat.history = vec![
+                    json!({"role":"user","content":"Previous question"}),
+                    json!({"role":"assistant","content":fixture()}),
+                    json!({"role":"user","content":"Current question"}),
+                    json!({"role":"assistant","content":fixture()}),
+                ];
+                app.sync_assistant_history(cx);
+                self.sample("current_answer_layout", Edit::Frame, app, window, cx);
+                self.stage = 10;
+            }
+            10 => {
+                ensure!(
+                    app.assistant.scroll.bounds_for_item(0).is_some()
+                        && app.assistant.scroll.bounds_for_item(1).is_none()
+                        && app.assistant.scroll.offset().y == px(0.),
+                    "default viewport did not isolate the current turn at its start"
+                );
+                self.note(
+                    "default viewport isolates the current question and answer",
+                    json!({}),
+                );
+                self.click_answer_view(app, true, window, cx)?;
+                self.stage = 11;
+            }
+            11 => {
+                ensure!(
+                    app.assistant.scroll.bounds_for_item(1).is_some(),
+                    "conversation did not show both turns"
+                );
+                self.click_answer_view(app, false, window, cx)?;
+                self.stage = 12;
+            }
+            12 => {
+                ensure!(
+                    app.assistant.scroll.bounds_for_item(1).is_none(),
+                    "current-answer control did not isolate the turn"
+                );
+                app.handle(Action::AssistantTurnReference(2), window, cx);
+                app.assistant.scroll.set_offset(point(px(0.), px(-150.)));
+                self.click_answer_view(app, false, window, cx)?;
+                self.stage = 13;
+            }
+            13 => {
+                ensure!(
+                    app.assistant.scroll.offset().y == px(0.)
+                        && app.assistant.expanded_turn.is_none(),
+                    "current-answer control did not return to the start"
+                );
+                self.note(
+                    "native controls switch views and return to the answer start",
+                    json!({}),
+                );
+                self.click_answer_view(app, true, window, cx)?;
+                self.stage = 14;
+            }
+            14 => {
+                ensure!(
+                    app.assistant.scroll.bounds_for_item(1).is_some(),
+                    "conversation did not reopen"
+                );
+                app.assistant.pending = Some(("New question".into(), vec![]));
+                app.chat.output = fixture();
+                app.chat.begin_request();
+                app.sync_assistant_history(cx);
+                self.sample("stream_current_answer", Edit::Frame, app, window, cx);
+                self.stage = 15;
+            }
+            15 => {
+                ensure!(
+                    app.assistant.scroll.bounds_for_item(1).is_none()
+                        && app.assistant.scroll.offset().y == px(0.),
+                    "new request did not lock onto its own answer"
+                );
+                app.assistant.scroll.set_offset(point(px(0.), px(-150.)));
+                app.chat.output.push_str("\n\nMore streamed text.");
+                app.sync_assistant_history(cx);
+                self.sample("more_streamed_answer", Edit::Frame, app, window, cx);
+                self.stage = 16;
+            }
+            16 => {
+                ensure!(
+                    app.assistant.scroll.offset().y == px(-150.),
+                    "streaming changed reading position"
+                );
+                let request = app.chat.current_request().context("streaming request")?;
+                app.chat.finish_request(&request);
+                app.assistant.pending = None;
+                let answer = app.chat.output.clone();
+                app.chat.history.extend([
+                    json!({"role":"user","content":"New question"}),
+                    json!({"role":"assistant","content":answer}),
+                ]);
+                app.sync_assistant_history(cx);
+                self.sample("answer_persisted", Edit::Frame, app, window, cx);
+                self.stage = 17;
+            }
+            17 => {
+                ensure!(
+                    app.assistant.scroll.offset().y == px(-150.),
+                    "completion changed reading position"
+                );
+                self.note("new request focuses its own answer and keeps scroll through streaming and completion", json!({"offset_px":-150}));
                 self.report(true, None)?;
                 return Ok(true);
             }

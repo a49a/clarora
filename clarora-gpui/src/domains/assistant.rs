@@ -203,7 +203,7 @@ impl Command {
                 if global {
                     app.assistant.pending = Some((question.clone(), references.clone()));
                     app.assistant.error.clear();
-                    app.assistant.scroll.scroll_to_bottom();
+                    app.assistant.expanded_turn = None;
                 }
                 let request = app.chat.begin_request();
                 app.begin_chat_task(if global {TaskScope::Application}else{TaskScope::Material},"AI 正在回答…", request.clone(), move |lib, cancel, tx| {

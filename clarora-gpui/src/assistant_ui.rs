@@ -17,7 +17,7 @@ pub(super) struct State {
     pub sessions_open: bool,
     pub wide: bool,
     pub scroll: ScrollHandle,
-    history_view: Option<Entity<super::assistant_history_ui::HistoryView>>,
+    pub(super) history_view: Option<Entity<super::assistant_history_ui::HistoryView>>,
     pub press: Option<Point<Pixels>>,
     pub dragging: bool,
     pub offer: Option<(Reference, Point<Pixels>)>,
