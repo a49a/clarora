@@ -208,6 +208,19 @@ impl AppView {
                     cx.notify();
                     return false;
                 }
+                if self.timer.active_round() && self.timer.is_running() {
+                    if let Err(error) =
+                        self.timer
+                            .interrupt(&self.lib, focus_timer::now_ms(), false)
+                    {
+                        self.report_status(
+                            FeedbackKind::Error,
+                            format!("专注进度保存失败：{error:#}"),
+                        );
+                        cx.notify();
+                        return false;
+                    }
+                }
                 #[cfg(debug_assertions)]
                 self.diagnostic_closing(window, cx);
                 window.remove_window();

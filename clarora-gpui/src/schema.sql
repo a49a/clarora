@@ -14,3 +14,13 @@ CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NU
 CREATE TABLE IF NOT EXISTS discover_favorites (key TEXT PRIMARY KEY, payload TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS local_credentials (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS focus_sessions (
+    id TEXT PRIMARY KEY,
+    ended_ms INTEGER NOT NULL,
+    goal_ms INTEGER NOT NULL,
+    actual_ms INTEGER NOT NULL,
+    distractions INTEGER NOT NULL,
+    fatigue INTEGER CHECK (fatigue BETWEEN 1 AND 3),
+    review_pending INTEGER NOT NULL DEFAULT 1
+);

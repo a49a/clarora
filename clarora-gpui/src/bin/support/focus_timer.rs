@@ -1,290 +1,205 @@
-//! SQLite/process restart workflows; the UI uses this same durable timer controller.
+//! Process restart, real SQLite and deterministic clock coverage for flexible focus.
 use anyhow::{Result, ensure};
 use clarora_gpui::{
     data::Library,
-    focus_timer::{KEY, Timer, Toggle},
+    focus_timer::{Event, KEY, Recommendation, Timer, Toggle},
 };
 use serde_json::{Value, json};
 use std::{fs, path::Path, time::Duration};
 
+const T: u64 = 1_800_000_000_000;
+const MINUTE: u64 = 60_000;
+
 pub fn worker(root: &Path) -> Result<()> {
     let lib = Library::open(root.to_path_buf())?;
-    let mut timer = Timer::load(&lib, 1_800_000_000_000)?.timer;
-    timer.start(&lib, 1_800_000_000_000, 900)?;
-    // No view shutdown hook or destructor may be necessary to preserve the timer.
+    let mut timer = Timer::load(&lib, T)?.timer;
+    timer.toggle(&lib, T)?;
+    timer.tick(&lib, T + 137_500)?;
     std::process::exit(0);
 }
-fn count(lib: &Library) -> Result<f64> {
-    Ok(lib
-        .list("study_stats")?
-        .iter()
-        .map(|r| r["pomodoro_count"].as_f64().unwrap_or(0.))
-        .sum())
+
+fn count(lib: &Library) -> Result<i64> {
+    Ok(lib.db()?.query_row(
+        "SELECT COALESCE(SUM(pomodoro_count),0) FROM study_stats",
+        [],
+        |r| r.get(0),
+    )?)
 }
+
 pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     let root = root.join("focus-timer");
     fs::create_dir_all(&root)?;
-    let dbroot = root.join("restart");
-    let t = 1_800_000_000_000u64;
+    let restart = root.join("restart");
     clarora_gpui::process::run(
         &std::env::current_exe()?,
         &[
-            dbroot.to_string_lossy().into_owned(),
+            restart.to_string_lossy().into_owned(),
             "--focus-timer-worker".into(),
         ],
         &clarora_gpui::process::cancel_token(),
         Duration::from_secs(8),
     )?;
-    let lib = Library::open(dbroot.clone())?;
+    let lib = Library::open(restart)?;
     let mut cases = vec![];
-    let mut timer = Timer::load(&lib, t + 137_500)?.timer;
+    let mut timer = Timer::load(&lib, T + 86_400_000)?.timer;
     ensure!(
-        timer.is_running() && timer.focus() && timer.remaining_seconds(t + 137_500) == 763,
-        "重开未恢复900秒倒计时"
+        timer.paused()
+            && timer.goal_seconds() == 1500
+            && timer.display_seconds(T + 86_400_000) == 137,
+        "process reopen counted offline time or lost checkpoint"
     );
-    cases.push(json!({"case":"独立进程不走析构退出/真实SQLite重开/扣除关闭时间","passed":true}));
+    ensure!(timer.toggle(&lib, T + 200_000)? == Toggle::Resumed);
+    ensure!(timer.toggle(&lib, T + 202_750)? == Toggle::Paused);
     ensure!(
-        timer.toggle(&lib, t + 150_250)? == Toggle::Paused,
-        "没有暂停"
-    );
-    timer = Timer::load(&lib, t + 500_000)?.timer;
-    ensure!(
-        timer.paused() && timer.remaining_seconds(t + 500_000) == 750,
-        "暂停状态重开扣时"
-    );
-    ensure!(
-        timer.toggle(&lib, t + 500_000)? == Toggle::Resumed,
-        "继续状态错误"
-    );
-    ensure!(
-        Timer::load(&lib, t + 550_000)?
+        Timer::load(&lib, T + 300_000)?
             .timer
-            .remaining_seconds(t + 550_000)
-            == 700,
-        "继续后毫秒精度丢失"
+            .display_seconds(T + 300_000)
+            == 140
     );
-    timer.reset(&lib)?;
-    timer = Timer::load(&lib, t + 900_000)?.timer;
+    cases.push(json!(
+        "process exit preserves checkpoint; paused time is excluded"
+    ));
+
+    let lib = Library::open(root.join("rounds"))?;
+    let mut timer = Timer::load(&lib, T)?.timer;
+    timer.set_goal(&lib, 45 * 60)?;
+    timer.toggle(&lib, T)?;
     ensure!(
-        !timer.is_running()
-            && !timer.paused()
-            && timer.focus()
-            && timer.remaining_seconds(t + 900_000) == 1500,
-        "重置未持久化"
-    );
-    cases.push(json!({"case":"暂停与继续跨重开/保留毫秒/重置清理deadline","passed":true}));
-    timer.start(&lib, t, 1)?;
-    let loaded = Timer::load(&lib, t + 86_400_000)?;
-    ensure!(
-        loaded.completed == Some(true)
-            && !loaded.timer.focus()
-            && loaded.timer.paused()
-            && loaded.timer.remaining_seconds(t + 86_400_000) == 300
-            && count(&lib)? == 1.,
-        "离线到期未停在休息或重复累计"
-    );
-    let loaded = Timer::load(&lib, t + 172_800_000)?;
-    ensure!(
-        loaded.completed.is_none() && count(&lib)? == 1.,
-        "重开重复结算"
-    );
-    timer = loaded.timer;
-    timer.toggle(&lib, t + 172_800_000)?;
-    let loaded = Timer::load(&lib, t + 172_800_000 + 301_000)?;
-    ensure!(
-        loaded.completed == Some(false)
-            && loaded.timer.focus()
-            && loaded.timer.paused()
-            && count(&lib)? == 1.,
-        "休息结束统计或阶段错误"
-    );
-    cases.push(json!({"case":"离线多日只完成一轮/不重复统计/休息恢复","passed":true}));
-    timer = loaded.timer;
-    timer.start(&lib, t, 1)?;
-    let old = lib.setting(KEY)?;
-    lib.db()?.execute_batch("CREATE TRIGGER reject_timer_stats BEFORE INSERT ON study_stats BEGIN SELECT RAISE(ABORT,'fixture write failure'); END;")?;
-    ensure!(
-        timer.tick(&lib, t + 2000, true).is_err() && lib.setting(KEY)? == old && count(&lib)? == 1.,
-        "状态与统计未原子回滚"
-    );
-    lib.db()?
-        .execute_batch("DROP TRIGGER reject_timer_stats;")?;
-    ensure!(
-        timer.tick(&lib, t + 2000, true)? == Some(true)
+        timer.tick(&lib, T + 45 * MINUTE)? == Some(Event::GoalReached)
             && timer.is_running()
+            && timer.focus()
+            && count(&lib)? == 0,
+        "minimum goal ended or prematurely counted the session"
+    );
+    ensure!(timer.tick(&lib, T + 47 * MINUTE)?.is_none());
+    timer.record_distraction(&lib)?;
+    let before = lib.setting(KEY)?;
+    lib.db()?.execute_batch("CREATE TRIGGER reject_round BEFORE INSERT ON study_stats BEGIN SELECT RAISE(ABORT,'fixture write failure'); END;")?;
+    ensure!(
+        timer.finish(&lib, T + 50 * MINUTE).is_err()
+            && lib.setting(KEY)? == before
+            && timer.recent().is_empty()
+    );
+    lib.db()?.execute_batch("DROP TRIGGER reject_round")?;
+    timer.finish(&lib, T + 50 * MINUTE)?;
+    let round = &timer.recent()[0];
+    ensure!(
+        round.actual_ms == 50 * MINUTE
+            && round.goal_ms == 45 * MINUTE
+            && round.distractions == 1
+            && round.fatigue.is_none()
+            && round.review_pending
+            && count(&lib)? == 1
             && !timer.focus()
-            && count(&lib)? == 2.,
-        "失败重试没有精确结算"
     );
+    let id = round.id.clone();
+    timer.review(&lib, &id, None)?;
+    ensure!(!timer.recent()[0].review_pending && timer.recent()[0].fatigue.is_none());
+    timer.review(&lib, &id, Some(1))?;
+    let loaded = Timer::load(&lib, T + 56 * MINUTE)?;
     ensure!(
-        timer.tick(&lib, t + 2001, true)?.is_none() && count(&lib)? == 2.,
-        "tick重复统计"
+        loaded.completed == Some(Event::BreakEnded)
+            && loaded.timer.awaiting_focus()
+            && !loaded.timer.is_running()
+            && loaded.timer.recent()[0].fatigue == Some(1)
+            && loaded.timer.recent()[0].distractions == 1
+            && count(&lib)? == 1
     );
-    cases.push(
-        json!({"case":"实际SQLite统计写失败/事务回滚/重试只统计一次/在线自动休息","passed":true}),
-    );
-    let confirm_lib = Library::open(root.join("break-confirmation"))?;
-    let mut confirm = Timer::load(&confirm_lib, t)?.timer;
-    confirm.start(&confirm_lib, t, 1)?;
+    timer = loaded.timer;
+    cases.push(json!(
+        "goal fires once; explicit finish, optional review and break are durable and atomic"
+    ));
+
+    for n in 1..=2 {
+        let start = T + n * 100 * MINUTE;
+        timer.toggle(&lib, start)?;
+        timer.finish(&lib, start + 50 * MINUTE)?;
+        let id = timer.recent()[0].id.clone();
+        ensure!(timer.recommendation() == Recommendation::NeedMore);
+        timer.review(&lib, &id, Some(1))?;
+        timer.tick(&lib, start + 55 * MINUTE)?;
+    }
     ensure!(
-        confirm.tick(&confirm_lib, t + 1000, true)? == Some(true)
-            && confirm.is_running()
-            && !confirm.focus(),
-        "专注结束未自动进入休息"
+        timer.recommendation() == Recommendation::IncreaseTo(3600) && timer.goal_seconds() == 2700
     );
-    ensure!(
-        confirm.tick(&confirm_lib, t + 301_000, true)? == Some(false)
-            && confirm.focus()
-            && confirm.paused()
-            && !confirm.is_running()
-            && confirm.remaining_seconds(t + 301_000) == 1500,
-        "休息结束自动开始专注，未等待用户确认"
-    );
-    let waiting = confirm_lib.setting(KEY)?;
-    ensure!(
-        serde_json::from_str::<Value>(&waiting)?["awaiting_focus"] == true,
-        "未持久化等待确认状态"
-    );
-    confirm = Timer::load(&confirm_lib, t + 86_400_000)?.timer;
-    ensure!(
-        !confirm.is_running()
-            && confirm.remaining_seconds(t + 86_400_000) == 1500
-            && confirm.tick(&confirm_lib, t + 172_800_000, true)?.is_none()
-            && count(&confirm_lib)? == 1.,
-        "等待期间或重开后偷偷计时／累计"
-    );
-    confirm_lib.db()?.execute_batch("CREATE TRIGGER reject_confirm BEFORE UPDATE ON app_settings WHEN NEW.key='focus_timer_v1' BEGIN SELECT RAISE(ABORT,'confirm fixture failure'); END;")?;
-    ensure!(
-        confirm.toggle(&confirm_lib, t + 172_800_000).is_err()
-            && !confirm.is_running()
-            && confirm_lib.setting(KEY)? == waiting,
-        "确认保存失败丢失等待状态"
-    );
-    confirm_lib
-        .db()?
-        .execute_batch("DROP TRIGGER reject_confirm;")?;
-    ensure!(
-        confirm.toggle(&confirm_lib, t + 172_800_000)? == Toggle::Started
-            && confirm.is_running()
-            && confirm.focus()
-            && confirm.deadline_ms() == Some(t + 172_800_000 + 1_500_000)
-            && count(&confirm_lib)? == 1.,
-        "明确确认没有开始完整新一轮"
-    );
-    ensure!(
-        Timer::load(&confirm_lib, t + 172_801_000)?
-            .timer
-            .remaining_seconds(t + 172_801_000)
-            == 1499,
-        "确认后的新截止时间未保留"
-    );
-    let old = json!({"version":1,"strict":false,"focus":true,"paused":true,"duration_ms":1500000,"remaining_ms":700000,"deadline_ms":null});
-    confirm_lib.set_setting(KEY, &old.to_string())?;
-    let legacy = Timer::load(&confirm_lib, t)?;
-    ensure!(
-        legacy.warning.is_none()
-            && legacy.timer.paused()
-            && legacy.timer.remaining_seconds(t) == 700,
-        "旧版暂停记录不兼容"
-    );
-    let mut invalid = old;
-    invalid["awaiting_focus"] = json!(true);
-    invalid["deadline_ms"] = json!(t + 5000);
-    invalid["paused"] = json!(false);
-    confirm_lib.set_setting(KEY, &invalid.to_string())?;
-    ensure!(
-        Timer::load(&confirm_lib, t)?.warning.is_some(),
-        "非法确认状态被接受"
-    );
-    cases.push(json!({"case":"在线休息结束等待确认/跨重开不计时/保存失败保护/点击才开始/旧记录兼容","passed":true}));
-    let retry_root = root.join("startup-write-failure");
-    let retry_lib = Library::open(retry_root)?;
-    let mut running = Timer::load(&retry_lib, t)?.timer;
-    running.start(&retry_lib, t, 1)?;
-    retry_lib.db()?.execute_batch("CREATE TRIGGER reject_startup_stats BEFORE INSERT ON study_stats BEGIN SELECT RAISE(ABORT,'startup fixture failure'); END;")?;
-    let restored = Timer::load(&retry_lib, t + 2000)?;
-    ensure!(
-        restored.warning.is_some() && restored.timer.is_running(),
-        "恢复写失败丢失了原计时状态"
-    );
-    retry_lib
-        .db()?
-        .execute_batch("DROP TRIGGER reject_startup_stats;")?;
-    let mut retry = restored.timer;
-    ensure!(
-        retry.tick(&retry_lib, t + 2100, true)? == Some(true)
-            && retry.paused()
-            && count(&retry_lib)? == 1.,
-        "恢复失败重试未停在下一阶段"
-    );
-    cases.push(json!({"case":"启动结算写失败保留原计时/后续重试暂停下一阶段","passed":true}));
-    let mut stale = Timer::load(&lib, t + 2100)?.timer;
-    timer.start(&lib, t + 2200, 600)?;
-    ensure!(
-        stale.reset(&lib).is_err() && Timer::load(&lib, t + 2200)?.timer.is_running(),
-        "旧实例覆盖新状态"
-    );
-    ensure!(
-        timer.remaining_seconds(t - 1000) <= 600,
-        "系统时间回拨增加到超过本轮时长"
-    );
-    cases.push(json!({"case":"多实例版本冲突/系统时间回拨夹取","passed":true}));
-    for bad in ["not json", "{\"version\":999}"] {
-        lib.set_setting(KEY, bad)?;
-        let loaded = Timer::load(&lib, t)?;
+    timer.set_goal(&lib, 3600)?;
+    ensure!(timer.goal_seconds() == 3600 && timer.recommendation() == Recommendation::AtMaximum);
+    timer.set_goal(&lib, 2700)?;
+    let start = T + 500 * MINUTE;
+    timer.toggle(&lib, start)?;
+    timer.record_distraction(&lib)?;
+    timer.record_distraction(&lib)?;
+    timer.finish(&lib, start + 30 * MINUTE)?;
+    let id = timer.recent()[0].id.clone();
+    timer.review(&lib, &id, Some(3))?;
+    ensure!(timer.recommendation() == Recommendation::Stay && count(&lib)? == 3);
+    let rounds = serde_json::to_value(timer.recent())?;
+    cases.push(json!("three comfortable rounds suggest 60 without changing the goal; early finish remains in the training history"));
+
+    let mixed = Library::open(root.join("mixed-goals"))?;
+    let mut timer = Timer::load(&mixed, T)?.timer;
+    let mut start = T;
+    for _ in 0..4 {
+        for goal in [5, 20, 30] {
+            timer.set_goal(&mixed, goal * 60)?;
+            timer.toggle(&mixed, start)?;
+            ensure!(timer.set_goal(&mixed, 3600).is_err(), "active goal changed");
+            timer.finish(&mixed, start + goal * MINUTE)?;
+            let id = timer.recent()[0].id.clone();
+            ensure!(
+                timer.recommendation() == Recommendation::NeedMore,
+                "unrated session counted as low fatigue"
+            );
+            timer.review(&mixed, &id, Some(1))?;
+            start += 100 * MINUTE;
+            timer.tick(&mixed, start)?;
+        }
+    }
+    for (goal, next) in [(5, 10), (20, 25), (30, 35)] {
+        timer.set_goal(&mixed, goal * 60)?;
+        timer = Timer::load(&mixed, start)?.timer;
         ensure!(
-            loaded.warning.is_some() && lib.setting(KEY)? == bad && !loaded.timer.is_running(),
-            "损坏状态被静默覆盖"
-        );
-        let mut recovered = loaded.timer;
-        recovered.reset(&lib)?;
-        ensure!(
-            Timer::load(&lib, t)?.warning.is_none(),
-            "用户显式重置无法恢复"
+            timer.goal_seconds() == goal * 60
+                && timer.recommendation() == Recommendation::IncreaseTo(next * 60),
+            "mixed rounds lost the saved duration or used the wrong training sample"
         );
     }
-    cases.push(json!({"case":"损坏/未知版本保留原值并提示/显式重置修复","passed":true}));
-    let strict_lib = Library::open(root.join("strict-timer"))?;
-    let mut strict = Timer::default();
-    strict.start_strict(&strict_lib, t, 60)?;
-    let restored = Timer::load(&strict_lib, t + 10_000)?.timer;
+    cases.push(json!(
+        "mixed 5/20/30-minute targets persist and progress independently across reopen"
+    ));
+
+    let legacy = Library::open(root.join("legacy"))?;
+    legacy.set_setting(KEY, &json!({"version":1,"strict":true,"focus":true,"paused":false,"duration_ms":1500000,"remaining_ms":1500000,"deadline_ms":T+10000}).to_string())?;
+    let mut timer = Timer::load(&legacy, T)?.timer;
     ensure!(
-        restored.strict() && restored.deadline_ms() == Some(t + 60_000),
-        "strict session deadline did not survive reopen"
+        timer.paused()
+            && !timer.strict()
+            && timer.goal_seconds() == 1500
+            && timer.display_seconds(T) == 1490
     );
-    strict.toggle(&strict_lib, t + 10_000)?;
-    ensure!(
-        !strict.strict() && strict.paused(),
-        "emergency pause retained strict mode"
-    );
-    strict.start_strict(&strict_lib, t, 1)?;
-    ensure!(
-        strict.tick(&strict_lib, t + 1001, true)? == Some(true) && !strict.strict(),
-        "deadline did not clear strict mode for break"
-    );
-    let completed = count(&strict_lib)?;
-    ensure!(
-        Timer::load(&strict_lib, t + 2000)?.completed.is_none() && count(&strict_lib)? == completed,
-        "strict completion counted twice"
-    );
-    strict_lib.db()?.execute_batch("CREATE TRIGGER fail_strict BEFORE UPDATE ON app_settings WHEN NEW.key='focus_timer_v1' BEGIN SELECT RAISE(ABORT,'injected strict save failure'); END;")?;
-    ensure!(
-        strict.start_strict(&strict_lib, t, 30).is_err() && !strict.strict(),
-        "failed strict start changed in-memory state"
-    );
-    strict_lib
-        .db()?
-        .execute_batch("DROP TRIGGER fail_strict;")?;
-    cases.push(
-        json!({"case":"电脑专注标志/截止重开/应急暂停/结束解除/保存失败原子保护","passed":true}),
-    );
+    let mut stale = Timer::load(&legacy, T)?.timer;
+    timer.resume_strict(&legacy, T)?;
+    ensure!(stale.reset(&legacy).is_err());
+    ensure!(timer.tick(&legacy, T + 10_000)? == Some(Event::GoalReached) && timer.strict());
+    timer.interrupt(&legacy, T + 11_000, true)?;
+    ensure!(timer.paused() && !timer.strict() && timer.distractions() == 1);
+    for bad in ["not json", r#"{"version":999}"#] {
+        legacy.set_setting(KEY, bad)?;
+        let mut loaded = Timer::load(&legacy, T)?;
+        ensure!(loaded.warning.is_some() && legacy.setting(KEY)? == bad);
+        loaded.timer.reset(&legacy)?;
+        ensure!(Timer::load(&legacy, T)?.warning.is_none());
+    }
+    cases.push(json!(
+        "legacy countdown, strict interruption, concurrent writers and corrupt state recovery"
+    ));
     let evidence = root.join("focus-recovery.json");
     fs::write(
         &evidence,
         serde_json::to_vec_pretty(
-            &json!({"passed":true,"cases":cases,"database":dbroot.join("clarora.db"),"final_state":lib.setting(KEY)?}),
+            &json!({"passed":true,"cases":cases,"database":lib.root.join("clarora.db"),"rounds":rounds}),
         )?,
     )?;
-    results.push(json!({"workflow":"专注计时跨进程/暂停/离线到期/原子结算/异常恢复","passed":true,"cases":cases.len(),"evidence":evidence}));
+    results.push(json!({"workflow":"最低专注目标/自由延长/中断恢复/实际时长与训练建议","passed":true,"cases":cases.len(),"evidence":evidence}));
     Ok(())
 }

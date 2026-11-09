@@ -224,7 +224,7 @@ impl AppView {
             self.report_status(FeedbackKind::Error, format!("计时提示音播放失败：{error}"));
         }
         if self.timer_retry.is_none_or(|retry| Instant::now() >= retry) {
-            match self.timer.tick(&self.lib, focus_timer::now_ms(), true) {
+            match self.timer.tick(&self.lib, focus_timer::now_ms()) {
                 Ok(Some(focused)) => {
                     self.focus_phase_completed(focused);
                     self.timer_retry = None;
@@ -238,9 +238,9 @@ impl AppView {
                 }
             }
         }
-        let remaining = self.timer.remaining_seconds(focus_timer::now_ms());
-        if remaining != self.timer_remaining {
-            self.timer_remaining = remaining;
+        let remaining = self.timer.display_seconds(focus_timer::now_ms());
+        if remaining != self.timer_seconds {
+            self.timer_seconds = remaining;
             changed = true;
         }
         let previous_context = self.chat.context.clone();

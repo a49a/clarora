@@ -235,7 +235,7 @@ struct AppView {
     timer_chimes: timer_chimes::Chimes,
     rendered_images: clarora_gpui::render_images::RenderedImages,
     timer: focus_timer::Timer,
-    timer_remaining: u64,
+    timer_seconds: u64,
     timer_retry: Option<Instant>,
     focus_mode: focus_mode_ui::Mode,
     pdf_path: Option<PathBuf>,
@@ -397,7 +397,7 @@ impl AppView {
             backups: vec![],
             recording: None,
             recorded: None,
-            timer_remaining: timer.remaining_seconds(focus_timer::now_ms()),
+            timer_seconds: timer.display_seconds(focus_timer::now_ms()),
             timer,
             timer_retry: None,
             focus_mode: focus_mode_ui::Mode::default(),
@@ -777,20 +777,18 @@ impl AppView {
             input.update(cx, |input, cx| input.set_value(value, window, cx));
         }
     }
-    fn focus_phase_completed(&mut self, focused: bool) {
-        self.play_timer_chime(timer_chimes::Cue::End);
-        if focused && self.page == "stats" {
-            self.refresh_view_data();
-        }
-        self.report_status(
-            FeedbackKind::Info,
-            if focused {
-                "专注完成，休息一下"
-            } else {
-                "休息已结束，点击「开始下一轮专注」后再计时"
+    fn focus_phase_completed(&mut self, event: focus_timer::Event) {
+        let (cue, message) = match event {
+            focus_timer::Event::GoalReached => (
+                timer_chimes::Cue::Start,
+                "已达到最低专注目标，可以继续学习，准备好时结束本轮",
+            ),
+            focus_timer::Event::BreakEnded => {
+                (timer_chimes::Cue::End, "休息已结束，准备好后开始下一轮")
             }
-            .into(),
-        );
+        };
+        self.play_timer_chime(cue);
+        self.report_status(FeedbackKind::Info, message.into());
     }
     fn play_timer_chime(&mut self, cue: timer_chimes::Cue) {
         if let Err(error) = self.timer_chimes.play(cue) {

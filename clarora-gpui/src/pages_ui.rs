@@ -1504,36 +1504,36 @@ impl AppView {
                 }
             }
             "meditation" => {
-                content = content.child(
-                    panel(cx)
-                        .items_center()
-                        .p_10()
-                        .child(div().text_3xl().child(clock(self.timer_remaining as f64)))
-                        .child(if self.timer.awaiting_focus() {
-                            "休息已结束，准备好后开始下一轮"
-                        } else if self.timer.focus() {
-                            "专注时间"
-                        } else {
-                            "休息时间"
-                        })
-                        .child(
-                            div()
-                                .text_sm()
-                                .child("使用顶部专注按钮开始、暂停或设置时长。"),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("新一轮开始响一声，每轮结束响两声；暂停和继续不重复提醒。"),
-                        )
-                        .child(self.button(
-                            "background-sound",
-                            "选择本机背景音乐",
-                            Action::Pick("background".into()),
-                            cx,
-                        )),
-                );
+                content = content
+                    .child(
+                        panel(cx)
+                            .items_center()
+                            .p_10()
+                            .child(div().text_3xl().child(clock(self.timer_seconds as f64)))
+                            .child(if self.timer.awaiting_focus() {
+                                "休息已结束，准备好后开始下一轮"
+                            } else if self.timer.focus() {
+                                "已专注时间"
+                            } else {
+                                "休息时间"
+                            })
+                            .child(div().text_sm().child(
+                                "在顶部设置最低目标。达标后可继续学习，准备好时点击「结束本轮」。",
+                            ))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("达标时轻响一声，计时继续。每轮结束后可记录疲劳。"),
+                            )
+                            .child(self.button(
+                                "background-sound",
+                                "选择本机背景音乐",
+                                Action::Pick("background".into()),
+                                cx,
+                            )),
+                    )
+                    .child(self.focus_training(cx));
             }
             "settings" => {
                 content = content.child(self.settings_view(window, cx));

@@ -160,6 +160,9 @@ pub(super) enum Action {
     FocusResume,
     FocusEmergency,
     FocusKeep,
+    FocusFinish,
+    FocusDistraction,
+    FocusReview(String, Option<u8>),
     SaveAi,
     CredentialMode(bool),
     ImportLegacyCredentials,
@@ -391,6 +394,11 @@ impl From<Action> for Command {
             Action::FocusResume => Routed::Focus(focus::Command::FocusResume),
             Action::FocusEmergency => Routed::Focus(focus::Command::FocusEmergency),
             Action::FocusKeep => Routed::Focus(focus::Command::FocusKeep),
+            Action::FocusFinish => Routed::Focus(focus::Command::FocusFinish),
+            Action::FocusDistraction => Routed::Focus(focus::Command::FocusDistraction),
+            Action::FocusReview(id, fatigue) => {
+                Routed::Focus(focus::Command::FocusReview(id, fatigue))
+            }
             Action::SaveAi => Routed::Settings(settings::Command::SaveAi),
             Action::CredentialMode(v0) => Routed::Settings(settings::Command::CredentialMode(v0)),
             Action::ImportLegacyCredentials => {

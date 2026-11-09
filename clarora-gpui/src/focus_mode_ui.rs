@@ -7,7 +7,7 @@ pub(super) mod recovery;
 
 pub(super) const EXIT_SHORTCUT: &str = "Ctrl + Shift + Esc";
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Interruption {
     #[cfg(target_os = "macos")]
     Shortcut,
@@ -17,7 +17,7 @@ pub(super) enum Interruption {
 #[derive(Default)]
 pub(super) struct Mode {
     native: Option<native::Guard>,
-    pub deadline: u64,
+    unlock_at_ms: u64,
     maximum: Option<Instant>,
     owned_fullscreen: bool,
     restore_fullscreen_at: Option<Instant>,
@@ -30,6 +30,10 @@ pub(super) struct Mode {
 impl Mode {
     pub fn active(&self) -> bool {
         self.native.is_some()
+    }
+    #[cfg(debug_assertions)]
+    pub fn expire_safety_limit(&mut self) {
+        self.unlock_at_ms = 0;
     }
     pub fn escape_remaining(&self) -> Option<u64> {
         self.escape.map(|at| {
@@ -64,17 +68,15 @@ impl AppView {
         );
         let guard = native::Guard::enter()?;
         let now = focus_timer::now_ms();
+        let starting = !self.timer.active_round();
         if let Some(seconds) = seconds {
             self.timer.start_strict(&self.lib, now, seconds)?;
         } else {
-            ensure!(
-                self.timer.strict() && self.timer.deadline_ms().is_some_and(|end| end > now),
-                "上次电脑专注已结束，请重新选择时长"
-            );
+            self.timer.resume_strict(&self.lib, now)?;
         }
-        self.focus_mode.deadline = self.timer.deadline_ms().context("专注计时未开始")?;
-        self.focus_mode.maximum =
-            Some(Instant::now() + Duration::from_secs(self.timer.remaining_seconds(now).min(3600)));
+        // The learning round is open-ended, but system restrictions remain bounded.
+        self.focus_mode.unlock_at_ms = now.saturating_add(3_600_000);
+        self.focus_mode.maximum = Some(Instant::now() + Duration::from_secs(3600));
         self.focus_mode.native = Some(guard);
         self.focus_mode.entered = Some(Instant::now());
         self.focus_mode.escape = None;
@@ -99,8 +101,10 @@ impl AppView {
             // Window activation/fullscreen do not change GPUI's input focus.
             window.focus(&self.focus);
         }
-        self.timer_remaining = self.timer.remaining_seconds(now);
-        self.play_timer_chime(timer_chimes::Cue::Start);
+        self.timer_seconds = self.timer.display_seconds(now);
+        if starting {
+            self.play_timer_chime(timer_chimes::Cue::Start);
+        }
         self.report_status(
             FeedbackKind::Info,
             format!("电脑专注已开启，按 {EXIT_SHORTCUT} 立即退出"),
@@ -145,6 +149,7 @@ impl AppView {
     fn interrupt_focus(
         &mut self,
         message: &str,
+        distracted: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
@@ -152,10 +157,10 @@ impl AppView {
         let now = focus_timer::now_ms();
         if self.timer.is_running() {
             self.timer
-                .toggle(&self.lib, now)
+                .interrupt(&self.lib, now, distracted)
                 .context("电脑专注已解除，但暂停计时失败")?;
         }
-        self.timer_remaining = self.timer.remaining_seconds(now);
+        self.timer_seconds = self.timer.display_seconds(now);
         self.report_status(FeedbackKind::Info, message.into());
         Ok(())
     }
@@ -172,7 +177,7 @@ impl AppView {
                 at.elapsed() >= Duration::from_secs(5),
                 "请等待应急结束倒计时"
             );
-            self.interrupt_focus("电脑专注已提前结束，计时已暂停", window, cx)?;
+            self.interrupt_focus("电脑专注已提前结束，计时已暂停", false, window, cx)?;
         } else {
             self.focus_mode.escape = Some(Instant::now());
             cx.notify();
@@ -184,13 +189,23 @@ impl AppView {
             self.restore_focus_fullscreen(window);
             return false;
         };
-        if focus_timer::now_ms() >= self.focus_mode.deadline
+        if focus_timer::now_ms() >= self.focus_mode.unlock_at_ms
             || self
                 .focus_mode
                 .maximum
                 .is_some_and(|at| Instant::now() >= at)
         {
             self.stop_focus_mode(window, cx);
+            match self.timer.release_strict(&self.lib) {
+                Ok(()) => self.report_status(
+                    FeedbackKind::Info,
+                    "电脑专注已解锁，本轮专注继续计时".into(),
+                ),
+                Err(error) => self.report_status(
+                    FeedbackKind::Error,
+                    format!("电脑专注已解锁，计时状态保存失败：{error:#}"),
+                ),
+            }
             return true;
         }
         let diagnostic = self.focus_probe_active();
@@ -203,7 +218,12 @@ impl AppView {
                 Interruption::Shortcut => "已通过快捷键退出电脑专注，计时已暂停",
                 Interruption::Deactivated => "Clarora 已离开前台，电脑专注已解除，计时已暂停",
             };
-            if let Err(error) = self.interrupt_focus(message, window, cx) {
+            if let Err(error) = self.interrupt_focus(
+                message,
+                interruption == Interruption::Deactivated,
+                window,
+                cx,
+            ) {
                 self.report_status(FeedbackKind::Error, format!("{error:#}"));
             }
             return true;
@@ -318,7 +338,9 @@ impl AppView {
         }
         let view = cx.entity().downgrade();
         let fallback_focus = self.focus.clone();
-        let resumable = cfg!(target_os = "macos") && self.timer.strict() && self.timer.is_running();
+        let active_round = self.timer.active_round();
+        let goal = self.timer.goal_seconds();
+        let in_rest = !self.timer.focus();
         let primary_label = self.focus_control_label().to_string();
         let primary_action = self.focus_control_primary_action();
         let label = div()
@@ -361,54 +383,52 @@ impl AppView {
                     primary_label.clone(),
                     primary_action.clone(),
                 ));
-                if resumable {
-                    menu = menu.item(Self::focus_menu_item(
-                        view.clone(),
-                        "仅暂停计时",
-                        Action::TimerPause,
-                    ));
+                if active_round {
+                    if cfg!(target_os = "macos") {
+                        menu = menu.item(Self::focus_menu_item(
+                            view.clone(),
+                            "开启电脑专注",
+                            Action::FocusResume,
+                        ));
+                    }
+                    return menu;
                 }
                 let duration_view = view.clone();
                 menu = menu.separator().submenu(
-                    "专注时长（选择后开始）",
+                    "最低专注目标",
                     window,
                     cx,
                     move |mut sub, _, _| {
-                        for minutes in [5, 10, 15, 25, 45, 60] {
+                        for minutes in focus_timer::GOAL_PRESETS_MINUTES {
+                            let label = if minutes * 60 == goal {
+                                format!("✓ {minutes} 分钟")
+                            } else {
+                                format!("{minutes} 分钟")
+                            };
                             sub = sub.item(Self::focus_menu_item(
                                 duration_view.clone(),
-                                format!("{minutes} 分钟"),
+                                label,
                                 Action::Timer(minutes * 60),
                             ));
                         }
                         sub
                     },
                 );
-                if cfg!(target_os = "macos") {
-                    let computer_view = view.clone();
-                    menu = menu.submenu(
-                        "电脑专注 · 限制切换应用",
-                        window,
-                        cx,
-                        move |mut sub, _, _| {
-                            for minutes in [5, 15, 25, 45, 60] {
-                                sub = sub.item(Self::focus_menu_item(
-                                    computer_view.clone(),
-                                    format!("专注 {minutes} 分钟"),
-                                    Action::FocusStart(minutes * 60),
-                                ));
-                            }
-                            sub
-                        },
-                    );
-                } else {
-                    menu = menu.item(PopupMenuItem::new("电脑专注仅支持 macOS").disabled(true));
+                if cfg!(target_os = "macos") && !in_rest {
+                    menu = menu.item(Self::focus_menu_item(
+                        view.clone(),
+                        format!("开启电脑专注 · 最低 {} 分钟", goal / 60),
+                        Action::FocusStart(goal),
+                    ));
                 }
-                menu.separator().item(Self::focus_menu_item(
-                    view.clone(),
-                    "重置计时",
-                    Action::TimerReset,
-                ))
+                if in_rest {
+                    menu = menu.item(Self::focus_menu_item(
+                        view.clone(),
+                        "结束休息",
+                        Action::TimerReset,
+                    ));
+                }
+                menu
             })
             .into_any_element()
     }

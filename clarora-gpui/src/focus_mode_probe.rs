@@ -81,19 +81,17 @@ impl Probe {
             !native::is_active(),
             "diagnostic unexpectedly became active; refusing to restrict desktop"
         );
-        self.cases.push(json!({"case":name,"passed":true,"presentation_options":native::options(),"active":app.focus_mode.active(),"deadline":app.timer.deadline_ms()}));
+        self.cases.push(json!({"case":name,"passed":true,"presentation_options":native::options(),"active":app.focus_mode.active(),"goal_seconds":app.timer.goal_seconds(),"elapsed_or_rest_seconds":app.timer_seconds}));
         Ok(())
     }
-    fn control(app: &AppView, label: &str, resume_strict: bool) -> Result<()> {
+    fn control(app: &AppView, label: &str) -> Result<()> {
         ensure!(
             app.focus_control_label() == label,
             "unified focus control label: expected {label}, got {}",
             app.focus_control_label()
         );
         ensure!(
-            if resume_strict {
-                matches!(app.focus_control_primary_action(), Action::FocusResume)
-            } else if label == "紧急结束" {
+            if label == "紧急结束" {
                 matches!(app.focus_control_primary_action(), Action::FocusEmergency)
             } else {
                 matches!(app.focus_control_primary_action(), Action::TimerPause)
@@ -131,14 +129,14 @@ impl Probe {
                 let now = focus_timer::now_ms();
 
                 app.handle(Action::TimerReset, w, cx);
-                Self::control(app, "开始专注", false)?;
+                Self::control(app, "开始专注")?;
                 let action = app.focus_control_primary_action();
                 app.handle(action, w, cx);
                 ensure!(
                     app.timer.is_running() && !app.timer.strict(),
                     "ordinary start enabled restrictions or failed"
                 );
-                Self::control(app, "暂停专注", false)?;
+                Self::control(app, "暂停专注")?;
                 self.note("single header action starts an ordinary focus timer without native restrictions", app)?;
                 let action = app.focus_control_primary_action();
                 app.handle(action, w, cx);
@@ -146,14 +144,14 @@ impl Probe {
                     app.timer.paused() && !app.timer.is_running(),
                     "header pause failed"
                 );
-                Self::control(app, "继续专注", false)?;
+                Self::control(app, "继续专注")?;
                 let action = app.focus_control_primary_action();
                 app.handle(action, w, cx);
                 ensure!(
                     app.timer.is_running() && !app.timer.strict(),
                     "header resume failed"
                 );
-                Self::control(app, "暂停专注", false)?;
+                Self::control(app, "暂停专注")?;
                 self.note(
                     "same header action pauses and resumes focus with matching labels",
                     app,
@@ -161,24 +159,24 @@ impl Probe {
 
                 app.lib.set_setting(focus_timer::KEY, &json!({"version":1,"strict":false,"focus":false,"paused":false,"duration_ms":300000,"remaining_ms":300000,"deadline_ms":now+300000}).to_string())?;
                 app.timer = focus_timer::Timer::load(&app.lib, now)?.timer;
-                app.timer_remaining = app.timer.remaining_seconds(now);
-                Self::control(app, "暂停休息", false)?;
+                app.timer_seconds = app.timer.display_seconds(now);
+                Self::control(app, "暂停休息")?;
                 let action = app.focus_control_primary_action();
                 app.handle(action, w, cx);
-                Self::control(app, "继续休息", false)?;
+                Self::control(app, "继续休息")?;
                 let action = app.focus_control_primary_action();
                 app.handle(action, w, cx);
                 ensure!(
                     app.timer.is_running() && !app.timer.focus(),
                     "header rest resume began focus instead"
                 );
-                Self::control(app, "暂停休息", false)?;
+                Self::control(app, "暂停休息")?;
                 self.note("single header action pauses and resumes rest without starting a new focus round", app)?;
 
                 app.timer.start_strict(&app.lib, now, 60)?;
                 app.timer = focus_timer::Timer::load(&app.lib, now)?.timer;
-                app.timer_remaining = app.timer.remaining_seconds(now);
-                Self::control(app, "继续电脑专注", true)?;
+                app.timer_seconds = app.timer.display_seconds(now);
+                Self::control(app, "继续专注")?;
                 ensure!(
                     !app.focus_mode.active() && native::options() == self.baseline,
                     "reopened strict timer activated native restrictions"
@@ -187,8 +185,8 @@ impl Probe {
 
                 app.lib.set_setting(focus_timer::KEY, &json!({"version":1,"strict":false,"focus":false,"paused":false,"duration_ms":300000,"remaining_ms":300000,"deadline_ms":now-1}).to_string())?;
                 app.timer = focus_timer::Timer::load(&app.lib, now)?.timer;
-                app.timer_remaining = app.timer.remaining_seconds(now);
-                Self::control(app, "开始下一轮专注", false)?;
+                app.timer_seconds = app.timer.display_seconds(now);
+                Self::control(app, "开始下一轮专注")?;
                 ensure!(
                     !app.timer.is_running() && !app.focus_mode.active(),
                     "waiting confirmation is not explicit in the timer UI"
@@ -238,18 +236,18 @@ impl Probe {
                 self.note("single header focus control and display-only timer status lay out in light/dark, normal/fullscreen and narrow/wide widths", app)?;
                 let action = app.focus_control_primary_action();
                 app.handle(action, w, cx);
-                Self::control(app, "暂停专注", false)?;
+                Self::control(app, "暂停专注")?;
                 ensure!(
                     app.timer.is_running()
                         && app.timer.focus()
-                        && app.timer_remaining == 1500
+                        && app.timer_seconds == 0
                         && !app.timer.strict()
                         && !app.focus_mode.active(),
                     "actual confirmation action did not begin a full new focus round"
                 );
                 self.note("rest completion waits for actual AppView confirmation before starting the next focus", app)?;
                 app.handle(Action::TimerReset, w, cx);
-                Self::control(app, "开始专注", false)?;
+                Self::control(app, "开始专注")?;
                 ensure!(!app.timer.is_running(), "reset did not clear waiting state");
                 app.media.player = Player::without_audio_device();
                 video_resume_probe::prepare(&app.lib)?;
@@ -291,7 +289,7 @@ impl Probe {
                 );
                 self.note("unified ordinary timer action returns keyboard to video and preserves sentence repeats", app)?;
                 app.inputs["question"].update(cx, |state, cx| state.focus(w, cx));
-                app.handle(Action::FocusStart(60), w, cx);
+                app.handle(Action::FocusResume, w, cx);
                 ensure!(
                     app.focus_mode.active() && w.focused(cx) == Some(app.focus.clone()),
                     "FocusStart left video keyboard focus in the old input/menu"
@@ -361,7 +359,7 @@ impl Probe {
                 app.handle(Action::Page("writing".into()), w, cx);
                 app.inputs["question"].update(cx, |state, cx| state.focus(w, cx));
                 let input = w.focused(cx);
-                app.handle(Action::FocusStart(60), w, cx);
+                app.handle(Action::FocusResume, w, cx);
                 ensure!(
                     app.focus_mode.active() && w.focused(cx) == input,
                     "starting focus on a non-video page stole editor focus"
@@ -374,8 +372,8 @@ impl Probe {
                 self.stage = 10;
             }
             10 => {
-                app.handle(Action::FocusStart(60), w, cx);
-                Self::control(app, "紧急结束", false)?;
+                app.handle(Action::FocusResume, w, cx);
+                Self::control(app, "紧急结束")?;
                 ensure!(
                     app.focus_mode.active()
                         && app.timer.strict()
@@ -383,12 +381,12 @@ impl Probe {
                     "actual native start failed: {}",
                     app.status
                 );
-                let deadline = app.timer.deadline_ms();
+                let goal = app.timer.goal_seconds();
                 app.handle(Action::TimerPause, w, cx);
                 app.handle(Action::TimerReset, w, cx);
                 app.handle(Action::Timer(5), w, cx);
                 ensure!(
-                    app.timer.deadline_ms() == deadline && app.timer.strict(),
+                    app.timer.goal_seconds() == goal && app.timer.strict(),
                     "ordinary timer actions bypassed focus"
                 );
                 self.note(
@@ -434,22 +432,52 @@ impl Probe {
                     "delayed emergency release restores original presentation and pauses timer",
                     app,
                 )?;
+                app.handle(Action::TimerReset, w, cx);
                 app.handle(Action::FocusStart(1), w, cx);
                 ensure!(app.focus_mode.active(), "second session failed");
                 self.stage = 12;
             }
             12 => {
-                if app.focus_mode.active() {
+                if !app.timer.goal_met(focus_timer::now_ms()) {
                     return Ok(false);
                 }
                 ensure!(
-                    native::options() == self.baseline,
-                    "deadline did not restore presentation options"
+                    app.focus_mode.active() && app.timer.is_running() && app.timer.strict(),
+                    "minimum goal released computer focus or stopped learning"
+                );
+                self.note("minimum goal keeps computer focus and learning active", app)?;
+                app.handle(Action::FocusFinish, w, cx);
+                ensure!(
+                    !app.focus_mode.active()
+                        && !app.timer.focus()
+                        && native::options() == self.baseline
+                        && app.timer.recent()[0].review_pending,
+                    "ending the round did not release the desktop and create a review"
+                );
+                let id = app.timer.recent()[0].id.clone();
+                app.handle(Action::FocusReview(id, Some(2)), w, cx);
+                ensure!(
+                    app.timer.recent()[0].fatigue == Some(2)
+                        && !app.timer.recent()[0].review_pending
                 );
                 self.note(
-                    "deadline releases native restrictions before persistence/phase polling",
+                    "explicit finish releases native restrictions and records fatigue",
                     app,
                 )?;
+                app.handle(Action::TimerReset, w, cx);
+                app.handle(Action::FocusStart(60), w, cx);
+                app.focus_mode.expire_safety_limit();
+                app.poll_focus_mode(w, cx);
+                ensure!(
+                    !app.focus_mode.active()
+                        && app.timer.is_running()
+                        && app.timer.focus()
+                        && !app.timer.strict()
+                        && native::options() == self.baseline,
+                    "independent computer unlock changed the learning round"
+                );
+                self.note("safety cap unlocks computer while learning continues", app)?;
+                app.handle(Action::TimerReset, w, cx);
                 app.lib.db()?.execute_batch("CREATE TRIGGER reject_focus BEFORE UPDATE ON app_settings WHEN NEW.key='focus_timer_v1' BEGIN SELECT RAISE(ABORT,'focus fixture failure'); END;")?;
                 app.handle(Action::FocusStart(60), w, cx);
                 ensure!(
@@ -518,7 +546,10 @@ impl Probe {
         );
         app.poll_focus_mode(window, cx);
         ensure!(
-            !app.focus_mode.active() && app.timer.paused() && !app.timer.strict(),
+            !app.focus_mode.active()
+                && app.timer.paused()
+                && !app.timer.strict()
+                && app.timer.distractions() == 1,
             "foreground loss did not clear the session and pause the timer"
         );
         self.note(
@@ -527,14 +558,15 @@ impl Probe {
         )?;
 
         // An occupied key must fail before changing the active ordinary timer.
-        app.handle(Action::Timer(120), window, cx);
-        let deadline = app.timer.deadline_ms();
+        app.handle(Action::TimerPause, window, cx);
+        let goal = app.timer.goal_seconds();
         probe::with_reserved_shortcut(|| {
-            app.handle(Action::FocusStart(60), window, cx);
+            app.handle(Action::FocusResume, window, cx);
             ensure!(
                 !app.focus_mode.active()
                     && native::options() == self.baseline
-                    && app.timer.deadline_ms() == deadline
+                    && app.timer.goal_seconds() == goal
+                    && app.timer.is_running()
                     && !app.timer.strict()
                     && app.status.contains(focus_mode_ui::EXIT_SHORTCUT),
                 "hot key registration failure applied restrictions or changed the timer"
@@ -546,7 +578,7 @@ impl Probe {
             app,
         )?;
 
-        app.handle(Action::FocusStart(60), window, cx);
+        app.handle(Action::FocusResume, window, cx);
         let current_id = probe::id()?;
         ensure!(
             app.focus_mode.active() && current_id != previous_id,
@@ -581,7 +613,8 @@ impl Probe {
                 && app.timer.paused()
                 && saved.paused()
                 && !saved.strict()
-                && (1..=60).contains(&saved.remaining_seconds(focus_timer::now_ms())),
+                && saved.distractions() == 1
+                && saved.goal_seconds() == 60,
             "global shortcut did not save the paused timer"
         );
         self.note(
@@ -589,7 +622,7 @@ impl Probe {
             app,
         )?;
 
-        app.handle(Action::FocusStart(60), window, cx);
+        app.handle(Action::FocusResume, window, cx);
         let id = probe::id()?;
         app.lib.db()?.execute_batch("CREATE TRIGGER reject_focus_stop BEFORE UPDATE ON app_settings WHEN NEW.key='focus_timer_v1' BEGIN SELECT RAISE(ABORT,'focus stop fixture failure'); END;")?;
         probe::dispatch_shortcut(id)?;
