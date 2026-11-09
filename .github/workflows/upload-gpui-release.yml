@@ -8,6 +8,9 @@ on:
       run_id:
         description: "GPUI desktop workflow run that produced the Windows artifact"
         required: true
+      source_sha:
+        description: "Source commit used for the macOS and Windows builds"
+        required: true
 permissions:
   contents: write
   actions: read
@@ -26,7 +29,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
-          SOURCE_SHA: 2b353ae4dd79e86da6d02792ba3bc2019f8b652c
+          SOURCE_SHA: ${{ inputs.source_sha }}
           WINDOWS_RUN_ID: ${{ inputs.run_id }}
         run: |
           set -euo pipefail
