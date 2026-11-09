@@ -934,6 +934,9 @@ impl AppView {
                 .flex()
                 .flex_col()
                 .overflow_hidden()
+                .when_some(self.audio.review.as_ref(), |v, review| {
+                    v.child(self.audio_review_bar(review, cx))
+                })
                 .when(
                     !self.audio.blind.enabled
                         && self.audio.show_current
@@ -1111,6 +1114,25 @@ impl AppView {
                         )
                         .selected(self.audio.clip_mode)
                         .disabled(!available || self.audio.blind.enabled),
+                    )
+                    .when(
+                        !self.audio_saved.is_empty() && !self.audio.blind.enabled,
+                        |v| {
+                            v.child(
+                                self.button(
+                                    "audio-review",
+                                    if self.audio.review.is_some() {
+                                        "复习中 ✓".into()
+                                    } else {
+                                        format!("重点句 {}", self.audio_saved.len())
+                                    },
+                                    Action::AudioReview,
+                                    cx,
+                                )
+                                .selected(self.audio.review.is_some())
+                                .disabled(!available || self.audio.blind.enabled),
+                            )
+                        },
                     )
                     .child(
                         self.button(
@@ -1454,5 +1476,72 @@ impl AppView {
                 );
         }
         content.into_any_element()
+    }
+}
+
+impl AppView {
+    fn audio_review_bar(
+        &self,
+        review: &crate::app_state::AudioClipReview,
+        cx: &Context<Self>,
+    ) -> Div {
+        let total = review.ranges.len();
+        let index = review.index.min(total.saturating_sub(1));
+        let range = &review.ranges[index];
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .px_5()
+            .py_2()
+            .bg(cx.theme().accent)
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(div().text_xs().font_weight(FontWeight::BOLD).child(format!(
+                "重点句 {}/{}",
+                index + 1,
+                total
+            )))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .child(range.saved.front.clone()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!(
+                        "{}–{}",
+                        clip_clock(range.start),
+                        clip_clock(range.end)
+                    )),
+            )
+            .child(
+                self.button(
+                    "audio-review-prev",
+                    "上一句",
+                    Action::AudioReviewStep(-1),
+                    cx,
+                )
+                .disabled(index == 0),
+            )
+            .child(
+                self.button(
+                    "audio-review-next",
+                    "下一句",
+                    Action::AudioReviewStep(1),
+                    cx,
+                )
+                .disabled(index + 1 >= total),
+            )
+            .child(
+                self.button("audio-review-stop", "退出复习", Action::AudioReviewStop, cx)
+                    .ghost(),
+            )
     }
 }

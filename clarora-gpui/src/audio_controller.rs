@@ -52,6 +52,7 @@ impl AppView {
         self.audio.current_scroll.set_offset(Point::default());
         self.audio.clip_mode = false;
         self.audio.tools_open = false;
+        self.audio.review = None;
         if self.audio.repeat_mode == PlaybackMode::Ab {
             self.audio.repeat_mode = PlaybackMode::Normal;
         }
@@ -115,5 +116,137 @@ impl AppView {
     pub(super) fn invalidate_blind(&mut self) {
         self.audio.blind.invalidate();
         self.audio.blind_pending = None;
+    }
+}
+
+impl AppView {
+    pub(super) fn start_audio_review(&mut self) -> Result<()> {
+        ensure!(!self.audio.blind.enabled, "请先切回字幕模式");
+        if self.audio.review.is_some() {
+            self.stop_audio_review(true);
+            return Ok(());
+        }
+        ensure!(!self.audio_saved.is_empty(), "本篇还没有收藏的重点句");
+        self.audio.review = Some(crate::app_state::AudioClipReview {
+            audio_id: self.audio.current_id.clone(),
+            ranges: self.audio_saved.clone(),
+            index: 0,
+            started: Instant::now(),
+        });
+        self.audio.clip_mode = false;
+        self.audio.tools_open = false;
+        self.audio.repeat_mode = PlaybackMode::Normal;
+        self.media.session.mode = PlaybackMode::Normal;
+        self.media.session.loop_a = None;
+        self.media.session.loop_b = None;
+        self.play_audio_review_clip(0)
+    }
+
+    pub(super) fn play_audio_review_clip(&mut self, index: usize) -> Result<()> {
+        let (audio_id, range, total) = {
+            let review = self.audio.review.as_ref().context("尚未开始重点句复习")?;
+            let range = review.ranges.get(index).context("重点句已不存在")?.clone();
+            (review.audio_id.clone(), range, review.ranges.len())
+        };
+        ensure!(audio_id == self.audio.current_id, "音频已切换");
+        let row = self.selected().context("音频不存在")?;
+        let path = PathBuf::from(text(&row, "audio_uri"));
+        self.media.open(
+            PlaybackOwner::Audio(audio_id),
+            path,
+            range.start,
+            range.end,
+            false,
+            PlaybackMode::Normal,
+        );
+        if let Some(review) = self.audio.review.as_mut() {
+            review.index = index;
+            review.started = Instant::now();
+        }
+        self.report_status(
+            FeedbackKind::Info,
+            format!("重点句 {}/{} · {}", index + 1, total, range.saved.front),
+        );
+        Ok(())
+    }
+
+    pub(super) fn step_audio_review(&mut self, delta: i8) -> Result<()> {
+        let Some(review) = self.audio.review.as_ref() else {
+            return Ok(());
+        };
+        let next = (review.index as i64 + i64::from(delta))
+            .clamp(0, review.ranges.len().saturating_sub(1) as i64) as usize;
+        if next == review.index {
+            return Ok(());
+        }
+        self.play_audio_review_clip(next)
+    }
+
+    pub(super) fn stop_audio_review(&mut self, restore: bool) {
+        let Some(review) = self.audio.review.take() else {
+            return;
+        };
+        let position = review
+            .ranges
+            .get(review.index)
+            .map(|range| range.start)
+            .unwrap_or(0.);
+        if restore && let Some(row) = self.selected() {
+            self.media.open(
+                PlaybackOwner::Audio(review.audio_id),
+                PathBuf::from(text(&row, "audio_uri")),
+                position,
+                0.,
+                true,
+                PlaybackMode::Normal,
+            );
+        }
+        self.media.player.set("pause", "yes");
+    }
+
+    pub(super) fn poll_audio_review(&mut self) -> bool {
+        let Some(review) = self.audio.review.as_ref() else {
+            return false;
+        };
+        if self.page != "listening" || review.audio_id != self.audio.current_id {
+            let stale = review.audio_id.clone();
+            self.stop_audio_review(false);
+            if stale != self.audio.current_id {
+                self.report_status(FeedbackKind::Info, "音频已切换，已退出重点句复习".into());
+            }
+            return true;
+        }
+        let (index, total, range, elapsed) = (
+            review.index,
+            review.ranges.len(),
+            review.ranges[review.index].clone(),
+            review.started.elapsed(),
+        );
+        let Some(row) = self.selected() else {
+            self.stop_audio_review(false);
+            return true;
+        };
+        let state = self.media.snapshot.clone();
+        if state.path != text(&row, "audio_uri") || elapsed < Duration::from_millis(250) {
+            return false;
+        }
+        if state.position + 0.5 < range.start || state.position > range.end + 0.5 {
+            self.stop_audio_review(true);
+            self.report_status(FeedbackKind::Info, "已退出重点句复习，恢复整篇播放".into());
+            return true;
+        }
+        if !(state.eof || state.position >= range.end - 0.03) {
+            return false;
+        }
+        if index + 1 < total {
+            if let Err(error) = self.play_audio_review_clip(index + 1) {
+                self.stop_audio_review(true);
+                self.report_status(FeedbackKind::Error, format!("重点句复习中断：{error:#}"));
+            }
+        } else {
+            self.stop_audio_review(true);
+            self.report_status(FeedbackKind::Info, "本篇重点句复习完成".into());
+        }
+        true
     }
 }

@@ -32,6 +32,9 @@ pub(super) enum Action {
     AudioBlindSentence(i8),
     AudioBlindRow(String, Cue, Option<usize>),
     AudioClipMode,
+    AudioReview,
+    AudioReviewStep(i8),
+    AudioReviewStop,
     AudioTools,
     AudioFont(u8),
     AudioCurrent,
@@ -248,6 +251,9 @@ impl From<Action> for Command {
                 Routed::Audio(audio::Command::AudioBlindRow(v0, v1, v2))
             }
             Action::AudioClipMode => Routed::Audio(audio::Command::AudioClipMode),
+            Action::AudioReview => Routed::Audio(audio::Command::AudioReview),
+            Action::AudioReviewStep(v0) => Routed::Audio(audio::Command::AudioReviewStep(v0)),
+            Action::AudioReviewStop => Routed::Audio(audio::Command::AudioReviewStop),
             Action::AudioTools => Routed::Audio(audio::Command::AudioTools),
             Action::AudioFont(v0) => Routed::Audio(audio::Command::AudioFont(v0)),
             Action::AudioCurrent => Routed::Audio(audio::Command::AudioCurrent),

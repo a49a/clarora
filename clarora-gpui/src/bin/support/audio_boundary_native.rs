@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command, time::Duration};
 
 pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
-    let workflow = "音频字幕 A/B 竖线拖动边界且不触发文字选区";
+    let workflow = "音频字幕 A/B 拖动与本篇重点句复习";
     if !cfg!(debug_assertions)
         || !cfg!(target_os = "macos")
         || std::env::var("CLARORA_GUI_MEMORY_CHECK").as_deref() != Ok("1")
@@ -29,11 +29,15 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         status.success()
             && report["passed"] == true
-            && report["cases"].as_array().is_some_and(|cases| cases.iter().any(
-                |case| case["case"]
-                    == "audio subtitle A/B vertical markers drag both boundaries without selecting text"
-            )),
-        "audio A/B text marker drag failed: {}",
+            && report["cases"].as_array().is_some_and(|cases| {
+                [
+                    "audio subtitle A/B vertical markers drag both boundaries without selecting text",
+                    "audio learning plays saved A/B clips in order and returns to the full track",
+                ]
+                .iter()
+                .all(|name| cases.iter().any(|case| case["case"] == *name))
+            }),
+        "audio A/B drag or saved-clip review failed: {}",
         report_path.display()
     );
     results.push(json!({"workflow":workflow,"passed":true,"report":report_path}));

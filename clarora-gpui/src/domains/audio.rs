@@ -12,6 +12,9 @@ pub(super) enum Command {
     AudioBlindSentence(i8),
     AudioBlindRow(String, Cue, Option<usize>),
     AudioClipMode,
+    AudioReview,
+    AudioReviewStep(i8),
+    AudioReviewStop,
     AudioTools,
     AudioFont(u8),
     AudioCurrent,
@@ -144,6 +147,9 @@ impl Command {
             }
 
             Command::AudioBlind(enabled) => {
+                if enabled {
+                    app.stop_audio_review(true);
+                }
                 app.subtitle_text.borrow_mut().clear();
                 ensure!(app.page == "listening", "请先进入音频学习");
                 ensure!(!app.tasks.foreground.is_running(), "请等待当前任务完成");
@@ -372,6 +378,7 @@ impl Command {
 
             Command::AudioClipMode => {
                 ensure!(!app.audio.blind.enabled, "请先切回字幕模式");
+                app.stop_audio_review(true);
                 if app.audio.repeat_mode.is_sentence() {
                     app.set_audio_repeat_mode(0)?;
                 }
@@ -384,6 +391,18 @@ impl Command {
                     }
                 }
             }
+
+            Command::AudioReview => {
+                ensure!(app.page == "listening", "请先进入音频学习");
+                app.start_audio_review()?;
+            }
+
+            Command::AudioReviewStep(direction) => {
+                ensure!(app.page == "listening", "请先进入音频学习");
+                app.step_audio_review(direction)?;
+            }
+
+            Command::AudioReviewStop => app.stop_audio_review(true),
 
             Command::AudioTools => {
                 ensure!(!app.audio.blind.enabled, "请先切回字幕模式");

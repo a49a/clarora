@@ -33,6 +33,18 @@ pub(super) fn prepare(out: &Path) -> Result<Library> {
             "audio_uri": wav, "subtitle_uri": srt,
         }),
     )?;
+    for (id, start, end, front) in [
+        ("boundary-clip-a", 1200, 1500, "Delta epsilon"),
+        ("boundary-clip-b", 1500, 1700, "zeta."),
+    ] {
+        lib.put(
+            "clip_cards",
+            json!({
+                "id": id, "en_text": front, "zh_text": "",
+                "audio_uri": wav.to_string_lossy(), "start_ms": start, "end_ms": end,
+            }),
+        )?;
+    }
     Ok(lib)
 }
 
@@ -44,6 +56,7 @@ pub(super) struct Probe {
     cases: Vec<Value>,
     observations: Vec<Value>,
     drawn: bool,
+    saw_second_review_clip: bool,
 }
 
 impl Probe {
@@ -56,6 +69,7 @@ impl Probe {
             cases: vec![],
             observations: vec![],
             drawn: false,
+            saw_second_review_clip: false,
         }
     }
     fn draw(window: &Window, cx: &mut Context<AppView>) {
@@ -267,6 +281,44 @@ impl Probe {
                     "clip_mode": app.audio.clip_mode,
                 }));
                 self.cases.push(json!({"case":"audio subtitle A/B vertical markers drag both boundaries without selecting text","passed":true}));
+                ensure!(
+                    app.audio_saved.len() >= 2,
+                    "review fixture clips missing: {:?}",
+                    app.audio_saved
+                );
+                app.handle(Action::AudioReview, window, cx);
+                ensure!(
+                    app.audio
+                        .review
+                        .as_ref()
+                        .is_some_and(|review| review.index == 0),
+                    "audio review did not start at the first saved clip"
+                );
+            }
+            6 => {
+                if let Some(review) = app.audio.review.as_ref() {
+                    if review.index == 1 {
+                        self.saw_second_review_clip = true;
+                    }
+                    ensure!(
+                        self.stage_started.elapsed() < Duration::from_secs(3),
+                        "audio review did not reach the second clip: index={} saved={}",
+                        review.index,
+                        app.audio_saved.len()
+                    );
+                    return Ok(false);
+                }
+                ensure!(
+                    self.saw_second_review_clip,
+                    "audio review finished without playing the second clip"
+                );
+                self.observations.push(json!({
+                    "event": "audio saved-clip review",
+                    "saved": app.audio_saved.len(),
+                    "saw_second": self.saw_second_review_clip,
+                    "paused": app.media.snapshot.paused,
+                }));
+                self.cases.push(json!({"case":"audio learning plays saved A/B clips in order and returns to the full track","passed":true}));
                 self.report(true, None)?;
                 return Ok(true);
             }

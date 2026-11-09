@@ -136,6 +136,7 @@ impl AppView {
         changed |= self.poll_pending_video_start();
         changed |= self.poll_video_sentence_repeat();
         changed |= self.poll_audio_sentence_repeat();
+        changed |= self.poll_audio_review();
         if let (Some(a), Some(b)) = (self.media.session.loop_a, self.media.session.loop_b) {
             if self.media.session.sentence().is_none()
                 && self.media.session.mode == PlaybackMode::Ab

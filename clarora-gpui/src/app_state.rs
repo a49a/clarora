@@ -1,6 +1,12 @@
 //! Domain state owners. Views render snapshots; resource lifetimes live here.
 use super::*;
 
+pub(super) struct AudioClipReview {
+    pub(super) audio_id: String,
+    pub(super) ranges: Vec<clip_marks::Range>,
+    pub(super) index: usize,
+    pub(super) started: Instant,
+}
 pub(super) struct AudioState {
     pub(super) library: audio_library::State,
     pub(super) rename_subscription: Option<Subscription>,
@@ -16,6 +22,7 @@ pub(super) struct AudioState {
     pub(super) waveform_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     pub(super) waveform_drag: Option<bool>,
     pub(super) text_edge_drag: Option<bool>,
+    pub(super) review: Option<AudioClipReview>,
     pub(super) cues: Vec<Cue>,
     pub(super) scroll: ListState,
     pub(super) center: subtitle_follow_ui::Follow,
@@ -52,6 +59,7 @@ impl AudioState {
             waveform_bounds: Default::default(),
             waveform_drag: None,
             text_edge_drag: None,
+            review: None,
             cues: vec![],
             scroll: ListState::new(0, ListAlignment::Top, px(120.)),
             center: Default::default(),
