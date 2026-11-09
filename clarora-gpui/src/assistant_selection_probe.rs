@@ -168,7 +168,7 @@ impl Probe {
     ) -> Result<(Point<Pixels>, Point<Pixels>, Point<Pixels>)> {
         let viewport = window.viewport_size();
         let edge = viewport.width - px(480.);
-        app.inputs["reference"].update(cx, |state, cx| {
+        app.inputs["speaking_answer_draft"].update(cx, |state, cx| {
             for y in (0..f32::from(viewport.height) as usize).step_by(2) {
                 let start = point(edge - px(100.), px(y as f32));
                 let end = point(edge + px(40.), px(y as f32));
@@ -609,7 +609,7 @@ impl Probe {
                 app.assistant.offer = None;
                 app.handle(Action::Page("speaking".into()), window, cx);
                 app.set(
-                    "reference",
+                    "speaking_answer_draft",
                     "background selection words ".repeat(40),
                     window,
                     cx,
@@ -640,7 +640,7 @@ impl Probe {
                 if self.started.elapsed() < Duration::from_millis(400) {
                     return Ok(false);
                 }
-                let selection = app.inputs["reference"]
+                let selection = app.inputs["speaking_answer_draft"]
                     .update(cx, |state, cx| state.selected_text_range(false, window, cx));
                 let range = selection
                     .filter(|s| !s.range.is_empty())
@@ -652,7 +652,7 @@ impl Probe {
                     "dragging":app.assistant.dragging
                 }));
                 ensure!(
-                    app.inputs["reference"]
+                    app.inputs["speaking_answer_draft"]
                         .read(cx)
                         .focus_handle(cx)
                         .is_focused(window)
@@ -674,7 +674,7 @@ impl Probe {
                 if self.started.elapsed() < Duration::from_millis(250) {
                     return Ok(false);
                 }
-                let selection = app.inputs["reference"]
+                let selection = app.inputs["speaking_answer_draft"]
                     .update(cx, |state, cx| state.selected_text_range(false, window, cx));
                 observations.push(json!({
                     "background_selection_after":selection.as_ref().map(|s| [s.range.start, s.range.end])

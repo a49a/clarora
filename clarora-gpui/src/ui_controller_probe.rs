@@ -62,6 +62,7 @@ pub(super) fn prepare(out: &Path) -> Result<Library> {
             ],
         )?;
     }
+    clarora_gpui::speaking::create_group(&lib, "原生探针口语")?;
     lib.put("sentence_cards",json!({"id":"native-probe-card","text":"Native controller card.","translation":"原生控制器卡片。","notes":""}))?;
     lib.set_setting(
         &format!("key_points_{AUDIO_A}"),
@@ -566,8 +567,8 @@ impl Probe {
                 );
                 self.note("全局新对话清理/旧材料会话仍可恢复", app)?;
                 app.handle(Action::Page("speaking".into()), window, cx);
-                app.set("reference", SELECTED_TEXT, window, cx);
-                app.inputs["reference"].update(cx, |state, cx| state.focus(window, cx));
+                app.set("speaking_answer_draft", SELECTED_TEXT, window, cx);
+                app.inputs["speaking_answer_draft"].update(cx, |state, cx| state.focus(window, cx));
                 Self::draw_after_update(window, cx);
                 self.advance();
             }
@@ -583,7 +584,7 @@ impl Probe {
                 if self.stage_started.elapsed() < Duration::from_millis(100) {
                     return Ok(());
                 }
-                let selection = app.inputs["reference"]
+                let selection = app.inputs["speaking_answer_draft"]
                     .update(cx, |state, cx| state.selected_text_range(false, window, cx));
                 ensure!(
                     selection.as_ref().is_some_and(|s| !s.range.is_empty()),
