@@ -371,11 +371,7 @@ impl Probe {
                 app.handle_video_arrow_key(&Self::key("left", false), window, cx);
                 ensure!(
                     app.video.part_confirmation.is_none()
-                        && app
-                            .media
-                            .session
-                            .video_sentence()
-                            .is_some_and(|s| s.three),
+                        && app.media.session.video_sentence().is_some_and(|s| s.three),
                     "左键没有取消并继续三遍切句"
                 );
                 self.record(app, "普通右键切句/末句首次确认/长按不确认/Esc与左键取消")?;
