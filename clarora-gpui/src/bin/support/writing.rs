@@ -1,6 +1,6 @@
 //! Writing drafts → real loopback model → append-only correction history → ZIP restore.
 use anyhow::{Context, Result, ensure};
-use clarora_gpui::{ai, backup, data::Library, process, writing};
+use clarora_gpui::{ai, backup, credentials, data::Library, process, writing};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -178,6 +178,15 @@ fn read_request(socket: &mut TcpStream) -> Result<Value> {
             .any(|s| s.eq_ignore_ascii_case("authorization: Bearer writing-http-fixture-key")),
         "writing did not use the synthetic credential"
     );
+    let header = |name: &str| {
+        headers.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_string())
+        })
+    };
+    let opencode_session = header("x-opencode-session").unwrap_or_default();
+    let user_agent = header("user-agent").unwrap_or_default();
     let length = headers
         .lines()
         .find_map(|line| {
@@ -195,7 +204,9 @@ fn read_request(socket: &mut TcpStream) -> Result<Value> {
         bytes.extend_from_slice(&block[..count]);
     }
     let body: Value = serde_json::from_slice(&bytes[split..split + length])?;
-    Ok(json!({"endpoint":"POST /chat/completions","synthetic_credential":true,"body":body}))
+    Ok(
+        json!({"endpoint":"POST /chat/completions","synthetic_credential":true,"opencode_session":opencode_session,"user_agent":user_agent,"body":body}),
+    )
 }
 fn response(socket: &mut TcpStream, kind: &str, body: &str) -> Result<()> {
     write!(
@@ -508,6 +519,25 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
                 "{model}: duplicate writing model request"
             );
             request_contains(&fixture, request_index, &before.prompt, &before.answer)?;
+            let body = fixture.requests.lock().unwrap()[request_index]["body"].clone();
+            let messages = body["messages"].as_array().unwrap();
+            let system = messages
+                .iter()
+                .find(|m| m["role"] == "system")
+                .and_then(|m| m["content"].as_str())
+                .unwrap();
+            let material = system
+                .split_once("<material>\n")
+                .and_then(|(_, s)| s.rsplit_once("\n</material>").map(|(data, _)| data))
+                .unwrap();
+            let material: Value = serde_json::from_str(material)?;
+            ensure!(
+                material["minimum_words"] == 150
+                    && messages.iter().any(|m| m["content"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("教学生如何扩充"))),
+                "{model}: minimum word target guidance missing from request"
+            );
             let after = writing::get(&Library::open(lib.root.clone())?, &entry.id)?.unwrap();
             let context = review.follow_up_context()?;
             ensure!(
@@ -898,6 +928,147 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
             &mut evidence,
             "writing-group-move-and-reopen",
             json!({"legacy_ungrouped":true,"group_id":group.id,"empty_group":empty_group.id,"draft_and_reviews_preserved":true}),
+        )?;
+        let endpoint = format!("http://{}", fixture.address);
+        ai::save_shared(
+            &lib,
+            ai::Config {
+                provider: ai::PROVIDER_OPENCODE_GO.into(),
+                base_url: "https://example.invalid/v1".into(),
+                model: "direct".into(),
+                ..Default::default()
+            },
+            "writing-http-fixture-key",
+        )?;
+        ensure!(
+            ai::load_config(&lib)?.base_url == ai::OPENCODE_GO_BASE_URL,
+            "OpenCode Go did not use the official base URL"
+        );
+        // Point the same provider at the loopback fixture to verify required headers.
+        ai::save(
+            &lib,
+            ai::Config {
+                provider: ai::PROVIDER_OPENCODE_GO.into(),
+                base_url: endpoint.clone(),
+                model: "direct".into(),
+                ..Default::default()
+            },
+            "writing-http-fixture-key",
+            "writing-http-fixture-key",
+        )?;
+        let request_index = fixture.count();
+        writing::review(&lib, &entry.id, &process::cancel_token(), |_| {})?;
+        writing::review(&lib, &entry.id, &process::cancel_token(), |_| {})?;
+        let requests = fixture.requests.lock().unwrap();
+        let first = &requests[request_index];
+        let second = &requests[request_index + 1];
+        ensure!(
+            first["opencode_session"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("ses_"))
+                && first["opencode_session"] == second["opencode_session"],
+            "OpenCode Go session header missing or unstable"
+        );
+        ensure!(
+            first["user_agent"] == format!("Clarora/{}", env!("CARGO_PKG_VERSION")),
+            "OpenCode Go user agent missing"
+        );
+        drop(requests);
+        record(
+            &root,
+            &mut evidence,
+            "opencode-go-provider",
+            json!({"official_base":true,"session_header":"ses_*","session_stable":true,"user_agent":"Clarora"}),
+        )?;
+        ai::save_shared(
+            &lib,
+            ai::Config {
+                provider: ai::PROVIDER_DEEPSEEK.into(),
+                base_url: "https://example.invalid/v1".into(),
+                model: "deepseek-flash".into(),
+                ..Default::default()
+            },
+            "writing-http-fixture-key",
+        )?;
+        let loaded = ai::load_config(&lib)?;
+        ensure!(
+            loaded.provider == ai::PROVIDER_DEEPSEEK
+                && loaded.base_url == ai::DEEPSEEK_BASE_URL
+                && loaded.model == "deepseek-flash",
+            "DeepSeek preset did not use the official configuration"
+        );
+        ai::save(
+            &lib,
+            ai::Config {
+                provider: ai::PROVIDER_DEEPSEEK.into(),
+                base_url: endpoint.clone(),
+                model: "direct".into(),
+                ..Default::default()
+            },
+            "writing-http-fixture-key",
+            "writing-http-fixture-key",
+        )?;
+        let request_index = fixture.count();
+        writing::review(&lib, &entry.id, &process::cancel_token(), |_| {})?;
+        ensure!(
+            fixture.requests.lock().unwrap()[request_index]["opencode_session"] == "",
+            "DeepSeek request carried an OpenCode session header"
+        );
+        fixture.configure(&lib, "direct")?;
+        record(
+            &root,
+            &mut evidence,
+            "deepseek-provider",
+            json!({"official_base":true,"model":"deepseek-flash","no_session_header":true}),
+        )?;
+        let first_profile = ai::save_profile(
+            &lib,
+            "写作配置甲",
+            ai::Config {
+                base_url: endpoint.clone(),
+                model: "direct".into(),
+                ..Default::default()
+            },
+            "profile-key-a",
+        )?;
+        let second_profile = ai::save_profile(
+            &lib,
+            "写作配置乙",
+            ai::Config {
+                base_url: endpoint,
+                model: "sse".into(),
+                ..Default::default()
+            },
+            "profile-key-b",
+        )?;
+        let (profiles, active) = ai::profiles(&lib)?;
+        ensure!(
+            profiles.iter().any(|p| p.id == first_profile.id)
+                && profiles.iter().any(|p| p.id == second_profile.id)
+                && active == second_profile.id
+                && ai::load_config(&lib)?.model == "sse",
+            "saved profiles were not retained or activated"
+        );
+        let selected = ai::select_profile(&lib, &first_profile.id)?;
+        ensure!(
+            selected.model == "direct" && ai::load_config(&lib)?.model == "direct",
+            "profile switch did not load the selected config"
+        );
+        ensure!(
+            credentials::get(&lib, &format!("chat-{}", selected.credential_id))? == "profile-key-a",
+            "first profile key was not stored separately"
+        );
+        let selected = ai::select_profile(&lib, &second_profile.id)?;
+        ensure!(
+            credentials::get(&lib, &format!("chat-{}", selected.credential_id))? == "profile-key-b",
+            "second profile key was not stored separately"
+        );
+        fixture.configure(&lib, "direct")?;
+        record(
+            &root,
+            &mut evidence,
+            "ai-profiles-save-switch",
+            json!({"profiles":profiles.len(),"switched_both":true,"keys_isolated":true}),
         )?;
         snapshot(&lib, &root.join("after-correction.sqlite"))?;
         let zip = root.join("writing-backup.zip");

@@ -10,6 +10,7 @@ pub(super) enum Command {
     TtsVoice(i32),
     TtsSpeed(f32),
     TtsPlay,
+    GroupCheck,
 }
 impl Command {
     pub(super) fn effects(&self, _app: &AppView) -> Effects {
@@ -135,6 +136,8 @@ impl Command {
                 app.page_scroll.set_offset(point(px(0.), px(0.)));
                 app.handle(Action::Audio(text(&row, "id")), window, cx);
             }
+
+            Command::GroupCheck => app.prepare_speaking_group_check(window, cx)?,
         }
         Ok(())
     }

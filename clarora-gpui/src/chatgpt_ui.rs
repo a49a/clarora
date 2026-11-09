@@ -433,16 +433,114 @@ impl AppView {
                     .border_color(cx.theme().border)
                     .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("自定义 AI 服务"))
                     .child(div().text_sm().text_color(cx.theme().muted_foreground).child("配置服务地址、模型和 API Key。远端转写需使用支持时间轴的模型；图片识字可单独指定视觉模型。"))
+                    .child({
+                        let provider = self.value("ai_provider", cx);
+                        let selected = match provider.as_str() {
+                            ai::PROVIDER_OPENCODE_GO => ai::PROVIDER_OPENCODE_GO,
+                            ai::PROVIDER_DEEPSEEK => ai::PROVIDER_DEEPSEEK,
+                            _ => ai::PROVIDER_CUSTOM,
+                        };
+                        self.surface_menu(
+                            "ai-provider",
+                            format!("服务类型：{} ▾", ai::provider_label(&selected)),
+                            vec![
+                                (
+                                    ai::provider_label(ai::PROVIDER_CUSTOM).into(),
+                                    Action::SelectAiProvider(ai::PROVIDER_CUSTOM.into()),
+                                    selected == ai::PROVIDER_CUSTOM,
+                                    locked,
+                                ),
+                                (
+                                    ai::provider_label(ai::PROVIDER_OPENCODE_GO).into(),
+                                    Action::SelectAiProvider(ai::PROVIDER_OPENCODE_GO.into()),
+                                    selected == ai::PROVIDER_OPENCODE_GO,
+                                    locked,
+                                ),
+                                (
+                                    ai::provider_label(ai::PROVIDER_DEEPSEEK).into(),
+                                    Action::SelectAiProvider(ai::PROVIDER_DEEPSEEK.into()),
+                                    selected == ai::PROVIDER_DEEPSEEK,
+                                    locked,
+                                ),
+                            ],
+                            cx,
+                        )
+                    })
+                    .when(self.value("ai_provider", cx) == ai::PROVIDER_OPENCODE_GO, |panel| {
+                        panel
+                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(
+                                "OpenCode Go 固定使用官方 Base URL，自动发送 x-opencode-session 与 Clarora User-Agent；仅支持 Chat Completions 模型，如 deepseek-v4.1-flash、glm-5.3、kimi-k3。远端转写请改用本地模型。",
+                            ))
+                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(format!(
+                                "当前 API Base URL：{}",
+                                ai::OPENCODE_GO_BASE_URL
+                            )))
+                    })
+                    .when(self.value("ai_provider", cx) == ai::PROVIDER_DEEPSEEK, |panel| {
+                        panel
+                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(
+                                "DeepSeek 固定使用官方 Base URL，仅支持 Chat Completions；模型可用 deepseek-flash 或 deepseek-v4-pro。远端转写请改用本地模型。",
+                            ))
+                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(format!(
+                                "当前 API Base URL：{}",
+                                ai::DEEPSEEK_BASE_URL
+                            )))
+                    })
+                    .when(!self.data.ai_profiles.is_empty(), |panel| {
+                        let active = self
+                            .data
+                            .ai_profiles
+                            .iter()
+                            .find(|profile| profile.id == self.data.active_ai_profile)
+                            .map(|profile| profile.name.as_str())
+                            .unwrap_or("未选择");
+                        let options = self
+                            .data
+                            .ai_profiles
+                            .iter()
+                            .map(|profile| {
+                                (
+                                    profile.name.clone(),
+                                    Action::SelectAiProfile(profile.id.clone()),
+                                    profile.id == self.data.active_ai_profile,
+                                    locked,
+                                )
+                            })
+                            .collect();
+                        panel.child(self.surface_menu(
+                            "ai-profile",
+                            format!("当前配置：{active} ▾"),
+                            options,
+                            cx,
+                        ))
+                    })
+                    .child(self.field("ai_profile_name", "配置名称（保存为新配置时使用）"))
                     .child(self.field("base_url", "共用 API Base URL"))
                     .child(self.field("model", "聊天／远端转写共用模型 ID"))
                     .child(self.field("chat_key", "共用 API Key · 留空保留已保存密钥"))
                     .child(self.field("vision_model", "视觉模型（可选，留空使用共用模型）"))
-                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("此按钮统一保存本页的 AI 与学习设置。"))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("「保存为新配置」会另存一套地址、模型与密钥并立即切换；「保存 AI 与学习设置」更新当前配置。"))
                     .child(
-                        self.button("save-ai", "保存 AI 与学习设置", Action::SaveAi, cx)
-                            .primary()
-                            .disabled(self.tasks.foreground.is_running()),
-                    ),
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(
+                                self.button("save-ai", "保存 AI 与学习设置", Action::SaveAi, cx)
+                                    .primary()
+                                    .disabled(self.tasks.foreground.is_running()),
+                            )
+                            .child(
+                                self.button(
+                                    "save-ai-profile",
+                                    "保存为新配置",
+                                    Action::SaveAiProfile,
+                                    cx,
+                                )
+                                .outline()
+                                .disabled(locked),
+                            ),
+                    )
             )
             .into_any_element()
     }

@@ -181,6 +181,23 @@ const PAGES: &[(&str, &str, &str)] = &[
     ("settings", "设置", "AI 与存储"),
     ("sentences", "句型搜索", "搜遍音视频，逐句对照听"),
 ];
+/// Display order only; Cmd/Ctrl+number keeps the PAGES order above.
+const NAV_ORDER: &[&str] = &[
+    "listening",
+    "video",
+    "speaking",
+    "writing",
+    "sentences",
+    "library",
+    "pdf",
+    "ocr",
+    "graph",
+    "stats",
+    "meditation",
+    "settings",
+    "discover",
+    "flashcard",
+];
 use domains::Action;
 
 use task_controller::{Outcome, TaskUpdate};
@@ -300,6 +317,7 @@ impl AppView {
                 true,
                 false,
             ),
+            ("speaking_target_words", "不设目标", false, false),
             (
                 "tts_text",
                 "输入要合成的中文或英文（最多 10,000 字）",
@@ -311,6 +329,8 @@ impl AppView {
             ("model", "聊天／转写共用模型 ID", false, false),
             ("vision_model", "视觉模型", false, false),
             ("chat_key", "共用 API Key", false, true),
+            ("ai_provider", "custom / opencode_go", false, false),
+            ("ai_profile_name", "例如：DeepSeek、公司代理", false, false),
             ("local_model", "base.en", false, false),
             ("engine", "local / compatible", false, false),
             ("provider", "s3 / oss", false, false),
@@ -333,6 +353,16 @@ impl AppView {
                         input = input.auto_grow(4, 10).soft_wrap(true);
                     } else if multi {
                         input = input.multi_line(true).rows(3);
+                    }
+                    if key == "speaking_target_words" {
+                        input = input.validate(|value, _| {
+                            value.is_empty()
+                                || (value.bytes().all(|byte| byte.is_ascii_digit())
+                                    && value.parse::<usize>().is_ok_and(|count| {
+                                        (1..=clarora_gpui::speaking::MAX_TARGET_WORDS)
+                                            .contains(&count)
+                                    }))
+                        });
                     }
                     if masked {
                         input = input.masked(true);
@@ -578,10 +608,18 @@ impl AppView {
             .filter(|p| PAGES.iter().any(|(k, _, _)| k == p))
             .unwrap_or("flashcard".into());
         this.navigation_open = this.lib.setting("navigation_open").ok().as_deref() != Some("false");
-        for key in ["reference", "speaking_title", "speaking_answer_draft"] {
+        for key in ["reference", "speaking_title"] {
             cx.subscribe(&this.inputs[key], |_, _, event, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
+                }
+            })
+            .detach();
+        }
+        for key in ["speaking_answer_draft", "speaking_target_words"] {
+            cx.subscribe(&this.inputs[key], |this, _, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.schedule_speaking_draft_save(cx);
                 }
             })
             .detach();
@@ -630,18 +668,7 @@ impl AppView {
         }
         let ai_result = ai::load_config(&this.lib);
         match ai_result {
-            Ok(c) => {
-                let (c, _) = ai::shared_settings(c, String::new(), String::new());
-                for (k, v) in [
-                    ("base_url", c.base_url),
-                    ("model", c.model),
-                    ("vision_model", c.vision_model),
-                    ("local_model", c.local_model),
-                    ("engine", c.engine),
-                ] {
-                    this.set(k, v, window, cx);
-                }
-            }
+            Ok(c) => this.apply_ai_config(&c, window, cx),
             Err(e) => this.report_status(FeedbackKind::Error, e.to_string()),
         }
         if let Ok(c) = serde_json::from_str::<backup::StorageConfig>(
@@ -684,6 +711,9 @@ impl AppView {
         cx.on_app_quit(|this, cx| {
             this.tasks.audio_subtitles.cancel();
             this.tasks.models.cancel();
+            if let Err(error) = this.flush_speaking_draft(cx) {
+                eprintln!("退出前口语草稿保存失败：{error:#}");
+            }
             if let Err(error) = this.flush_writing(cx) {
                 eprintln!("退出前写作草稿保存失败：{error:#}");
             }
@@ -811,6 +841,26 @@ impl AppView {
     ) {
         if let Some(input) = self.inputs.get(key) {
             input.update(cx, |input, cx| input.set_value(value, window, cx));
+        }
+    }
+    fn apply_ai_config(&self, config: &ai::Config, window: &mut Window, cx: &mut Context<Self>) {
+        let (config, _) = ai::shared_settings(config.clone(), String::new(), String::new());
+        for (k, v) in [
+            (
+                "ai_provider",
+                if config.provider.is_empty() {
+                    ai::PROVIDER_CUSTOM.to_string()
+                } else {
+                    config.provider
+                },
+            ),
+            ("base_url", config.base_url),
+            ("model", config.model),
+            ("vision_model", config.vision_model),
+            ("local_model", config.local_model),
+            ("engine", config.engine),
+        ] {
+            self.set(k, v, window, cx);
         }
     }
     fn focus_phase_completed(&mut self, event: focus_timer::Event) {
@@ -1587,16 +1637,13 @@ impl Render for AppView {
             .flex()
             .flex_col()
             .gap_1();
-        // Keep existing Cmd/Ctrl+number assignments while placing search in learning space.
-        for (key, label, _) in PAGES[..6]
-            .iter()
-            .chain(PAGES.last())
-            .chain(PAGES[6..PAGES.len() - 1].iter())
-        {
-            if let Some(section) = match *key {
-                "discover" => Some("学习空间"),
+        // Keep existing Cmd/Ctrl+number assignments while showing review spaces last.
+        for key in NAV_ORDER.iter().copied() {
+            if let Some(section) = match key {
+                "listening" => Some("学习空间"),
                 "library" => Some("资料库"),
                 "stats" => Some("我的"),
+                "discover" => Some("复习"),
                 _ => None,
             } {
                 links = links.child(
@@ -1609,8 +1656,13 @@ impl Render for AppView {
                         .child(section),
                 );
             }
-            let selected = self.page == *key;
-            let key = (*key).to_string();
+            let selected = self.page == key;
+            let label = PAGES
+                .iter()
+                .find(|(page, _, _)| *page == key)
+                .map(|(_, label, _)| *label)
+                .unwrap_or(key);
+            let key = key.to_string();
             links = links.child(
                 div()
                     .id(SharedString::from(format!("nav-{key}")))
@@ -1646,7 +1698,7 @@ impl Render for AppView {
                             cx.theme().muted_foreground
                         },
                     ))
-                    .child(div().flex_1().child(*label))
+                    .child(div().flex_1().child(label))
                     .when(selected, |v| {
                         v.child(div().size(px(5.)).rounded_full().bg(cx.theme().primary))
                     })
@@ -2219,6 +2271,9 @@ impl Render for AppView {
                                             .child(subtitle),
                                     ),
                             )
+                            .when(self.page == "speaking", |header| {
+                                header.child(self.speaking_header_controls(cx))
+                            })
                             .child(
                                 div()
                                     .flex()

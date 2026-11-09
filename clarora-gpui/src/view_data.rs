@@ -19,6 +19,8 @@ pub struct State {
     pub asr_models: BTreeSet<String>,
     pub tts_ready: bool,
     pub saved_ai: Option<ai::Config>,
+    pub ai_profiles: Vec<ai::Profile>,
+    pub active_ai_profile: String,
     pub needs_legacy_import: bool,
     pub error: String,
     pub revision: u64,
@@ -84,6 +86,7 @@ impl State {
                 .filter(|model| model.installed(lib))
                 .map(|model| model.id.to_string())
                 .collect();
+            let (ai_profiles, active_ai_profile) = ai::profiles(lib)?;
             Ok(Self {
                 speaking,
                 ocr,
@@ -96,6 +99,8 @@ impl State {
                 // These APIs read non-secret settings/local credential presence only.
                 // They deliberately do not resolve OS keychain passwords.
                 saved_ai: Some(ai::load_config(lib)?),
+                ai_profiles,
+                active_ai_profile,
                 needs_legacy_import: credentials::needs_legacy_import(lib)?,
                 error: String::new(),
                 revision: self.revision.wrapping_add(1),

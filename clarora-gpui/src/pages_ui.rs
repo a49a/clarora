@@ -102,7 +102,15 @@ impl AppView {
                                     } else {
                                         "把遇见的表达，变成熟悉。"
                                     },
-                                )),
+                                ))
+                                .when(discover, |hero| {
+                                    hero.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("从已导入的资料中随机抽取句子、片段和 AI 问答卡，打开就开始。"),
+                                    )
+                                }),
                         )
                         .child(
                             div()

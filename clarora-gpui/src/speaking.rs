@@ -4,6 +4,7 @@ use crate::{
     data::{Library, id, now},
     practice_groups,
     process::Cancel,
+    writing::{self, Review, ReviewMode, ReviewSubject, ReviewSubmission},
 };
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
@@ -172,6 +173,10 @@ pub struct Question {
     pub audio: Option<PromptAudio>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub answer_draft: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_words: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviews: Vec<Review>,
 }
 
 impl Question {
@@ -184,6 +189,8 @@ impl Question {
             translation: None,
             audio: None,
             answer_draft: String::new(),
+            target_words: None,
+            reviews: Vec::new(),
         }
     }
 
@@ -210,6 +217,46 @@ impl Question {
 }
 
 pub const MAX_ANSWER_DRAFT_CHARS: usize = 60_000;
+pub const MAX_TARGET_WORDS: usize = MAX_ANSWER_DRAFT_CHARS.div_ceil(2);
+
+pub const GROUP_REVIEW_PROMPT: &str = "请一起批改以上同一组口语题的回答。重点检查各题答案之间是否重复，包括观点、例子、理由、句式和用词；指出重复出现在哪些题之间，并给每道题一个可执行的差异化改进方向。最后给出整组重复问题总结。只依据文本评价，不推断发音、语速或实际口语表现。";
+
+/// Build one assistant reference containing every answered question in a group.
+pub fn group_review_context(group: &Group, questions: &[Question]) -> Result<String> {
+    let questions = questions
+        .iter()
+        .filter(|question| {
+            question.group_id == group.id && !question.answer_draft.trim().is_empty()
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        questions.len() >= 2,
+        "至少需要 2 道已写作答草稿的题目，才能检查整组重复"
+    );
+    let mut text = format!(
+        "【口语整组批改】\n分组：{}\n共 {} 题；仅包含已写草稿的题目。\n",
+        group.name,
+        questions.len()
+    );
+    for (index, question) in questions.iter().enumerate() {
+        text.push_str(&format!(
+            "\n[{}] {}\n题目：{}\n作答草稿：{}\n",
+            index + 1,
+            question.label(),
+            if question.text.trim().is_empty() {
+                "（无题目转写）"
+            } else {
+                question.text.trim()
+            },
+            question.answer_draft.trim()
+        ));
+    }
+    ensure!(
+        text.chars().count() <= 120_000,
+        "整组内容超过 120,000 字符，请分批检查"
+    );
+    Ok(text)
+}
 
 pub fn read_answer_draft(path: &Path) -> Result<String> {
     let supported = path
@@ -242,6 +289,14 @@ pub fn validate_answer_draft(text: &str) -> Result<()> {
     ensure!(
         text.chars().count() <= MAX_ANSWER_DRAFT_CHARS,
         "作答草稿最多 {MAX_ANSWER_DRAFT_CHARS} 字符"
+    );
+    Ok(())
+}
+
+pub fn validate_target_words(target: Option<usize>) -> Result<()> {
+    ensure!(
+        target.is_none_or(|count| (1..=MAX_TARGET_WORDS).contains(&count)),
+        "目标词数须为 1 到 {MAX_TARGET_WORDS} 的整数"
     );
     Ok(())
 }
@@ -314,8 +369,63 @@ pub fn list(lib: &Library) -> Result<Vec<Question>> {
     .collect()
 }
 
-pub fn save(lib: &Library, mut question: Question, audio: AudioEdit) -> Result<Question> {
+/// Commit only the answer and target, leaving prompt edits and review history untouched.
+pub fn save_answer_draft(
+    lib: &Library,
+    question: &Question,
+    answer: &str,
+    target_words: Option<usize>,
+) -> Result<()> {
+    validate_answer_draft(answer)?;
+    validate_target_words(target_words)?;
+    let mut db = lib.db()?;
+    db.busy_timeout(std::time::Duration::from_millis(100))?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let changed = tx.execute(
+        "UPDATE ai_records SET payload=json_set(payload,'$.answer_draft',?1,'$.target_words',?2) WHERE id=?3 AND kind='speaking_question'",
+        params![answer, target_words, question.id],
+    )?;
+    if changed == 0 {
+        ensure!(
+            tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM ai_records WHERE id=? AND kind='speaking_group')",
+                [&question.group_id],
+                |row| row.get::<_, bool>(0)
+            )?,
+            "请先选择有效的口语分组"
+        );
+        let mut saved = question.clone();
+        saved.answer_draft = answer.to_owned();
+        saved.target_words = target_words;
+        tx.execute(
+            "INSERT INTO ai_records(id,kind,payload,created_at) VALUES(?,'speaking_question',?,?)",
+            params![saved.id, serde_json::to_string(&saved)?, now()],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn save(lib: &Library, question: Question, audio: AudioEdit) -> Result<Question> {
+    save_question(lib, question, audio, false)
+}
+
+pub(crate) fn import_prompt_audio(
+    lib: &Library,
+    question: Question,
+    path: PathBuf,
+) -> Result<Question> {
+    save_question(lib, question, AudioEdit::Import(path), true)
+}
+
+fn save_question(
+    lib: &Library,
+    mut question: Question,
+    audio: AudioEdit,
+    preserve_draft: bool,
+) -> Result<Question> {
     validate_answer_draft(&question.answer_draft)?;
+    validate_target_words(question.target_words)?;
     question.title = question.title.trim().to_owned();
     ensure!(
         question.title.chars().count() <= 256,
@@ -388,13 +498,20 @@ pub fn save(lib: &Library, mut question: Question, audio: AudioEdit) -> Result<Q
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        let previous = previous
+        let mut previous = previous
             .map(|(kind, payload)| -> Result<Question> {
                 ensure!(kind == "speaking_question", "口语题目标识冲突");
                 Ok(serde_json::from_str(&payload)?)
             })
             .transpose()?;
         let existing = previous.is_some();
+        if preserve_draft && let Some(previous) = &mut previous {
+            question.answer_draft = std::mem::take(&mut previous.answer_draft);
+        }
+        question.reviews = previous
+            .as_mut()
+            .map(|item| std::mem::take(&mut item.reviews))
+            .unwrap_or_default();
         question.audio = match audio {
             AudioEdit::Keep => previous.and_then(|item| item.audio),
             AudioEdit::Remove => None,
@@ -415,4 +532,54 @@ pub fn save(lib: &Library, mut question: Question, audio: AudioEdit) -> Result<Q
         }
     }
     result
+}
+
+/// Review the submitted text and append the result to the latest saved question.
+pub fn review_draft(
+    lib: &Library,
+    snapshot: &Question,
+    mode: ReviewMode,
+    cancel: &Cancel,
+) -> Result<Review> {
+    writing::check_cancel(cancel)?;
+    validate_answer_draft(&snapshot.answer_draft)?;
+    ensure!(!snapshot.text.trim().is_empty(), "请先转写题目音频");
+    ensure!(!snapshot.answer_draft.trim().is_empty(), "请先填写作答草稿");
+    let db = lib.db()?;
+    let created_at: String = db
+        .query_row(
+            "SELECT created_at FROM ai_records WHERE id=? AND kind='speaking_question'",
+            [&snapshot.id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("口语题目不存在，请先保存题目")?;
+    let review = writing::request_review(
+        lib,
+        ReviewSubmission {
+            subject: ReviewSubject::Speaking,
+            prompt: &snapshot.text,
+            prompt_markdown: false,
+            answer: &snapshot.answer_draft,
+            minimum_words: snapshot.target_words,
+            mode,
+        },
+        cancel,
+        |_| {},
+    )?;
+    let tx = writing::review_transaction(&db, cancel)?;
+    let payload: String = tx.query_row(
+        "SELECT payload FROM ai_records WHERE id=? AND kind='speaking_question' AND created_at=?",
+        params![snapshot.id, created_at], |row| row.get(0),
+    ).optional()?.context("口语题目已移除或替换，本次批改未保存")?;
+    let mut current: Question = serde_json::from_str(&payload).context("无法读取口语题目")?;
+    ensure!(current.id == snapshot.id, "口语题目标识不一致");
+    current.reviews.insert(0, review.clone());
+    tx.execute(
+        "UPDATE ai_records SET payload=? WHERE id=? AND kind='speaking_question'",
+        params![serde_json::to_string(&current)?, snapshot.id],
+    )?;
+    writing::check_cancel(cancel)?;
+    tx.commit()?;
+    Ok(review)
 }

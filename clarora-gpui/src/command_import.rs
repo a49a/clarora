@@ -2,7 +2,7 @@
 use crate::{
     data::{Library, Row, text},
     process::{self, Cancel},
-    speaking::{self, AudioEdit, Question},
+    speaking::{self, Question},
 };
 use anyhow::{Context, Result, ensure};
 use std::{collections::HashSet, path::PathBuf, sync::atomic::Ordering, time::Duration};
@@ -204,7 +204,7 @@ impl SpeakingRequest {
                 .question
                 .clone()
                 .unwrap_or_else(|| Question::draft(self.group.clone()));
-            match speaking::save(lib, question, AudioEdit::Import(path)) {
+            match speaking::import_prompt_audio(lib, question, path) {
                 Ok(saved) => report.questions.push(saved),
                 Err(error) => {
                     report.failed += 1;

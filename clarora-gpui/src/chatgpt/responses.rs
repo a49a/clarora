@@ -3,6 +3,20 @@ use serde_json::json;
 use std::sync::atomic::Ordering;
 const MAX_TEXT: usize = 4 * 1024 * 1024;
 const MAX_FRAME: usize = 8 * 1024 * 1024;
+
+fn network_error(error: anyhow::Error) -> anyhow::Error {
+    if error
+        .downcast_ref::<reqwest::Error>()
+        .is_some_and(reqwest::Error::is_connect)
+    {
+        anyhow::anyhow!(
+            "网络连接失败（无法完成与 ChatGPT 的 TLS 连接）。请检查网络、代理或 VPN 后重试。原始错误：{error}"
+        )
+    } else {
+        error
+    }
+}
+
 pub(super) async fn read_json(mut response: reqwest::Response, cancel: &Cancel) -> Result<Value> {
     let mut bytes = vec![];
     while let Some(chunk) = crate::ai_chat::request(cancel, response.chunk()).await? {
@@ -522,6 +536,7 @@ pub(super) async fn stream(
             .json(&body)
             .send(),
     )
-    .await?;
+    .await
+    .map_err(network_error)?;
     receive(response, cancel, progress).await
 }

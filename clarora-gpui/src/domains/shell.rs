@@ -88,6 +88,9 @@ fn navigate(
     if app.page == "writing" {
         app.flush_writing(cx)?;
     }
+    if app.page == "speaking" {
+        app.flush_speaking_draft(cx)?;
+    }
     audio::prepare_leave(app);
     let previous = app.page.clone();
     library::leave(app);

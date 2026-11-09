@@ -153,6 +153,14 @@ impl AppView {
         if self.chat_closing.is_some() {
             return false;
         }
+        if let Err(error) = self.flush_speaking_draft(cx) {
+            self.report_status(
+                FeedbackKind::Error,
+                format!("口语草稿尚未保存，窗口保持打开：{error:#}"),
+            );
+            cx.notify();
+            return false;
+        }
         if let Err(error) = self.flush_writing(cx) {
             self.report_status(
                 FeedbackKind::Error,
@@ -200,6 +208,14 @@ impl AppView {
                     && closing.requested_context == self.chat.requested_context()
                     && closing.revision == self.chat.draft_revision() =>
             {
+                if let Err(error) = self.flush_speaking_draft(cx) {
+                    self.report_status(
+                        FeedbackKind::Error,
+                        format!("口语草稿尚未保存，窗口保持打开：{error:#}"),
+                    );
+                    cx.notify();
+                    return false;
+                }
                 if let Err(error) = self.flush_writing(cx) {
                     self.report_status(
                         FeedbackKind::Error,

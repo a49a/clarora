@@ -92,9 +92,10 @@ pub enum CredentialSource {
     Chat,
     Asr,
 }
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub provider: String,
     pub base_url: String,
     pub model: String,
     pub vision_model: String,
@@ -105,9 +106,179 @@ pub struct Config {
     pub credential_id: String,
     pub shared_key_source: Option<CredentialSource>,
 }
+
+pub const PROVIDER_CUSTOM: &str = "custom";
+pub const PROVIDER_OPENCODE_GO: &str = "opencode_go";
+pub const PROVIDER_DEEPSEEK: &str = "deepseek";
+pub const OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/inference/go/openai/v1";
+pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
+
+pub fn provider_label(provider: &str) -> &'static str {
+    match provider {
+        PROVIDER_OPENCODE_GO => "OpenCode Go",
+        PROVIDER_DEEPSEEK => "DeepSeek",
+        _ => "自定义 OpenAI 兼容",
+    }
+}
+
+/// A named, reusable custom AI configuration. Secrets stay in credential storage.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Profile {
+    pub id: String,
+    pub name: String,
+    pub config: Config,
+}
+
+const PROFILES_KEY: &str = "ai_profiles";
+const ACTIVE_PROFILE_KEY: &str = "ai_active_profile";
+const DEFAULT_PROFILE_NAME: &str = "当前配置";
+const MAX_PROFILE_NAME_CHARS: usize = 60;
+
+fn validate_profile_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    ensure!(!name.is_empty(), "请输入配置名称");
+    ensure!(
+        name.chars().count() <= MAX_PROFILE_NAME_CHARS,
+        "配置名称最多 {MAX_PROFILE_NAME_CHARS} 个字符"
+    );
+    ensure!(
+        !name.chars().any(char::is_control),
+        "配置名称不能包含控制字符"
+    );
+    Ok(name)
+}
+
+fn default_profile(config: &Config) -> Option<Profile> {
+    let has_config = !config.base_url.trim().is_empty()
+        || !config.model.trim().is_empty()
+        || !config.asr_base_url.trim().is_empty()
+        || !config.credential_id.is_empty();
+    has_config.then(|| Profile {
+        id: if config.credential_id.is_empty() {
+            "default".into()
+        } else {
+            config.credential_id.clone()
+        },
+        name: DEFAULT_PROFILE_NAME.into(),
+        config: config.clone(),
+    })
+}
+
+/// Saved profiles plus the active profile ID. An unmodified single config appears
+/// as a synthetic profile so existing libraries keep working without migration.
+pub fn profiles(lib: &Library) -> Result<(Vec<Profile>, String)> {
+    let raw = lib.setting(PROFILES_KEY)?;
+    let mut profiles: Vec<Profile> = if raw.trim().is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&raw).context("已保存的 AI 配置格式无效")?
+    };
+    if profiles.is_empty() {
+        if let Some(profile) = default_profile(&load_config(lib)?) {
+            profiles.push(profile);
+        }
+    }
+    let stored = lib.setting(ACTIVE_PROFILE_KEY)?;
+    let active = if profiles.iter().any(|profile| profile.id == stored) {
+        stored
+    } else {
+        profiles
+            .first()
+            .map(|profile| profile.id.clone())
+            .unwrap_or_default()
+    };
+    Ok((profiles, active))
+}
+
+pub fn list_profiles(lib: &Library) -> Result<Vec<Profile>> {
+    Ok(profiles(lib)?.0)
+}
+
+/// Switch the active configuration without reading any secret.
+pub fn select_profile(lib: &Library, profile_id: &str) -> Result<Config> {
+    let _guard = config_lock().lock().unwrap();
+    let (profiles, _) = profiles(lib)?;
+    let profile = profiles
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .context("AI 配置不存在，请刷新后重试")?;
+    for endpoint in [&profile.config.base_url, &profile.config.asr_base_url] {
+        if !endpoint.is_empty() {
+            endpoint_url(endpoint)?;
+        }
+    }
+    lib.set_setting("ai_config", &serde_json::to_string(&profile.config)?)?;
+    lib.set_setting(ACTIVE_PROFILE_KEY, &profile.id)?;
+    Ok(profile.config)
+}
+
+/// Keep the active profile in sync after editing the shared settings form.
+pub fn sync_active_profile(lib: &Library) -> Result<()> {
+    let _guard = config_lock().lock().unwrap();
+    let (mut profiles, active) = profiles(lib)?;
+    if active.is_empty() {
+        return Ok(());
+    }
+    let config = load_config(lib)?;
+    let Some(profile) = profiles.iter_mut().find(|profile| profile.id == active) else {
+        return Ok(());
+    };
+    if profile.config == config {
+        return Ok(());
+    }
+    profile.config = config;
+    lib.set_setting(PROFILES_KEY, &serde_json::to_string(&profiles)?)
+}
+
+/// Save the current form as a new named profile and make it active.
+pub fn save_profile(lib: &Library, name: &str, config: Config, key: &str) -> Result<Profile> {
+    let name = validate_profile_name(name)?;
+    let (profiles, _) = profiles(lib)?;
+    ensure!(
+        !profiles
+            .iter()
+            .any(|profile| profile.name.eq_ignore_ascii_case(name)),
+        "已有同名配置，请换一个名称"
+    );
+    if key.is_empty() {
+        save_preferences(lib, config, "")?;
+    } else {
+        save_shared(lib, config, key)?;
+    }
+    let profile = Profile {
+        id: id(),
+        name: name.to_owned(),
+        config: load_config(lib)?,
+    };
+    let mut saved = profiles;
+    saved.push(profile.clone());
+    lib.set_setting(PROFILES_KEY, &serde_json::to_string(&saved)?)?;
+    lib.set_setting(ACTIVE_PROFILE_KEY, &profile.id)?;
+    Ok(profile)
+}
 impl Config {
+    pub fn is_opencode_go(&self) -> bool {
+        self.provider == PROVIDER_OPENCODE_GO
+    }
+    pub fn is_deepseek(&self) -> bool {
+        self.provider == PROVIDER_DEEPSEEK
+    }
+    /// Built-in presets only expose chat completions, not audio transcription.
+    pub fn is_chat_preset(&self) -> bool {
+        self.is_opencode_go() || self.is_deepseek()
+    }
     /// Keep legacy fields in sync so existing transcription consumers keep working.
     pub fn shared_api(mut self) -> Self {
+        self.provider = match self.provider.as_str() {
+            PROVIDER_OPENCODE_GO => PROVIDER_OPENCODE_GO.into(),
+            PROVIDER_DEEPSEEK => PROVIDER_DEEPSEEK.into(),
+            _ => PROVIDER_CUSTOM.into(),
+        };
+        if self.is_opencode_go() {
+            self.base_url = OPENCODE_GO_BASE_URL.into();
+        } else if self.is_deepseek() {
+            self.base_url = DEEPSEEK_BASE_URL.into();
+        }
         self.asr_base_url = self.base_url.clone();
         self.asr_model = self.model.clone();
         self
@@ -301,12 +472,15 @@ pub fn ocr(lib: &Library, path: &Path, cancel: &Cancel) -> Result<String> {
     };
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     let base = endpoint_url(&c.base_url)?;
+    let provider = c.provider.clone();
+    let session = crate::ai_chat::session_for(&format!("ocr:{model}:{}", path.display()));
     let payload = json!({"model":model,"messages":[{"role":"user","content":[{"type":"text","text":"逐字识别图片中的文字，保留段落，不要解释。"},{"type":"image_url","image_url":{"url":format!("data:{mime};base64,{encoded}")}}]}]});
     let connection_base = base.clone();
     let value = crate::ai_chat::remote_json(cancel, &connection_base, move |client| async move {
         let mut request = client
             .post(format!("{base}/chat/completions"))
             .json(&payload);
+        request = crate::ai_chat::provider_headers(request, &provider, &session);
         if !key.is_empty() {
             request = request.bearer_auth(key);
         }
@@ -329,6 +503,11 @@ pub fn transcribe(lib: &Library, path: &Path, cancel: &Cancel) -> Result<Vec<Cue
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
     let c = load_config(lib)?;
     if c.engine == "compatible" {
+        ensure!(
+            !c.is_chat_preset(),
+            "{}仅提供聊天接口，请改用本地转写模型",
+            provider_label(&c.provider)
+        );
         let key = credential(lib, &c, CredentialSource::Asr)?;
         let base = if c.asr_base_url.is_empty() {
             &c.base_url

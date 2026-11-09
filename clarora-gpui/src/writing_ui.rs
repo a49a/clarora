@@ -7,7 +7,7 @@ use clarora_gpui::{
     writing::{self, Entry, Review, ReviewMode},
     writing_format,
 };
-use gpui::{prelude::*, *};
+use gpui::{ClipboardItem, prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Selectable, Sizable,
     button::*,
@@ -18,8 +18,8 @@ use gpui_component::{
 };
 use std::{collections::BTreeMap, sync::atomic::Ordering, time::Duration};
 
-const BODY_FONT_SIZE: Pixels = px(24.);
-const BODY_LINE_SPACING: f32 = 1.55;
+pub(super) const BODY_FONT_SIZE: Pixels = px(24.);
+pub(super) const BODY_LINE_SPACING: f32 = 1.55;
 const EDITOR_HEIGHT: Pixels = px(440.);
 const EDITOR_HEADER_HEIGHT: Pixels = px(28.);
 const EDITOR_COLUMN_WIDTH: Pixels = px(380.);
@@ -220,6 +220,7 @@ pub(super) mod paste_probe {
                             prompt_markdown: true,
                             answer: "Earlier submission".into(),
                             feedback: "Fixture feedback".into(),
+                            minimum_words: Some(150),
                             edits: Some(vec![writing::Revision {
                                 original: "Earlier submission".into(),
                                 replacement: "Earlier draft".into(),
@@ -1537,6 +1538,20 @@ impl WritingView {
             })
     }
 
+    fn review_action(&mut self, action: ReviewAction, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            ReviewAction::Select(id) => {
+                self.selected_review = Some(id);
+                self.show_submission = false;
+                self.show_revision_notes = false;
+            }
+            ReviewAction::ToggleSubmission => self.show_submission = !self.show_submission,
+            ReviewAction::ToggleNotes => self.show_revision_notes = !self.show_revision_notes,
+            ReviewAction::FollowUp(id) => self.follow_up_review(&id, window, cx),
+        }
+        cx.notify();
+    }
+
     fn follow_up_review(&self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(review) = self.current.reviews.iter().find(|review| review.id == id) else {
             return;
@@ -1544,173 +1559,22 @@ impl WritingView {
         let context = review.follow_up_context();
         let owner = self.owner.clone();
         window.defer(cx, move |window, cx| {
-            let _ = owner.update(cx, |app, cx| match context {
-                Ok(text) => app.handle(
-                    Action::AssistantQuote(clarora_gpui::assistant::Reference {
-                        text,
-                        ..Default::default()
-                    }),
-                    window,
-                    cx,
-                ),
-                Err(error) => {
-                    app.report_status(FeedbackKind::Error, format!("无法引用本次批改：{error}"));
-                    cx.notify();
-                }
-            });
+            let _ = owner.update(cx, |app, cx| quote_review(app, context, window, cx));
         });
     }
 
     fn correction_history(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut panel = card(cx).child(
-            div()
-                .text_lg()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("批改历史"),
-        );
-        if self.current.reviews.is_empty() {
-            return panel
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("还没有批改记录。保存题目与作答后，可提交给设置中的大模型。"),
-                )
-                .into_any_element();
-        }
-        let mut tabs = div().flex().flex_wrap().gap_2();
-        for (index, review) in self.current.reviews.iter().enumerate() {
-            let id = review.id.clone();
-            tabs = tabs.child(
-                Button::new(SharedString::from(format!("writing-review-{id}")))
-                    .small()
-                    .outline()
-                    .selected(self.selected_review.as_deref() == Some(review.id.as_str()))
-                    .label(format!(
-                        "{} · {} · {}",
-                        self.current.reviews.len() - index,
-                        review.mode().label(),
-                        display_time(&review.created_at)
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.selected_review = Some(id.clone());
-                        this.show_submission = false;
-                        this.show_revision_notes = false;
-                        cx.notify();
-                    })),
-            );
-        }
-        panel = panel.child(tabs);
-        if let Some(review) = self
-            .current
-            .reviews
-            .iter()
-            .find(|review| self.selected_review.as_deref() == Some(review.id.as_str()))
-            .or_else(|| self.current.reviews.first())
-        {
-            let review_id = review.id.clone();
-            panel = panel
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(format!(
-                            "{} · 提交时模型设置：{}",
-                            display_time(&review.created_at),
-                            review.model
-                        )),
-                )
-                .child(
-                    Button::new("writing-review-follow-up")
-                        .primary()
-                        .small()
-                        .label("追问 AI")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.follow_up_review(&review_id, window, cx)
-                        })),
-                )
-                .child(
-                    Button::new("writing-review-source")
-                        .outline()
-                        .small()
-                        .label(if self.show_submission {
-                            "收起提交原文"
-                        } else {
-                            "查看本次提交原文"
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show_submission = !this.show_submission;
-                            cx.notify();
-                        })),
-                )
-                .when(self.show_submission, |panel| {
-                    panel.child(
-                        card(cx)
-                            .bg(cx.theme().muted)
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("本次批改的题目与作答 · 历史快照"),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("反馈对应以下提交内容，当前编辑框的内容可能已经更新。"),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("提交的题目"),
-                            )
-                            .child(if review.prompt_markdown {
-                                TextView::markdown(
-                                    SharedString::from(format!(
-                                        "writing-review-prompt-{}",
-                                        review.id
-                                    )),
-                                    review.prompt.clone(),
-                                    window,
-                                    cx,
-                                )
-                                .selectable(true)
-                                .into_any_element()
-                            } else {
-                                div()
-                                    .text_sm()
-                                    .whitespace_normal()
-                                    .child(review.prompt.clone())
-                                    .into_any_element()
-                            })
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("提交的作答"),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .whitespace_normal()
-                                    .child(review.answer.clone()),
-                            ),
-                    )
-                })
-                .child(if review.edits.is_some() {
-                    revision_result(review, self.show_revision_notes, cx).into_any_element()
-                } else {
-                    TextView::markdown(
-                        SharedString::from(format!("writing-feedback-{}", review.id)),
-                        review.feedback.clone(),
-                        window,
-                        cx,
-                    )
-                    .selectable(true)
-                    .into_any_element()
-                });
-        }
-        panel.into_any_element()
+        correction_history(
+            ReviewHistory {
+                reviews: &self.current.reviews,
+                selected: self.selected_review.as_deref(),
+                show_submission: self.show_submission,
+                show_notes: self.show_revision_notes,
+            },
+            Self::review_action,
+            window,
+            cx,
+        )
     }
 }
 
@@ -1762,14 +1626,36 @@ impl Render for WritingView {
                     .child(Button::new("writing-cancel-review").label(if cancelling { "正在取消…" } else { "取消批改" }).outline().disabled(cancelling)
                         .on_click(cx.listener(|this, _, _, cx| this.cancel_correction(cx))))));
         } else if let Some((message, failed)) = &self.correction_status {
+            let message = message.clone();
+            let failed = *failed;
+            let copy_message = message.clone();
             content = content.child(
                 card(cx)
-                    .text_color(if *failed {
+                    .text_color(if failed {
                         cx.theme().danger
                     } else {
                         cx.theme().primary
                     })
-                    .child(message.clone()),
+                    .child(
+                        div()
+                            .flex()
+                            .items_start()
+                            .gap_3()
+                            .child(div().flex_1().min_w_0().child(message))
+                            .when(failed, |row| {
+                                row.child(
+                                    Button::new("writing-copy-correction-error")
+                                        .small()
+                                        .outline()
+                                        .label("复制错误")
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                copy_message.clone(),
+                                            ));
+                                        })),
+                                )
+                            }),
+                    ),
             );
         }
         if !self.current.reviews.is_empty() {
@@ -1934,7 +1820,7 @@ impl Render for WritingView {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("留空表示不设目标"),
+                            .child("留空表示不设目标；低于目标时，AI 批改会说明差额并教你如何扩充"),
                     ),
             )
             .child(editors)
@@ -1999,7 +1885,7 @@ impl Render for WritingView {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("点击 AI 批改会把本次题目和作答发送至「设置」中配置的大模型服务。"),
+                    .child("点击 AI 批改会把本次题目和作答发送至「设置」中配置的大模型服务；批改结果可用“追问 AI”继续提问。"),
             );
         if self.delete_confirm.as_deref() == Some(self.current.id.as_str()) {
             editor = editor.child(
@@ -2045,7 +1931,345 @@ impl Render for WritingView {
     }
 }
 
-fn revision_result(review: &Review, show_notes: bool, cx: &Context<WritingView>) -> Div {
+pub(super) enum ReviewAction {
+    Select(String),
+    FollowUp(String),
+    ToggleSubmission,
+    ToggleNotes,
+}
+
+pub(super) struct ReviewHistory<'a> {
+    pub reviews: &'a [Review],
+    pub selected: Option<&'a str>,
+    pub show_submission: bool,
+    pub show_notes: bool,
+}
+
+pub(super) fn quote_review(
+    app: &mut AppView,
+    context: Result<String>,
+    window: &mut Window,
+    cx: &mut Context<AppView>,
+) {
+    match context {
+        Ok(text) => app.handle(
+            Action::AssistantQuote(clarora_gpui::assistant::Reference {
+                text,
+                ..Default::default()
+            }),
+            window,
+            cx,
+        ),
+        Err(error) => {
+            app.report_status(FeedbackKind::Error, format!("无法引用本次批改：{error}"));
+            cx.notify();
+        }
+    }
+}
+
+enum MarkdownChunk {
+    Text(String),
+    Table {
+        header: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
+}
+
+fn is_table_separator(line: &str) -> bool {
+    let line = line.trim();
+    line.contains('-')
+        && line.contains('|')
+        && line.chars().all(|ch| matches!(ch, '|' | '-' | ':' | ' '))
+}
+
+fn table_cells(line: &str) -> Vec<String> {
+    line.trim()
+        .trim_matches('|')
+        .split('|')
+        .map(|cell| cell.trim().to_owned())
+        .collect()
+}
+
+fn markdown_chunks(text: &str) -> Vec<MarkdownChunk> {
+    let lines = text.lines().collect::<Vec<_>>();
+    let mut chunks = Vec::new();
+    let mut text_start = 0;
+    let mut index = 0;
+    let mut fenced = false;
+    while index < lines.len() {
+        let trimmed = lines[index].trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            index += 1;
+            continue;
+        }
+        if !fenced
+            && index + 1 < lines.len()
+            && lines[index].contains('|')
+            && is_table_separator(lines[index + 1])
+        {
+            if text_start < index {
+                chunks.push(MarkdownChunk::Text(lines[text_start..index].join("\n")));
+            }
+            let mut header = table_cells(lines[index]);
+            let mut rows = Vec::new();
+            let mut row = index + 2;
+            while row < lines.len() && !lines[row].trim().is_empty() && lines[row].contains('|') {
+                rows.push(table_cells(lines[row]));
+                row += 1;
+            }
+            let columns = header
+                .len()
+                .max(rows.iter().map(Vec::len).max().unwrap_or(0));
+            header.resize(columns, String::new());
+            for row in &mut rows {
+                row.resize(columns, String::new());
+            }
+            if columns > 0 {
+                chunks.push(MarkdownChunk::Table { header, rows });
+            }
+            index = row;
+            text_start = index;
+            continue;
+        }
+        index += 1;
+    }
+    if text_start < lines.len() {
+        chunks.push(MarkdownChunk::Text(lines[text_start..].join("\n")));
+    }
+    chunks
+}
+
+fn markdown_table_row<T>(cells: &[String], header: bool, last: bool, cx: &Context<T>) -> Div {
+    let columns = cells.len();
+    let mut row = div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .when(header, |row| row.bg(cx.theme().accent))
+        .when(!last, |row| {
+            row.border_b_1().border_color(cx.theme().border)
+        });
+    for (index, cell) in cells.iter().enumerate() {
+        row = row.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .px_3()
+                .py_2()
+                .text_sm()
+                .whitespace_normal()
+                .when(header, |cell| cell.font_weight(FontWeight::SEMIBOLD))
+                .when(index + 1 < columns, |cell| {
+                    cell.border_r_1().border_color(cx.theme().border)
+                })
+                .child(cell.clone()),
+        );
+    }
+    row
+}
+
+/// Render Markdown while replacing tables with wrapping flex rows. The upstream
+/// Markdown table cell widths overflow narrow review columns and clip content.
+fn markdown_with_tables<T>(
+    id_prefix: &str,
+    text: &str,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) -> AnyElement {
+    let mut content = div().w_full().min_w_0().flex().flex_col().gap_3();
+    for (index, chunk) in markdown_chunks(text).into_iter().enumerate() {
+        match chunk {
+            MarkdownChunk::Text(text) => {
+                if text.trim().is_empty() {
+                    continue;
+                }
+                content = content.child(
+                    TextView::markdown(
+                        SharedString::from(format!("{id_prefix}-text-{index}")),
+                        text,
+                        window,
+                        cx,
+                    )
+                    .selectable(true),
+                );
+            }
+            MarkdownChunk::Table { header, rows } => {
+                let mut table = div()
+                    .w_full()
+                    .min_w_0()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .overflow_hidden();
+                let has_rows = !rows.is_empty();
+                if !header.is_empty() {
+                    table = table.child(markdown_table_row(&header, true, !has_rows, cx));
+                }
+                let count = rows.len();
+                for (row_index, row) in rows.into_iter().enumerate() {
+                    table =
+                        table.child(markdown_table_row(&row, false, row_index + 1 == count, cx));
+                }
+                content = content.child(table);
+            }
+        }
+    }
+    content.into_any_element()
+}
+
+pub(super) fn correction_history<T: 'static>(
+    history: ReviewHistory<'_>,
+    on_action: fn(&mut T, ReviewAction, &mut Window, &mut Context<T>),
+    window: &mut Window,
+    cx: &mut Context<T>,
+) -> AnyElement {
+    let mut panel = card(cx).child(
+        div()
+            .text_lg()
+            .font_weight(FontWeight::SEMIBOLD)
+            .child("批改历史"),
+    );
+    if history.reviews.is_empty() {
+        return panel
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("还没有批改记录。保存题目与作答后，可提交给设置中的大模型。"),
+            )
+            .into_any_element();
+    }
+    let mut tabs = div().flex().flex_wrap().gap_2();
+    for (index, review) in history.reviews.iter().enumerate() {
+        let id = review.id.clone();
+        tabs = tabs.child(
+            Button::new(SharedString::from(format!("writing-review-{id}")))
+                .small()
+                .outline()
+                .selected(history.selected == Some(review.id.as_str()))
+                .label(format!(
+                    "{} · {} · {}",
+                    history.reviews.len() - index,
+                    review.mode().label(),
+                    display_time(&review.created_at)
+                ))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    on_action(this, ReviewAction::Select(id.clone()), window, cx);
+                })),
+        );
+    }
+    panel = panel.child(tabs);
+    if let Some(review) = history
+        .reviews
+        .iter()
+        .find(|review| history.selected == Some(review.id.as_str()))
+        .or_else(|| history.reviews.first())
+    {
+        let review_id = review.id.clone();
+        panel = panel
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!(
+                        "{} · 提交时模型设置：{}",
+                        display_time(&review.created_at),
+                        review.model
+                    )),
+            )
+            .child(
+                Button::new("writing-review-follow-up")
+                    .primary()
+                    .small()
+                    .label("追问 AI")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        on_action(this, ReviewAction::FollowUp(review_id.clone()), window, cx)
+                    })),
+            )
+            .child(
+                Button::new("writing-review-source")
+                    .outline()
+                    .small()
+                    .label(if history.show_submission {
+                        "收起提交原文"
+                    } else {
+                        "查看本次提交原文"
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        on_action(this, ReviewAction::ToggleSubmission, window, cx);
+                    })),
+            )
+            .when(history.show_submission, |panel| {
+                panel.child(
+                    card(cx)
+                        .bg(cx.theme().muted)
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("本次批改的题目与作答 · 历史快照"),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("反馈对应以下提交内容，当前编辑框的内容可能已经更新。"),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("提交的题目"),
+                        )
+                        .child(if review.prompt_markdown {
+                            TextView::markdown(
+                                SharedString::from(format!("writing-review-prompt-{}", review.id)),
+                                review.prompt.clone(),
+                                window,
+                                cx,
+                            )
+                            .selectable(true)
+                            .into_any_element()
+                        } else {
+                            div()
+                                .text_sm()
+                                .whitespace_normal()
+                                .child(review.prompt.clone())
+                                .into_any_element()
+                        })
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("提交的作答"),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .whitespace_normal()
+                                .child(review.answer.clone()),
+                        ),
+                )
+            })
+            .child(if review.edits.is_some() {
+                revision_result(review, history.show_notes, on_action, cx).into_any_element()
+            } else {
+                markdown_with_tables(
+                    &format!("writing-feedback-{}", review.id),
+                    &review.feedback,
+                    window,
+                    cx,
+                )
+            });
+    }
+    panel.into_any_element()
+}
+fn revision_result<T: 'static>(
+    review: &Review,
+    show_notes: bool,
+    on_action: fn(&mut T, ReviewAction, &mut Window, &mut Context<T>),
+    cx: &Context<T>,
+) -> Div {
     let result = div()
         .min_w_0()
         .flex()
@@ -2150,9 +2374,8 @@ fn revision_result(review: &Review, show_notes: bool, cx: &Context<WritingView>)
                     } else {
                         "展开批注"
                     })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_revision_notes = !this.show_revision_notes;
-                        cx.notify();
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        on_action(this, ReviewAction::ToggleNotes, window, cx);
                     })),
             )
             .when(show_notes, |result| {

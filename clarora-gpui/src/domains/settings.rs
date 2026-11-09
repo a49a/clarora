@@ -3,6 +3,9 @@ use super::*;
 pub(super) enum Command {
     ChatGpt(chatgpt_ui::Command),
     SaveAi,
+    SaveAiProfile,
+    SelectAiProfile(String),
+    SelectAiProvider(String),
     CredentialMode(bool),
     ImportLegacyCredentials,
     SaveStorage,
@@ -13,7 +16,13 @@ pub(super) enum Command {
 impl Command {
     pub(super) fn effects(&self, _app: &AppView) -> Effects {
         Effects {
-            refresh_data: matches!(self, Command::SaveAi | Command::SaveStorage),
+            refresh_data: matches!(
+                self,
+                Command::SaveAi
+                    | Command::SaveAiProfile
+                    | Command::SelectAiProfile(_)
+                    | Command::SaveStorage
+            ),
             ..Effects::default()
         }
     }
@@ -24,6 +33,41 @@ impl Command {
         cx: &mut Context<AppView>,
     ) -> Result<()> {
         match self {
+            Command::SelectAiProvider(provider) => {
+                let previous = app.value("ai_provider", cx);
+                let provider = match provider.as_str() {
+                    ai::PROVIDER_OPENCODE_GO => ai::PROVIDER_OPENCODE_GO,
+                    ai::PROVIDER_DEEPSEEK => ai::PROVIDER_DEEPSEEK,
+                    _ => ai::PROVIDER_CUSTOM,
+                };
+                app.set("ai_provider", provider, window, cx);
+                match provider {
+                    ai::PROVIDER_OPENCODE_GO => {
+                        app.set("base_url", ai::OPENCODE_GO_BASE_URL, window, cx);
+                        if previous != provider {
+                            app.set("model", "deepseek-v4.1-flash", window, cx);
+                        }
+                        app.report_status(
+                            FeedbackKind::Info,
+                            "已选择 OpenCode Go：保存时会使用官方 Base URL，并自动发送会话标识与 Clarora User-Agent".into(),
+                        );
+                    }
+                    ai::PROVIDER_DEEPSEEK => {
+                        app.set("base_url", ai::DEEPSEEK_BASE_URL, window, cx);
+                        if previous != provider {
+                            app.set("model", "deepseek-flash", window, cx);
+                        }
+                        app.report_status(
+                            FeedbackKind::Info,
+                            "已选择 DeepSeek：保存时会使用官方 Base URL，模型可用 deepseek-flash 或 deepseek-v4-pro".into(),
+                        );
+                    }
+                    _ => {
+                        app.report_status(FeedbackKind::Info, "已选择自定义 OpenAI 兼容服务".into())
+                    }
+                }
+            }
+
             Command::CredentialMode(enabled) => {
                 ensure!(
                     !app.tasks.foreground.is_running()
@@ -65,7 +109,9 @@ impl Command {
             }
 
             Command::SaveAi => {
+                let provider = app.value("ai_provider", cx);
                 let config = ai::Config {
+                    provider: provider.clone(),
                     base_url: app.value("base_url", cx),
                     model: app.value("model", cx),
                     vision_model: app.value("vision_model", cx),
@@ -74,6 +120,7 @@ impl Command {
                     ..Default::default()
                 };
                 let key = app.value("chat_key", cx);
+                require_preset_key(app, &provider, &key)?;
                 let limit = app.value("daily_limit", cx);
                 ensure!(limit.parse::<usize>().is_ok(), "每日新卡上限无效");
                 app.lib.set_setting("new_cards_per_day", &limit)?;
@@ -82,6 +129,7 @@ impl Command {
                 app.import_command = app.value("command", cx);
                 app.begin("正在保存 AI 设置…", move |lib, _, _| {
                     ai::save_preferences(&lib, config, &key)?;
+                    ai::sync_active_profile(&lib)?;
                     let location = if credentials::secure_mode(&lib)? {
                         "系统凭证库"
                     } else {
@@ -91,6 +139,56 @@ impl Command {
                         "AI 设置已保存，聊天与远端转写共用配置，密钥保存在{location}"
                     )))
                 });
+            }
+
+            Command::SaveAiProfile => {
+                ensure_ai_idle(app)?;
+                let name = app.value("ai_profile_name", cx);
+                ensure!(!name.trim().is_empty(), "请先填写配置名称");
+                let provider = app.value("ai_provider", cx);
+                let config = ai::Config {
+                    provider: provider.clone(),
+                    base_url: app.value("base_url", cx),
+                    model: app.value("model", cx),
+                    vision_model: app.value("vision_model", cx),
+                    local_model: app.value("local_model", cx),
+                    engine: app.value("engine", cx),
+                    ..Default::default()
+                };
+                let key = app.value("chat_key", cx);
+                require_preset_key(app, &provider, &key)?;
+                app.begin("正在保存并切换 AI 配置…", move |lib, _, _| {
+                    let profile = ai::save_profile(&lib, &name, config, &key)?;
+                    let location = if credentials::secure_mode(&lib)? {
+                        "系统凭证库"
+                    } else {
+                        "本机 SQLite"
+                    };
+                    Ok(Outcome::Message(format!(
+                        "已保存并切换到“{}”，密钥保存在{location}",
+                        profile.name
+                    )))
+                });
+            }
+
+            Command::SelectAiProfile(id) => {
+                ensure_ai_idle(app)?;
+                let name = ai::list_profiles(&app.lib)?
+                    .into_iter()
+                    .find(|profile| profile.id == id)
+                    .map(|profile| profile.name)
+                    .unwrap_or_default();
+                let config = ai::select_profile(&app.lib, &id)?;
+                app.apply_ai_config(&config, window, cx);
+                app.set("ai_profile_name", name.clone(), window, cx);
+                app.report_status(
+                    FeedbackKind::Info,
+                    if name.is_empty() {
+                        "已切换 AI 配置".into()
+                    } else {
+                        format!("已切换到“{name}”")
+                    },
+                );
             }
 
             Command::ChatGpt(command) => app.handle_chatgpt(command, cx)?,
@@ -157,6 +255,30 @@ impl Command {
         }
         Ok(())
     }
+}
+
+fn ensure_ai_idle(app: &AppView) -> Result<()> {
+    ensure!(
+        !app.chat.running
+            && !app.tasks.foreground.is_running()
+            && !app.tasks.audio_subtitles.lane.is_running()
+            && app.tasks.video_job.is_none()
+            && !app.chatgpt.busy(),
+        "请先完成或取消正在使用 AI 的任务，再保存或切换配置"
+    );
+    Ok(())
+}
+
+fn require_preset_key(app: &AppView, provider: &str, key: &str) -> Result<()> {
+    if matches!(provider, ai::PROVIDER_OPENCODE_GO | ai::PROVIDER_DEEPSEEK) && key.is_empty() {
+        let saved = ai::load_config(&app.lib)?;
+        ensure!(
+            saved.provider == provider,
+            "首次使用{}请填写 API Key",
+            ai::provider_label(provider)
+        );
+    }
+    Ok(())
 }
 
 // Completion policy belongs to this domain: cancellation may race a durable commit.

@@ -241,6 +241,17 @@ impl AppView {
                                 .ghost(),
                         )
                     })
+                    .when(error, |v| {
+                        v.child(
+                            self.button(
+                                "feedback-copy-error",
+                                "复制错误",
+                                Action::CopySelection(message.to_string()),
+                                cx,
+                            )
+                            .ghost(),
+                        )
+                    })
                     .child(
                         self.button(
                             if error {

@@ -148,6 +148,50 @@ pub fn chat_stream(
     chat_messages(lib, messages, cancel, progress)
 }
 
+fn session_hash(seed: &str) -> String {
+    // Stable per conversation; OpenCode Go uses it for routing and prompt caching.
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in seed.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("ses_{hash:016x}")
+}
+
+pub(crate) fn session_for(seed: &str) -> String {
+    session_hash(seed)
+}
+
+fn conversation_session(messages: &[Value]) -> String {
+    let system = messages
+        .first()
+        .filter(|message| message["role"] == "system")
+        .and_then(|message| message["content"].as_str())
+        .unwrap_or_default();
+    let first_user = messages
+        .iter()
+        .find(|message| message["role"] == "user")
+        .and_then(|message| message["content"].as_str())
+        .unwrap_or_default();
+    session_hash(&format!("{system}\n{first_user}"))
+}
+
+/// OpenCode Go requires a stable session header and a non-generic user agent.
+pub(crate) fn provider_headers(
+    builder: reqwest::RequestBuilder,
+    provider: &str,
+    session: &str,
+) -> reqwest::RequestBuilder {
+    if provider == ai::PROVIDER_OPENCODE_GO {
+        builder.header("x-opencode-session", session).header(
+            reqwest::header::USER_AGENT,
+            format!("Clarora/{}", env!("CARGO_PKG_VERSION")),
+        )
+    } else {
+        builder
+    }
+}
+
 pub(crate) fn chat_messages(
     lib: &Library,
     messages: Vec<Value>,
@@ -161,6 +205,7 @@ pub(crate) fn chat_messages(
     let (config, key) = ai::load_chat(lib)?;
     ensure!(!config.model.is_empty(), "请先设置聊天模型");
     let base = ai::endpoint_url(&config.base_url)?;
+    let session = conversation_session(&messages);
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
@@ -173,6 +218,7 @@ pub(crate) fn chat_messages(
                 let mut builder = client
                     .post(format!("{base}/chat/completions"))
                     .json(&json!({"model":config.model,"messages":messages,"stream":streaming}));
+                builder = provider_headers(builder, &config.provider, &session);
                 if !key.is_empty() {
                     builder = builder.bearer_auth(&key);
                 }

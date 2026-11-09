@@ -241,6 +241,116 @@ fn sentences(text: &str) -> Vec<String> {
     }
     result
 }
+fn validate_preview_text(text: &str, voice: i32, speed: f32) -> Result<()> {
+    ensure!(
+        !text.trim().is_empty()
+            && text.chars().count() <= 10_000
+            && text.len() <= 40_000
+            && !text.contains('\0'),
+        "请输入 1–10,000 字的正文（不含空字符）"
+    );
+    ensure!((0..54).contains(&voice), "音色编号需在 0–53 之间");
+    ensure!(
+        speed.is_finite() && (0.5..=2.).contains(&speed),
+        "语速需在 0.5–2.0 之间"
+    );
+    Ok(())
+}
+
+fn preview_key(text: &str, voice: i32, speed: f32) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"clarora-speaking-tts-v1\0");
+    hash.update(MODEL.as_bytes());
+    hash.update(b"\0");
+    hash.update(voice.to_string().as_bytes());
+    hash.update(b"\0");
+    hash.update(format!("{speed:.2}").as_bytes());
+    hash.update(b"\0");
+    hash.update(text.as_bytes());
+    hex::encode(hash.finalize())
+}
+
+pub fn preview_path(lib: &Library, text: &str, voice: i32, speed: f32) -> PathBuf {
+    lib.root
+        .join("cache/speaking-tts")
+        .join(format!("{}.wav", preview_key(text, voice, speed)))
+}
+
+pub fn cached_preview(lib: &Library, text: &str, voice: i32, speed: f32) -> Option<PathBuf> {
+    let path = preview_path(lib, text, voice, speed);
+    fs::metadata(&path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 44)
+        .then_some(path)
+}
+
+/// Generate a cached pronunciation preview for the speaking draft.
+pub fn preview(
+    lib: &Library,
+    model: &Path,
+    text: &str,
+    voice: i32,
+    speed: f32,
+    cancel: &Cancel,
+) -> Result<PathBuf> {
+    ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+    validate_preview_text(text, voice, speed)?;
+    let output = preview_path(lib, text, voice, speed);
+    if cached_preview(lib, text, voice, speed).is_some() {
+        return Ok(output);
+    }
+    validate_model(model)?;
+    let helper = process::tool("clarora-tts")
+        .context("未安装 Kokoro 原生运行程序 clarora-tts，请按项目说明文档构建并安装")?;
+    let work = Work(
+        lib.root
+            .join("cache")
+            .join(format!("speaking-tts-{}", id())),
+    );
+    fs::create_dir_all(&work.0)?;
+    let input = work.0.join("text.txt");
+    let wav = work.0.join("output.wav");
+    let sentences = sentences(text);
+    ensure!(!sentences.is_empty(), "没有可合成的正文");
+    fs::write(&input, sentences.join("\n"))?;
+    process::run(
+        &helper,
+        &[
+            model.to_string_lossy().into(),
+            input.to_string_lossy().into(),
+            wav.to_string_lossy().into(),
+            voice.to_string(),
+            speed.to_string(),
+        ],
+        cancel,
+        Duration::from_secs(1800),
+    )?;
+    let mut reader = hound::WavReader::open(&wav).context("Kokoro 未生成有效 WAV")?;
+    ensure!(
+        reader.duration() > 0
+            && reader.spec().sample_rate > 0
+            && reader.spec().channels == 1
+            && reader.spec().bits_per_sample == 16,
+        "Kokoro 音频格式无效"
+    );
+    let mut audible = false;
+    for (index, sample) in reader.samples::<i16>().enumerate() {
+        if index % 65536 == 0 {
+            ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+        }
+        audible |= sample?.unsigned_abs() > 30;
+    }
+    ensure!(audible, "Kokoro 生成了静音，请检查文字与音色");
+    ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+    fs::create_dir_all(output.parent().context("读音缓存路径无效")?)?;
+    if let Err(error) = fs::rename(&wav, &output) {
+        if cached_preview(lib, text, voice, speed).is_some() {
+            return Ok(output);
+        }
+        return Err(error.into());
+    }
+    Ok(output)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn generate(
     lib: &Library,

@@ -25,6 +25,8 @@ pub(super) enum Outcome {
     SpeakingCommandImported(clarora_gpui::command_import::SpeakingReport),
     SpeakingTextReady(String, speaking_ui::PromptText),
     SpeakingGroupTagsReady(String, Vec<String>),
+    SpeakingReviewed(String, clarora_gpui::writing::Review),
+    SpeakingDraftAudio(PathBuf),
     AudioMerged(clarora_gpui::audio_tools::Merged),
 }
 pub(super) enum TaskUpdate {

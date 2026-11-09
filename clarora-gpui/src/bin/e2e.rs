@@ -252,6 +252,23 @@ fn mock_ai() -> Result<(String, Arc<AtomicBool>, thread::JoinHandle<Vec<String>>
                     json!({"choices":[{"message":{"content":content},"finish_reason":"stop"}]})
                         .to_string(),
                 )
+            } else if body.contains("口语作答草稿") {
+                assert!(body.contains("Respond to the recording.") && body.contains("Opening"));
+                let content = if body.contains("summary") {
+                    let original = if body.contains("Invalid fixture") {
+                        "Missing phrase"
+                    } else {
+                        "Opening"
+                    };
+                    json!({"summary":"表达可更自然。","edits":[{"original":original,"replacement":"To start","reason":"适合口头表达"}]}).to_string()
+                } else {
+                    "回答切题。可以补充细节。".into()
+                };
+                (
+                    "application/json",
+                    json!({"choices":[{"message":{"content":content},"finish_reason":"stop"}]})
+                        .to_string(),
+                )
             } else if body.contains("仅返回中文译文") {
                 (
                     "application/json",

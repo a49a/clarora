@@ -238,6 +238,24 @@ impl AppView {
                         )
                     }),
             )
+            .when(
+                notice.state == TaskState::Failed && !notice.detail.trim().is_empty(),
+                |v| {
+                    v.child(
+                        self.button(
+                            format!("{key}-task-copy"),
+                            "复制错误",
+                            Action::CopySelection(notice.detail.clone()),
+                            cx,
+                        )
+                        .ghost()
+                        .h(px(40.))
+                        .px_4()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD),
+                    )
+                },
+            )
             .child(
                 button
                     .h(px(40.))

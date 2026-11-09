@@ -164,6 +164,9 @@ pub(super) enum Action {
     FocusDistraction,
     FocusReview(String, Option<u8>),
     SaveAi,
+    SaveAiProfile,
+    SelectAiProfile(String),
+    SelectAiProvider(String),
     CredentialMode(bool),
     ImportLegacyCredentials,
     SaveStorage,
@@ -188,6 +191,7 @@ pub(super) enum Action {
     TtsVoice(i32),
     TtsSpeed(f32),
     TtsPlay,
+    SpeakingGroupCheck,
     MergeAudios,
     CheckAudio(String),
     Suspend(bool),
@@ -401,6 +405,11 @@ impl From<Action> for Command {
                 Routed::Focus(focus::Command::FocusReview(id, fatigue))
             }
             Action::SaveAi => Routed::Settings(settings::Command::SaveAi),
+            Action::SaveAiProfile => Routed::Settings(settings::Command::SaveAiProfile),
+            Action::SelectAiProfile(v0) => Routed::Settings(settings::Command::SelectAiProfile(v0)),
+            Action::SelectAiProvider(v0) => {
+                Routed::Settings(settings::Command::SelectAiProvider(v0))
+            }
             Action::CredentialMode(v0) => Routed::Settings(settings::Command::CredentialMode(v0)),
             Action::ImportLegacyCredentials => {
                 Routed::Settings(settings::Command::ImportLegacyCredentials)
@@ -427,6 +436,7 @@ impl From<Action> for Command {
             Action::TtsVoice(v0) => Routed::Speech(speech::Command::TtsVoice(v0)),
             Action::TtsSpeed(v0) => Routed::Speech(speech::Command::TtsSpeed(v0)),
             Action::TtsPlay => Routed::Speech(speech::Command::TtsPlay),
+            Action::SpeakingGroupCheck => Routed::Speech(speech::Command::GroupCheck),
             Action::MergeAudios => Routed::Library(library::Command::MergeAudios),
             Action::CheckAudio(v0) => Routed::Library(library::Command::CheckAudio(v0)),
             Action::Suspend(v0) => Routed::Cards(cards::Command::Suspend(v0)),
@@ -617,6 +627,11 @@ pub(super) fn complete(
         Outcome::SpeakingGroupTagsReady(group_id, tags) => {
             app.finish_speaking_group_tags(&group_id, &tags, context.cancelled)
         }
+        Outcome::SpeakingReviewed(id, review) => {
+            context.cancelled = false;
+            app.finish_speaking_review(&id, review);
+        }
+        Outcome::SpeakingDraftAudio(path) => app.finish_speaking_draft_audio(path, cx),
         Outcome::AudioMerged(v0) => {
             audio::Completed::AudioMerged(v0).apply(app, context, window, cx)
         }
