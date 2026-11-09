@@ -100,6 +100,9 @@ sentence_search::run(output, results)
     "--audio-repeat-only",0,0 => {
 audio_repeat_native::run(output, results)
     },
+    "--audio-boundary-only",0,0 => {
+audio_boundary_native::run(output, results)
+    },
     "--chatgpt-only",0,0 => {
 #[cfg(debug_assertions)]
         {

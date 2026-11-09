@@ -7,6 +7,8 @@ mod assistant_latency_probe;
 #[cfg(debug_assertions)]
 mod assistant_selection_probe;
 mod assistant_ui;
+#[cfg(debug_assertions)]
+mod audio_boundary_probe;
 mod audio_controller;
 mod audio_current_ui;
 mod audio_player_ui;
@@ -1762,6 +1764,7 @@ impl Render for AppView {
                 }
             }))
             .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                this.audio.text_edge_drag = None;
                 if event.button == MouseButton::Left && this.assistant.dragging {
                     this.offer_assistant_selection(event.position, window, cx);
                 } else if event.button == MouseButton::Left {
@@ -1782,6 +1785,18 @@ impl Render for AppView {
                 this.handle(Action::CommandImport, window, cx);
             }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                if let Some(start) = this.audio.text_edge_drag {
+                    if event.dragging() {
+                        let time = this
+                            .subtitle_text
+                            .borrow()
+                            .audio_time_at(event.position, &this.audio.cues);
+                        if let Some(time) = time {
+                            this.handle(Action::Boundary(time, start), window, cx);
+                        }
+                    }
+                    return;
+                }
                 this.subtitle_drag_update(event, cx);
                 if event.dragging()
                     && this

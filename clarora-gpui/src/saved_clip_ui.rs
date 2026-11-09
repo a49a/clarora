@@ -187,11 +187,11 @@ impl AppView {
                     )
                     .when_some(
                         edges.filter(|e| e.start.cue == index && e.start.word == j),
-                        |v, e| v.child(clip_selection_ui::text_edge(e.start, true)),
+                        |v, e| v.child(clip_selection_ui::text_edge(e.start, true, cx)),
                     )
                     .when_some(
                         edges.filter(|e| e.end.cue == index && e.end.word == j),
-                        |v, e| v.child(clip_selection_ui::text_edge(e.end, false)),
+                        |v, e| v.child(clip_selection_ui::text_edge(e.end, false, cx)),
                     )
                     .text_size(px(font))
                     .child(self.subtitle_fragment(
@@ -204,6 +204,14 @@ impl AppView {
                         Some(j),
                         cx,
                     ))
+                    .when_some(
+                        edges.filter(|e| e.start.cue == index && e.start.word == j),
+                        |v, e| v.child(clip_selection_ui::text_edge(e.start, true, cx)),
+                    )
+                    .when_some(
+                        edges.filter(|e| e.end.cue == index && e.end.word == j),
+                        |v, e| v.child(clip_selection_ui::text_edge(e.end, false, cx)),
+                    )
                     .when(audio, |v| {
                         v.cursor_pointer().on_click(cx.listener(
                             move |this, event: &ClickEvent, window, cx| {

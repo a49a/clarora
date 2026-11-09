@@ -804,14 +804,6 @@ impl AppView {
                             .id(("audio-word", i * 100000 + j))
                             .relative()
                             .when(this.audio.clip_mode, |v| v.py(px(14.)))
-                            .when_some(
-                                edges.filter(|e| e.start.cue == i && e.start.word == j),
-                                |v, e| v.child(clip_selection_ui::text_edge(e.start, true)),
-                            )
-                            .when_some(
-                                edges.filter(|e| e.end.cue == i && e.end.word == j),
-                                |v, e| v.child(clip_selection_ui::text_edge(e.end, false)),
-                            )
                             .text_size(px(this.audio.font_size as f32))
                             .px_0p5()
                             .rounded_sm()
@@ -838,6 +830,14 @@ impl AppView {
                                 Some(j),
                                 cx,
                             ))
+                            .when_some(
+                                edges.filter(|e| e.start.cue == i && e.start.word == j),
+                                |v, e| v.child(clip_selection_ui::text_edge(e.start, true, cx)),
+                            )
+                            .when_some(
+                                edges.filter(|e| e.end.cue == i && e.end.word == j),
+                                |v, e| v.child(clip_selection_ui::text_edge(e.end, false, cx)),
+                            )
                             .when(is_saved, |v| {
                                 v.on_mouse_down(
                                     MouseButton::Right,

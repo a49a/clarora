@@ -11,6 +11,8 @@ mod assistant;
 mod assistant_latency_native;
 #[path = "support/audio_batch.rs"]
 mod audio_batch;
+#[path = "support/audio_boundary_native.rs"]
+mod audio_boundary_native;
 #[path = "support/audio_library.rs"]
 mod audio_library;
 #[path = "support/audio_merge.rs"]
@@ -526,6 +528,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     let selected = lib.list("listening_audios")?;
     audio_merge::run(&root, results)?;
     audio_repeat_native::run(&root, results)?;
+    audio_boundary_native::run(&root, results)?;
     assistant_latency_native::run(&root, results)?;
     audio_remove_native::run(&root, results)?;
     sentence_search::run(&root, results)?;

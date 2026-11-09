@@ -2,7 +2,7 @@
 use super::*;
 use clarora_gpui::subtitle_selection::{Document, Selection};
 use std::{cell::RefCell, ops::Range, rc::Rc, sync::Arc};
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Surface {
     Audio,
     Focus,
@@ -163,9 +163,16 @@ impl State {
         }
     }
     fn nearest(&self, position: Point<Pixels>) -> Option<usize> {
+        self.nearest_with(position, |surface| surface == self.surface)
+    }
+    fn nearest_with(
+        &self,
+        position: Point<Pixels>,
+        include: impl Fn(Surface) -> bool,
+    ) -> Option<usize> {
         self.layouts
             .iter()
-            .filter(|f| f.surface == self.surface)
+            .filter(|f| include(f.surface))
             .min_by(|a, b| {
                 let distance = |f: &Fragment| {
                     let dx = f32::from(
@@ -190,6 +197,40 @@ impl State {
                     .min(f.range.len());
                 f.range.start + local
             })
+    }
+    /// Map a pointer position on the audio transcript (including the current
+    /// sentence card) to the cue time used by that character offset. The text
+    /// document and `words()` share the same character interpolation.
+    pub(super) fn audio_time_at(&self, position: Point<Pixels>, cues: &[Cue]) -> Option<f64> {
+        let index = self.nearest_with(position, |surface| surface != Surface::Video)?;
+        let doc = self.doc(Surface::Audio);
+        for (i, cue_text) in doc.cues.iter().enumerate() {
+            let end = cue_text.translation.end.max(cue_text.original.end);
+            if index > end {
+                continue;
+            }
+            let cue = cues.get(i)?;
+            let original = &cue_text.original;
+            let local = if index <= original.start {
+                0
+            } else {
+                doc.text
+                    .get(original.start..index.min(original.end))
+                    .map(|text| text.chars().count())
+                    .unwrap_or(0)
+            };
+            let total = doc
+                .text
+                .get(original.clone())
+                .map(|text| text.chars().count())
+                .unwrap_or(0);
+            return Some(if total == 0 {
+                cue.start
+            } else {
+                cue.start + (cue.end - cue.start) * local as f64 / total as f64
+            });
+        }
+        None
     }
 }
 pub(super) struct SelectableText {
@@ -398,6 +439,9 @@ impl AppView {
         .into_any_element()
     }
     pub(super) fn subtitle_drag_update(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if self.audio.text_edge_drag.is_some() {
+            return;
+        }
         let mut state = self.subtitle_text.borrow_mut();
         if !event.dragging() || !state.selection.selecting {
             return;
