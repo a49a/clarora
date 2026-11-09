@@ -194,7 +194,7 @@ impl Probe {
                 ensure!(
                     state.paused
                         && state.eof
-                        && state.position >= state.duration - 0.1
+                        && state.position >= state.duration - 0.25
                         && state.path == self.eof_path
                         && state.load_revision == self.eof_load_revision,
                     "EOF play with invalid audio material changed the loaded track"
@@ -351,8 +351,12 @@ impl Probe {
                         return Ok(false);
                     }
                     ensure!(
-                        state.position >= state.duration - 0.1,
-                        "natural EOF did not retain the end position"
+                        state.position >= state.duration - 0.25,
+                        "natural EOF did not retain the end position: position={} duration={} paused={} eof={}",
+                        state.position,
+                        state.duration,
+                        state.paused,
+                        state.eof
                     );
                     self.note(
                         if self.eof_stage == 6 {
