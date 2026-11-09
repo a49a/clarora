@@ -15,6 +15,7 @@ jobs:
   upload:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           name: Clarora-GPUI-Windows-x64-unsigned
@@ -25,6 +26,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
+          SOURCE_SHA: 2b353ae4dd79e86da6d02792ba3bc2019f8b652c
+          WINDOWS_RUN_ID: ${{ inputs.run_id }}
         run: |
           set -euo pipefail
           version="${TAG#v}"
@@ -37,94 +40,8 @@ jobs:
           cp "$setup" Clarora-windows-x64-setup-unsigned.exe
           sha256sum Clarora-windows-x64.zip Clarora-windows-x64-setup-unsigned.exe > windows-SHA256SUMS.txt
           cat windows-SHA256SUMS.txt
-          gh release download "$TAG" -p macos-assets.json -O macos-assets.json --clobber
-          python3 - <<'PY'
-          import hashlib, json, pathlib
-
-          version = "0.3.0"
-          tag = "v0.3.0"
-          source_sha = "2b353ae4dd79e86da6d02792ba3bc2019f8b652c"
-          repo = "https://github.com/a49a/clarora"
-          macos = json.load(open("macos-assets.json"))["assets"]
-
-          def digest(path):
-              h = hashlib.sha256()
-              with open(path, "rb") as stream:
-                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                      h.update(chunk)
-              return h.hexdigest()
-
-          windows = []
-          for name in ["Clarora-windows-x64.zip", "Clarora-windows-x64-setup-unsigned.exe"]:
-              p = pathlib.Path(name)
-              windows.append({"path": name, "size": p.stat().st_size, "sha256": digest(p)})
-
-          macos_zip = next(a for a in macos if a["path"].endswith(".zip"))
-          macos_dmg = next(a for a in macos if a["path"].endswith(".dmg"))
-          windows_zip = next(a for a in windows if a["path"].endswith(".zip"))
-          windows_setup = next(a for a in windows if a["path"].endswith(".exe"))
-          sums = [macos_dmg, macos_zip, windows_setup, windows_zip]
-          pathlib.Path("SHA256SUMS.txt").write_text(
-              "".join(f"{item['sha256']}  {item['path']}\n" for item in sums)
-          )
-
-          assets_base = f"{repo}/releases/download/{tag}"
-          provenance = {
-              "source_repository": repo,
-              "source_commit": source_sha,
-              "tag": tag,
-              "version": version,
-              "application_name": "Clarora",
-              "build_profile": "release",
-              "build_number": 20261109,
-              "source_inputs_match_commit": True,
-              "macos_worktree_dirty": False,
-              "excluded_uncommitted_paths": [],
-              "platforms": {
-                  "macos": {"architecture": "arm64", "minimum_os": "14.0", "signing": "ad-hoc", "notarized": False},
-                  "windows": {
-                      "architecture": "x86_64",
-                      "minimum_os": "10.0.17763",
-                      "signing": "unsigned",
-                      "ci_run": "https://github.com/a49a/clarora/actions/runs/42640445830",
-                      "install_runtime_overwrite_uninstall_data_preservation": "passed",
-                  },
-              },
-              "legal_audit_passed": False,
-              "archives": [
-                  {**macos_zip, "canonical_path": f"Clarora-{version}-macOS-arm64.zip", "platform": "macos"},
-                  {**macos_dmg, "canonical_path": f"Clarora-{version}-macOS-arm64.dmg", "platform": "macos"},
-                  {**windows_zip, "canonical_path": f"Clarora-{version}-windows-x64-unsigned.zip", "platform": "windows"},
-                  {**windows_setup, "canonical_path": f"Clarora-{version}-windows-x64-setup-unsigned.exe", "platform": "windows"},
-              ],
-          }
-          pathlib.Path("source-provenance.json").write_text(json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
-
-          metadata = {
-              "version": version,
-              "tag": tag,
-              "source_sha": source_sha,
-              "repository": repo,
-              "assets_base": assets_base,
-              "latest_url": f"{repo}/releases/tag/{tag}",
-              "platforms": {
-                  "macos": {"arch": "arm64", "asset_name": "Clarora-macos-arm64.dmg", "status": "released", "requirements": "macOS 14+,Apple Silicon", "url": f"{assets_base}/Clarora-macos-arm64.dmg"},
-                  "windows": {"arch": "x64", "asset_name": "Clarora-windows-x64.zip", "status": "released", "requirements": "Windows 10 1809+,安装器或便携 ZIP", "url": f"{assets_base}/Clarora-windows-x64.zip"},
-                  "android": {"asset_name": "Clarora-android.apk", "arch": "universal", "status": "planned", "requirements": "Android 8+"},
-                  "ios": {"status": "planned", "requirements": "iOS 15.1+,需设备验证"},
-              },
-              "mobile_release": {
-                  "version": "0.2.1",
-                  "tag": "v0.2.1",
-                  "source_sha": "206b2d4e1ec9a734910a774d25147ac39065dc2c",
-                  "platforms": {
-                      "android": {"status": "released", "asset_name": "Clarora-android.apk", "url": "https://github.com/a49a/clarora/releases/download/v0.2.1/Clarora-android.apk"},
-                      "ios": {"status": "planned"},
-                  },
-              },
-          }
-          pathlib.Path("release-metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n")
-          PY
+          gh release download "$TAG" -R a49a/clarora -p macos-assets.json -O macos-assets.json --clobber
+          python3 .github/scripts/generate_release_metadata.py
           gh release upload "$TAG" \
             Clarora-windows-x64.zip \
             Clarora-windows-x64-setup-unsigned.exe \
@@ -132,4 +49,5 @@ jobs:
             SHA256SUMS.txt \
             source-provenance.json \
             release-metadata.json \
+            -R a49a/clarora \
             --clobber
