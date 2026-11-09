@@ -82,6 +82,8 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             "--sentence-search-check",
             "--speaking-groups-check",
             "--subtitle-workbench-check",
+            #[cfg(target_os = "macos")]
+            "--writing-paste-check",
             "--focus-mode-check",
             "--ui-controller-check",
             "--ui-controller-quit-check",

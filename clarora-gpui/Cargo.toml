@@ -39,6 +39,8 @@ keyring = { version = "3", features = ["apple-native", "windows-native"] }
 pdfium-render = "0.8"
 cpal = "0.16"
 hound = "3.5"
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
 tar = "0.4"
 bzip2 = "0.6"
 
@@ -46,11 +48,13 @@ bzip2 = "0.6"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_UI_WindowsAndMessaging", "Win32_System_DataExchange", "Win32_System_Memory"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSPasteboard"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSData"] }
 
 [profile.dev]
 debug = 0

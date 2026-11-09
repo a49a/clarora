@@ -75,6 +75,7 @@ mod video_player_ui;
 #[cfg(debug_assertions)]
 mod video_resume_probe;
 mod video_transcript_ui;
+mod writing_clipboard;
 mod writing_ui;
 use anyhow::{Context as _, Result, ensure};
 use clarora_gpui::playback_session::{Mode as PlaybackMode, Owner as PlaybackOwner};
@@ -588,8 +589,16 @@ impl AppView {
                 this.report_status(FeedbackKind::Error, format!("读取口语题库失败：{error:#}"));
             }
         }
-        this.writing =
-            Some(cx.new(|cx| writing_ui::WritingView::new(this.lib.clone(), window, cx)));
+        let owner = cx.entity().downgrade();
+        this.writing = Some(cx.new(|cx| {
+            writing_ui::WritingView::new(
+                this.lib.clone(),
+                this.page_scroll.clone(),
+                owner,
+                window,
+                cx,
+            )
+        }));
         this.audio.practice_id = this.lib.setting("library_group").unwrap_or_default();
         this.refresh();
         if this.lib.setting("floating_import_open").ok().as_deref() == Some("true") {
