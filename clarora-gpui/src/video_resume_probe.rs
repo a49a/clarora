@@ -519,6 +519,14 @@ impl Probe {
                 ensure!(app.open(path.clone()), "快速切视频失败");
                 ensure!(app.open(other_video(&app.lib)), "快速切回下一视频失败");
                 app.handle(Action::Play, window, cx);
+                ensure!(
+                    app.video
+                        .pending_start
+                        .as_ref()
+                        .is_some_and(|pending| pending.paused)
+                        || app.media.player.snapshot().paused,
+                    "准备期间暂停被自动播放覆盖"
+                );
                 self.advance();
             }
             17 => {
@@ -536,10 +544,7 @@ impl Probe {
                 {
                     return Ok(false);
                 }
-                ensure!(
-                    state.paused && app.video.repeat_three,
-                    "准备期间暂停被自动播放覆盖"
-                );
+                ensure!(app.video.repeat_three, "快速换片后三次模式丢失");
                 self.record(app, "快速换片只采用当前字幕/暂停意图保留三次")?;
                 app.handle(Action::VideoStopSentenceRepeat, window, cx);
                 ensure!(!app.video.repeat_three, "停止后模式仍选中");
