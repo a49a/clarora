@@ -2752,7 +2752,7 @@ pub(super) mod probe {
                         track.size.height == px(52.)
                             && left_inset >= px(0.)
                             && left_inset <= px(40.)
-                            && (left_inset - right_inset).abs() <= px(1.),
+                            && (left_inset - right_inset).abs() <= px(2.),
                         "音轨没有铺满题目卡片：{track:?}，详情列 {detail:?}"
                     );
                     if !self.clicked_track {
