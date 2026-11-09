@@ -1162,33 +1162,34 @@ impl AppView {
                 content = content.child(self.audio_study(window, cx));
             }
             "speaking" => {
-                content = content
-                    .child(self.field("reference", "朗读参考原文"))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .flex_wrap()
-                            .child(
-                                self.button("record", "开始录音", Action::Record, cx)
-                                    .primary()
-                                    .disabled(self.recording.is_some()),
-                            )
-                            .child(
-                                self.button("stop-record", "停止录音", Action::StopRecord, cx)
-                                    .disabled(self.recording.is_none()),
-                            )
-                            .child(self.button(
-                                "pick-record",
-                                "选择已有录音",
-                                Action::Pick("recording".into()),
-                                cx,
-                            ))
-                            .child(
-                                self.button("score-record", "转写并对齐评分", Action::Score, cx)
-                                    .disabled(self.tasks.foreground.is_running()),
-                            ),
-                    );
+                content = content.child(self.speaking_library_view(window, cx)).child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(
+                            self.button("record", "开始录音", Action::Record, cx)
+                                .primary()
+                                .disabled(self.recording.is_some()),
+                        )
+                        .child(
+                            self.button("stop-record", "停止录音", Action::StopRecord, cx)
+                                .disabled(self.recording.is_none()),
+                        )
+                        .child(self.button(
+                            "pick-record",
+                            "选择已有录音",
+                            Action::Pick("recording".into()),
+                            cx,
+                        ))
+                        .child(
+                            self.button("score-record", "转写并对齐评分", Action::Score, cx)
+                                .disabled(
+                                    self.tasks.foreground.is_running()
+                                        || self.value("reference", cx).trim().is_empty(),
+                                ),
+                        ),
+                );
                 if let Some(path) = &self.recorded {
                     content = content.child(
                         path.file_name()

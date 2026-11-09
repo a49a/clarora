@@ -82,6 +82,8 @@ mod runtime_stability;
 mod sentence_search;
 #[path = "support/sentence_search_native.rs"]
 mod sentence_search_native;
+#[path = "support/speaking_groups.rs"]
+mod speaking_groups;
 #[path = "support/storage_errors.rs"]
 mod storage_errors;
 #[path = "support/subtitle_selection.rs"]
@@ -233,6 +235,26 @@ fn mock_ai() -> Result<(String, Arc<AtomicBool>, thread::JoinHandle<Vec<String>>
                         json!({"error":"wrong shared ASR model"}).to_string()
                     },
                 )
+            } else if body.contains("只返回标签字符串组成的 JSON 数组") {
+                let content = if body.contains("Respond to the recording.")
+                    && body.contains("Find the science building.")
+                    && !body.contains("Read the sentence aloud.")
+                    && !body.contains("Another group marker.")
+                {
+                    r#"["校园","问路"," #问路 ","场景对话"]"#
+                } else {
+                    "fixture: wrong transcripts"
+                };
+                (
+                    "application/json",
+                    json!({"choices":[{"message":{"content":content},"finish_reason":"stop"}]})
+                        .to_string(),
+                )
+            } else if body.contains("仅返回中文译文") {
+                (
+                    "application/json",
+                    json!({"choices":[{"message":{"content":"请朗读这句话。"},"finish_reason":"stop"}]}).to_string(),
+                )
             } else if body.contains("image_url") {
                 (
                     "application/json",
@@ -293,6 +315,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     playback_session::run(&root, results)?;
     video_repeat::run(&lib, results)?;
     writing::run(&lib, results)?;
+    speaking_groups::run(&root, results)?;
     reliability(&lib, results)?;
     lib.import_words("bright\t明亮的\ncalm - 平静的", "manual", false)?;
     ensure!(lib.list("words")?.len() == 2, "词条导入失败");

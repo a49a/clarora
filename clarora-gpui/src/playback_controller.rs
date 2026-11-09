@@ -14,6 +14,9 @@ impl AppView {
         if self.poll_close(window, cx) {
             return;
         }
+        if self.poll_speaking_waveform() {
+            cx.notify();
+        }
         #[cfg(debug_assertions)]
         if self.poll_diagnostic(window, cx) {
             return;

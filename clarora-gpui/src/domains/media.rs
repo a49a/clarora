@@ -389,6 +389,10 @@ pub(super) fn leave(app: &mut AppView, changed: bool) {
     app.media.preloader.set("pause", "yes");
     app.media.preloaded_index = None;
     if changed {
-        app.media.release();
+        if app.media.session.owner() == Some(&PlaybackOwner::Speaking) {
+            app.stop_speaking_prompt();
+        } else {
+            app.media.release();
+        }
     }
 }

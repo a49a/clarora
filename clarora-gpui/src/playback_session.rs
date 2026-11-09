@@ -45,6 +45,7 @@ impl Mode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Owner {
     Audio(String),
+    Speaking,
     Video,
     Card { kind: String, id: String },
     Background,

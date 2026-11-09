@@ -182,6 +182,7 @@ playback_session_native::run(output, results)
 let lib = Library::open(output.join(format!("video-repeat-{}", data::id())))?;
         video_repeat::run(&lib, results)
     },
+    "--speaking-groups-only",0,0 => {speaking_groups::run(output, results)},
     "--writing-only",0,0 => {
 let lib = Library::open(output.join(format!("writing-{}", data::id())))?;
         writing::run(&lib, results)

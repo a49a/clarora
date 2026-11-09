@@ -192,6 +192,7 @@ pub(super) enum Action {
     CheckAudio(String),
     Suspend(bool),
     CommandImport,
+    CommandImportSpeaking(String),
     AudioGroupSubtitles(clarora_gpui::audio_batch::Mode),
     ConfigureCommandImport,
     SaveCommandImport,
@@ -430,6 +431,9 @@ impl From<Action> for Command {
             Action::CheckAudio(v0) => Routed::Library(library::Command::CheckAudio(v0)),
             Action::Suspend(v0) => Routed::Cards(cards::Command::Suspend(v0)),
             Action::CommandImport => Routed::Library(library::Command::CommandImport),
+            Action::CommandImportSpeaking(group) => {
+                Routed::Speech(speech::Command::ImportSpeakingGroup(group))
+            }
             Action::AudioGroupSubtitles(v0) => {
                 Routed::Audio(audio::Command::AudioGroupSubtitles(v0))
             }
@@ -603,6 +607,15 @@ pub(super) fn complete(
         Outcome::TtsReady(v0) => audio::Completed::TtsReady(v0).apply(app, context, window, cx),
         Outcome::CommandImported(v0) => {
             library::Completed::CommandImported(v0).apply(app, context, window, cx)
+        }
+        Outcome::SpeakingCommandImported(report) => {
+            app.finish_speaking_command_import(report, context.cancelled)
+        }
+        Outcome::SpeakingTextReady(id, result) => {
+            app.finish_speaking_text(id, result, context.cancelled, window, cx)
+        }
+        Outcome::SpeakingGroupTagsReady(group_id, tags) => {
+            app.finish_speaking_group_tags(&group_id, &tags, context.cancelled)
         }
         Outcome::AudioMerged(v0) => {
             audio::Completed::AudioMerged(v0).apply(app, context, window, cx)

@@ -13,7 +13,7 @@ impl AppView {
             .child(div().text_lg().child("悬浮窗与命令导入"))
             .child(self.field("command", "本机导入命令"))
             .child(div().text_sm().text_color(cx.theme().muted_foreground)
-                .child("仅在点击导入时执行。命令每行输出一个本机音频文件的完整路径，音频保存到点击时选择的练习组。"))
+                .child("音频管理和口语题库共用这条命令。每行输出一个本机音频文件的完整路径，点击导入时执行。"))
             .child(div().flex().gap_2()
                 .child(self.button("save-import-command", "保存导入命令", Action::SaveCommandImport, cx)
                     .primary().disabled(self.tasks.foreground.is_running()))

@@ -2,7 +2,7 @@ use anyhow::{Result, ensure};
 use clarora_gpui::{
     audio_library, command_import,
     data::{Library, text},
-    process,
+    process, speaking,
 };
 use serde_json::{Value, json};
 use std::{
@@ -80,6 +80,32 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     ensure!(duplicate.is_err(), "全重复路径被报告成功0条");
     results.push(json!({"workflow":"真实命令 → 中文/空格/引号音频路径 → 点击时组固定 → 文件复制与SQLite重开 → 重复导入明确失败", "passed":true}));
 
+    let speaking_group = speaking::create_group(lib, "命令导入口语")?;
+    let other_speaking = speaking::create_group(lib, "另一个口语组")?;
+    let imported = command_import::SpeakingRequest::new(lib, &speaking_group.id, &command, None)?
+        .run(lib, &process::cancel_token())?;
+    ensure!(imported.questions.len() == 1 && imported.questions[0].group_id == speaking_group.id);
+    ensure!(imported.questions[0].text.is_empty());
+    let mut question = speaking::Question::draft(speaking_group.id.clone());
+    question.text = "Listen and explain in English.".into();
+    let attached = command_import::SpeakingRequest::new(
+        lib,
+        &speaking_group.id,
+        &command,
+        Some(question.clone()),
+    )?
+    .run(lib, &process::cancel_token())?;
+    ensure!(attached.questions[0].id == question.id && attached.questions[0].text == question.text);
+    ensure!(
+        speaking::list(&reopened)?
+            .iter()
+            .all(|entry| entry.group_id != other_speaking.id)
+    );
+    ensure!(
+        lib.list("listening_audios")? == rows,
+        "口语命令改动了音频库"
+    );
+
     ensure!(report.audios.len() == 1, "报告缺少新导入条目");
     ensure!(
         text(&report.audios[0], "id") == text(row, "id"),
@@ -103,6 +129,29 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
         output(&another),
         output(&third)
     );
+    let before_speaking = speaking::list(lib)?;
+    ensure!(
+        command_import::SpeakingRequest::new(
+            lib,
+            &speaking_group.id,
+            &batch_command,
+            Some(question)
+        )?
+        .run(lib, &process::cancel_token())
+        .is_err()
+    );
+    ensure!(speaking::list(lib)? == before_speaking);
+    let batch_speaking =
+        command_import::SpeakingRequest::new(lib, &other_speaking.id, &batch_command, None)?
+            .run(lib, &process::cancel_token())?;
+    ensure!(
+        batch_speaking.questions.len() == 2
+            && batch_speaking
+                .questions
+                .iter()
+                .all(|entry| entry.group_id == other_speaking.id)
+    );
+    results.push(json!({"workflow":"同一命令口语导入：单题附音频保留文字、批量建题、目标组固定与多文件保护", "passed":true}));
     let mut batch = command_import::Request::new(lib, &first, &batch_command)?
         .run(lib, &process::cancel_token())?;
     ensure!(

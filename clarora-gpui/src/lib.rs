@@ -63,3 +63,6 @@ pub mod library_controller;
 mod sentence_audition;
 pub mod sentence_search;
 mod sentence_search_worker;
+
+mod practice_groups;
+pub mod speaking;

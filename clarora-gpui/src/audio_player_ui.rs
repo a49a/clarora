@@ -1,6 +1,30 @@
 //! Audio workspace renders the current playback and library snapshots.
 use super::*;
 
+pub(super) fn paint_waveform_peaks(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    peaks: &[f32],
+    color: Hsla,
+) {
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
+    let step = width / peaks.len().max(1) as f32;
+    for (i, peak) in peaks.iter().enumerate() {
+        let h = (peak * height * 0.8).max(1.);
+        window.paint_quad(fill(
+            Bounds::new(
+                point(
+                    bounds.left() + px(i as f32 * step),
+                    bounds.top() + px((height - h) / 2.),
+                ),
+                size(px(step.max(1.) * 0.7), px(h)),
+            ),
+            color,
+        ));
+    }
+}
+
 impl AppView {
     pub(super) fn waveform_view(&self, cx: &Context<Self>) -> AnyElement {
         let Some(waveform) = &self.audio.waveform else {
@@ -40,7 +64,6 @@ impl AppView {
                             move |bounds, _, _| bounds_cell.set(bounds),
                             move |bounds, _, window, _| {
                                 let width = f32::from(bounds.size.width);
-                                let height = f32::from(bounds.size.height);
                                 if let (Some(a), Some(b)) = (a, b) {
                                     window.paint_quad(fill(
                                         Bounds::new(
@@ -56,20 +79,7 @@ impl AppView {
                                         rgba(0x36a58022),
                                     ));
                                 }
-                                let step = width / peaks.len().max(1) as f32;
-                                for (i, peak) in peaks.iter().enumerate() {
-                                    let h = (peak * height * 0.8).max(1.);
-                                    window.paint_quad(fill(
-                                        Bounds::new(
-                                            point(
-                                                bounds.left() + px(i as f32 * step),
-                                                bounds.top() + px((height - h) / 2.),
-                                            ),
-                                            size(px(step.max(1.) * 0.7), px(h)),
-                                        ),
-                                        color,
-                                    ));
-                                }
+                                paint_waveform_peaks(window, bounds, &peaks, color);
                                 for (time, color) in [
                                     (Some(position), rgb(0xe87240)),
                                     (a, clip_selection_ui::edge_color(true)),

@@ -347,6 +347,18 @@ pub(super) fn map_media(
             }
         }
     }
+    if let Some(rows) = data.get_mut("ai_records") {
+        for row in rows
+            .iter_mut()
+            .filter(|row| text(row, "kind") == "speaking_question")
+        {
+            let mut payload: Value = serde_json::from_str(&text(row, "payload"))?;
+            if let Some(path) = payload["audio"]["path"].as_str() {
+                payload["audio"]["path"] = json!(map(path)?);
+                row.insert("payload".into(), json!(payload.to_string()));
+            }
+        }
+    }
     Ok(())
 }
 pub fn collect(lib: &Library) -> Result<(Manifest, BTreeMap<String, PathBuf>)> {

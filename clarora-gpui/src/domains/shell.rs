@@ -97,6 +97,9 @@ fn navigate(
     tasks::leave(app);
     media::leave(app, previous != page);
     app.page = page;
+    if app.page == "speaking" {
+        app.reload_speaking_questions(window, cx)?;
+    }
     if app.page == "writing" {
         if let Some(view) = &app.writing {
             view.update(cx, |view, cx| view.reload(cx))?;

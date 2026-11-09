@@ -12,6 +12,7 @@ enum Kind {
     Backup,
     Sentences,
     Subtitles,
+    SpeakingGroups,
     Focus,
     Controller,
     Quit,
@@ -22,6 +23,11 @@ struct Entry {
     kind: Kind,
 }
 const ENTRIES: &[Entry] = &[
+    Entry {
+        flag: "--speaking-groups-check",
+        name: "speaking-groups",
+        kind: Kind::SpeakingGroups,
+    },
     Entry {
         flag: "--task-lifecycle-check",
         name: "task-lifecycle",
@@ -234,6 +240,7 @@ mod running {
                 Kind::Backup => backup_progress_probe::prepare(&self.out),
                 Kind::Sentences => sentence_search_probe::prepare(&self.out),
                 Kind::Subtitles => subtitle_workbench_probe::prepare(&self.out),
+                Kind::SpeakingGroups => speaking_ui::probe::prepare(&self.out),
                 Kind::Focus => Library::open(self.out.join("library")),
                 Kind::Controller | Kind::Quit => ui_controller_probe::prepare(&self.out),
             }
@@ -249,6 +256,7 @@ mod running {
                 Kind::Backup => Box::new(backup_progress_probe::Probe::new(&self.out)),
                 Kind::Sentences => Box::new(sentence_search_probe::Probe::new(&self.out)),
                 Kind::Subtitles => Box::new(subtitle_workbench_probe::Probe::new(&self.out)),
+                Kind::SpeakingGroups => Box::new(speaking_ui::probe::Probe::default()),
                 Kind::Focus => Box::new(focus_mode_probe::Probe::new(&self.out)),
                 Kind::Controller | Kind::Quit => Box::new(
                     ui_controller_probe::Probe::new(&self.out)

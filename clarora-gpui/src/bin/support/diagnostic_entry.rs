@@ -80,6 +80,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             "--model-navigation-check",
             "--backup-progress-check",
             "--sentence-search-check",
+            "--speaking-groups-check",
             "--subtitle-workbench-check",
             "--focus-mode-check",
             "--ui-controller-check",

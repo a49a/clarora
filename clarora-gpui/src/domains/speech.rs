@@ -2,6 +2,7 @@
 use super::*;
 pub(super) enum Command {
     Score,
+    ImportSpeakingGroup(String),
     Record,
     StopRecord,
     TtsDownload,
@@ -21,10 +22,13 @@ impl Command {
         cx: &mut Context<AppView>,
     ) -> Result<()> {
         match self {
+            Command::ImportSpeakingGroup(group) => {
+                app.start_speaking_command_import_to(group, None, window, cx);
+            }
             Command::Score => {
                 let path = app.recorded.clone().context("请先录音或选择录音文件")?;
                 let reference = app.value("reference", cx);
-                ensure!(!reference.trim().is_empty(), "请填写参考原文");
+                ensure!(!reference.trim().is_empty(), "请先转写题目音频");
                 app.begin("正在转写并对齐录音…", move |lib, cancel, _| {
                     let cues = ai::transcribe(&lib, &path, &cancel)?;
                     let actual = cues

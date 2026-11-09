@@ -56,6 +56,7 @@ mod saved_clip_ui;
 mod sentence_search_probe;
 mod sentence_search_ui;
 mod settings_ui;
+mod speaking_ui;
 mod subtitle_follow_ui;
 mod subtitle_text_ui;
 #[cfg(debug_assertions)]
@@ -166,7 +167,7 @@ const PAGES: &[(&str, &str, &str)] = &[
     ("flashcard", "闪卡复习", "温习与计划"),
     ("listening", "音频学习", "逐句听懂"),
     ("video", "视频学习", "精听与片段"),
-    ("speaking", "口语跟读", "录音与对齐"),
+    ("speaking", "口语练习", "题库、草稿与录音"),
     ("writing", "写作练习", "保存草稿与 AI 批改"),
     ("library", "音频管理", "整理练习组"),
     ("pdf", "文档阅读", "PDF / EPUB / TXT"),
@@ -232,6 +233,7 @@ struct AppView {
     backups: Vec<String>,
     recording: Option<Recorder>,
     recorded: Option<PathBuf>,
+    speaking: speaking_ui::SpeakingLibrary,
     timer_chimes: timer_chimes::Chimes,
     rendered_images: clarora_gpui::render_images::RenderedImages,
     timer: focus_timer::Timer,
@@ -286,6 +288,15 @@ impl AppView {
                 false,
             ),
             ("reference", "朗读参考原文", true, false),
+            ("speaking_group", "分组名称", false, false),
+            ("speaking_group_tag", "例如：托福、校园", false, false),
+            ("speaking_title", "可选，方便查找题目", false, false),
+            (
+                "speaking_answer_draft",
+                "写下或粘贴你的口语作答草稿",
+                true,
+                false,
+            ),
             (
                 "tts_text",
                 "输入要合成的中文或英文（最多 10,000 字）",
@@ -397,6 +408,7 @@ impl AppView {
             backups: vec![],
             recording: None,
             recorded: None,
+            speaking: Default::default(),
             timer_seconds: timer.display_seconds(focus_timer::now_ms()),
             timer,
             timer_retry: None,
@@ -563,6 +575,19 @@ impl AppView {
             .filter(|p| PAGES.iter().any(|(k, _, _)| k == p))
             .unwrap_or("flashcard".into());
         this.navigation_open = this.lib.setting("navigation_open").ok().as_deref() != Some("false");
+        for key in ["reference", "speaking_title", "speaking_answer_draft"] {
+            cx.subscribe(&this.inputs[key], |_, _, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            })
+            .detach();
+        }
+        if this.page == "speaking" {
+            if let Err(error) = this.reload_speaking_questions(window, cx) {
+                this.report_status(FeedbackKind::Error, format!("读取口语题库失败：{error:#}"));
+            }
+        }
         this.writing =
             Some(cx.new(|cx| writing_ui::WritingView::new(this.lib.clone(), window, cx)));
         this.audio.practice_id = this.lib.setting("library_group").unwrap_or_default();

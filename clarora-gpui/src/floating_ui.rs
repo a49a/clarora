@@ -4,12 +4,58 @@ use super::*;
 const COMPACT_WIDTH: f32 = 232.;
 const COMPACT_HEIGHT: f32 = 60.;
 const EXPANDED_HEIGHT: f32 = 148.;
+const TARGETS_HEIGHT: f32 = 228.;
+const SPEAKING_TARGET_SETTING: &str = "floating_speaking_group";
+
+#[derive(Clone, PartialEq, Eq)]
+enum ImportTarget {
+    Audio,
+    Speaking(String),
+}
+
+impl ImportTarget {
+    fn load(lib: &Library) -> Self {
+        match lib.setting(SPEAKING_TARGET_SETTING) {
+            Ok(id) if !id.is_empty() => Self::Speaking(id),
+            _ => Self::Audio,
+        }
+    }
+
+    fn page(&self) -> &'static str {
+        match self {
+            Self::Audio => "library",
+            Self::Speaking(_) => "speaking",
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Audio => "音频",
+            Self::Speaking(_) => "口语",
+        }
+    }
+
+    fn action(&self) -> Action {
+        match self {
+            Self::Audio => Action::CommandImport,
+            Self::Speaking(id) => Action::CommandImportSpeaking(id.clone()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FloatingPanel {
+    Compact,
+    Details,
+    Targets,
+}
 
 struct FloatingImport {
     owner: WeakEntity<AppView>,
     main: AnyWindowHandle,
     snapshot: ImportSnapshot,
-    expanded: bool,
+    panel: FloatingPanel,
+    target: ImportTarget,
     focus: FocusHandle,
     _changes: Subscription,
 }
@@ -18,32 +64,111 @@ impl FloatingImport {
         owner: Entity<AppView>,
         main: AnyWindowHandle,
         snapshot: ImportSnapshot,
+        target: ImportTarget,
         cx: &mut Context<Self>,
     ) -> Self {
         let changes = cx.observe(&owner, |this, owner, cx| {
-            this.snapshot = ImportSnapshot::from_app(owner.read(cx));
+            this.snapshot = ImportSnapshot::from_app(owner.read(cx), &this.target);
             cx.notify();
         });
         Self {
             owner: owner.downgrade(),
             main,
             snapshot,
-            expanded: false,
+            panel: FloatingPanel::Compact,
+            target,
             focus: cx.focus_handle(),
             _changes: changes,
         }
     }
     fn toggle_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.expanded = !self.expanded;
-        window.resize(size(
-            px(COMPACT_WIDTH),
-            px(if self.expanded {
-                EXPANDED_HEIGHT
-            } else {
-                COMPACT_HEIGHT
-            }),
-        ));
+        let panel = if self.panel == FloatingPanel::Details {
+            FloatingPanel::Compact
+        } else {
+            FloatingPanel::Details
+        };
+        self.set_panel(panel, window, cx);
+    }
+    fn set_panel(&mut self, panel: FloatingPanel, window: &mut Window, cx: &mut Context<Self>) {
+        self.panel = panel;
+        let height = match panel {
+            FloatingPanel::Compact => COMPACT_HEIGHT,
+            FloatingPanel::Details => EXPANDED_HEIGHT,
+            FloatingPanel::Targets => TARGETS_HEIGHT,
+        };
+        window.resize(size(px(COMPACT_WIDTH), px(height)));
         cx.notify();
+    }
+    fn toggle_targets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panel == FloatingPanel::Targets {
+            self.set_panel(FloatingPanel::Compact, window, cx);
+            return;
+        }
+        self.set_panel(FloatingPanel::Targets, window, cx);
+        let owner = self.owner.clone();
+        cx.defer(move |cx| {
+            let _ = owner.update(cx, |app, cx| {
+                if let Err(error) = app.refresh_speaking_groups() {
+                    app.report_status(FeedbackKind::Error, format!("读取口语分组失败：{error:#}"));
+                }
+                cx.notify();
+            });
+        });
+    }
+    fn select_target(&mut self, target: ImportTarget, window: &mut Window, cx: &mut Context<Self>) {
+        self.target = target;
+        self.set_panel(FloatingPanel::Compact, window, cx);
+        if let Some(owner) = self.owner.upgrade() {
+            let app = owner.read(cx);
+            let id = match &self.target {
+                ImportTarget::Audio => "",
+                ImportTarget::Speaking(id) => id,
+            };
+            let saved = app.lib.set_setting(SPEAKING_TARGET_SETTING, id);
+            self.snapshot = ImportSnapshot::from_app(app, &self.target);
+            if let Err(error) = saved {
+                cx.defer(move |cx| {
+                    owner.update(cx, |app, cx| {
+                        app.report_status(
+                            FeedbackKind::Error,
+                            format!("保存悬浮窗导入目标失败：{error:#}"),
+                        );
+                        cx.notify();
+                    })
+                });
+            }
+        }
+    }
+    fn import(&self, cx: &mut Context<Self>) {
+        if self.snapshot.busy {
+            self.dispatch(Action::Cancel, false, cx);
+        } else if !self.snapshot.command_ready {
+            self.dispatch(Action::ConfigureCommandImport, true, cx);
+        } else if self.snapshot.group.is_none() {
+            self.dispatch(Action::Page(self.target.page().into()), true, cx);
+        } else {
+            self.dispatch(self.target.action(), false, cx);
+        }
+    }
+    fn target_button(
+        &self,
+        id: SharedString,
+        label: String,
+        target: ImportTarget,
+        cx: &Context<Self>,
+    ) -> Button {
+        Button::new(id)
+            .small()
+            .outline()
+            .w_full()
+            .justify_start()
+            .flex_shrink_0()
+            .selected(self.target == target)
+            .child(div().min_w_0().w_full().truncate().child(label.clone()))
+            .tooltip(label)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_target(target.clone(), window, cx)
+            }))
     }
     fn hide(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.dispatch(Action::CloseFloatingNames, false, cx);
@@ -73,6 +198,8 @@ impl FloatingImport {
 #[derive(Clone)]
 struct ImportSnapshot {
     group: Option<String>,
+    audio_group: Option<String>,
+    speaking_groups: Vec<clarora_gpui::speaking::Group>,
     command_ready: bool,
     busy: bool,
     cancelling: bool,
@@ -82,13 +209,21 @@ struct ImportSnapshot {
     can_name: bool,
 }
 impl ImportSnapshot {
-    fn from_app(app: &AppView) -> Self {
-        let group = app
+    fn from_app(app: &AppView, target: &ImportTarget) -> Self {
+        let audio_group = app
             .audio
             .practices
             .iter()
             .find(|r| text(r, "id") == app.audio.practice_id)
             .map(|r| text(r, "name"));
+        let speaking_groups = app.speaking_groups().to_vec();
+        let group = match target {
+            ImportTarget::Audio => audio_group.clone(),
+            ImportTarget::Speaking(id) => speaking_groups
+                .iter()
+                .find(|group| &group.id == id)
+                .map(|group| group.name.clone()),
+        };
         let command_ready = !app.import_command.trim().is_empty();
         let busy = app.tasks.foreground.is_running();
         let cancelling = app
@@ -96,11 +231,13 @@ impl ImportSnapshot {
             .foreground
             .cancel_token()
             .is_some_and(|t| t.load(Ordering::SeqCst));
-        let notice = app
-            .tasks
-            .notice
-            .as_ref()
-            .filter(|n| n.title == "命令导入音频");
+        let notice = app.tasks.notice.as_ref().filter(|n| {
+            n.title
+                == match target {
+                    ImportTarget::Audio => "命令导入音频",
+                    ImportTarget::Speaking(_) => "口语命令导入",
+                }
+        });
         let detail = if busy {
             if cancelling {
                 "正在取消…".into()
@@ -137,15 +274,28 @@ impl ImportSnapshot {
         .to_string();
         Self {
             group,
+            audio_group,
+            speaking_groups,
             command_ready,
             busy,
             cancelling,
             detail,
             failed,
             caption,
-            can_name: app.command_imported.is_some(),
+            can_name: matches!(target, ImportTarget::Audio) && app.command_imported.is_some(),
         }
     }
+}
+
+#[cfg(debug_assertions)]
+pub(super) fn speaking_probe_action(app: &AppView, group: &str) -> Result<Action> {
+    app.lib.set_setting(SPEAKING_TARGET_SETTING, group)?;
+    let target = ImportTarget::load(&app.lib);
+    ensure!(target == ImportTarget::Speaking(group.to_owned()));
+    let snapshot = ImportSnapshot::from_app(app, &target);
+    ensure!(snapshot.group.as_deref() == Some("悬浮窗目标") && snapshot.command_ready);
+    ensure!(!snapshot.can_name);
+    Ok(target.action())
 }
 impl Render for FloatingImport {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -154,6 +304,8 @@ impl Render for FloatingImport {
         window.set_rem_size(cx.theme().font_size);
         let ImportSnapshot {
             group,
+            audio_group,
+            speaking_groups,
             command_ready,
             busy,
             cancelling,
@@ -163,8 +315,12 @@ impl Render for FloatingImport {
             can_name,
         } = self.snapshot.clone();
         let has_group = group.is_some();
-        let group_name = group.unwrap_or_else(|| "未选练习组".into());
-        let group_tip = format!("{} · 点击打开音频管理", group_name);
+        let group_name = group.unwrap_or_else(|| "未选分组".into());
+        let group_tip = format!(
+            "{} · {} · 点击选择导入目标",
+            self.target.label(),
+            group_name
+        );
         let (icon, tip) = if busy {
             (
                 IconName::Close,
@@ -179,7 +335,14 @@ impl Render for FloatingImport {
         } else if !has_group {
             (IconName::FolderClosed, "选择练习组")
         } else {
-            (IconName::ArrowDown, "命令导入音频")
+            (
+                IconName::ArrowDown,
+                if matches!(self.target, ImportTarget::Audio) {
+                    "命令导入音频"
+                } else {
+                    "命令导入口语题目"
+                },
+            )
         };
         let bar = div()
             .h(px(50.))
@@ -223,18 +386,16 @@ impl Render for FloatingImport {
                                 cx.theme().muted_foreground
                             })
                             .truncate()
-                            .child(caption),
+                            .child(format!("{} · {caption}", self.target.label())),
                     )
                     .child(
                         div()
                             .text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
-                            .child(group_name),
+                            .child(format!("{group_name} ▾")),
                     )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.dispatch(Action::Page("library".into()), true, cx)
-                    })),
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_targets(window, cx))),
             )
             .child(
                 Button::new("floating-command-import")
@@ -246,22 +407,11 @@ impl Render for FloatingImport {
                     .rounded_full()
                     .tooltip(tip)
                     .disabled(cancelling)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let action = if busy {
-                            Action::Cancel
-                        } else if !command_ready {
-                            Action::ConfigureCommandImport
-                        } else if !has_group {
-                            Action::Page("library".into())
-                        } else {
-                            Action::CommandImport
-                        };
-                        this.dispatch(action, !busy && (!command_ready || !has_group), cx);
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.import(cx))),
             )
             .child(
                 Button::new("floating-more")
-                    .icon(if self.expanded {
+                    .icon(if self.panel == FloatingPanel::Details {
                         IconName::ChevronUp
                     } else {
                         IconName::Ellipsis
@@ -270,14 +420,14 @@ impl Render for FloatingImport {
                     .small()
                     .w(px(22.))
                     .h(px(28.))
-                    .tooltip(if self.expanded {
+                    .tooltip(if self.panel == FloatingPanel::Details {
                         "收起详情"
                     } else {
                         "详情与更多操作"
                     })
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_details(window, cx))),
             );
-        let details = self.expanded.then(|| {
+        let details = (self.panel == FloatingPanel::Details).then(|| {
             div()
                 .border_t_1()
                 .border_color(cx.theme().border)
@@ -329,7 +479,7 @@ impl Render for FloatingImport {
                                 .h(px(24.))
                                 .px_2()
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.dispatch(Action::Page("library".into()), true, cx)
+                                    this.dispatch(Action::Page(this.target.page().into()), true, cx)
                                 })),
                         )
                         .child(
@@ -354,6 +504,50 @@ impl Render for FloatingImport {
                         ),
                 )
         });
+        let targets = (self.panel == FloatingPanel::Targets).then(|| {
+            let mut list = div()
+                .id("floating-targets")
+                .min_h_0()
+                .flex_1()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .px_2()
+                .pb_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("导入目标"),
+                );
+            list = list.child(self.target_button(
+                "floating-target-audio".into(),
+                format!("音频 · {}", audio_group.as_deref().unwrap_or("当前练习组")),
+                ImportTarget::Audio,
+                cx,
+            ));
+            if speaking_groups.is_empty() {
+                list = list.child(
+                    Button::new("floating-open-speaking")
+                        .small()
+                        .outline()
+                        .label("去口语练习新建组")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.dispatch(Action::Page("speaking".into()), true, cx)
+                        })),
+                );
+            }
+            for group in speaking_groups {
+                list = list.child(self.target_button(
+                    format!("floating-target-speaking-{}", group.id).into(),
+                    format!("口语 · {}", group.name),
+                    ImportTarget::Speaking(group.id),
+                    cx,
+                ));
+            }
+            list
+        });
         div()
             .id("floating-import")
             .track_focus(&self.focus)
@@ -366,7 +560,9 @@ impl Render for FloatingImport {
                 cx.listener(|this, _: &ToggleFloatingImport, window, cx| this.hide(window, cx)),
             )
             .on_action(cx.listener(|this, _: &ImportAudioCommand, _, cx| {
-                this.dispatch(Action::CommandImport, false, cx);
+                if !this.snapshot.busy {
+                    this.import(cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &Quit, _, cx| {
                 let main = this.main;
@@ -378,8 +574,8 @@ impl Render for FloatingImport {
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
-                    if this.expanded {
-                        this.toggle_details(window, cx);
+                    if this.panel != FloatingPanel::Compact {
+                        this.set_panel(FloatingPanel::Compact, window, cx);
                     } else {
                         this.hide(window, cx);
                     }
@@ -399,13 +595,18 @@ impl Render for FloatingImport {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .rounded(px(if self.expanded { 16. } else { 26. }))
+                    .rounded(px(if self.panel == FloatingPanel::Compact {
+                        26.
+                    } else {
+                        16.
+                    }))
                     .border_1()
                     .border_color(cx.theme().primary.opacity(0.22))
                     .bg(cx.theme().background)
                     .shadow_sm()
                     .child(bar)
-                    .children(details),
+                    .children(details)
+                    .children(targets),
             )
     }
 }
@@ -423,8 +624,12 @@ impl AppView {
                 return;
             }
         }
+        if let Err(error) = self.refresh_speaking_groups() {
+            self.report_status(FeedbackKind::Error, format!("读取口语分组失败：{error:#}"));
+        }
         let owner = cx.entity();
-        let snapshot = ImportSnapshot::from_app(self);
+        let target = ImportTarget::load(&self.lib);
+        let snapshot = ImportSnapshot::from_app(self, &target);
         let main = window.window_handle();
         let display = window.display(cx);
         let screen = display
@@ -454,7 +659,7 @@ impl AppView {
             move |window, cx| {
                 window.set_window_title("Clarora · 快速导入");
                 native::configure(window);
-                let view = cx.new(|cx| FloatingImport::new(owner, main, snapshot, cx));
+                let view = cx.new(|cx| FloatingImport::new(owner, main, snapshot, target, cx));
                 view.read(cx).focus.focus(window);
                 view
             },
