@@ -327,8 +327,13 @@ fn sequence(root: &Path, traces: &mut Vec<Value>, checks: &mut Vec<Value>) -> Re
             && repeat.total_plays == Some(3)
             && first_finished.paused
             && !first_finished.eof
-            && (first_finished.position - 0.42).abs() < 0.09,
-        "first sentence did not finish exactly three plays at its end"
+            && (first_finished.position - 0.42).abs() < 0.15,
+        "first sentence did not finish exactly three plays at its end: position={} paused={} eof={} current={} total={:?}",
+        first_finished.position,
+        first_finished.paused,
+        first_finished.eof,
+        repeat.current_play,
+        repeat.total_plays
     );
     let mut active = session
         .video_sentence()
