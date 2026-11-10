@@ -45,6 +45,125 @@ npm run typecheck
 npm test
 ```
 
+## 从源码打包桌面应用
+
+以下步骤以当前 `master` 为准，产物版本取 `clarora-gpui/Cargo.toml` 的 `version`。先拉取最新代码并确认版本：
+
+```sh
+git clone https://github.com/a49a/clarora.git
+cd clarora
+git pull --ff-only
+grep '^version' clarora-gpui/Cargo.toml
+```
+
+只想在本机运行、不生成安装包时，macOS 执行 `make gpui`，Windows 执行 `powershell -File clarora-gpui/scripts/dev.ps1`；`npm run gpui` 保留为兼容别名。真正的可分发包按下面平台分别构建。
+
+| 目标 | 入口 | 产物 |
+| --- | --- | --- |
+| macOS 本机调试 | `make gpui` | `clarora-gpui/target/Clarora.app` |
+| macOS 分发包 | `release-macos.py` + runtime 配置 | `artifacts/clarora/gpui/macos/release-*` 下的 `.app`、ZIP、DMG |
+| Windows 分发包 | `prepare-windows-runtime.ps1` + `build-windows.ps1 -Distribution` | `artifacts/clarora/gpui/windows/` 下的 ZIP、安装器、校验和 |
+
+### macOS
+
+要求 macOS 14+ Apple Silicon、Xcode Command Line Tools、Rust 1.93.1、Python 3、Homebrew 和 CMake：
+
+```sh
+brew install mpv ffmpeg yt-dlp cmake
+```
+
+**本机调试应用**（不用于分发）：
+
+```sh
+make gpui
+# 产物：clarora-gpui/target/Clarora.app
+```
+
+**可分发的 release 包：**
+
+1. 编译 ASR/TTS 辅助程序。下面的 `/path/to/...` 换成自己的 whisper.cpp / sherpa-onnx 安装位置：
+
+```sh
+cmake -S clarora-gpui/native -B clarora-gpui/target/native \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/path/to/whisper-and-sherpa
+cmake --build clarora-gpui/target/native --config Release
+
+cmake -S clarora-gpui/native/tts -B clarora-gpui/target/tts \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/path/to/sherpa-onnx
+cmake --build clarora-gpui/target/tts --config Release
+```
+
+2. 准备 PDFium：
+
+```sh
+mkdir -p /absolute/path/clarora-runtime
+python3 clarora-gpui/scripts/install-pdfium.py /absolute/path/clarora-runtime
+```
+
+3. 复制运行库配置并填写绝对路径：
+
+```sh
+cp clarora-gpui/scripts/macos-runtime.example.json /absolute/path/macos-runtime.json
+```
+
+至少填写 `libmpv`、`ffmpeg`、`ffprobe`、`yt_dlp`、`pdfium`、`asr`、`tts`、`ggml_cpu`，以及 ASR/TTS/PDFium 的 `providers` 来源和许可证路径、`python` 段。示例中的占位符不能直接用于打包。
+
+4. 缓存 Rust 依赖、打包并验证：
+
+```sh
+cargo fetch --manifest-path clarora-gpui/Cargo.toml --locked
+
+cd clarora-gpui
+python3 scripts/release-macos.py \
+  --runtime-config /absolute/path/macos-runtime.json \
+  --output ../../artifacts/clarora/gpui/macos/release-001 \
+  --dmg
+python3 scripts/verify-macos-package.py \
+  ../../artifacts/clarora/gpui/macos/release-001/Clarora.app \
+  --evidence ../../artifacts/clarora/gpui/macos/verify-001 \
+  --launch-seconds 3
+```
+
+输出目录必须是工作区 `artifacts/clarora/` 下尚不存在的新目录；重复打包请换新目录。默认使用本机 ad-hoc 签名，不做公证；正式分发需要 `--sign-identity` 和 `--notarize-profile`。产物包含 `.app`、ZIP、可选 DMG，以及 `release.json`、`release-files.json`。
+
+### Windows
+
+要求 Windows 10/11 x64、Rust 1.93.1 MSVC、Visual Studio 2022 的 C++ 桌面开发工作负载、Windows SDK、CMake、Python 3、7-Zip 和 Inno Setup 6。使用 x64 开发者 PowerShell 或 Native Tools 命令提示符：
+
+```powershell
+git clone https://github.com/a49a/clarora.git
+cd clarora\clarora-gpui
+./scripts/prepare-windows-runtime.ps1
+./scripts/build-windows.ps1 -Distribution -RuntimeDir ./target/windows-runtime -Installer
+```
+
+`prepare-windows-runtime.ps1` 会按 `windows-runtime-lock.json` 下载固定依赖并编译 ASR/TTS 运行库，第一次执行可能需要较长时间。`-Installer` 生成按用户安装的安装器；不加时只生成便携 ZIP。
+
+默认输出到工作区 `artifacts/clarora/gpui/windows/`，包含：
+
+- `Clarora-<version>-windows-x64-unsigned.zip`
+- `Clarora-<version>-windows-x64-setup-unsigned.exe`（带 `-Installer` 时）
+- `release-manifest.json`、`SHA256SUMS.txt` 和验证报告
+
+验证安装、覆盖安装、运行检查和保留资料卸载：
+
+```powershell
+./scripts/verify-windows-installer.ps1 `
+  -Installer /absolute/path/Clarora-<version>-windows-x64-setup-unsigned.exe `
+  -Evidence /absolute/path/installer-evidence
+```
+
+只运行 `./scripts/build-windows.ps1` 得到的是不完整开发版 EXE，不能分发；发布必须带 `-Distribution -RuntimeDir`。
+
+### 发布前检查
+
+- 两个平台的产物默认未签名：macOS 为 ad-hoc，Windows 为 unsigned；正式分发需自行签名／公证。
+- 语音模型不随包提供，由用户在应用内下载；ASR/TTS 运行库、FFmpeg、PDFium 和 libmpv 必须随包收集。
+- 安装包版本来自 `clarora-gpui/Cargo.toml`；发布新版本时同时更新 `Cargo.lock` 中 `clarora-gpui` 的版本并提交。
+- 运行库字段、许可证和验证边界详见 `clarora-gpui/scripts/PACKAGING.md`。
+
 ## 同步与备份
 
 在「设置 → 同步与备份」填写存储类型、Endpoint、Region、Bucket、Access Key 和资料库前缀。各设备使用相同的存储位置；一台设备点“备份本机资料”，另一台读取版本并“合并到本机”。不需要部署数据库、API 或任务队列。

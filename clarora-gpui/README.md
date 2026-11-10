@@ -38,6 +38,51 @@ python ./clarora-gpui/scripts/install-pdfium.py ./clarora-gpui/target/package
 
 完整 Windows 分发使用 `prepare-windows-runtime.ps1` 和 `build-windows.ps1 -Distribution -Installer`，收齐工具、ASR／TTS、PDFium、DLL 和许可证后生成 ZIP 与按用户安装的安装器。详细参数与验证命令见[安装包流程](scripts/PACKAGING.md)。分发包只加载包内运行库，不借用开发机 PATH；设置页的“运行环境”及 `--runtime-check /absolute/report.json` 可检查组件，后者不打开学习资料库。
 
+## 从源码打包最新桌面应用
+
+先拉取最新代码并确认版本；产物版本取 `clarora-gpui/Cargo.toml` 的 `version`：
+
+```sh
+git pull --ff-only
+grep '^version' clarora-gpui/Cargo.toml
+```
+
+完整运行库字段、许可证和验证边界见[安装包流程](scripts/PACKAGING.md)。
+
+**macOS**（macOS 14+ Apple Silicon，需 Xcode Command Line Tools、Homebrew、CMake、Python 3）：
+
+```sh
+# 本机调试应用，不用于分发
+make gpui
+
+# 可分发 release 包：先按 PACKAGING.md 准备 runtime.json
+cargo fetch --manifest-path clarora-gpui/Cargo.toml --locked
+cd clarora-gpui
+python3 scripts/release-macos.py \
+  --runtime-config /absolute/path/macos-runtime.json \
+  --output ../../artifacts/clarora/gpui/macos/release-001 \
+  --dmg
+python3 scripts/verify-macos-package.py \
+  ../../artifacts/clarora/gpui/macos/release-001/Clarora.app \
+  --evidence ../../artifacts/clarora/gpui/macos/verify-001 \
+  --launch-seconds 3
+```
+
+输出目录必须是工作区 `artifacts/clarora/` 下尚不存在的新目录。默认 ad-hoc 签名；正式分发需 `--sign-identity` 和 `--notarize-profile`。
+
+**Windows**（Windows 10/11 x64，需 Rust MSVC、Visual Studio 2022 C++ 工作负载、Windows SDK、CMake、Python 3、7-Zip、Inno Setup 6）：
+
+```powershell
+cd clarora-gpui
+./scripts/prepare-windows-runtime.ps1
+./scripts/build-windows.ps1 -Distribution -RuntimeDir ./target/windows-runtime -Installer
+./scripts/verify-windows-installer.ps1 `
+  -Installer /absolute/path/Clarora-<version>-windows-x64-setup-unsigned.exe `
+  -Evidence /absolute/path/installer-evidence
+```
+
+默认产物在 `artifacts/clarora/gpui/windows/`：便携 ZIP、按用户安装器（带 `-Installer`）、`release-manifest.json`、`SHA256SUMS.txt` 和验证报告。只运行 `build-windows.ps1` 得到的是不完整开发版 EXE，不能分发。
+
 ## 界面与快捷操作
 
 桌面界面采用暖灰与青绿色主题，导航按学习空间、资料库、我的和复习分组；随便学学与闪卡复习放在最后的复习区。页面左上角可收起/展开左侧导航，也可按 `Cmd/Ctrl+B`；导航从左侧滑动展开/收起，内容区同步扩缩；按钮用加粗双箭头指示方向，并记住状态，重启后保留。侧栏底部可切换浅色/深色，也可按 `Cmd/Ctrl+Shift+L`。闪卡页默认聚焦学习卡片，点击“添加句子卡”展开编辑区；`Cmd/Ctrl+Shift+N` 可直接打开句子编辑并定位输入框。视频控制栏“字幕：开／关”控制画面字幕（含第二轨），普通／全屏共用并记住偏好；字幕列表保留供定位、复制和翻译。字幕区“更多 → 导入英文字幕”加载 SRT／VTT，“翻译中文”调用共用聊天 API 分批生成双语字幕，保留英文和时间轴，全部成功后才保存，失败／取消保留原缓存；已有中文不重复发送给模型。视频页采用左右工作台：左侧播放器，右侧“我的视频／字幕／选集”页签；拖动中间分隔条调整宽度，窄窗口自动上下排列。字幕按正文长度展开，支持点击播放、逐句复制及提问；选集独立滚动，不再占用播放器下方空间。点击标题栏的 P 数可切到选集。字幕叠加在画面底部，可从控制栏“设置”菜单选择 14–32px 字号（默认 16px），立即生效并自动保存，普通与全屏播放共用；控制栏提供播放、前后 10 秒、进度拖动、倍速菜单、音量滑杆/静音；“设置”菜单集中管理字幕字号、循环方式和精听工具。选择“A–B 精听工具”展开起终点、清除、逐句切换、重听本句及片段闪卡；设置有效 A/B 后自动循环，进度条显示范围和金色边界，切换字幕句时退出旧循环。B 必须晚于 A；重设 A 超过旧 B 会清除旧 B。标题栏“更多”展开本地视频、bilibili 导入、字幕轨道、SRT 导出和最近视频；首次打开没有视频时自动显示。单击视频画面可播放／暂停，普通与全屏模式均支持；双击切换全屏后保持原播放状态。控制栏的“全屏”、双击视频画面或 `F11` 可进入视频专用原生全屏，`Esc` 或“退出全屏”返回；播放继续，退出后保留原导航/助手状态。
