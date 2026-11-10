@@ -11,6 +11,8 @@ pub(super) enum Command {
     TtsSpeed(f32),
     TtsPlay,
     GroupCheck,
+    Delete,
+    BatchImport,
 }
 impl Command {
     pub(super) fn effects(&self, _app: &AppView) -> Effects {
@@ -26,6 +28,8 @@ impl Command {
             Command::ImportSpeakingGroup(group) => {
                 app.start_speaking_command_import_to(group, None, window, cx);
             }
+            Command::Delete => app.open_speaking_delete_dialog(window, cx)?,
+            Command::BatchImport => app.open_speaking_batch_import_dialog(window, cx)?,
             Command::Score => {
                 let path = app.recorded.clone().context("请先录音或选择录音文件")?;
                 let reference = app.value("reference", cx);

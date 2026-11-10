@@ -196,6 +196,16 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     ensure!(speaking::list(&lib)?.contains(&both));
     ensure!(speaking::save(&lib, Question::draft(group.id.clone()), AudioEdit::Keep).is_err());
     ensure!(speaking::save(&lib, Question::draft("missing".into()), AudioEdit::Keep).is_err());
+    let mut doomed = Question::draft(group.id.clone());
+    doomed.text = "Delete this question.".into();
+    let doomed = speaking::save(&lib, doomed, AudioEdit::Keep)?;
+    speaking::delete(&lib, &doomed.id)?;
+    ensure!(
+        !speaking::list(&lib)?
+            .iter()
+            .any(|question| question.id == doomed.id)
+    );
+    ensure!(speaking::delete(&lib, &doomed.id).is_err());
     ensure!(speaking::list(&Library::open(lib.root.clone())?)?.len() == 6);
     let zip = root.join("speaking.zip");
     backup::export_local(&lib, &zip)?;

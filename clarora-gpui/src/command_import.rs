@@ -186,7 +186,7 @@ impl SpeakingRequest {
         if attached {
             ensure!(
                 paths.len() <= 1,
-                "命令返回了多条音频，请使用「命令批量导入」或让命令只返回一个文件"
+                "命令返回了多条音频，请使用题目分组栏的「按命令导入」，或让命令只返回一个文件"
             );
         }
         let mut report = SpeakingReport {

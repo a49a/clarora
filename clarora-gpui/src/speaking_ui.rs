@@ -249,6 +249,97 @@ impl AppView {
         cx.notify();
     }
 
+    pub(super) fn open_speaking_delete_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        ensure!(self.page == "speaking", "请先进入口语练习");
+        ensure!(!self.speaking_locked(), "请先等待当前任务完成");
+        let question = self.speaking.current.clone().context("请先选择题目")?;
+        let saved = self
+            .speaking
+            .questions
+            .iter()
+            .any(|item| item.id == question.id);
+        let id = question.id.clone();
+        let group_id = question.group_id.clone();
+        let label = question.label();
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let confirm = view.clone();
+            let id = id.clone();
+            let group_id = group_id.clone();
+            dialog
+                .title(if saved {
+                    "删除这道题？"
+                } else {
+                    "放弃未保存的题目？"
+                })
+                .confirm()
+                .w((window.viewport_size().width - px(32.)).min(px(520.)))
+                .button_props(
+                    DialogButtonProps::default()
+                        .cancel_text("取消")
+                        .ok_text(if saved { "确认删除" } else { "放弃题目" })
+                        .ok_variant(ButtonVariant::Danger),
+                )
+                .child(div().text_sm().child(format!("题目：{label}")))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(if saved {
+                            "题目、作答草稿和批改历史会从本机删除；原始音频文件保留。此操作不能撤销。"
+                        } else {
+                            "这道题还没有保存到题库；放弃后不会保留当前编辑内容。"
+                        }),
+                )
+                .on_ok(move |_, window, cx| {
+                    confirm
+                        .update(cx, |this, cx| {
+                            let result = if saved {
+                                clarora_gpui::speaking::delete(&this.lib, &id)
+                            } else {
+                                Ok(())
+                            };
+                            match result {
+                                Ok(()) => {
+                                    this.speaking.questions.retain(|item| item.id != id);
+                                    let next = this
+                                        .speaking
+                                        .questions
+                                        .iter()
+                                        .find(|item| item.group_id == group_id)
+                                        .cloned()
+                                        .unwrap_or_else(|| Question::draft(group_id.clone()));
+                                    this.set_speaking_question(next, window, cx);
+                                    this.report_status(
+                                        FeedbackKind::Info,
+                                        if saved {
+                                            "题目已删除；原始音频文件保留".to_string()
+                                        } else {
+                                            "已放弃未保存的题目".to_string()
+                                        },
+                                    );
+                                    true
+                                }
+                                Err(error) => {
+                                    this.report_status(
+                                        FeedbackKind::Error,
+                                        format!("删除题目失败：{error:#}"),
+                                    );
+                                    cx.notify();
+                                    false
+                                }
+                            }
+                        })
+                        .unwrap_or(true)
+                })
+        });
+        Ok(())
+    }
+
     fn open_speaking_group(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let saved = self
             .speaking
@@ -338,20 +429,15 @@ impl AppView {
         .detach();
     }
 
-    fn start_speaking_command_import(
-        &mut self,
-        attach: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.speaking_locked() || (attach && self.speaking_prompt_audio().is_some()) {
+    fn start_speaking_command_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.speaking_locked() || self.speaking_prompt_audio().is_some() {
             return;
         }
         if self.import_command.trim().is_empty() {
             self.handle(Action::ConfigureCommandImport, window, cx);
             return;
         }
-        if attach && let Err(error) = self.flush_speaking_draft(cx) {
+        if let Err(error) = self.flush_speaking_draft(cx) {
             self.report_status(FeedbackKind::Error, format!("作答草稿尚未保存：{error:#}"));
             cx.notify();
             return;
@@ -359,16 +445,13 @@ impl AppView {
         let Some(current) = &self.speaking.current else {
             return;
         };
-        let question = attach.then(|| {
-            let mut question = current.clone();
-            question.title = self.value("speaking_title", cx);
-            question.answer_draft = self.value("speaking_answer_draft", cx);
-            question.target_words = self.speaking_target_words(cx);
-            question.text = self.value("reference", cx);
-            question.translation = self.speaking_translation(cx).map(str::to_owned);
-            question
-        });
-        self.start_speaking_command_import_to(current.group_id.clone(), question, window, cx);
+        let mut question = current.clone();
+        question.title = self.value("speaking_title", cx);
+        question.answer_draft = self.value("speaking_answer_draft", cx);
+        question.target_words = self.speaking_target_words(cx);
+        question.text = self.value("reference", cx);
+        question.translation = self.speaking_translation(cx).map(str::to_owned);
+        self.start_speaking_command_import_to(current.group_id.clone(), Some(question), window, cx);
     }
 
     pub(super) fn start_speaking_command_import_to(
@@ -1448,10 +1531,94 @@ impl AppView {
                                             .update(cx, |input, cx| input.focus(window, cx));
                                         cx.notify();
                                     })),
+                            )
+                            .child(
+                                Button::new("speaking-question-more")
+                                    .small()
+                                    .ghost()
+                                    .label("更多")
+                                    .tooltip("删除当前题目")
+                                    .disabled(locked)
+                                    .dropdown_menu({
+                                        let owner = cx.entity().downgrade();
+                                        move |mut menu, _, _| {
+                                            let owner = owner.clone();
+                                            menu =
+                                                menu.item(PopupMenuItem::new("删除题目").on_click(
+                                                    move |_, window, cx| {
+                                                        let _ = owner.update(cx, |this, cx| {
+                                                            this.handle(
+                                                                Action::SpeakingDelete,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        });
+                                                    },
+                                                ));
+                                            menu
+                                        }
+                                    }),
                             ),
                     )
                 },
             )
+    }
+
+    pub(super) fn open_speaking_batch_import_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        ensure!(self.page == "speaking", "请先进入口语练习");
+        ensure!(!self.speaking_locked(), "请先等待当前任务完成");
+        if self.import_command.trim().is_empty() {
+            self.handle(Action::ConfigureCommandImport, window, cx);
+            return Ok(());
+        }
+        let group_id = self
+            .speaking
+            .current
+            .as_ref()
+            .context("请先选择口语分组")?
+            .group_id
+            .clone();
+        let group_name = self
+            .speaking
+            .groups
+            .iter()
+            .find(|group| group.id == group_id)
+            .map(|group| group.name.clone())
+            .unwrap_or_default();
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let view = view.clone();
+            let group_id = group_id.clone();
+            dialog
+                .title("按命令导入题目")
+                .confirm()
+                .w((window.viewport_size().width - px(32.)).min(px(520.)))
+                .button_props(
+                    DialogButtonProps::default()
+                        .cancel_text("取消")
+                        .ok_text("继续导入")
+                        .ok_variant(ButtonVariant::Primary),
+                )
+                .child(div().text_sm().child(format!("当前分组：{group_name}")))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("将执行「设置 → 悬浮窗与命令导入」中的本机命令。命令返回的每个音频都会在当前分组新建一道题；如果返回多个音频，会创建多道题。原始命令和音频文件不会被删除。"),
+                )
+                .on_ok(move |_, window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.start_speaking_command_import_to(group_id.clone(), None, window, cx);
+                        true
+                    })
+                    .unwrap_or(true)
+                })
+        });
+        Ok(())
     }
 
     pub(super) fn speaking_header_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1778,6 +1945,18 @@ impl AppView {
                                 })),
                         )
                         .child(
+                            Button::new("speaking-command-import-group")
+                                .small()
+                                .ghost()
+                                .h(px(30.))
+                                .disabled(locked)
+                                .label("按命令导入")
+                                .tooltip("用本机命令导入音频；返回多个音频时会创建多道题，执行前需确认")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.handle(Action::SpeakingBatchImport, window, cx);
+                                })),
+                        )
+                        .child(
                             Button::new("speaking-new-question")
                                 .small()
                                 .primary()
@@ -1801,18 +1980,6 @@ impl AppView {
                                         }
                                     }
                                     cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("speaking-command-import-group")
-                                .small()
-                                .ghost()
-                                .h(px(30.))
-                                .disabled(locked)
-                                .label("批量导入")
-                                .tooltip("使用设置中的本机导入命令，每个音频建一道新题")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.start_speaking_command_import(false, window, cx);
                                 })),
                         )
                     }),
@@ -2445,7 +2612,7 @@ impl AppView {
                                 .label("用命令导入")
                                 .tooltip("使用设置中的本机导入命令，命令需返回一个音频")
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.start_speaking_command_import(true, window, cx);
+                                    this.start_speaking_command_import(window, cx);
                                 })),
                         ),
                 );
@@ -2873,7 +3040,7 @@ pub(super) mod probe {
                         window,
                         cx,
                     );
-                    app.start_speaking_command_import(true, window, cx);
+                    app.start_speaking_command_import(window, cx);
                     ensure!(app.tasks.foreground.is_running());
                     app.set(
                         "speaking_answer_draft",
@@ -2939,7 +3106,7 @@ pub(super) mod probe {
                     let question = app.speaking.current.as_ref().unwrap().clone();
                     ensure!(question.translation.as_deref() == Some("新的转写。"));
                     ensure!(speaking::list(&app.lib)?.contains(&question));
-                    app.start_speaking_command_import(true, window, cx);
+                    app.start_speaking_command_import(window, cx);
                     ensure!(!app.tasks.foreground.is_running(), "已有音频时不能命令覆盖");
                     app.remove_speaking_prompt(window, cx);
                     ensure!(app.value("reference", cx).is_empty());
@@ -2960,7 +3127,7 @@ pub(super) mod probe {
                             && question.translation.is_none()
                     );
                     ensure!(speaking::list(&app.lib)?.contains(question));
-                    app.start_speaking_command_import(true, window, cx);
+                    app.start_speaking_command_import(window, cx);
                     ensure!(app.tasks.foreground.is_running());
                 }
                 7 => {
@@ -3104,6 +3271,9 @@ pub(super) mod probe {
                             && saved.answer_draft == "Explicitly saved draft."
                             && saved.reviews == question.reviews
                     }));
+                    app.handle(Action::SpeakingDelete, window, cx);
+                    ensure!(window.has_active_dialog(cx), "删除题目没有打开确认对话框");
+                    window.close_dialog(cx);
                     app.speaking.layout_probe = Some(SpeakingLayoutBounds::default());
                     window.resize(size(px(1400.), px(800.)));
                     draw_next_frame(window, cx);

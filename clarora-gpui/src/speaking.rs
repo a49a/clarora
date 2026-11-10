@@ -583,3 +583,12 @@ pub fn review_draft(
     tx.commit()?;
     Ok(review)
 }
+
+pub fn delete(lib: &Library, key: &str) -> Result<()> {
+    let removed = lib.db()?.execute(
+        "DELETE FROM ai_records WHERE id=? AND kind='speaking_question'",
+        [key],
+    )?;
+    ensure!(removed > 0, "题目已不存在");
+    Ok(())
+}
