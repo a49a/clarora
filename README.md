@@ -36,7 +36,7 @@ npm run windows
 npm run ios
 ```
 
-桌面 GPUI 开发可直接在仓库根目录执行 `npm run gpui`；脚本会在缺少 PDFium 时安装固定版本，macOS 会打包调试 `.app` 后启动，首次运行需要联网下载 PDFium。Windows/iOS 的构建步骤和平台限制见 [平台说明](docs/platform-builds.md)。`.github/workflows/` 中的 CI 在推送与 PR 时运行共享代码的类型检查和测试，并编译验证 Android / macOS / iOS；Windows 安装包随推送构建，也可手动触发。共享代码和自动化测试不等同于四个平台的真机验收。
+桌面 GPUI 开发可直接在仓库根目录执行 `make gpui`，或运行 `sh clarora-gpui/scripts/dev.sh`；Windows 使用 `powershell -File clarora-gpui/scripts/dev.ps1`。脚本会在缺少 PDFium 时安装固定版本，macOS 会打包调试 `.app` 后启动，首次运行需要联网下载 PDFium。`npm run gpui` 保留为兼容别名。Windows/iOS 的构建步骤和平台限制见 [平台说明](docs/platform-builds.md)。`.github/workflows/` 中的 CI 在推送与 PR 时运行共享代码的类型检查和测试，并编译验证 Android / macOS / iOS；Windows 安装包随推送构建，也可手动触发。共享代码和自动化测试不等同于四个平台的真机验收。
 
 `npm run macos` 会检查本机 Pods；首次构建或原生依赖锁文件不一致时自动执行 `pod install`，因此需要先安装 CocoaPods。修改 Podfile 后，可在 `clarora-app/` 中执行 `npm run macos:pods` 手动更新依赖。`Pods/` 是本地生成内容，不提交到仓库。
 
