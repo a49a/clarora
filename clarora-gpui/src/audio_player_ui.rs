@@ -202,7 +202,6 @@ impl AppView {
     }
     pub(super) fn blind_panel(&self, cx: &Context<Self>) -> AnyElement {
         let ready = !self.audio.current_id.is_empty()
-            && !self.tasks.foreground.is_running()
             && self.audio.blind_pending.is_none()
             && self
                 .audio
@@ -357,8 +356,7 @@ impl AppView {
                     })
                     .child(
                         self.button("blind-full", "查看全文", Action::AudioBlind(false), cx)
-                            .ghost()
-                            .disabled(self.tasks.foreground.is_running()),
+                            .ghost(),
                     ),
             )
             .child(
@@ -410,7 +408,7 @@ impl AppView {
                     text(r, "name"),
                     Action::AudioPractice(key.clone()),
                     key == self.audio.practice_id,
-                    self.tasks.foreground.is_running(),
+                    false,
                 )
             })
             .collect();
@@ -422,7 +420,7 @@ impl AppView {
                     format!("{}  {}", i + 1, text(r, "name")),
                     Action::Audio(text(r, "id")),
                     Some(i) == index,
-                    self.tasks.foreground.is_running(),
+                    false,
                 )
             })
             .collect();
@@ -445,13 +443,11 @@ impl AppView {
             .py_3()
             .child(
                 self.button("audio-subtitle-mode", "字幕", Action::AudioBlind(false), cx)
-                    .selected(!self.audio.blind.enabled)
-                    .disabled(self.tasks.foreground.is_running()),
+                    .selected(!self.audio.blind.enabled),
             )
             .child(
                 self.button("audio-blind-mode", "盲听", Action::AudioBlind(true), cx)
-                    .selected(self.audio.blind.enabled)
-                    .disabled(self.tasks.foreground.is_running()),
+                    .selected(self.audio.blind.enabled),
             )
             .child(self.player_menu(
                 "audio-practice-picker",
@@ -478,7 +474,7 @@ impl AppView {
                     Action::Audio(previous.clone().unwrap_or_default()),
                     cx,
                 )
-                .disabled(previous.is_none() || self.tasks.foreground.is_running()),
+                .disabled(previous.is_none()),
             )
             .child(
                 self.button(
@@ -487,21 +483,27 @@ impl AppView {
                     Action::Audio(next.clone().unwrap_or_default()),
                     cx,
                 )
-                .disabled(next.is_none() || self.tasks.foreground.is_running()),
+                .disabled(next.is_none()),
             )
             .child(div().flex_1())
             .child(
                 self.button(
                     "audio-follow",
                     if self.audio.follow {
-                        "跟随 ✓"
+                        "跟随播放 ✓"
                     } else {
-                        "跟随"
+                        "跟随播放"
                     },
                     Action::AudioFollow,
                     cx,
                 )
-                .ghost(),
+                .outline()
+                .selected(self.audio.follow)
+                .tooltip(if self.audio.follow {
+                    "字幕会随播放自动滚动；点击关闭"
+                } else {
+                    "开启后字幕随播放自动滚动"
+                }),
             )
             .when(self.audio.blind.enabled, |v| {
                 v.child(
@@ -511,8 +513,7 @@ impl AppView {
                         Action::AudioBlind(false),
                         cx,
                     )
-                    .ghost()
-                    .disabled(self.tasks.foreground.is_running()),
+                    .outline(),
                 )
             })
             .child(
@@ -522,7 +523,7 @@ impl AppView {
                     Action::Page("library".into()),
                     cx,
                 )
-                .ghost(),
+                .outline(),
             );
         let header = div()
             .flex()
@@ -739,10 +740,7 @@ impl AppView {
                                 cx,
                             )
                             .ghost()
-                            .disabled(
-                                this.tasks.foreground.is_running()
-                                    || this.audio.blind_pending.is_some(),
-                            ),
+                            .disabled(this.audio.blind_pending.is_some()),
                         )
                         .when(revealed.is_some(), |v| {
                             v.child(

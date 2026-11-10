@@ -8,8 +8,7 @@ impl AppView {
         total: usize,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let disabled = self.tasks.foreground.is_running()
-            || self.tasks.audio_subtitles.lane.is_running()
+        let disabled = self.tasks.audio_subtitles.lane.is_running()
             || self.audio.practice_id.is_empty()
             || total == 0;
         div()
@@ -61,8 +60,7 @@ impl AppView {
 
     pub(super) fn audio_subtitle_toolbar(&self, cx: &Context<Self>) -> impl IntoElement {
         let available = !self.audio.current_id.is_empty();
-        let busy =
-            self.tasks.foreground.is_running() || self.tasks.audio_subtitles.lane.is_running();
+        let busy = self.tasks.audio_subtitles.lane.is_running();
         let has_cues = !self.audio.cues.is_empty();
         let generating = self.tasks.audio_subtitles.working(
             &self.audio.current_id,
@@ -195,7 +193,7 @@ impl AppView {
             .label("更多")
             .icon(IconName::Ellipsis)
             .small()
-            .ghost()
+            .outline()
             .h(px(32.))
             .tooltip("导入字幕、显示方式与字号")
             .dropdown_menu(move |mut menu, window, cx| {

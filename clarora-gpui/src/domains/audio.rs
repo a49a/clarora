@@ -108,7 +108,6 @@ impl Command {
             Command::AudioPractice(key) => {
                 app.reset_audio_sentence_request();
                 app.invalidate_blind();
-                ensure!(!app.tasks.foreground.is_running(), "请等待当前任务完成");
                 ensure!(
                     app.audio.practices.iter().any(|r| text(r, "id") == key),
                     "练习组不存在"
@@ -152,7 +151,6 @@ impl Command {
                 }
                 app.subtitle_text.borrow_mut().clear();
                 ensure!(app.page == "listening", "请先进入音频学习");
-                ensure!(!app.tasks.foreground.is_running(), "请等待当前任务完成");
                 app.audio.blind.enabled = enabled;
                 app.invalidate_blind();
                 app.assistant_open = false;
@@ -194,8 +192,8 @@ impl Command {
                     "请先开启盲听"
                 );
                 ensure!(
-                    !app.tasks.foreground.is_running() && app.audio.blind_pending.is_none(),
-                    "请等待当前操作完成"
+                    app.audio.blind_pending.is_none(),
+                    "正在确认上一条字幕，请稍候"
                 );
                 ensure!(
                     app.audio
@@ -264,7 +262,6 @@ impl Command {
                     app.page == "listening" && app.audio.blind.enabled,
                     "请先开启盲听"
                 );
-                ensure!(!app.tasks.foreground.is_running(), "请等待当前任务完成");
                 let playback = app.media.player.snapshot();
                 ensure!(
                     audio_id == app.audio.current_id
@@ -330,8 +327,8 @@ impl Command {
                     "请先开启盲听"
                 );
                 ensure!(
-                    !app.tasks.foreground.is_running() && app.audio.blind_pending.is_none(),
-                    "请等待当前操作完成"
+                    app.audio.blind_pending.is_none(),
+                    "正在确认上一条字幕，请稍候"
                 );
                 ensure!(
                     app.audio
