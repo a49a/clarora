@@ -196,7 +196,7 @@ impl AppView {
             && self.media.session.is_video()
             && self.media.session.mode == PlaybackMode::Normal
             && self.media.session.video_sentence().is_none()
-            && !self.video.repeat_three
+            && self.video.sentence_repeat.is_none()
         {
             if !self.media.snapshot.eof {
                 self.media.session.end_handled = false;

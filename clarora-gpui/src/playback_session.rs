@@ -12,6 +12,7 @@ pub enum Mode {
     Continuous,
     Sentence,
     SentenceThree,
+    SentenceFive,
 }
 impl Mode {
     /// The persisted values and menu indices predate typed playback modes.
@@ -23,6 +24,7 @@ impl Mode {
             4 => Self::Continuous,
             5 => Self::Sentence,
             6 => Self::SentenceThree,
+            7 => Self::SentenceFive,
             _ => Self::Normal,
         }
     }
@@ -35,10 +37,14 @@ impl Mode {
             Self::Continuous => 4,
             Self::Sentence => 5,
             Self::SentenceThree => 6,
+            Self::SentenceFive => 7,
         }
     }
     pub fn is_sentence(self) -> bool {
-        matches!(self, Self::Sentence | Self::SentenceThree)
+        matches!(
+            self,
+            Self::Sentence | Self::SentenceThree | Self::SentenceFive
+        )
     }
 }
 

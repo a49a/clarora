@@ -753,11 +753,25 @@ impl AppView {
                                             .gap_1()
                                             .child(
                                                 {
-                                                    let (_,translation)=subtitles::languages(std::slice::from_ref(cue));
-                                                    div().flex().flex_col().gap_1()
-                                                        .child(this.marked_cue(false,i,cue,14.,false,cx))
-                                                        .when(!translation.is_empty(),|v|v.child(div().text_sm().text_color(cx.theme().muted_foreground).child(this.subtitle_fragment(subtitle_text_ui::Surface::Video,i,None,cx))))
-                                                        .into_any_element()
+                                                    let masked = this.video_repeat_blind()
+                                                        && this
+                                                            .media
+                                                            .session
+                                                            .video_sentence()
+                                                            .is_some_and(|session| session.index == i);
+                                                    if masked {
+                                                        div()
+                                                            .text_sm()
+                                                            .text_color(cx.theme().muted_foreground)
+                                                            .child("盲听 · 本句字幕暂时隐藏")
+                                                            .into_any_element()
+                                                    } else {
+                                                        let (_,translation)=subtitles::languages(std::slice::from_ref(cue));
+                                                        div().flex().flex_col().gap_1()
+                                                            .child(this.marked_cue(false,i,cue,14.,false,cx))
+                                                            .when(!translation.is_empty(),|v|v.child(div().text_sm().text_color(cx.theme().muted_foreground).child(this.subtitle_fragment(subtitle_text_ui::Surface::Video,i,None,cx))))
+                                                            .into_any_element()
+                                                    }
                                                 },
                                             )
                                             .child(
@@ -786,7 +800,7 @@ impl AppView {
                                                             "单句循环",
                                                             Action::VideoSentenceRepeat(
                                                                 Some(i),
-                                                                false,
+                                                                None,
                                                             ),
                                                             cx,
                                                         )
@@ -802,7 +816,23 @@ impl AppView {
                                                             "每句三遍",
                                                             Action::VideoSentenceRepeat(
                                                                 Some(i),
-                                                                true,
+                                                                Some(3),
+                                                            ),
+                                                            cx,
+                                                        )
+                                                        .ghost()
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            |_, _, cx| cx.stop_propagation(),
+                                                        ),
+                                                    )
+                                                    .child(
+                                                        this.button(
+                                                            format!("video-cue-repeat-five-{i}"),
+                                                            "每句五遍",
+                                                            Action::VideoSentenceRepeat(
+                                                                Some(i),
+                                                                Some(5),
                                                             ),
                                                             cx,
                                                         )

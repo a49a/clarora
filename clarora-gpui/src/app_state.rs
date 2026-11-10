@@ -79,7 +79,7 @@ impl AudioState {
                 .setting("audio_repeat_mode")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .filter(|n| [0, 1, 3, 4, 5, 6].contains(n))
+                .filter(|n| [0, 1, 3, 4, 5, 6, 7].contains(n))
                 .map(PlaybackMode::from_index)
                 .unwrap_or_default(),
             pending_repeat_pause: None,
@@ -118,7 +118,7 @@ pub(super) struct VideoState {
     pub(super) resize: Option<(Pixels, f32)>,
     pub(super) parts_scroll: UniformListScrollHandle,
     pub(super) active: Option<usize>,
-    pub(super) repeat_three: bool,
+    pub(super) sentence_repeat: Option<u32>,
     pub(super) repeat_mode: PlaybackMode,
     pub(super) pending_start: Option<PendingVideoStart>,
     pub(super) part_confirmation: Option<video_controller::PartConfirmation>,
@@ -168,7 +168,7 @@ impl VideoState {
             resize: None,
             parts_scroll: UniformListScrollHandle::new(),
             active: None,
-            repeat_three: false,
+            sentence_repeat: None,
             repeat_mode: PlaybackMode::Normal,
             pending_start: None,
             part_confirmation: None,

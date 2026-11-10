@@ -35,15 +35,19 @@ impl AppView {
             let panel = self.video.tab;
             if self.open_part_video(path, from_end) {
                 self.video.tab = panel;
-                if !self.video.repeat_three && !from_end {
+                if self.video.sentence_repeat.is_none() && !from_end {
                     self.media.player.set("pause", "no");
                 }
                 self.report_status(
                     FeedbackKind::Info,
                     if from_end {
                         format!("正在定位 P{} 的最后一句", index + 1)
-                    } else if self.video.repeat_three {
-                        format!("正在准备 P{} 的每句三次播放", index + 1)
+                    } else if let Some(total) = self.video.sentence_repeat {
+                        format!(
+                            "正在准备 P{} 的{}播放",
+                            index + 1,
+                            clarora_gpui::video_repeat::label(total)
+                        )
                     } else {
                         format!("正在播放 P{}", index + 1)
                     },
@@ -121,7 +125,9 @@ impl AppView {
             }
         }
         // Only this video's track-loop policy survives another video load.
-        let mode = if !self.video.repeat_three && self.video.repeat_mode == PlaybackMode::Track {
+        let mode = if self.video.sentence_repeat.is_none()
+            && self.video.repeat_mode == PlaybackMode::Track
+        {
             PlaybackMode::Track
         } else {
             PlaybackMode::Normal
@@ -132,13 +138,13 @@ impl AppView {
             path.clone(),
             position,
             0.,
-            paused || self.video.repeat_three || from_end,
+            paused || self.video.sentence_repeat.is_some() || from_end,
             mode,
         );
         self.audio.cues.clear();
         self.audio.current_id.clear();
         self.load_video_subtitles(&path);
-        if self.video.repeat_three || from_end {
+        if self.video.sentence_repeat.is_some() || from_end {
             self.video.pending_start = Some(app_state::PendingVideoStart {
                 revision: self.media.session.revision(),
                 path: path.clone(),
@@ -210,7 +216,7 @@ impl AppView {
             .unwrap_or_else(|| self.media.player.snapshot().paused);
         self.reset_video_sentence_request();
         if self.media.session.is_video()
-            && (self.video.repeat_three || from_end)
+            && (self.video.sentence_repeat.is_some() || from_end)
             && self.media.session.path.as_deref() == Some(path)
         {
             self.video.pending_start = Some(app_state::PendingVideoStart {
@@ -226,11 +232,16 @@ impl AppView {
             self.report_status(
                 FeedbackKind::Info,
                 if from_end {
-                    "正在等待当前视频字幕，以定位最后一句"
+                    "正在等待当前视频字幕，以定位最后一句".into()
                 } else {
-                    "已保留每句三遍，等待当前视频字幕；无字幕时可生成或导入"
-                }
-                .into(),
+                    format!(
+                        "已保留{}，等待当前视频字幕；无字幕时可生成或导入",
+                        self.video
+                            .sentence_repeat
+                            .map(clarora_gpui::video_repeat::label)
+                            .unwrap_or_else(|| "逐句重复".into())
+                    )
+                },
             );
         }
         self.video.caption_source = VideoCaptionSource::Transcript;
@@ -256,7 +267,7 @@ impl AppView {
     }
     pub(super) fn clear_video_sentence_repeat(&mut self) {
         self.reset_video_sentence_request();
-        self.video.repeat_three = false;
+        self.video.sentence_repeat = None;
     }
     pub(super) fn reset_video_sentence_request(&mut self) {
         self.video.part_confirmation = None;
@@ -343,7 +354,7 @@ impl AppView {
         };
         let paused = pending.paused;
         let within_sentence_seek = pending.within_sentence_seek;
-        if !self.video.repeat_three {
+        if self.video.sentence_repeat.is_none() {
             let position = self.video.cues[index].start;
             self.video.pending_start.as_mut().unwrap().seek_to = Some(position);
             self.media.player.command([
@@ -359,7 +370,13 @@ impl AppView {
         }
         self.video.pending_start = None;
         let started = (|| -> Result<()> {
-            self.start_video_sentence_repeat(Some(index), true)?;
+            let total = self.video.sentence_repeat.or_else(|| {
+                self.media
+                    .session
+                    .video_sentence()
+                    .and_then(|session| session.total)
+            });
+            self.start_video_sentence_repeat(Some(index), total)?;
             if let Some(position) = within_sentence_seek {
                 self.media
                     .session
@@ -383,12 +400,12 @@ impl AppView {
             }
             Err(error) => {
                 self.clear_video_sentence_repeat();
-                self.report_status(FeedbackKind::Error, format!("恢复每句三次失败：{error:#}"));
+                self.report_status(FeedbackKind::Error, format!("恢复逐句重复失败：{error:#}"));
             }
         }
         true
     }
-    pub(super) fn seek_video_timeline_three(&mut self, time: f64) -> Result<()> {
+    pub(super) fn seek_video_timeline_repeat(&mut self, time: f64) -> Result<()> {
         ensure!(time.is_finite(), "播放位置无效");
         let path = self.video.path.clone().context("请先打开视频")?;
         ensure!(
@@ -401,7 +418,7 @@ impl AppView {
             .media
             .session
             .video_sentence()
-            .filter(|session| session.three);
+            .filter(|session| session.total.is_some());
         let pending = self
             .video
             .pending_start
@@ -450,7 +467,11 @@ impl AppView {
                     })
                 })
             {
-                self.start_video_sentence_repeat(Some(index), true)?;
+                let total = self
+                    .video
+                    .sentence_repeat
+                    .or_else(|| session.and_then(|session| session.total));
+                self.start_video_sentence_repeat(Some(index), total)?;
             }
             let session = self
                 .media
@@ -507,7 +528,13 @@ impl AppView {
             }
             self.report_status(
                 FeedbackKind::Info,
-                "每句三遍，播完自动下一句；← / → 切句后从第一遍开始".into(),
+                format!(
+                    "{}，播完自动下一句；← / → 切句后从第一遍开始",
+                    session
+                        .total
+                        .map(clarora_gpui::video_repeat::label)
+                        .unwrap_or_else(|| "逐句重复".into())
+                ),
             );
         }
     }
@@ -531,7 +558,13 @@ impl AppView {
                 } else {
                     self.report_status(
                         FeedbackKind::Info,
-                        "最后一句已播放三遍，已暂停；← 切上一句，→ 确认下一 P".into(),
+                        format!(
+                            "最后一句已播放{}，已暂停；← 切上一句，→ 确认下一 P",
+                            session
+                                .total
+                                .map(|total| format!("{total}遍"))
+                                .unwrap_or_else(|| "完".into())
+                        ),
                     );
                 }
                 true
@@ -628,7 +661,7 @@ impl AppView {
             .media
             .session
             .video_sentence()
-            .filter(|s| s.three)
+            .filter(|s| s.total.is_some())
             .map(|s| s.index)
             .or_else(|| video_subtitles::active(&self.video.cues, state.position))
             .or_else(|| {
@@ -716,17 +749,22 @@ impl AppView {
         };
         // A completed first cue must not auto-advance after cancelling its prompt.
         if !prompt.next {
-            if let Some(session) = self.media.session.video_sentence().filter(|s| s.three) {
+            if let Some(session) = self
+                .media
+                .session
+                .video_sentence()
+                .filter(|s| s.total.is_some())
+            {
+                let (index, total, request_id) = (session.index, session.total, session.request_id);
                 if self
                     .media
                     .player
                     .snapshot()
                     .sentence_repeat
                     .as_ref()
-                    .is_some_and(|s| s.request_id == session.request_id && s.finished)
+                    .is_some_and(|s| s.request_id == request_id && s.finished)
                 {
-                    if let Err(error) = self.start_video_sentence_repeat(Some(session.index), true)
-                    {
+                    if let Err(error) = self.start_video_sentence_repeat(Some(index), total) {
                         self.report_status(FeedbackKind::Error, error.to_string());
                     }
                     self.media.player.set("pause", "yes");
@@ -815,7 +853,12 @@ impl AppView {
         )
     }
     pub(super) fn can_move_video_sentence(&self, next: bool) -> bool {
-        if let Some(session) = self.media.session.video_sentence().filter(|s| s.three) {
+        if let Some(session) = self
+            .media
+            .session
+            .video_sentence()
+            .filter(|s| s.total.is_some())
+        {
             session
                 .neighbor(&self.video.cues, next, self.media.snapshot.duration)
                 .is_some()
@@ -837,10 +880,30 @@ impl AppView {
             .or_else(|| video_subtitles::active(&self.video.cues, self.media.snapshot.position))
             .filter(|index| self.video.cues.get(*index).is_some())
     }
+    /// True while a 4/6-play sentence request is in its no-subtitle half.
+    pub(super) fn video_repeat_blind(&self) -> bool {
+        let Some(session) = self.media.session.video_sentence() else {
+            return false;
+        };
+        let Some(total) = session.total else {
+            return false;
+        };
+        let blind = clarora_gpui::video_repeat::blind_plays(total);
+        if blind == 0 {
+            return false;
+        }
+        self.media
+            .snapshot
+            .sentence_repeat
+            .as_ref()
+            .filter(|state| state.request_id == session.request_id)
+            .is_none_or(|state| !state.finished && state.current_play <= blind)
+    }
+
     pub(super) fn start_video_sentence_repeat(
         &mut self,
         index: Option<usize>,
-        three: bool,
+        total: Option<u32>,
     ) -> Result<()> {
         ensure!(self.page == "video", "请先进入视频学习");
         let path = self.video.path.clone().context("请先打开视频")?;
@@ -849,7 +912,7 @@ impl AppView {
             self.media.session.is_video() && self.media.session.path.as_ref() == Some(&path),
             "视频正在切换，请稍候再重复本句"
         );
-        if three && index.is_none() {
+        if total.is_some() && index.is_none() {
             // The mode menu is independent of a selected/active subtitle. Bind
             // its intent to this file and let the existing readiness path pick
             // the current cue, the next cue in a gap, or the last valid cue.
@@ -871,7 +934,7 @@ impl AppView {
                 .and_then(|p| p.selected_time)
                 .or_else(|| (!from_end).then_some(position));
             self.reset_video_sentence_request();
-            self.video.repeat_three = true;
+            self.video.sentence_repeat = total;
             self.video.pending_start = Some(app_state::PendingVideoStart {
                 revision: self.media.session.revision(),
                 path,
@@ -890,7 +953,12 @@ impl AppView {
             if self.video.pending_start.is_some() {
                 self.report_status(
                     FeedbackKind::Info,
-                    "已开启每句三次，等待当前视频和字幕就绪；可生成或导入字幕".into(),
+                    format!(
+                        "已开启{}，等待当前视频和字幕就绪；可生成或导入字幕",
+                        total
+                            .map(clarora_gpui::video_repeat::label)
+                            .unwrap_or_default()
+                    ),
                 );
             }
             return Ok(());
@@ -912,16 +980,16 @@ impl AppView {
                 &path,
                 &self.video.cues,
                 index,
-                three,
+                total,
                 playback.duration,
             )?));
-        self.video.repeat_three = three;
+        self.video.sentence_repeat = total;
         self.video.pending_start = None;
         self.media.session.mode = PlaybackMode::Normal;
         self.media.session.loop_a = None;
         self.media.session.loop_b = None;
         self.media.session.end_handled = true;
-        if three {
+        if total.is_some() {
             self.follow_video_repeat();
         } else {
             self.report_status(

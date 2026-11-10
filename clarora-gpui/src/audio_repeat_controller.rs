@@ -2,7 +2,7 @@
 use super::*;
 use clarora_gpui::video_repeat::{self, Session, Transition};
 
-pub(super) const MODES: [&str; 7] = [
+pub(super) const MODES: [&str; 8] = [
     "不循环",
     "单曲循环",
     "A–B 循环",
@@ -10,6 +10,7 @@ pub(super) const MODES: [&str; 7] = [
     "单次连播",
     "单句循环",
     "每句三遍",
+    "每句五遍",
 ];
 impl AppView {
     pub(super) fn reset_audio_sentence_request(&mut self) {
@@ -51,7 +52,11 @@ impl AppView {
             &path,
             &self.audio.cues,
             index,
-            self.audio.repeat_mode == PlaybackMode::SentenceThree,
+            match self.audio.repeat_mode {
+                PlaybackMode::SentenceThree => Some(3),
+                PlaybackMode::SentenceFive => Some(5),
+                _ => None,
+            },
             state.duration,
         )?;
         ensure!(
@@ -364,7 +369,15 @@ impl AppView {
             .unwrap_or(position)
     }
     pub(super) fn audio_repeat_label(&self) -> String {
-        if self.audio.repeat_mode == PlaybackMode::SentenceThree {
+        if matches!(
+            self.audio.repeat_mode,
+            PlaybackMode::SentenceThree | PlaybackMode::SentenceFive
+        ) {
+            let total = if self.audio.repeat_mode == PlaybackMode::SentenceFive {
+                5
+            } else {
+                3
+            };
             let play = self
                 .media
                 .session
@@ -378,7 +391,12 @@ impl AppView {
                 })
                 .map(|r| r.current_play)
                 .unwrap_or(1);
-            format!("每句三遍 · {}/3", play.clamp(1, 3))
+            format!(
+                "{} · {}/{}",
+                clarora_gpui::video_repeat::label(total),
+                play.clamp(1, total),
+                total
+            )
         } else {
             MODES
                 .get(self.audio.repeat_mode.index())

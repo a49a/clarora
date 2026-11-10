@@ -94,7 +94,7 @@ pub(super) enum Action {
     VideoTranslate,
     VideoClearLoop,
     VideoRepeatCue,
-    VideoSentenceRepeat(Option<usize>, bool),
+    VideoSentenceRepeat(Option<usize>, Option<u32>),
     VideoStopSentenceRepeat,
     VideoSentence(bool),
     VideoArrow(bool, bool),
@@ -541,7 +541,7 @@ impl Effects {
         if self.leave_video_sentence
             && app.page == "video"
             && (app.media.session.video_sentence().is_some()
-                || app.video.repeat_three
+                || app.video.sentence_repeat.is_some()
                 || app.video.pending_start.is_some())
         {
             app.clear_video_sentence_repeat();

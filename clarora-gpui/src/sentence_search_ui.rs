@@ -139,7 +139,7 @@ impl AppView {
                     Command::Stop => queue.stop(),
                     Command::Autoplay => queue.autoplay = !queue.autoplay,
                     Command::Repeats(count) => {
-                        ensure!([0, 1, 3].contains(&count), "重复方式无效");
+                        ensure!([0, 1, 3, 5].contains(&count), "重复方式无效");
                         queue.repeats = count;
                         if let Some(i) = queue.index {
                             queue.select(&results.hits, i)?;
@@ -381,7 +381,12 @@ impl AppView {
             )
             .selected(queue.is_none_or(|q| q.autoplay)),
         );
-        for (label, count) in [("听一遍", 1), ("每句三遍", 3), ("单句循环", 0)] {
+        for (label, count) in [
+            ("听一遍", 1),
+            ("每句三遍", 3),
+            ("每句五遍", 5),
+            ("单句循环", 0),
+        ] {
             transport = transport.child(
                 self.button(
                     format!("sentence-repeats-{count}"),

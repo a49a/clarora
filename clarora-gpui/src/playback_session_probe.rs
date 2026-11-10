@@ -130,9 +130,9 @@ impl Probe {
         let observation = json!({"stage":self.stage,"page":app.page,
             "owner":format!("{:?}",app.media.session.owner()),"revision":app.media.session.revision(),
             "session_path":app.media.session.path,"mode":app.media.session.mode.index(),
-            "audio_preference":app.audio.repeat_mode.index(),"video_preference":app.video.repeat_three,
+            "audio_preference":app.audio.repeat_mode.index(),"video_preference":app.video.sentence_repeat.is_some(),
             "loop_a":app.media.session.loop_a,"loop_b":app.media.session.loop_b,
-            "active_sentence":app.media.session.sentence().map(|s|json!({"index":s.index,"request":s.request_id,"range":s.range,"three":s.three})),
+            "active_sentence":app.media.session.sentence().map(|s|json!({"index":s.index,"request":s.request_id,"range":s.range,"three":s.total.is_some()})),
             "native":{"path":state.path,"position":state.position,"duration":state.duration,
                 "paused":state.paused,"eof":state.eof,"error":state.error,"load_revision":state.load_revision,
                 "repeat":state.sentence_repeat.as_ref().map(|s|json!({"request":s.request_id,"current":s.current_play,"total":s.total_plays,"finished":s.finished}))}});
@@ -278,7 +278,8 @@ impl Probe {
                     "audio policy leaked into same-source video"
                 );
                 ensure!(
-                    app.audio.repeat_mode == PlaybackMode::SentenceThree && !app.video.repeat_three,
+                    app.audio.repeat_mode == PlaybackMode::SentenceThree
+                        && app.video.sentence_repeat.is_none(),
                     "opening video changed an independent preference"
                 );
                 ensure!(
@@ -289,7 +290,7 @@ impl Probe {
                     "same-source audio to video releases old request and saves audio bookmark",
                     app,
                 )?;
-                app.handle(Action::VideoSentenceRepeat(Some(1), true), window, cx);
+                app.handle(Action::VideoSentenceRepeat(Some(1), Some(3)), window, cx);
             }
             7 => {
                 let state = app.media.player.snapshot();
@@ -302,7 +303,7 @@ impl Probe {
                     return Ok(false);
                 }
                 ensure!(
-                    sentence.index == 1 && app.video.repeat_three,
+                    sentence.index == 1 && app.video.sentence_repeat.is_some(),
                     "video triple did not select its own cue"
                 );
                 self.video_request = sentence.request_id;
@@ -342,7 +343,8 @@ impl Probe {
                     return Ok(false);
                 }
                 ensure!(
-                    app.audio.repeat_mode == PlaybackMode::SentenceThree && app.video.repeat_three,
+                    app.audio.repeat_mode == PlaybackMode::SentenceThree
+                        && app.video.sentence_repeat.is_some(),
                     "audio and video preferences are not independent"
                 );
                 self.record(
@@ -375,7 +377,8 @@ impl Probe {
                     "same-source card inherited video/audio policy"
                 );
                 ensure!(
-                    app.audio.repeat_mode == PlaybackMode::SentenceThree && app.video.repeat_three,
+                    app.audio.repeat_mode == PlaybackMode::SentenceThree
+                        && app.video.sentence_repeat.is_some(),
                     "card changed page preferences"
                 );
                 self.record("same-source card claims its own owner and saved range", app)?;
@@ -478,7 +481,7 @@ impl Probe {
                     return Ok(false);
                 };
                 ensure!(
-                    sentence.index == 1 && sentence.three && Self::no_range(app),
+                    sentence.index == 1 && sentence.total.is_some() && Self::no_range(app),
                     "video did not restore its own triple session"
                 );
                 ensure!(
@@ -585,8 +588,8 @@ impl Probe {
                 ensure!(
                     app.media.session.is_audio(AUDIO)
                         && sentence.index == 0
-                        && sentence.three
-                        && app.video.repeat_three,
+                        && sentence.total.is_some()
+                        && app.video.sentence_repeat.is_some(),
                     "audio restored another page's position or preference"
                 );
                 let reopened = Library::open(app.lib.root.clone())?;
@@ -647,7 +650,7 @@ impl Probe {
                         && Self::no_range(app)
                         && app.media.session.mode == PlaybackMode::Track
                         && app.audio.repeat_mode == PlaybackMode::SentenceThree
-                        && app.video.repeat_three,
+                        && app.video.sentence_repeat.is_some(),
                     "background inherited a learning request or changed preferences"
                 );
                 self.record(
@@ -704,7 +707,7 @@ impl Probe {
                     app.media.session.is_video()
                         && app.media.session.mode == PlaybackMode::Track
                         && app.video.repeat_mode == PlaybackMode::Track
-                        && !app.video.repeat_three
+                        && app.video.sentence_repeat.is_none()
                         && app.media.session.sentence().is_none(),
                     "video track-loop action did not replace the sentence policy"
                 );

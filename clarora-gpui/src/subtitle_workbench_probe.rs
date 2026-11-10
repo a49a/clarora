@@ -418,7 +418,7 @@ impl Probe {
             "transcript action changed playback path/position/pause"
         );
         ensure!(
-            app.video.repeat_three == guard.repeat_three,
+            app.video.sentence_repeat.is_some() == guard.repeat_three,
             "transcript action changed triple preference"
         );
         ensure!(
@@ -526,7 +526,7 @@ impl Probe {
                     return Ok(false);
                 }
                 app.video.set_cues(cues(false));
-                app.start_video_sentence_repeat(Some(1), true)?;
+                app.start_video_sentence_repeat(Some(1), Some(3))?;
                 app.media.player.set("pause", "yes");
                 self.advance();
             }
@@ -550,7 +550,7 @@ impl Probe {
                     position: state.position,
                     path: state.path.clone(),
                     paused: state.paused,
-                    repeat_three: app.video.repeat_three,
+                    repeat_three: app.video.sentence_repeat.is_some(),
                     request_id: repeat.request_id,
                     current_play: repeat.current_play,
                 });

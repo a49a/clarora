@@ -212,7 +212,8 @@ impl AppView {
                     && self.media.snapshot.path == p.to_string_lossy()
             });
         let frame = self.media.snapshot.frame.clone().filter(|_| active);
-        let active_caption = if !active
+        let active_caption = if self.video_repeat_blind()
+            || !active
             || !self.video.captions_enabled
             || self.media.snapshot.subtitle_is_bitmap
             || self.video.caption_source == VideoCaptionSource::Hidden
@@ -452,7 +453,8 @@ impl AppView {
             .is_some_and(|(a, b)| b > a);
         let current_cue = self.video_repeat_cue();
         let repeat_label = if let Some(session) = self.media.session.video_sentence() {
-            if session.three {
+            if let Some(total) = session.total {
+                let mode = clarora_gpui::video_repeat::label(total);
                 match self
                     .media
                     .snapshot
@@ -460,18 +462,28 @@ impl AppView {
                     .as_ref()
                     .filter(|state| state.request_id == session.request_id)
                 {
-                    Some(state) if state.finished => "每句三遍 · 本句完成 ▾".into(),
-                    Some(state) => format!("每句三遍 · 第 {} 遍 ▾", state.current_play),
-                    None => "每句三遍 · 准备中 ▾".into(),
+                    Some(state) if state.finished => format!("{mode} · 本句完成 ▾"),
+                    Some(state) => {
+                        let blind = clarora_gpui::video_repeat::blind_plays(total);
+                        if blind > 0 && state.current_play <= blind {
+                            format!("{mode} · 第 {} 遍 · 无字幕 ▾", state.current_play)
+                        } else if blind > 0 {
+                            format!("{mode} · 第 {} 遍 · 字幕 ▾", state.current_play)
+                        } else {
+                            format!("{mode} · 第 {} 遍 ▾", state.current_play)
+                        }
+                    }
+                    None => format!("{mode} · 准备中 ▾"),
                 }
             } else {
                 "单句循环 ▾".into()
             }
-        } else if self.video.repeat_three {
+        } else if let Some(total) = self.video.sentence_repeat {
+            let mode = clarora_gpui::video_repeat::label(total);
             if self.video.cues.is_empty() {
-                "每句三遍 · 等待字幕 ▾".into()
+                format!("{mode} · 等待字幕 ▾")
             } else {
-                "每句三遍 · 准备中 ▾".into()
+                format!("{mode} · 准备中 ▾")
             }
         } else {
             let mode = match self.media.session.mode {
@@ -488,25 +500,43 @@ impl AppView {
         let sentence_options = vec![
             (
                 "单句循环 · 重播当前句".into(),
-                Action::VideoSentenceRepeat(None, false),
+                Action::VideoSentenceRepeat(None, None),
                 self.media
                     .session
                     .video_sentence()
-                    .is_some_and(|s| !s.three),
+                    .is_some_and(|s| s.total.is_none()),
                 current_cue.is_none(),
             ),
             (
                 "每句三遍 · 自动下一句".into(),
-                Action::VideoSentenceRepeat(None, true),
-                self.video.repeat_three,
+                Action::VideoSentenceRepeat(None, Some(3)),
+                self.video.sentence_repeat == Some(3),
                 self.video.path.is_none(),
             ),
             (
-                "退出单句练习".into(),
+                "每句四遍 · 前两遍无字幕".into(),
+                Action::VideoSentenceRepeat(None, Some(4)),
+                self.video.sentence_repeat == Some(4),
+                self.video.path.is_none(),
+            ),
+            (
+                "每句五遍 · 自动下一句".into(),
+                Action::VideoSentenceRepeat(None, Some(5)),
+                self.video.sentence_repeat == Some(5),
+                self.video.path.is_none(),
+            ),
+            (
+                "每句六遍 · 前三遍无字幕".into(),
+                Action::VideoSentenceRepeat(None, Some(6)),
+                self.video.sentence_repeat == Some(6),
+                self.video.path.is_none(),
+            ),
+            (
+                "退出逐句循环".into(),
                 Action::VideoStopSentenceRepeat,
                 false,
                 self.media.session.video_sentence().is_none()
-                    && !self.video.repeat_three
+                    && self.video.sentence_repeat.is_none()
                     && self.video.pending_start.is_none(),
             ),
         ];

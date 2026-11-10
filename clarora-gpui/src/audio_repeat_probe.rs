@@ -683,6 +683,23 @@ impl Probe {
                     "repeat preference not persisted"
                 );
                 self.note("repeat preference survives SQLite reopen", app);
+                app.handle(Action::AudioRepeat(7), window, cx);
+                ensure!(
+                    app.audio.repeat_mode == PlaybackMode::SentenceFive
+                        && app.media.session.audio_sentence().is_some(),
+                    "five-play sentence mode did not start"
+                );
+                self.note(
+                    "five-play sentence mode starts its own counted request",
+                    app,
+                );
+                let reopened = Library::open(app.lib.root.clone())?;
+                ensure!(
+                    app_state::AudioState::new(&reopened).repeat_mode == PlaybackMode::SentenceFive,
+                    "five-play preference not restored"
+                );
+                self.note("five-play preference survives SQLite reopen", app);
+                app.handle(Action::AudioRepeat(6), window, cx);
             }
             3 => {
                 if !app
@@ -982,7 +999,7 @@ impl Probe {
                     app.media.session.audio_sentence().is_none()
                         && app.audio.repeat_mode == PlaybackMode::Sentence
                         && app.media.session.mode == PlaybackMode::Normal
-                        && !app.video.repeat_three,
+                        && app.video.sentence_repeat.is_none(),
                     "audio repetition leaked into video"
                 );
                 self.note(

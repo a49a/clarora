@@ -110,11 +110,23 @@ fn finished(
     end: f64,
     traces: &mut Vec<Value>,
 ) -> Result<Playback> {
-    let state = wait(player, stage, Duration::from_secs(8), traces, |s| {
+    finished_times(player, stage, request_id, start, end, 3, traces)
+}
+
+fn finished_times(
+    player: &Player,
+    stage: &str,
+    request_id: u64,
+    start: f64,
+    end: f64,
+    total: u32,
+    traces: &mut Vec<Value>,
+) -> Result<Playback> {
+    let state = wait(player, stage, Duration::from_secs(12), traces, |s| {
         s.sentence_repeat.as_ref().is_some_and(|r| {
             r.request_id == request_id
                 && r.finished
-                && r.total_plays == Some(3)
+                && r.total_plays == Some(total)
                 && (r.start - start).abs() < 0.001
                 && (r.end - end).abs() < 0.001
         })
@@ -124,7 +136,7 @@ fn finished(
         .as_ref()
         .context("完成时丢失本句状态")?;
     ensure!(state.paused, "{stage}: 完成态没有在同一快照发布暂停");
-    ensure!(repeat.current_play == 3, "{stage}: 三遍计数错误");
+    ensure!(repeat.current_play == total, "{stage}: {total} 遍计数错误");
     ensure!(
         (state.position - repeat.end).abs() < 0.09,
         "{stage}: 未停在句尾，position={} end={}",
@@ -191,7 +203,16 @@ fn sequence(
             text: "Outside video".into(),
         },
     ];
-    let mut session = Session::start(player, video, &cues, 0, true, duration)?;
+    ensure!(
+        clarora_gpui::video_repeat::blind_plays(4) == 2
+            && clarora_gpui::video_repeat::blind_plays(6) == 3
+            && clarora_gpui::video_repeat::blind_plays(3) == 0
+            && clarora_gpui::video_repeat::blind_plays(5) == 0,
+        "blind repeat halves are wrong"
+    );
+    checks.push(json!({"scenario":"每句四遍前两遍无字幕、每句六遍前三遍无字幕，其余模式不隐藏","passed":true}));
+
+    let mut session = Session::start(player, video, &cues, 0, Some(3), duration)?;
     for (index, next) in [(0, 2), (2, 3)] {
         let old_request = session.request_id;
         let completed = finished(
@@ -208,7 +229,7 @@ fn sequence(
             "完成三遍未自动进入下一句"
         );
         ensure!(
-            session.index == next && session.three && session.request_id != old_request,
+            session.index == next && session.total.is_some() && session.request_id != old_request,
             "新句未保留三次模式/未跳过无效字幕"
         );
         let new_request = session.request_id;
@@ -244,7 +265,47 @@ fn sequence(
     save_frame(&root.join("sequence-last-frame.png"), &completed)?;
     checks.push(json!({"scenario":"逐句自动各三遍/40ms短句/跳过无效字幕/旧请求隔离/末句暂停","passed":true}));
 
-    session = Session::start(player, video, &cues, 0, true, duration)?;
+    let mut five = Session::start(player, video, &cues, 0, Some(5), duration)?;
+    let five_request = five.request_id;
+    let five_done = finished_times(
+        player,
+        "每句五遍严格计数",
+        five_request,
+        five.range.0,
+        five.range.1,
+        5,
+        traces,
+    )?;
+    ensure!(
+        five.total == Some(5)
+            && five.poll(player, video, &cues, &five_done)? == Transition::Advanced
+            && five.index == 2
+            && five.total == Some(5),
+        "五遍完成后未保留五遍模式或未进入下一有效句"
+    );
+    checks.push(json!({"scenario":"每句五遍严格计数后自动下一句","passed":true}));
+
+    let mut four = Session::start(player, video, &cues, 0, Some(4), duration)?;
+    let four_request = four.request_id;
+    let four_done = finished_times(
+        player,
+        "每句四遍严格计数",
+        four_request,
+        four.range.0,
+        four.range.1,
+        4,
+        traces,
+    )?;
+    ensure!(
+        four.total == Some(4)
+            && four.poll(player, video, &cues, &four_done)? == Transition::Advanced
+            && four.index == 2
+            && four.total == Some(4),
+        "四遍完成后未保留四遍模式或未进入下一有效句"
+    );
+    checks.push(json!({"scenario":"每句四遍严格计数后自动下一句","passed":true}));
+
+    session = Session::start(player, video, &cues, 0, Some(3), duration)?;
     let first_id = session.request_id;
     ensure!(
         !session.step(player, video, &cues, false, duration)? && session.request_id == first_id,
@@ -264,7 +325,7 @@ fn sequence(
         "向左未定位上一有效句"
     );
     ensure!(
-        session.three && session.request_id != first_id,
+        session.total.is_some() && session.request_id != first_id,
         "切句丢失三次模式"
     );
     let newest = session.request_id;
@@ -284,7 +345,7 @@ fn sequence(
     checks
         .push(json!({"scenario":"首句左边界/连续左右切句保留三次/新句独立完整三遍","passed":true}));
 
-    session = Session::start(player, video, &cues, 3, true, duration)?;
+    session = Session::start(player, video, &cues, 3, Some(3), duration)?;
     let last_id = session.request_id;
     ensure!(
         !session.step(player, video, &cues, true, duration)? && session.request_id == last_id,
@@ -313,7 +374,7 @@ fn sequence(
     )?;
     checks.push(json!({"scenario":"末句右边界/完成后向左恢复三次","passed":true}));
 
-    session = Session::start(player, video, &cues, 0, true, duration)?;
+    session = Session::start(player, video, &cues, 0, Some(3), duration)?;
     let running = wait(
         player,
         "序列暂停前第二遍",
@@ -375,7 +436,7 @@ fn sequence(
         "字幕时间轴变化仍沿用旧序列"
     );
     player.clear_sentence_repeat();
-    session = Session::start(player, video, &cues, 0, false, duration)?;
+    session = Session::start(player, video, &cues, 0, None, duration)?;
     let infinite = wait(
         player,
         "序列无限模式保持本句",
@@ -1262,7 +1323,7 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     )?;
     outcome?;
     results.push(json!({
-        "workflow": "真实视频逐句无限/三遍重复、短句与EOF、暂停恢复与清除、切媒体复位",
+        "workflow": "真实视频逐句无限/三、四、五、六遍重复、短句与EOF、暂停恢复与清除、切媒体复位",
         "passed": true,
         "checks": checks.len(),
         "evidence": root.join("repeat-evidence.json"),

@@ -957,7 +957,7 @@ impl AppView {
                         .video_sentence()
                         .filter(|session| {
                             let (a, b) = session.range;
-                            session.three
+                            session.total.is_some()
                                 && a.is_finite()
                                 && b.is_finite()
                                 && a >= 0.

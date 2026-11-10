@@ -21,7 +21,7 @@ pub struct Audition {
     request: Option<u64>,
     pub index: Option<usize>,
     pub autoplay: bool,
-    /// 0 repeats indefinitely, 1 once, 3 three times.
+    /// 0 repeats indefinitely; 1/3/5 plays once or a finite number of times.
     pub repeats: u8,
     pub finished: bool,
     pub completed: u64,

@@ -10,7 +10,7 @@ pub(super) enum Command {
     VideoTranslate,
     VideoClearLoop,
     VideoRepeatCue,
-    VideoSentenceRepeat(Option<usize>, bool),
+    VideoSentenceRepeat(Option<usize>, Option<u32>),
     VideoStopSentenceRepeat,
     VideoSentence(bool),
     VideoArrow(bool, bool),
@@ -73,8 +73,8 @@ impl Command {
     ) -> Result<()> {
         match self {
             Command::VideoTimelineSeek(time) => {
-                if app.page == "video" && app.video.repeat_three {
-                    app.seek_video_timeline_three(time)?;
+                if app.page == "video" && app.video.sentence_repeat.is_some() {
+                    app.seek_video_timeline_repeat(time)?;
                 } else {
                     app.handle(Action::SeekTo(time), window, cx);
                 }
@@ -171,11 +171,11 @@ impl Command {
             }
 
             Command::VideoRepeatCue => {
-                app.start_video_sentence_repeat(None, false)?;
+                app.start_video_sentence_repeat(None, None)?;
             }
 
-            Command::VideoSentenceRepeat(index, three) => {
-                app.start_video_sentence_repeat(index, three)?;
+            Command::VideoSentenceRepeat(index, total) => {
+                app.start_video_sentence_repeat(index, total)?;
             }
 
             Command::VideoStopSentenceRepeat => app.clear_video_sentence_repeat(),
@@ -192,10 +192,12 @@ impl Command {
                 let cue = app.video.cues.get(index).context("字幕行不存在")?;
                 let start = cue.start;
                 ensure!(start.is_finite() && start >= 0., "字幕时间无效");
-                if app.video.repeat_three || app.media.session.video_sentence().is_some() {
+                if app.video.sentence_repeat.is_some()
+                    || app.media.session.video_sentence().is_some()
+                {
                     // A subtitle click chooses a new sentence in the current
                     // repeat mode, restarting its play count from the beginning.
-                    app.start_video_sentence_repeat(Some(index), app.video.repeat_three)?;
+                    app.start_video_sentence_repeat(Some(index), app.video.sentence_repeat)?;
                     return Ok(());
                 }
                 app.reset_video_sentence_request();
@@ -217,12 +219,17 @@ impl Command {
                     if app.video.pending_start.is_some() {
                         app.report_status(
                             FeedbackKind::Info,
-                            "每句三次模式正在等待当前视频和字幕就绪".into(),
+                            "逐句重复模式正在等待当前视频和字幕就绪".into(),
                         );
                         return Ok(());
                     }
                 }
-                if let Some(mut session) = app.media.session.video_sentence().filter(|s| s.three) {
+                if let Some(mut session) = app
+                    .media
+                    .session
+                    .video_sentence()
+                    .filter(|s| s.total.is_some())
+                {
                     let path = app.video.path.as_ref().context("请先打开视频")?;
                     ensure!(
                         app.media.session.path.as_ref() == Some(path),
@@ -734,15 +741,19 @@ impl Completed {
                         let panel = app.video.tab;
                         if app.open_part_video(path, from_end) {
                             app.video.tab = panel;
-                            if !app.video.repeat_three && !from_end {
+                            if app.video.sentence_repeat.is_none() && !from_end {
                                 app.media.player.set("pause", "no");
                             }
                             app.report_status(
                                 FeedbackKind::Info,
                                 if from_end {
                                     format!("正在定位 P{} 的最后一句", index + 1)
-                                } else if app.video.repeat_three {
-                                    format!("正在准备 P{} 的每句三次播放", index + 1)
+                                } else if let Some(total) = app.video.sentence_repeat {
+                                    format!(
+                                        "正在准备 P{} 的{}播放",
+                                        index + 1,
+                                        clarora_gpui::video_repeat::label(total)
+                                    )
                                 } else {
                                     format!("正在播放 P{}", index + 1)
                                 },

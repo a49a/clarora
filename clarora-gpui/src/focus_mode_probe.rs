@@ -264,7 +264,7 @@ impl Probe {
                 if state.duration < 11.9 || state.frame.is_none() || app.video.cues.len() != 3 {
                     return Ok(false);
                 }
-                app.handle(Action::VideoSentenceRepeat(Some(0), true), w, cx);
+                app.handle(Action::VideoSentenceRepeat(Some(0), Some(3)), w, cx);
                 app.media.player.set("pause", "yes");
                 self.stage = 8;
             }
@@ -692,7 +692,7 @@ impl Probe {
     }
     fn at_sentence(app: &AppView, index: usize) -> bool {
         let state = app.media.player.snapshot();
-        app.video.repeat_three
+        app.video.sentence_repeat.is_some()
             && app.media.session.video_sentence().is_some_and(|s| {
                 s.index == index
                     && state.position >= s.range.0 - 0.05

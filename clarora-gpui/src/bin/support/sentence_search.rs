@@ -278,6 +278,26 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             .is_some_and(|s| s.current_play == 3 && s.finished),
         "three count"
     );
+    queue.repeats = 5;
+    queue.select(&all.hits, 1)?;
+    let started = Instant::now();
+    while !queue.finished {
+        queue.poll(&all.hits)?;
+        ensure!(
+            started.elapsed() < Duration::from_secs(10),
+            "five plays timed out"
+        );
+        thread::sleep(Duration::from_millis(15));
+    }
+    ensure!(
+        queue
+            .snapshot()
+            .sentence_repeat
+            .as_ref()
+            .is_some_and(|s| s.current_play == 5 && s.finished),
+        "five count"
+    );
+    queue.repeats = 3;
     queue.select(&all.hits, 0)?;
     queue.select(&all.hits, 3)?;
     queue.select(&all.hits, 1)?;
@@ -403,6 +423,6 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             &json!({"passed":true,"checks":checks,"hits":all,"playback_trace":trace}),
         )?,
     )?;
-    results.push(json!({"workflow":"跨音视频全库句型检索 → 精确范围逐条试听 → 三遍/快速切换/状态隔离","passed":true,"evidence":evidence}));
+    results.push(json!({"workflow":"跨音视频全库句型检索 → 精确范围逐条试听 → 三遍与五遍/快速切换/状态隔离","passed":true,"evidence":evidence}));
     Ok(())
 }

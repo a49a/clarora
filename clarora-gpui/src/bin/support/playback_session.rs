@@ -70,7 +70,7 @@ fn record(checks: &mut Vec<Value>, case: &str, session: &Session, state: &Playba
     checks.push(json!({"case":case,"passed":true,"owner":format!("{:?}",session.owner()),
         "material":session.path,"mode":session.mode.index(),
         "range":[session.loop_a,session.loop_b],"end_handled":session.end_handled,
-        "sentence":session.sentence().map(|s| json!({"index":s.index,"request_id":s.request_id,"three":s.three})),
+        "sentence":session.sentence().map(|s| json!({"index":s.index,"request_id":s.request_id,"three":s.total.is_some()})),
         "playback":snapshot(state)}));
 }
 
@@ -247,7 +247,7 @@ fn sequence(root: &Path, traces: &mut Vec<Value>, checks: &mut Vec<Value>) -> Re
             text: "Second sentence".into(),
         },
     ];
-    let audio_sentence = Sentence::start(&player, &path, &cues, 0, true, state.duration)?;
+    let audio_sentence = Sentence::start(&player, &path, &cues, 0, Some(3), state.duration)?;
     ensure!(
         session.set_audio_sentence(Some(audio_sentence)),
         "audio owner cannot set audio sentence"
@@ -304,7 +304,7 @@ fn sequence(root: &Path, traces: &mut Vec<Value>, checks: &mut Vec<Value>) -> Re
         !session.set_audio_sentence(None),
         "audio setter can mutate a video owner"
     );
-    let first = Sentence::start(&player, &path, &cues, 0, true, state.duration)?;
+    let first = Sentence::start(&player, &path, &cues, 0, Some(3), state.duration)?;
     ensure!(
         session.set_sentence(video_lease, Some(first)),
         "current video lease rejected sentence"

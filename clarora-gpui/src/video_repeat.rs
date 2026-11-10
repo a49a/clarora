@@ -9,10 +9,31 @@ use std::path::Path;
 #[derive(Clone, Copy, Debug)]
 pub struct Session {
     pub index: usize,
-    pub three: bool,
+    /// `None` is an infinite sentence loop; `Some(n)` stops after n plays.
+    pub total: Option<u32>,
     pub range: (f64, f64),
     pub request_id: u64,
     completed: bool,
+}
+
+/// Human-readable label for finite sentence repetition counts.
+pub fn label(total: u32) -> String {
+    match total {
+        3 => "每句三遍".into(),
+        4 => "每句四遍".into(),
+        5 => "每句五遍".into(),
+        6 => "每句六遍".into(),
+        n => format!("每句 {n} 遍"),
+    }
+}
+
+/// Leading plays whose subtitle is hidden for the blind half of 4/6 repeats.
+pub fn blind_plays(total: u32) -> u32 {
+    match total {
+        4 => 2,
+        6 => 3,
+        _ => 0,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,18 +104,17 @@ impl Session {
         path: &Path,
         cues: &[Cue],
         index: usize,
-        three: bool,
+        total: Option<u32>,
         duration: f64,
     ) -> Result<Self> {
         let range = cues
             .get(index)
             .and_then(|cue| range(cue, duration))
             .context("本句字幕时间无效")?;
-        let request_id =
-            player.repeat_sentence(path, range.0, range.1, if three { Some(3) } else { None })?;
+        let request_id = player.repeat_sentence(path, range.0, range.1, total)?;
         Ok(Self {
             index,
-            three,
+            total,
             range,
             request_id,
             completed: false,
@@ -143,7 +163,7 @@ impl Session {
         let Some(index) = self.neighbor(cues, next, duration) else {
             return Ok(false);
         };
-        *self = Self::start(player, path, cues, index, self.three, duration)?;
+        *self = Self::start(player, path, cues, index, self.total, duration)?;
         Ok(true)
     }
 
@@ -163,12 +183,12 @@ impl Session {
             ),
             "字幕时间轴已更新，已停止旧句重复"
         );
-        if !self.three || self.completed {
+        let Some(total) = self.total.filter(|_| !self.completed) else {
             return Ok(Transition::Unchanged);
-        }
+        };
         let finished = snapshot.path == path.to_string_lossy()
             && snapshot.sentence_repeat.as_ref().is_some_and(|r| {
-                r.request_id == self.request_id && r.finished && r.total_plays == Some(3)
+                r.request_id == self.request_id && r.finished && r.total_plays == Some(total)
             });
         if !finished {
             return Ok(Transition::Unchanged);
