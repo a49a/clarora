@@ -3,7 +3,7 @@
 - **闪卡与复习**：单词、音频片段、AI 问答卡；SM-2 计划复习；文本、目录和 Anki 导入（Anki 卡组支持 macOS / Windows 桌面端；移动端不做导入，桌面导入的卡片经「同步与备份」下发）。
 - **音视频学习**：逐句字幕、倍速、循环、双语字幕合并、片段收藏、音频管理与原生播放。
 - **随便学学**：混合推荐本地学习内容，支持收藏和音频片段预加载。
-- **学习辅助**：统计、番茄钟、冥想、主题、词汇关系图。
+- **学习辅助**：统计、专注模式、冥想、主题、词汇关系图。
 - **自有存储备份**：客户端直连 S3 兼容存储或阿里云 OSS，保留版本，在其他设备选择备份合并。
 - **自定义 AI API**：聊天、流式回答、重点标注、翻译、OCR、转写与跟读文本对齐评分。用户自行配置模型与密钥。
 - **端侧字幕（macOS / Windows）**：whisper.cpp 与 SenseVoice 本地模型离线生成字幕，音频不上传；英文转中文再走聊天 API。模型在设置中一键下载。
@@ -11,22 +11,25 @@
 
 ## 下载安装
 
-项目官网(功能介绍、使用指南与下载入口):<https://a49a.github.io/clarora-web/>
+项目官网（功能介绍、使用指南与下载入口）：<https://a49a.github.io/clarora-web/>
 
-v0.1.0 起提供 macOS 与 Windows 安装包,从 [GitHub Releases](https://github.com/a49a/clarora/releases/latest) 下载:
+当前桌面主版本从 [GitHub Releases](https://github.com/a49a/clarora/releases/latest) 下载：
 
-- macOS:`Clarora-macos-arm64.dmg`(Apple Silicon,运行时依赖已内置,无需 Homebrew)
-- Windows:`Clarora-windows-x64.zip`(解压后按内附说明侧载安装,需开启开发者模式)
+- macOS：`Clarora-macos-arm64.dmg`，要求 macOS 14+、Apple Silicon；运行库已内置，无需 Homebrew。
+- Windows：优先使用 `Clarora-windows-x64-setup-unsigned.exe` 按用户安装，或解压 `Clarora-windows-x64.zip` 运行便携版；无需开发者模式或侧载脚本。
 
-安装包未做代码签名:macOS 首次打开如被 Gatekeeper 拦截,右键 App 选「打开」;Windows 如有 SmartScreen 提示,选择「仍要运行」。
+安装包未做代码签名：macOS 首次打开如被 Gatekeeper 拦截，右键 App 选「打开」，或执行 `xattr -dr com.apple.quarantine /Applications/Clarora.app`；Windows 安装器未签名，SmartScreen 提示属正常现象。应用内下载语音模型，安装包不包含模型或个人学习资料。
 
-移动端签名构建与分发配置见 [移动端发布](docs/mobile-releases.md)。Android APK 以 Release 实际资产为准；iOS Release 将提供 `Clarora-ios-unsigned.ipa`（以实际资产为准），需要用户自行签名后安装，不能下载后直接安装；无需付费账号即可构建该未签名包。
+移动端继续使用独立标注的 RN 版本；Android APK 与 iOS 渠道以下载页和对应 Release 资产为准。iOS 未签名包需要自行签名后安装，不能下载后直接安装。构建与分发配置见[移动端发布](docs/mobile-releases.md)。
 
 ## 开发
 
-需要 Node.js 24、对应平台开发工具。macOS 还需要 Xcode、CocoaPods、libmpv 和 whisper-cpp（`brew install mpv whisper-cpp`）；当前工程从 `/opt/homebrew` 查找这些库，其他安装路径需要调整 Xcode 的 Header / Library Search Paths。
+桌面 GPUI 原生客户端位于 `clarora-gpui/`，使用 Rust；React Native 客户端位于 `clarora-app/`，两者启动方式独立。GPUI 日常启动用 `make gpui`（Windows 用 `powershell -File clarora-gpui/scripts/dev.ps1`），完整打包步骤见下方[从源码打包桌面应用](#从源码打包桌面应用)。
+
+RN 开发需要 Node.js 24、对应平台开发工具。macOS 还需要 Xcode、CocoaPods、libmpv 和 whisper.cpp：
 
 ```sh
+brew install mpv whisper.cpp
 npm run setup
 npm start
 # 另开终端，选择一个平台：
@@ -36,7 +39,15 @@ npm run windows
 npm run ios
 ```
 
-桌面 GPUI 开发可直接在仓库根目录执行 `make gpui`，或运行 `sh clarora-gpui/scripts/dev.sh`；Windows 使用 `powershell -File clarora-gpui/scripts/dev.ps1`。脚本会在缺少 PDFium 时安装固定版本，macOS 会打包调试 `.app` 后启动，首次运行需要联网下载 PDFium。`npm run gpui` 保留为兼容别名。Windows/iOS 的构建步骤和平台限制见 [平台说明](docs/platform-builds.md)。`.github/workflows/` 中的 CI 在推送与 PR 时运行共享代码的类型检查和测试，并编译验证 Android / macOS / iOS；Windows 安装包随推送构建，也可手动触发。共享代码和自动化测试不等同于四个平台的真机验收。
+GPUI 的 macOS 开发环境还需要 FFmpeg、yt-dlp 和 CMake：
+
+```sh
+brew install mpv ffmpeg yt-dlp cmake whisper.cpp
+```
+
+直接 `cargo run` 打开 PDF 时如果提示缺少 `libpdfium.dylib`，执行 `python3 clarora-gpui/scripts/install-pdfium.py clarora-gpui/target/debug`，或改用会自动准备 PDFium 的 `make gpui`。
+
+Windows/iOS 的 RN 构建步骤和平台限制见[平台说明](docs/platform-builds.md)。桌面 GPUI 需要 Rust 1.93.1；Windows 还需要 Visual Studio 2022 的 C++ 桌面工作负载与 Windows SDK。`.github/workflows/` 中的 CI 在推送与 PR 时运行共享代码的类型检查和测试，并编译验证 Android / macOS / iOS；Windows 安装包随推送构建，也可手动触发。共享代码和自动化测试不等同于四个平台的真机验收。
 
 `npm run macos` 会检查本机 Pods；首次构建或原生依赖锁文件不一致时自动执行 `pod install`，因此需要先安装 CocoaPods。修改 Podfile 后，可在 `clarora-app/` 中执行 `npm run macos:pods` 手动更新依赖。`Pods/` 是本地生成内容，不提交到仓库。
 
@@ -69,7 +80,7 @@ grep '^version' clarora-gpui/Cargo.toml
 要求 macOS 14+ Apple Silicon、Xcode Command Line Tools、Rust 1.93.1、Python 3、Homebrew 和 CMake：
 
 ```sh
-brew install mpv ffmpeg yt-dlp cmake
+brew install mpv ffmpeg yt-dlp cmake whisper.cpp
 ```
 
 **本机调试应用**（不用于分发）：
@@ -81,36 +92,45 @@ make gpui
 
 **可分发的 release 包：**
 
-1. 编译 ASR/TTS 辅助程序。下面的 `/path/to/...` 换成自己的 whisper.cpp / sherpa-onnx 安装位置：
+1. 准备 sherpa-onnx。Homebrew 没有现成 formula，需要从 [sherpa-onnx Releases](https://github.com/k2-fsa/sherpa-onnx/releases) 下载匹配架构的 shared 包并解压。下面以当前验证的 1.13.8 为例，换版本时同步修改路径和 `runtime.json` 中的版本：
+
+```sh
+tar -xjf sherpa-onnx-v1.13.8-osx-arm64-shared.tar.bz2
+export SHERPA_PREFIX="$PWD/sherpa-onnx-v1.13.8-osx-arm64-shared"
+```
+
+2. 编译 ASR/TTS 辅助程序。whisper.cpp 由 Homebrew 提供；sherpa-onnx 使用上一步的目录：
 
 ```sh
 cmake -S clarora-gpui/native -B clarora-gpui/target/native \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=/path/to/whisper-and-sherpa
+  -DCMAKE_PREFIX_PATH="/opt/homebrew/opt/whisper.cpp;/opt/homebrew/opt/ggml;$SHERPA_PREFIX"
 cmake --build clarora-gpui/target/native --config Release
 
 cmake -S clarora-gpui/native/tts -B clarora-gpui/target/tts \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=/path/to/sherpa-onnx
+  -DCMAKE_PREFIX_PATH="$SHERPA_PREFIX"
 cmake --build clarora-gpui/target/tts --config Release
 ```
 
-2. 准备 PDFium：
+如果下载的 sherpa-onnx 包不是启用 TTS 的版本，`clarora-tts` 会链接失败或无法生成语音；请换用 shared 包中带 TTS 的运行库。
+
+3. 准备 PDFium：
 
 ```sh
 mkdir -p /absolute/path/clarora-runtime
 python3 clarora-gpui/scripts/install-pdfium.py /absolute/path/clarora-runtime
 ```
 
-3. 复制运行库配置并填写绝对路径：
+4. 复制运行库配置并填写绝对路径：
 
 ```sh
 cp clarora-gpui/scripts/macos-runtime.example.json /absolute/path/macos-runtime.json
 ```
 
-至少填写 `libmpv`、`ffmpeg`、`ffprobe`、`yt_dlp`、`pdfium`、`asr`、`tts`、`ggml_cpu`，以及 ASR/TTS/PDFium 的 `providers` 来源和许可证路径、`python` 段。示例中的占位符不能直接用于打包。
+至少填写 `libmpv`、`ffmpeg`、`ffprobe`、`yt_dlp`、`pdfium`、`asr`、`tts`、`ggml_cpu`，以及 ASR/TTS/PDFium 的 `providers` 来源和许可证路径、`python` 段。`asr` 指向 `clarora-gpui/target/native/clarora-asr`，`tts` 指向 `clarora-gpui/target/tts/clarora-tts`；示例中的占位符不能直接用于打包。
 
-4. 缓存 Rust 依赖、打包并验证：
+5. 缓存 Rust 依赖、打包并验证：
 
 ```sh
 cargo fetch --manifest-path clarora-gpui/Cargo.toml --locked
@@ -126,11 +146,11 @@ python3 scripts/verify-macos-package.py \
   --launch-seconds 3
 ```
 
-输出目录必须是工作区 `artifacts/clarora/` 下尚不存在的新目录；重复打包请换新目录。默认使用本机 ad-hoc 签名，不做公证；正式分发需要 `--sign-identity` 和 `--notarize-profile`。产物包含 `.app`、ZIP、可选 DMG，以及 `release.json`、`release-files.json`。
+`release-macos.py` 要求输出目录位于仓库上一级的 `artifacts/clarora/` 下，并且目录不存在；重复打包请换新目录。默认使用本机 ad-hoc 签名，不做公证；正式分发需要 `--sign-identity` 和 `--notarize-profile`。产物包含 `.app`、ZIP、可选 DMG，以及 `release.json`、`release-files.json`。
 
 ### Windows
 
-要求 Windows 10/11 x64、Rust 1.93.1 MSVC、Visual Studio 2022 的 C++ 桌面开发工作负载、Windows SDK、CMake、Python 3、7-Zip 和 Inno Setup 6。使用 x64 开发者 PowerShell 或 Native Tools 命令提示符：
+要求 Windows 10 1809+ / 11 x64、Rust 1.93.1 MSVC、Visual Studio 2022 的 C++ 桌面开发工作负载、Windows SDK、CMake、Python 3、7-Zip 和 Inno Setup 6。使用 x64 开发者 PowerShell 或 Native Tools 命令提示符：
 
 ```powershell
 git clone https://github.com/a49a/clarora.git
@@ -141,7 +161,7 @@ cd clarora\clarora-gpui
 
 `prepare-windows-runtime.ps1` 会按 `windows-runtime-lock.json` 下载固定依赖并编译 ASR/TTS 运行库，第一次执行可能需要较长时间。`-Installer` 生成按用户安装的安装器；不加时只生成便携 ZIP。
 
-默认输出到工作区 `artifacts/clarora/gpui/windows/`，包含：
+默认输出到仓库上一级 `artifacts/clarora/gpui/windows/`，包含：
 
 - `Clarora-<version>-windows-x64-unsigned.zip`
 - `Clarora-<version>-windows-x64-setup-unsigned.exe`（带 `-Installer` 时）
@@ -170,7 +190,7 @@ cd clarora\clarora-gpui
 
 当前采用手动版本备份与增量合并：不自动传播删除，本机已有内容优先，复习进度采用较晚的评分，同日统计取较大值。每次上传是完整备份，不是后台实时双向同步。
 
-备份包括词卡、音视频学习附件、字幕、收藏、复习计划、统计、OCR 与跟读结果。凭证、设备设置、未收藏的最近视频、聊天会话草稿、原始 OCR 图片和跟读录音不纳入备份。凭证在 macOS / Windows 保存在系统凭证保险库（钥匙串 / 凭据库），移动端暂存本机应用数据库；云端备份通过 HTTPS 传输，尚无端到端加密。
+备份包括词卡、音视频学习附件、字幕、收藏、复习计划、统计、OCR 与跟读结果。凭证、设备设置、未收藏的最近视频、聊天会话草稿、原始 OCR 图片和跟读录音不纳入备份。较新桌面主版本默认把密钥保存在本机数据库，可在「密钥存储」开启系统凭证库（钥匙串 / 凭据库）；RN 客户端暂存本机应用数据库，具体以版本说明为准。云端备份通过 HTTPS 传输，尚无端到端加密。
 
 详细配置、权限、数据格式和恢复策略见 [存储同步说明](docs/storage-sync.md)。
 
@@ -184,6 +204,7 @@ OCR 与跟读结果保存在本机。跟读评分比较识别文本与参考句�
 
 | 路径 | 内容 |
 | --- | --- |
+| `clarora-gpui/` | Rust + GPUI 桌面主版本（macOS / Windows） |
 | `clarora-app/` | 四平台 React Native 客户端、共享数据层、对象存储与 AI 适配 |
 | `tool/` | 客户端图标生成工具 |
 | `docs/` | 客户端构建与存储同步说明 |
