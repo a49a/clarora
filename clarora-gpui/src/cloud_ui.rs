@@ -112,7 +112,15 @@ impl AppView {
                 .child(self.button("cloud-sync-auto",if self.cloud.automatic{"自动同步：开 · 5分钟"}else{"自动同步：关"},Action::CloudAutoSync,cx).outline().selected(self.cloud.automatic).disabled(busy)))
             .child(div().text_xs().text_color(cx.theme().muted_foreground).child("自动同步默认关闭；开启后在页面空闲且未编辑文字时运行，切换模块后任务继续。修改时间相同则按设备标识和序号稳定决定。"))
             .child(div().text_xs().text_color(cx.theme().muted_foreground).child("首次同步前的旧资料没有修改记录，以初始版本合并；启用后持续记录离线修改。新版去重、同步与清理需要支持条件写入的 S3／R2；OSS 继续使用兼容备份。"))
-            .when(!self.cloud.status.is_empty(),|v|v.child(div().text_sm().child(self.cloud.status.clone())))
+            .when(!self.cloud.status.is_empty(),|v|v.child(
+                div().flex().items_center().gap_2().flex_wrap()
+                    .child(div().text_sm().child(self.cloud.status.clone()))
+                    .when(!busy && !self.cloud.status.contains("同步完成"), |row| row.child(
+                        self.button("cloud-sync-retry", "重试同步", Action::CloudSync, cx)
+                            .small()
+                            .outline(),
+                    ))
+            ))
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("备份保留与清理"))
             .child(div().flex().flex_wrap().gap_2()
                 .child(self.surface_menu("cloud-retain-count",format!("至少留 {} 份 ▾",self.cloud.retention.keep_last),menu(0,&[1,3,5,10,20,50],"份",self.cloud.retention.keep_last),cx))
