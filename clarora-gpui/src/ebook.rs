@@ -35,6 +35,42 @@ pub fn display_name(path: &Path) -> String {
         .unwrap_or(&stem)
         .to_string()
 }
+
+/// Human-readable shelf label that drops imported UUID/timestamp noise.
+/// `display_name` remains the stable backup-matching key.
+pub fn ui_label(path: &Path) -> String {
+    static NOISE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let noise = NOISE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,64})",
+        )
+        .expect("valid filename noise pattern")
+    });
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let stem = noise.replace_all(&stem, " ");
+    let mut parts = vec![];
+    for part in stem.split('_') {
+        let part = part.trim();
+        if part.is_empty()
+            || (part.len() >= 10 && part.bytes().all(|byte| byte.is_ascii_digit()))
+            || (part.len() >= 16 && part.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            continue;
+        }
+        parts.push(part);
+    }
+    let name = parts
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if name.is_empty() {
+        "未命名书籍".into()
+    } else {
+        name
+    }
+}
+
 pub fn is_ebook(path: &Path) -> bool {
     extension(path).is_some_and(|s| ["epub", "txt"].contains(&s.as_str()))
 }

@@ -365,6 +365,21 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
     ensure!(count() == before, "failed imports left book files");
     cases.push(json!({"case":"broken-encoding-format-container-traversal-duplicate-bomb-cancel-no-import","passed":true}));
 
+    ensure!(
+        ebook::ui_label(Path::new(
+            "1789544025976_718bde25-0cf6-4d67-a189-1281590922e4_business vocabulary.pdf"
+        )) == "business vocabulary",
+        "import filename noise was not cleaned: {:?}",
+        ebook::ui_label(Path::new(
+            "1789544025976_718bde25-0cf6-4d67-a189-1281590922e4_business vocabulary.pdf"
+        ))
+    );
+    ensure!(
+        ebook::ui_label(Path::new("04dfd629daff48b7a6287389ea767b9c.epub")) == "未命名书籍",
+        "hash-only shelf label was not replaced"
+    );
+    cases.push(json!({"case":"import UUID and timestamp noise is removed from shelf labels","passed":true}));
+
     let mut shelf = clarora_gpui::view_data::State::default();
     shelf.reload(&lib, &[])?;
     ensure!(
