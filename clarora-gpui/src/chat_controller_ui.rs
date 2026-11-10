@@ -153,6 +153,25 @@ impl AppView {
         if self.chat_closing.is_some() {
             return false;
         }
+        let note = self.value("focus_note", cx);
+        let note = note.trim();
+        if !note.is_empty() && self.focus_note_close_saved.as_deref() != Some(note) {
+            match focus_notes::save(&self.lib, note, focus_timer::now_ms()) {
+                Ok(saved) => {
+                    self.focus_note_close_saved = Some(note.to_owned());
+                    self.focus_notes.insert(0, saved);
+                    self.focus_notes.truncate(20);
+                }
+                Err(error) => {
+                    self.report_status(
+                        FeedbackKind::Error,
+                        format!("想法尚未保存，窗口保持打开：{error:#}"),
+                    );
+                    cx.notify();
+                    return false;
+                }
+            }
+        }
         if let Err(error) = self.flush_speaking_draft(cx) {
             self.report_status(
                 FeedbackKind::Error,

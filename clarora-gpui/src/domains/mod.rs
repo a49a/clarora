@@ -166,6 +166,9 @@ pub(super) enum Action {
     FocusFinish,
     FocusDistraction,
     FocusReview(String, Option<u8>),
+    FocusNoteToggle,
+    FocusNoteSave,
+    FocusNoteDelete(String),
     SaveAi,
     SaveAiProfile,
     SelectAiProfile(String),
@@ -412,6 +415,9 @@ impl From<Action> for Command {
             Action::FocusReview(id, fatigue) => {
                 Routed::Focus(focus::Command::FocusReview(id, fatigue))
             }
+            Action::FocusNoteToggle => Routed::Focus(focus::Command::FocusNoteToggle),
+            Action::FocusNoteSave => Routed::Focus(focus::Command::FocusNoteSave),
+            Action::FocusNoteDelete(id) => Routed::Focus(focus::Command::FocusNoteDelete(id)),
             Action::SaveAi => Routed::Settings(settings::Command::SaveAi),
             Action::SaveAiProfile => Routed::Settings(settings::Command::SaveAiProfile),
             Action::SelectAiProfile(v0) => Routed::Settings(settings::Command::SelectAiProfile(v0)),

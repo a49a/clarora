@@ -2,6 +2,7 @@
 use anyhow::{Result, ensure};
 use clarora_gpui::{
     data::Library,
+    focus_notes,
     focus_timer::{Event, KEY, Recommendation, Timer, Toggle},
 };
 use serde_json::{Value, json};
@@ -193,6 +194,51 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     cases.push(json!(
         "legacy countdown, strict interruption, concurrent writers and corrupt state recovery"
     ));
+
+    let notes = Library::open(root.join("notes"))?;
+    let mut timer = Timer::load(&notes, T)?.timer;
+    timer.toggle(&notes, T)?;
+    ensure!(
+        focus_notes::save(&notes, "  ", T).is_err(),
+        "blank note saved"
+    );
+    ensure!(
+        focus_notes::save(&notes, &"长".repeat(focus_notes::MAX_CHARS + 1), T).is_err(),
+        "oversized note saved"
+    );
+    let first = focus_notes::save(&notes, "  想到一个论文结构：先写结论  ", T + 1)?;
+    ensure!(
+        first.body == "想到一个论文结构：先写结论",
+        "note whitespace not trimmed"
+    );
+    let second = focus_notes::save(&notes, "结束后查一下引用格式", T + 2)?;
+    timer.record_distraction(&notes)?;
+    timer.finish(&notes, T + 3 * MINUTE)?;
+    let reopened = Library::open(notes.root.clone())?;
+    let saved = focus_notes::list(&reopened, 10)?;
+    ensure!(
+        saved.len() == 2
+            && saved[0].id == second.id
+            && saved[1].body == "想到一个论文结构：先写结论"
+            && saved[0].created_ms == T + 2
+            && Timer::load(&reopened, T + 4 * MINUTE)?.timer.recent().len() == 1,
+        "notes were lost or reordered after a finished round and reopen"
+    );
+    focus_notes::delete(&reopened, &saved[0].id)?;
+    ensure!(
+        focus_notes::list(&reopened, 10)?.len() == 1
+            && focus_notes::delete(&reopened, &saved[0].id).is_err(),
+        "note deletion was not durable or silently accepted a missing ID"
+    );
+    focus_notes::save(&reopened, "第三条", T + 5)?;
+    ensure!(
+        focus_notes::list(&reopened, 10)?.len() == 2,
+        "new note after delete was not stored"
+    );
+    cases.push(json!(
+        "focus notes survive finish and reopen; blank/oversized input rejected and deletion is durable"
+    ));
+
     let evidence = root.join("focus-recovery.json");
     fs::write(
         &evidence,

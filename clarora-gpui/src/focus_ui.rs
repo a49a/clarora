@@ -1,5 +1,15 @@
 use super::*;
 
+fn note_html(text: &str) -> SharedString {
+    SharedString::from(format!(
+        "<p>{}</p>",
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('\n', "<br/>")
+    ))
+}
+
 impl AppView {
     pub(super) fn focus_control_label(&self) -> &'static str {
         if self.focus_mode.active() {
@@ -66,7 +76,11 @@ impl AppView {
             .into_any_element()
     }
 
-    pub(super) fn focus_timer_bar(&self, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn focus_timer_bar(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let fullscreen = self.video.fullscreen;
         let foreground = if fullscreen {
             rgb(0xe8f0eb).into()
@@ -140,7 +154,24 @@ impl AppView {
                             .outline(),
                     )
                 },
-            );
+            )
+            .when(self.timer.active_round() || self.focus_note_open, |row| {
+                row.child(
+                    self.button(
+                        "focus-note-toggle",
+                        if self.focus_note_open {
+                            "收起想法"
+                        } else {
+                            "记想法"
+                        },
+                        Action::FocusNoteToggle,
+                        cx,
+                    )
+                    .outline()
+                    .selected(self.focus_note_open)
+                    .tooltip("专注时想到的内容先记在这里，结束后仍会保留"),
+                )
+            });
         div()
             .id("global-focus-timer")
             .flex_shrink_0()
@@ -163,10 +194,87 @@ impl AppView {
             .flex_col()
             .gap_2()
             .child(row)
+            .when(self.focus_note_open, |bar| {
+                bar.child(self.focus_note_editor(window, cx))
+            })
             .when_some(
                 self.timer.recent().first().filter(|r| r.review_pending),
                 |bar, round| bar.child(self.focus_review(round, true, cx)),
             )
+            .into_any_element()
+    }
+
+    fn focus_note_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let mut notes = div().flex().flex_col().gap_2().id("focus-recent-notes");
+        for note in self.focus_notes.iter().take(3) {
+            let time = chrono::DateTime::from_timestamp_millis(note.created_ms as i64)
+                .map(|date| {
+                    date.with_timezone(&chrono::Local)
+                        .format("%m-%d %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            notes = notes.child(
+                div()
+                    .border_l_2()
+                    .border_color(cx.theme().primary.opacity(0.5))
+                    .pl_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(time),
+                    )
+                    .child(
+                        TextView::html(
+                            SharedString::from(format!("focus-recent-note-{}", note.id)),
+                            note_html(&note.body),
+                            window,
+                            cx,
+                        )
+                        .selectable(true),
+                    ),
+            );
+        }
+        div()
+            .id("focus-note-editor")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(Input::new(&self.inputs["focus_note"]).h(px(84.)))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        self.button("focus-note-save", "保存想法", Action::FocusNoteSave, cx)
+                            .primary(),
+                    )
+                    .child(
+                        self.button("focus-note-close", "收起", Action::FocusNoteToggle, cx)
+                            .ghost(),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("保存后可在「统计 → 专注训练」查看；未保存内容会在关闭应用时自动收录"),
+                    ),
+            )
+            .when(!self.focus_notes.is_empty(), |view| {
+                view.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("最近记录"),
+                )
+                .child(notes)
+            })
             .into_any_element()
     }
 
@@ -209,6 +317,19 @@ impl AppView {
         row.when(prompt, |row| {
             row.child(
                 self.button(
+                    "focus-review-note",
+                    if self.focus_note_open {
+                        "收起想法"
+                    } else {
+                        "补记想法"
+                    },
+                    Action::FocusNoteToggle,
+                    cx,
+                )
+                .outline(),
+            )
+            .child(
+                self.button(
                     "focus-review-later",
                     "稍后评价",
                     Action::FocusReview(round.id.clone(), None),
@@ -239,7 +360,11 @@ impl AppView {
         }
     }
 
-    pub(super) fn focus_training(&self, cx: &Context<Self>) -> impl IntoElement {
+    pub(super) fn focus_training(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let mut view = panel(cx)
             .child(
                 div()
@@ -294,6 +419,71 @@ impl AppView {
                     ),
             );
         }
-        view
+        let mut notes = div()
+            .id("focus-notes-history")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("专注想法"));
+        if self.focus_notes.is_empty() {
+            notes = notes.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("专注时点顶部「记想法」，临时的念头、疑问和待办会保存在这里。"),
+            );
+        }
+        for (i, note) in self.focus_notes.iter().take(10).enumerate() {
+            let time = chrono::DateTime::from_timestamp_millis(note.created_ms as i64)
+                .map(|date| {
+                    date.with_timezone(&chrono::Local)
+                        .format("%m-%d %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            notes = notes.child(
+                div()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .pt_2()
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(time),
+                            )
+                            .child(
+                                TextView::html(
+                                    SharedString::from(format!("focus-note-body-{}", note.id)),
+                                    note_html(&note.body),
+                                    window,
+                                    cx,
+                                )
+                                .selectable(true),
+                            ),
+                    )
+                    .child(
+                        self.button(
+                            format!("focus-note-delete-{i}"),
+                            "删除",
+                            Action::FocusNoteDelete(note.id.clone()),
+                            cx,
+                        )
+                        .small()
+                        .ghost(),
+                    ),
+            );
+        }
+        view.child(notes)
     }
 }

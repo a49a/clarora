@@ -1542,7 +1542,7 @@ impl AppView {
                                 cx,
                             )),
                     )
-                    .child(self.focus_training(cx));
+                    .child(self.focus_training(window, cx));
             }
             "settings" => {
                 content = content.child(self.settings_view(window, cx));

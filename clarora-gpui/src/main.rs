@@ -85,7 +85,7 @@ use clarora_gpui::task_runtime::{self, Scope as TaskScope};
 use clarora_gpui::{
     ai, audio_library, backup, bilibili, blind_listening, clip_marks, credentials,
     data::{Card, Library, Row, id, now, text},
-    documents, ebook, focus_timer,
+    documents, ebook, focus_notes, focus_timer,
     media::{Playback, Player},
     model_download::Progress as ModelProgress,
     process::{self, Cancel},
@@ -260,6 +260,9 @@ struct AppView {
     timer_seconds: u64,
     timer_retry: Option<Instant>,
     focus_mode: focus_mode_ui::Mode,
+    focus_notes: Vec<focus_notes::Note>,
+    focus_note_open: bool,
+    focus_note_close_saved: Option<String>,
     pdf_path: Option<PathBuf>,
     pdf_image: Option<std::sync::Arc<RenderImage>>,
     pdf_page: u16,
@@ -319,6 +322,7 @@ impl AppView {
                 false,
             ),
             ("speaking_target_words", "不设目标", false, false),
+            ("focus_note", "记下此刻的想法、疑问或待办…", true, false),
             (
                 "tts_text",
                 "输入要合成的中文或英文（最多 10,000 字）",
@@ -381,6 +385,7 @@ impl AppView {
                     None,
                 ),
             };
+        let focus_notes = focus_notes::list(&lib, 20).unwrap_or_default();
         let mut this = Self {
             #[cfg(debug_assertions)]
             diagnostic: None,
@@ -447,6 +452,9 @@ impl AppView {
             timer,
             timer_retry: None,
             focus_mode: focus_mode_ui::Mode::default(),
+            focus_notes,
+            focus_note_open: false,
+            focus_note_close_saved: None,
             pdf_path: None,
             pdf_image: None,
             pdf_page: 0,
@@ -618,6 +626,12 @@ impl AppView {
             })
             .detach();
         }
+        cx.subscribe(&this.inputs["focus_note"], |this, _, event, _| {
+            if matches!(event, InputEvent::Change) {
+                this.focus_note_close_saved = None;
+            }
+        })
+        .detach();
         for key in ["speaking_answer_draft", "speaking_target_words"] {
             cx.subscribe(&this.inputs[key], |this, _, event, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -1610,7 +1624,7 @@ impl Render for AppView {
             return div()
                 .relative()
                 .size_full()
-                .child(self.fullscreen_video(cx))
+                .child(self.fullscreen_video(window, cx))
                 .children(assistant)
                 .children(selection)
                 .children(self.feedback_view(window, cx))
@@ -2303,7 +2317,7 @@ impl Render for AppView {
                                     ),
                             ),
                     )
-                    .child(self.focus_timer_bar(cx))
+                    .child(self.focus_timer_bar(window, cx))
                     .children(self.subtitle_task_banner(cx))
                     .child(
                         div()

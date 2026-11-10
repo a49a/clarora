@@ -661,7 +661,7 @@ impl Probe {
                     for width in [420., 760., 1240.] {
                         for (name, mut bar) in [
                             ("unified-focus-header", app.computer_focus_control(cx)),
-                            ("timer-status-only", app.focus_timer_bar(cx)),
+                            ("timer-status-only", app.focus_timer_bar(window, cx)),
                         ] {
                             let measured = bar.layout_as_root(
                                 size(

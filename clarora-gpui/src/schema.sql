@@ -24,3 +24,11 @@ CREATE TABLE IF NOT EXISTS focus_sessions (
     fatigue INTEGER CHECK (fatigue BETWEEN 1 AND 3),
     review_pending INTEGER NOT NULL DEFAULT 1
 );
+
+CREATE TABLE IF NOT EXISTS focus_notes (
+    id TEXT PRIMARY KEY,
+    created_ms INTEGER NOT NULL,
+    body TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS focus_notes_created ON focus_notes(created_ms DESC);

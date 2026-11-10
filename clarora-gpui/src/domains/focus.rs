@@ -12,6 +12,9 @@ pub(super) enum Command {
     FocusFinish,
     FocusDistraction,
     FocusReview(String, Option<u8>),
+    FocusNoteToggle,
+    FocusNoteSave,
+    FocusNoteDelete(String),
 }
 impl Command {
     pub(super) fn effects(&self, app: &AppView) -> Effects {
@@ -66,6 +69,83 @@ impl Command {
                 if fatigue.is_some() {
                     app.report_status(FeedbackKind::Info, app.focus_advice());
                 }
+            }
+            Command::FocusNoteToggle => {
+                app.focus_note_open = !app.focus_note_open;
+                if app.focus_note_open {
+                    app.inputs["focus_note"].update(cx, |input, cx| input.focus(window, cx));
+                } else {
+                    window.focus(&app.focus);
+                }
+            }
+            Command::FocusNoteSave => {
+                let body = app.value("focus_note", cx);
+                let note = focus_notes::save(&app.lib, &body, now)?;
+                app.focus_notes.insert(0, note);
+                app.focus_notes.truncate(20);
+                app.set("focus_note", "", window, cx);
+                app.report_status(
+                    FeedbackKind::Info,
+                    "想法已记录；专注结束后可在「统计」页查看".into(),
+                );
+            }
+            Command::FocusNoteDelete(id) => {
+                let preview = app
+                    .focus_notes
+                    .iter()
+                    .find(|note| note.id == id)
+                    .map(|note| {
+                        let body: String = note.body.chars().take(120).collect();
+                        if body.chars().count() < note.body.chars().count() {
+                            format!("{body}…")
+                        } else {
+                            body
+                        }
+                    })
+                    .unwrap_or_default();
+                let view = cx.entity().downgrade();
+                window.open_dialog(cx, move |dialog, window, cx| {
+                    let view = view.clone();
+                    let id = id.clone();
+                    dialog
+                        .title("删除这条想法？")
+                        .confirm()
+                        .w((window.viewport_size().width - px(32.)).min(px(480.)))
+                        .button_props(
+                            DialogButtonProps::default()
+                                .cancel_text("取消")
+                                .ok_text("确认删除")
+                                .ok_variant(ButtonVariant::Danger),
+                        )
+                        .child(div().text_sm().child(preview.clone()))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("删除后不能恢复；其它想法和专注记录不受影响。"),
+                        )
+                        .on_ok(move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                match focus_notes::delete(&this.lib, &id) {
+                                    Ok(()) => {
+                                        this.focus_notes.retain(|note| note.id != id);
+                                        this.report_status(
+                                            FeedbackKind::Info,
+                                            "已删除这条想法".into(),
+                                        );
+                                    }
+                                    Err(error) => this.report_status(
+                                        FeedbackKind::Error,
+                                        format!("删除想法失败：{error:#}"),
+                                    ),
+                                }
+                                cx.notify();
+                                true
+                            })
+                            .unwrap_or(true);
+                            true
+                        })
+                });
             }
         }
         app.timer_seconds = app.timer.display_seconds(focus_timer::now_ms());

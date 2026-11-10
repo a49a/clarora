@@ -323,7 +323,11 @@ impl AppView {
                 cx.notify();
             }))
     }
-    pub(super) fn fullscreen_video(&self, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn fullscreen_video(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .id("video-fullscreen")
             .size_full()
@@ -433,7 +437,7 @@ impl AppView {
                         cx,
                     )),
             )
-            .child(self.focus_timer_bar(cx))
+            .child(self.focus_timer_bar(window, cx))
             .children(self.subtitle_task_banner(cx))
             .child(self.video_picture(None, cx))
             .child(self.video_controls(cx))

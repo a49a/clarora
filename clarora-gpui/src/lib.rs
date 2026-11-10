@@ -57,6 +57,7 @@ pub mod subtitle_selection;
 
 pub mod render_images;
 
+pub mod focus_notes;
 pub mod focus_timer;
 
 pub mod chat_controller;
