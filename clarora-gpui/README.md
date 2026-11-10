@@ -12,6 +12,8 @@ cargo run --manifest-path clarora-gpui/Cargo.toml --locked
 
 需要 Rust 1.93.1。macOS 需要 Xcode Command Line Tools；Windows 使用 Rust MSVC 工具链、Visual Studio 2022 的 C++ 桌面开发工作负载与 Windows SDK。
 
+也可以在仓库根目录执行 `npm run gpui`。脚本会在缺少 PDFium 时安装固定版本，macOS 还会打包带 Dock 图标的调试 `.app` 再启动；首次运行需要联网下载 PDFium，之后的启动直接复用本机文件。
+
 macOS 媒体工具：
 
 ```sh

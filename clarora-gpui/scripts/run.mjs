@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -11,6 +12,17 @@ function run(command, argv) {
     process.exit(1);
   }
   return result.status ?? 1;
+}
+const pdfium = process.platform === 'darwin'
+  ? 'target/debug/libpdfium.dylib'
+  : process.platform === 'win32'
+    ? 'target/debug/pdfium.dll'
+    : null;
+if (pdfium && !fs.existsSync(path.join(root, pdfium))) {
+  console.log(`正在安装固定版本 PDFium：${pdfium}`);
+  const python = process.platform === 'win32' ? 'python' : 'python3';
+  const status = run(python, [path.join(root, 'scripts/install-pdfium.py'), path.join(root, 'target/debug')]);
+  if (status !== 0) process.exit(status);
 }
 if (process.platform === 'darwin') {
   const status = run('sh', [path.join(root, 'scripts/package-macos.sh')]);

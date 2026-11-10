@@ -23,6 +23,14 @@ cp "$root/../LICENSE" "$output/Contents/Resources/LICENSE"
 cp "$root/README.md" "$output/Contents/Resources/README.md"
 cp "$root/target/debug/clarora-gpui" "$output/Contents/MacOS/clarora-gpui.new"
 mv -f "$output/Contents/MacOS/clarora-gpui.new" "$output/Contents/MacOS/clarora-gpui"
+if [ -f "$root/target/debug/libpdfium.dylib" ]; then
+  cp "$root/target/debug/libpdfium.dylib" "$output/Contents/MacOS/libpdfium.dylib.new"
+  mv -f "$output/Contents/MacOS/libpdfium.dylib.new" "$output/Contents/MacOS/libpdfium.dylib"
+fi
+if [ -d "$root/target/debug/pdfium-licenses" ]; then
+  rm -rf "$output/Contents/Resources/pdfium-licenses"
+  cp -R "$root/target/debug/pdfium-licenses" "$output/Contents/Resources/pdfium-licenses"
+fi
 if [ -f "$root/target/native/clarora-asr" ]; then
   mkdir -p "$output/Contents/MacOS/tools"
   cp "$root/target/native/clarora-asr" "$output/Contents/MacOS/tools/clarora-asr"
