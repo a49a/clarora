@@ -56,6 +56,10 @@ data_loader::run(output, results)
     "--focus-timer-only",0,0 => {
 focus_timer::run(output, results)
     },
+    "--credential-mode-only",0,0 => {
+Library::open(output.join("credential-mode-source"))
+            .and_then(|lib| credential_mode::run(&lib, results))
+    },
     "--runtime-stability-only",0,1 => {
 runtime_stability::run(
             output,

@@ -147,6 +147,24 @@ fn referenced(lib: &Library) -> Result<Vec<String>> {
             names.push(format!("token-{id}"));
         }
     }
+    // Inactive storage profiles keep their own credentials so switching does not
+    // require retyping keys; migrate and check every referenced profile.
+    let raw = lib.setting("storage_profiles")?;
+    if !raw.is_empty() {
+        let profiles: serde_json::Value = serde_json::from_str(&raw)?;
+        for profile in profiles.as_array().into_iter().flatten() {
+            if let Some(id) = profile["config"]["credential_id"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+            {
+                for name in [format!("storage-{id}"), format!("token-{id}")] {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+        }
+    }
     Ok(names)
 }
 pub fn needs_legacy_import(lib: &Library) -> Result<bool> {

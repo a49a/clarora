@@ -213,6 +213,36 @@ impl AppView {
                     .child("使用云备份需要先填写你自己的存储服务信息。仅在本机保存备份时，直接点击「导出本机备份 ZIP」即可，无需配置以下项目。"))
                 .child(div().text_sm().text_color(cx.theme().muted_foreground)
                     .child("云备份中的 bilibili 原视频仅保存来源链接，恢复后按需下载；字幕、学习记录和本地视频文件继续备份。本机 ZIP 保留可用视频原文件。"))
+                .when(!self.data.storage_profiles.is_empty(), |panel| {
+                    let active = self
+                        .data
+                        .storage_profiles
+                        .iter()
+                        .find(|profile| profile.id == self.data.active_storage_profile)
+                        .map(|profile| profile.name.as_str())
+                        .unwrap_or("未选择");
+                    let busy = self.tasks.foreground.is_running();
+                    let options = self
+                        .data
+                        .storage_profiles
+                        .iter()
+                        .map(|profile| {
+                            (
+                                profile.name.clone(),
+                                Action::SelectStorageProfile(profile.id.clone()),
+                                profile.id == self.data.active_storage_profile,
+                                busy,
+                            )
+                        })
+                        .collect();
+                    panel.child(self.surface_menu(
+                        "storage-profile",
+                        format!("当前存储：{active} ▾"),
+                        options,
+                        cx,
+                    ))
+                })
+                .child(self.field("storage_profile_name", "配置名称（另存为新配置时使用）"))
                 .child(self.field("provider", "存储类型 s3 / oss"))
                 .child(self.field("endpoint", "Endpoint"))
                 .child(self.field("region", "Region"))
@@ -222,9 +252,30 @@ impl AppView {
                 .child(self.field("session_token", "Session Token（可选）"))
                 .child(self.field("prefix", "资料库前缀"))
                 .child(self.field("path_style", "S3 路径模式 true / false"))
+                .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                    .child("阿里云 OSS：存储类型选 oss，Endpoint 填 https://oss-cn-hangzhou.aliyuncs.com，Region 填 cn-hangzhou（不是 auto 或 oss-cn-hangzhou），Bucket 单独填写。"))
+                .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                    .child("「保存当前配置」更新正在使用的存储，密钥留空则沿用已保存的密钥；「另存为新配置」会再存一份并立即切换。"))
                 .child(
-                    self.button("save-storage", "保存存储配置", Action::SaveStorage, cx)
-                        .disabled(self.tasks.foreground.is_running()),
+                    div()
+                        .flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(
+                            self.button("save-storage", "保存当前配置", Action::SaveStorage, cx)
+                                .primary()
+                                .disabled(self.tasks.foreground.is_running()),
+                        )
+                        .child(
+                            self.button(
+                                "save-storage-profile",
+                                "另存为新配置",
+                                Action::SaveStorageProfile,
+                                cx,
+                            )
+                            .outline()
+                            .disabled(self.tasks.foreground.is_running()),
+                        ),
                 )
                 .child(
                     div()

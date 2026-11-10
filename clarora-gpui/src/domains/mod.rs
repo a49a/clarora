@@ -176,6 +176,8 @@ pub(super) enum Action {
     CredentialMode(bool),
     ImportLegacyCredentials,
     SaveStorage,
+    SaveStorageProfile,
+    SelectStorageProfile(String),
     Models(String),
     SelectModel(String),
     CloudList,
@@ -429,6 +431,10 @@ impl From<Action> for Command {
                 Routed::Settings(settings::Command::ImportLegacyCredentials)
             }
             Action::SaveStorage => Routed::Settings(settings::Command::SaveStorage),
+            Action::SaveStorageProfile => Routed::Settings(settings::Command::SaveStorageProfile),
+            Action::SelectStorageProfile(v0) => {
+                Routed::Settings(settings::Command::SelectStorageProfile(v0))
+            }
             Action::Models(v0) => Routed::Settings(settings::Command::Models(v0)),
             Action::SelectModel(v0) => Routed::Settings(settings::Command::SelectModel(v0)),
             Action::CloudList => Routed::Cloud(cloud::Command::CloudList),

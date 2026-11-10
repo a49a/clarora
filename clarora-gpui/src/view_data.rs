@@ -1,6 +1,6 @@
 //! Explicitly loaded, last-known-good data for otherwise I/O-free UI rendering.
 use crate::{
-    ai, credentials,
+    ai, backup, credentials,
     data::{Library, Row, text},
     tts,
 };
@@ -21,6 +21,8 @@ pub struct State {
     pub saved_ai: Option<ai::Config>,
     pub ai_profiles: Vec<ai::Profile>,
     pub active_ai_profile: String,
+    pub storage_profiles: Vec<backup::StorageProfile>,
+    pub active_storage_profile: String,
     pub needs_legacy_import: bool,
     pub error: String,
     pub revision: u64,
@@ -87,6 +89,7 @@ impl State {
                 .map(|model| model.id.to_string())
                 .collect();
             let (ai_profiles, active_ai_profile) = ai::profiles(lib)?;
+            let (storage_profiles, active_storage_profile) = backup::profiles(lib)?;
             Ok(Self {
                 speaking,
                 ocr,
@@ -101,6 +104,8 @@ impl State {
                 saved_ai: Some(ai::load_config(lib)?),
                 ai_profiles,
                 active_ai_profile,
+                storage_profiles,
+                active_storage_profile,
                 needs_legacy_import: credentials::needs_legacy_import(lib)?,
                 error: String::new(),
                 revision: self.revision.wrapping_add(1),

@@ -143,6 +143,110 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
         provider.calls.load(Ordering::SeqCst) == 0,
         "SQLite模式仍访问钥匙串"
     );
+    let (profiles, active) = backup::profiles(&lib)?;
+    ensure!(
+        profiles.len() == 1 && active == profiles[0].id && profiles[0].name == "当前存储",
+        "first saved storage did not appear as the active profile"
+    );
+    let first = profiles[0].clone();
+    let first_key = first.config.credential_id.clone();
+    let mut edited = first.config.clone();
+    edited.prefix = "clarora-edited".into();
+    backup::Storage::save(&lib, edited, "", "")?;
+    let stored: backup::StorageConfig = serde_json::from_str(&lib.setting("storage_config")?)?;
+    ensure!(
+        stored.credential_id == first_key
+            && stored.prefix == "clarora-edited"
+            && backup::Storage::load(&lib).is_ok(),
+        "editing the active profile with a blank secret lost the saved credential"
+    );
+    let mut second = stored.clone();
+    second.endpoint = "https://storage-b.example.invalid".into();
+    second.bucket = "second-bucket".into();
+    second.prefix = "clarora-b".into();
+    let second_profile =
+        backup::Storage::save_profile(&lib, "备用桶", second.clone(), "second-key", "")?;
+    let (profiles, active) = backup::profiles(&lib)?;
+    ensure!(
+        profiles.len() == 2
+            && active == second_profile.id
+            && serde_json::from_str::<backup::StorageConfig>(&lib.setting("storage_config")?)?
+                .endpoint
+                == second.endpoint,
+        "saving a new profile did not switch the active storage config"
+    );
+    ensure!(
+        credentials::get(
+            &lib,
+            &format!("storage-{}", second_profile.config.credential_id)
+        )? == "second-key",
+        "new profile did not store its own secret"
+    );
+    backup::select_profile(&lib, &first.id)?;
+    ensure!(
+        serde_json::from_str::<backup::StorageConfig>(&lib.setting("storage_config")?)?.endpoint
+            == first.config.endpoint
+            && credentials::get(&lib, &format!("storage-{first_key}"))? == "sqlite-storage-key",
+        "switching back to the first profile lost its config or secret"
+    );
+    ensure!(
+        backup::Storage::save_profile(&lib, " 备用桶 ", second, "x", "").is_err(),
+        "duplicate storage profile name was accepted"
+    );
+    backup::select_profile(&lib, &second_profile.id)?;
+    backup::Storage::load(&lib)?;
+    ensure!(
+        backup::list_profiles(&lib)?.len() == 2,
+        "selecting profiles changed the saved list"
+    );
+
+    let oss = Library::open(lib.root.join("oss-normalize"))?;
+    let base = backup::StorageConfig {
+        provider: "oss".into(),
+        endpoint: "https://oss-cn-hangzhou.aliyuncs.com".into(),
+        region: "cn-hangzhou".into(),
+        bucket: "lingua-clarora".into(),
+        access_key_id: "oss-access".into(),
+        prefix: "clarora".into(),
+        ..Default::default()
+    };
+    backup::Storage::save(&oss, base.clone(), "oss-secret", "")?;
+    let saved: backup::StorageConfig = serde_json::from_str(&oss.setting("storage_config")?)?;
+    let mut legacy = saved.clone();
+    legacy.region = "auto".into();
+    oss.set_setting("storage_config", &serde_json::to_string(&legacy)?)?;
+    backup::Storage::load(&oss)?;
+    let migrated: backup::StorageConfig = serde_json::from_str(&oss.setting("storage_config")?)?;
+    ensure!(
+        migrated.provider == "oss" && migrated.region == "cn-hangzhou",
+        "legacy OSS region=auto was not normalized on load"
+    );
+    let second = backup::StorageConfig {
+        endpoint: "https://lingua-clarora.oss-cn-shanghai.aliyuncs.com".into(),
+        region: "oss-cn-shanghai".into(),
+        bucket: "lingua-clarora".into(),
+        ..base.clone()
+    };
+    backup::Storage::save(&oss, second, "oss-secret", "")?;
+    let second: backup::StorageConfig = serde_json::from_str(&oss.setting("storage_config")?)?;
+    ensure!(
+        second.region == "cn-shanghai" && second.endpoint == "https://oss-cn-shanghai.aliyuncs.com",
+        "OSS endpoint bucket prefix or region prefix was not normalized"
+    );
+    let inferred = backup::StorageConfig {
+        provider: "s3".into(),
+        endpoint: "https://oss-cn-beijing.aliyuncs.com".into(),
+        region: "auto".into(),
+        bucket: "lingua-clarora".into(),
+        ..base
+    };
+    backup::Storage::save(&oss, inferred, "oss-secret", "")?;
+    let inferred: backup::StorageConfig = serde_json::from_str(&oss.setting("storage_config")?)?;
+    ensure!(
+        inferred.provider == "oss" && inferred.region == "cn-beijing",
+        "Aliyun endpoint with s3 provider was not inferred as OSS"
+    );
+    results.push(json!({"workflow":"阿里云 OSS 配置：auto/oss- 前缀、Bucket Endpoint 与 s3/oss 自动归一","passed":true}));
     let zip = lib.root.join("without-secrets.zip");
     backup::export_local(&lib, &zip)?;
     let mut archive = zip::ZipArchive::new(fs::File::open(zip)?)?;

@@ -22,7 +22,10 @@ mod manifest;
 mod restore;
 pub mod sync;
 
-pub use crate::object_storage::{Storage, StorageConfig, UploadProgress, UploadStage};
+pub use crate::object_storage::{
+    Storage, StorageConfig, StorageProfile, UploadProgress, UploadStage, list_profiles, profiles,
+    select_profile,
+};
 pub use archive::{export_local, export_local_cancellable, import_local, import_local_cancellable};
 pub use cloud::{BackupVersion, CleanupPlan, CleanupResult, Retention};
 pub use manifest::{

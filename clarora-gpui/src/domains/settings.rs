@@ -9,6 +9,8 @@ pub(super) enum Command {
     CredentialMode(bool),
     ImportLegacyCredentials,
     SaveStorage,
+    SaveStorageProfile,
+    SelectStorageProfile(String),
     Models(String),
     SelectModel(String),
     Theme,
@@ -22,6 +24,8 @@ impl Command {
                     | Command::SaveAiProfile
                     | Command::SelectAiProfile(_)
                     | Command::SaveStorage
+                    | Command::SaveStorageProfile
+                    | Command::SelectStorageProfile(_)
             ),
             ..Effects::default()
         }
@@ -220,6 +224,66 @@ impl Command {
                         }
                     )))
                 });
+            }
+
+            Command::SaveStorageProfile => {
+                ensure!(
+                    !app.tasks.foreground.is_running(),
+                    "请先完成当前任务再保存存储配置"
+                );
+                let name = app.value("storage_profile_name", cx);
+                let config = backup::StorageConfig {
+                    provider: app.value("provider", cx),
+                    endpoint: app.value("endpoint", cx),
+                    region: app.value("region", cx),
+                    bucket: app.value("bucket", cx),
+                    access_key_id: app.value("access_key", cx),
+                    prefix: app.value("prefix", cx),
+                    path_style: app.value("path_style", cx) == "true",
+                    credential_id: String::new(),
+                };
+                let key = app.value("secret_key", cx);
+                let token = app.value("session_token", cx);
+                app.cloud.plan = None;
+                app.cloud.versions.clear();
+                app.cloud.status.clear();
+                app.begin("正在保存并切换存储配置…", move |lib, _, _| {
+                    let profile = backup::Storage::save_profile(&lib, &name, config, &key, &token)?;
+                    let location = if credentials::secure_mode(&lib)? {
+                        "系统凭证库"
+                    } else {
+                        "本机 SQLite"
+                    };
+                    Ok(Outcome::Message(format!(
+                        "已保存并切换到“{}”，密钥保存在{location}",
+                        profile.name
+                    )))
+                });
+            }
+
+            Command::SelectStorageProfile(id) => {
+                ensure!(
+                    !app.tasks.foreground.is_running(),
+                    "请先完成当前任务再切换存储配置"
+                );
+                let (profiles, _) = backup::profiles(&app.lib)?;
+                let profile = profiles
+                    .into_iter()
+                    .find(|profile| profile.id == id)
+                    .context("存储配置不存在，请刷新后重试")?;
+                backup::select_profile(&app.lib, &id)?;
+                app.apply_storage_config(&profile.config, Some(&profile.name), window, cx);
+                app.data.active_storage_profile = profile.id.clone();
+                app.cloud.plan = None;
+                app.cloud.versions.clear();
+                app.cloud.status.clear();
+                app.report_status(
+                    FeedbackKind::Info,
+                    format!(
+                        "已切换存储配置为“{}”；新同步、备份与恢复会使用这份配置",
+                        profile.name
+                    ),
+                );
             }
 
             Command::SelectModel(model) => {

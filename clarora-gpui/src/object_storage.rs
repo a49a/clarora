@@ -128,6 +128,9 @@ fn storage_error_message(status: reqwest::StatusCode, code: Option<&str>) -> Str
             "对象受桶的对象锁定规则保护，暂时无法修改。请检查该桶的保留规则。"
         }
         Some("NoSuchBucket") => "找不到 Bucket。请核对桶名，以及 Endpoint 是否属于该桶所在账户。",
+        Some("InvalidArgument") => {
+            "请求参数被存储服务拒绝。阿里云 OSS 请在「存储类型」选择 oss，Region 填 cn-hangzhou（不要填 auto 或 oss-cn-hangzhou），Endpoint 填 https://oss-cn-hangzhou.aliyuncs.com，Bucket 单独填写。"
+        }
         Some("SlowDown" | "Throttling") => "请求过于频繁，请稍后重试。",
         _ if status == reqwest::StatusCode::FORBIDDEN => {
             "服务端拒绝了请求，暂不能确定是密钥或权限问题。请保留此错误码继续排查具体原因。"
@@ -140,7 +143,7 @@ fn storage_error_message(status: reqwest::StatusCode, code: Option<&str>) -> Str
         code.map(|value| format!("（{value}）")).unwrap_or_default()
     )
 }
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StorageConfig {
     pub provider: String,
@@ -151,6 +154,160 @@ pub struct StorageConfig {
     pub prefix: String,
     pub path_style: bool,
     pub credential_id: String,
+}
+
+impl StorageConfig {
+    /// Aliyun OSS V4 requires the region ID (for example `cn-hangzhou`) in the
+    /// credential scope. R2's `auto` and endpoint-shaped values are invalid.
+    /// Derive the region from a standard Aliyun endpoint when possible.
+    pub fn normalized(mut self) -> Self {
+        if let Some(region) = aliyun_region(&self.endpoint, &self.bucket) {
+            if self.provider == "s3" || self.provider.is_empty() {
+                self.provider = "oss".into();
+            }
+            if self.provider == "oss"
+                && (self.region.trim().is_empty()
+                    || self.region.eq_ignore_ascii_case("auto")
+                    || self.region.starts_with("oss-"))
+            {
+                self.region = region;
+            }
+        }
+        if self.provider == "oss" {
+            if let Some(region) = self.region.strip_prefix("oss-") {
+                self.region = region.trim_end_matches("-internal").to_string();
+            }
+            // Users often paste the bucket endpoint. Avoid bucket.bucket.host.
+            let host = self
+                .endpoint
+                .trim_start_matches("https://")
+                .trim_end_matches('/');
+            if let Some(rest) = host.strip_prefix(&format!("{}.", self.bucket))
+                && rest.starts_with("oss-")
+            {
+                self.endpoint = format!("https://{rest}");
+            }
+        }
+        self
+    }
+}
+
+fn aliyun_region(endpoint: &str, bucket: &str) -> Option<String> {
+    let host = endpoint
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
+    let host = host.strip_prefix(&format!("{bucket}.")).unwrap_or(host);
+    let rest = host.strip_prefix("oss-")?;
+    let region = rest
+        .strip_suffix(".aliyuncs.com")
+        .or_else(|| rest.strip_suffix(".aliyuncs.com.cn"))?;
+    Some(region.trim_end_matches("-internal").to_string())
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct StorageProfile {
+    pub id: String,
+    pub name: String,
+    pub config: StorageConfig,
+}
+
+const PROFILES_KEY: &str = "storage_profiles";
+const ACTIVE_PROFILE_KEY: &str = "storage_active_profile";
+const DEFAULT_PROFILE_NAME: &str = "当前存储";
+const MAX_PROFILE_NAME_CHARS: usize = 60;
+
+fn validate_profile_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    ensure!(!name.is_empty(), "请输入存储配置名称");
+    ensure!(
+        name.chars().count() <= MAX_PROFILE_NAME_CHARS,
+        "配置名称最多 {MAX_PROFILE_NAME_CHARS} 个字符"
+    );
+    ensure!(
+        !name.chars().any(char::is_control),
+        "配置名称不能包含控制字符"
+    );
+    Ok(name)
+}
+
+fn default_profile(config: &StorageConfig) -> Option<StorageProfile> {
+    let has_config = !config.endpoint.trim().is_empty()
+        || !config.bucket.trim().is_empty()
+        || !config.access_key_id.trim().is_empty()
+        || !config.credential_id.trim().is_empty();
+    has_config.then(|| StorageProfile {
+        id: if config.credential_id.is_empty() {
+            "default".into()
+        } else {
+            config.credential_id.clone()
+        },
+        name: DEFAULT_PROFILE_NAME.into(),
+        config: config.clone(),
+    })
+}
+
+/// Saved storage profiles plus the active profile ID. A single legacy config
+/// appears as a synthetic profile so existing libraries keep working.
+pub fn profiles(lib: &Library) -> Result<(Vec<StorageProfile>, String)> {
+    let raw = lib.setting(PROFILES_KEY)?;
+    let mut profiles: Vec<StorageProfile> = if raw.trim().is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&raw).context("已保存的存储配置格式无效")?
+    };
+    for profile in &mut profiles {
+        profile.config = profile.config.clone().normalized();
+    }
+    if profiles.is_empty() {
+        let config: StorageConfig =
+            serde_json::from_str(&lib.setting("storage_config")?).unwrap_or_default();
+        let config = config.normalized();
+        if let Some(profile) = default_profile(&config) {
+            profiles.push(profile);
+        }
+    }
+    let stored = lib.setting(ACTIVE_PROFILE_KEY)?;
+    let active = if profiles.iter().any(|profile| profile.id == stored) {
+        stored
+    } else {
+        profiles
+            .first()
+            .map(|profile| profile.id.clone())
+            .unwrap_or_default()
+    };
+    Ok((profiles, active))
+}
+
+pub fn list_profiles(lib: &Library) -> Result<Vec<StorageProfile>> {
+    Ok(profiles(lib)?.0)
+}
+
+/// Switch the active storage profile. The secret stays under its credential ID.
+pub fn select_profile(lib: &Library, profile_id: &str) -> Result<StorageConfig> {
+    let (profiles, _) = profiles(lib)?;
+    let profile = profiles
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .context("存储配置不存在，请刷新后重试")?;
+    lib.set_setting("storage_config", &serde_json::to_string(&profile.config)?)?;
+    lib.set_setting(ACTIVE_PROFILE_KEY, &profile.id)?;
+    Ok(profile.config)
+}
+
+/// Keep the active profile in sync after editing the shared storage form.
+pub fn sync_active_profile(lib: &Library) -> Result<()> {
+    let (mut profiles, active) = profiles(lib)?;
+    let Some(profile) = profiles.iter_mut().find(|profile| profile.id == active) else {
+        return Ok(());
+    };
+    let config = serde_json::from_str::<StorageConfig>(&lib.setting("storage_config")?)
+        .context("已保存的存储配置格式无效")?
+        .normalized();
+    if profile.config == config {
+        return Ok(());
+    }
+    profile.config = config;
+    lib.set_setting(PROFILES_KEY, &serde_json::to_string(&profiles)?)
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -396,6 +553,7 @@ impl Storage {
                 "云备份设置无法读取。请在「设置 → 同步与备份」重新填写，并点击「保存存储配置」。"
             )
         })?;
+        let c = c.normalized();
         ensure!(
             [
                 &c.provider,
@@ -418,9 +576,24 @@ impl Storage {
             fixture_endpoint: None,
         };
         s.validate()?;
+        if let Ok(normalized) = serde_json::to_string(&s.config)
+            && normalized != raw
+        {
+            // Best-effort migration for legacy R2-style region values. Only
+            // after the normalized configuration is known to be usable.
+            let _ = lib.set_setting("storage_config", &normalized);
+            let _ = sync_active_profile(lib);
+        }
         Ok(s)
     }
-    pub fn save(lib: &Library, mut c: StorageConfig, secret: &str, token: &str) -> Result<()> {
+    /// Persist a config with an existing or fresh credential ID.
+    fn persist(
+        lib: &Library,
+        mut c: StorageConfig,
+        secret: &str,
+        token: &str,
+    ) -> Result<StorageConfig> {
+        c = c.normalized();
         let tmp = Self {
             config: c.clone(),
             secret: secret.into(),
@@ -428,7 +601,9 @@ impl Storage {
             fixture_endpoint: None,
         };
         tmp.validate()?;
-        c.credential_id = id();
+        if c.credential_id.is_empty() {
+            c.credential_id = id();
+        }
         crate::credentials::store_config(
             lib,
             "storage_config",
@@ -437,7 +612,83 @@ impl Storage {
                 (format!("storage-{}", c.credential_id), secret.into()),
                 (format!("token-{}", c.credential_id), token.into()),
             ],
-        )
+        )?;
+        Ok(c)
+    }
+
+    fn active_credentials(lib: &Library, credential_id: &str) -> Result<(String, String)> {
+        ensure!(!credential_id.is_empty(), "请填写 Secret Access Key");
+        Ok((
+            crate::credentials::get(lib, &format!("storage-{credential_id}"))?,
+            crate::credentials::get_optional(lib, &format!("token-{credential_id}"))?,
+        ))
+    }
+
+    /// Update the active profile. A blank secret keeps the stored credential so
+    /// editing an endpoint or bucket does not require retyping the key.
+    pub fn save(lib: &Library, mut c: StorageConfig, secret: &str, token: &str) -> Result<()> {
+        let (secret, token) = if secret.trim().is_empty() {
+            if c.credential_id.is_empty() {
+                let current: StorageConfig =
+                    serde_json::from_str(&lib.setting("storage_config")?).unwrap_or_default();
+                c.credential_id = current.credential_id;
+            }
+            let (secret, stored_token) = Self::active_credentials(lib, &c.credential_id)?;
+            let token = if token.trim().is_empty() {
+                stored_token
+            } else {
+                token.to_owned()
+            };
+            (secret, token)
+        } else {
+            // Rotate the credential ID so a failed keychain write cannot delete
+            // the old working secret before the new config is committed.
+            c.credential_id.clear();
+            (secret.to_owned(), token.to_owned())
+        };
+        Self::persist(lib, c, &secret, &token)?;
+        sync_active_profile(lib)
+    }
+
+    /// Save the form as a new named profile and make it active. A blank secret
+    /// copies the active credential so duplicating a working setup stays simple.
+    pub fn save_profile(
+        lib: &Library,
+        name: &str,
+        mut c: StorageConfig,
+        secret: &str,
+        token: &str,
+    ) -> Result<StorageProfile> {
+        let name = validate_profile_name(name)?;
+        let (profiles, _) = profiles(lib)?;
+        ensure!(
+            !profiles
+                .iter()
+                .any(|profile| profile.name.eq_ignore_ascii_case(name)),
+            "已有同名存储配置，请换一个名称"
+        );
+        let (secret, token) = if secret.trim().is_empty() {
+            if c.credential_id.is_empty() {
+                let current: StorageConfig =
+                    serde_json::from_str(&lib.setting("storage_config")?).unwrap_or_default();
+                c.credential_id = current.credential_id;
+            }
+            Self::active_credentials(lib, &c.credential_id)?
+        } else {
+            (secret.to_owned(), token.to_owned())
+        };
+        c.credential_id.clear();
+        let config = Self::persist(lib, c, &secret, &token)?;
+        let profile = StorageProfile {
+            id: id(),
+            name: name.to_owned(),
+            config,
+        };
+        let mut saved = profiles;
+        saved.push(profile.clone());
+        lib.set_setting(PROFILES_KEY, &serde_json::to_string(&saved)?)?;
+        lib.set_setting(ACTIVE_PROFILE_KEY, &profile.id)?;
+        Ok(profile)
     }
     /// Local protocol fixture only: numeric loopback address and fixed fake credentials.
     /// Saved application configurations still require HTTPS and never use this transport.
@@ -477,6 +728,10 @@ impl Storage {
             regex::Regex::new(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")?.is_match(&c.bucket)
                 && regex::Regex::new(r"^[a-z0-9-]+$")?.is_match(&c.region),
             "Bucket 或 Region 无效"
+        );
+        ensure!(
+            c.provider != "oss" || c.region != "auto",
+            "阿里云 OSS 的 Region 需要填写地域 ID，例如 cn-hangzhou，不能使用 auto；Endpoint 示例 https://oss-cn-hangzhou.aliyuncs.com，Bucket 单独填写"
         );
         ensure!(
             !c.prefix.is_empty()
@@ -640,6 +895,15 @@ impl Storage {
         let mut request = client.request(method.parse()?, url);
         for (k, v) in headers {
             request = request.header(k, v);
+        }
+        if oss {
+            // Aliyun's SDK sends an unsigned HTTP Date alongside x-oss-date.
+            request = request.header(
+                "date",
+                chrono::Utc::now()
+                    .format("%a, %d %b %Y %H:%M:%S GMT")
+                    .to_string(),
+            );
         }
         if let Some(body) = body {
             request = match body {

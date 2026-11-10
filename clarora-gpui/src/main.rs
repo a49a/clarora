@@ -336,6 +336,7 @@ impl AppView {
             ("chat_key", "共用 API Key", false, true),
             ("ai_provider", "custom / opencode_go", false, false),
             ("ai_profile_name", "例如：DeepSeek、公司代理", false, false),
+            ("storage_profile_name", "例如：主存储、备用桶", false, false),
             ("local_model", "base.en", false, false),
             ("engine", "local / compatible", false, false),
             ("provider", "s3 / oss", false, false),
@@ -690,17 +691,12 @@ impl AppView {
         if let Ok(c) = serde_json::from_str::<backup::StorageConfig>(
             &this.lib.setting("storage_config").unwrap_or_default(),
         ) {
-            for (k, v) in [
-                ("provider", c.provider),
-                ("endpoint", c.endpoint),
-                ("region", c.region),
-                ("bucket", c.bucket),
-                ("access_key", c.access_key_id),
-                ("prefix", c.prefix),
-                ("path_style", c.path_style.to_string()),
-            ] {
-                this.set(k, v, window, cx);
-            }
+            this.apply_storage_config(&c.normalized(), None, window, cx);
+        }
+        if let Ok((profiles, active)) = backup::profiles(&this.lib)
+            && let Some(profile) = profiles.iter().find(|profile| profile.id == active)
+        {
+            this.set("storage_profile_name", profile.name.clone(), window, cx);
         }
         for (k, default) in [
             ("provider", "s3"),
@@ -877,6 +873,38 @@ impl AppView {
             ("engine", config.engine),
         ] {
             self.set(k, v, window, cx);
+        }
+    }
+    /// Populate the storage form without ever reading a secret into an input.
+    fn apply_storage_config(
+        &self,
+        config: &backup::StorageConfig,
+        profile_name: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for (k, v) in [
+            (
+                "provider",
+                if config.provider.is_empty() {
+                    "s3".to_string()
+                } else {
+                    config.provider.clone()
+                },
+            ),
+            ("endpoint", config.endpoint.clone()),
+            ("region", config.region.clone()),
+            ("bucket", config.bucket.clone()),
+            ("access_key", config.access_key_id.clone()),
+            ("prefix", config.prefix.clone()),
+            ("path_style", config.path_style.to_string()),
+            ("secret_key", String::new()),
+            ("session_token", String::new()),
+        ] {
+            self.set(k, v, window, cx);
+        }
+        if let Some(name) = profile_name {
+            self.set("storage_profile_name", name.to_string(), window, cx);
         }
     }
     fn focus_phase_completed(&mut self, event: focus_timer::Event) {
