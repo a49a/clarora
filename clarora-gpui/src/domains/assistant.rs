@@ -35,6 +35,12 @@ impl Command {
                     window.focus(&app.focus);
                     app.lib.set_setting("assistant_open", "false")?;
                 } else {
+                    if let Err(error) = app.attach_current_background(cx) {
+                        app.report_status(
+                            FeedbackKind::Info,
+                            format!("未自动加入当前全文背景：{error:#}"),
+                        );
+                    }
                     app.open_assistant(window, cx);
                     app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
                 }

@@ -1,4 +1,6 @@
-//! Explicit, immutable references for the app-wide assistant. No implicit page upload.
+//! Explicit, immutable references for the app-wide assistant. Opening the
+//! assistant may attach the current material locally, but nothing is uploaded
+//! until the user sends a question.
 use crate::{ai_chat, data::Library, process::Cancel};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -74,6 +76,26 @@ pub fn plain_reference(text: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+/// Replace the single transcript/background reference with the current
+/// material. Selected or manually added references are preserved.
+pub fn with_transcript_background(
+    mut references: Vec<Reference>,
+    text: String,
+) -> Result<Vec<Reference>> {
+    ensure!(!text.trim().is_empty(), "当前没有可引用的全文");
+    let reference = Reference {
+        text,
+        kind: ReferenceKind::TranscriptBackground,
+    };
+    if references.contains(&reference) {
+        return Ok(references);
+    }
+    references.retain(|r| r.kind != ReferenceKind::TranscriptBackground);
+    references.push(reference);
+    validate(&references)?;
+    Ok(references)
+}
+
 pub fn validate(references: &[Reference]) -> Result<()> {
     ensure!(
         references.len() <= 4,

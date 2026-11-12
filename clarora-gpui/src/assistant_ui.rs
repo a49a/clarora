@@ -97,6 +97,66 @@ impl AppView {
         }
         self.sync_chat(window, cx);
     }
+    /// Attach the current material as the single full-text background. It is
+    /// local-only until the user sends; blind modes keep their hidden text out.
+    pub(super) fn attach_current_background(&mut self, cx: &App) -> Result<()> {
+        let text = self.current_material_text(cx);
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+        let next = assistant::with_transcript_background(self.assistant.references.clone(), text)?;
+        if next != self.assistant.references {
+            self.lib
+                .set_setting("assistant_reference_draft", &serde_json::to_string(&next)?)?;
+            self.assistant.references = next;
+            self.assistant.expanded = true;
+            self.assistant.error.clear();
+        }
+        Ok(())
+    }
+
+    fn current_material_text(&self, cx: &App) -> String {
+        match self.page.as_str() {
+            "listening" if !self.audio.blind.enabled => self
+                .audio
+                .cues
+                .iter()
+                .map(|cue| cue.text.as_str())
+                .collect::<Vec<_>>()
+                .join(
+                    "
+",
+                ),
+            "video" if !self.video_repeat_blind() && !self.video.cues.is_empty() => self
+                .video
+                .cues
+                .iter()
+                .map(|cue| cue.text.as_str())
+                .collect::<Vec<_>>()
+                .join(
+                    "
+",
+                ),
+            "speaking" => {
+                let question = self.value("reference", cx);
+                let draft = self.value("speaking_answer_draft", cx);
+                if question.trim().is_empty() && draft.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "题目：
+{question}
+
+我的作答：
+{draft}"
+                    )
+                }
+            }
+            "listening" | "video" => String::new(),
+            _ => self.reference(cx),
+        }
+    }
+
     pub(super) fn add_assistant_reference(
         &mut self,
         reference: Reference,

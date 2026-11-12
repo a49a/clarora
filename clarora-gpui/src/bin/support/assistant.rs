@@ -2,7 +2,7 @@
 use anyhow::{Result, ensure};
 use clarora_gpui::{
     ai,
-    assistant::{self, Reference},
+    assistant::{self, Reference, ReferenceKind},
     chat_store,
     data::Library,
     process,
@@ -84,7 +84,7 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         restored.text == first.text,
         "旧草稿没有去掉自动标题／时间标记"
     );
-    let new_turn = assistant::user_turn("fresh 在这里是什么意思？", &[first.clone()]);
+    let new_turn = assistant::user_turn("fresh 在这里是什么意思？", std::slice::from_ref(&first));
     ensure!(
         new_turn["references"][0].get("label").is_none(),
         "新消息仍保存来源名称"
@@ -114,13 +114,13 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
     let second = assistant::ask(
         &lib,
         "与这句比较一下",
-        &[picture.clone()],
+        std::slice::from_ref(&picture),
         &history,
         &cancel,
         |_| {},
     )?;
     history.extend([
-        assistant::user_turn("与这句比较一下", &[picture.clone()]),
+        assistant::user_turn("与这句比较一下", std::slice::from_ref(&picture)),
         json!({"role":"assistant","content":second.answer}),
     ]);
     chat_store::save(
@@ -217,6 +217,35 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         assistant::validate(&vec![picture; 5]).is_err(),
         "过多引用未拒绝"
     );
+    let selected = Reference {
+        text: "selected sentence".into(),
+        kind: ReferenceKind::SelectedSubtitle,
+    };
+    let old_background = Reference {
+        text: "old background".into(),
+        kind: ReferenceKind::TranscriptBackground,
+    };
+    let current = assistant::with_transcript_background(
+        vec![selected.clone(), old_background],
+        "new full material".into(),
+    )?;
+    ensure!(
+        current.len() == 2
+            && current[0] == selected
+            && current[1].text == "new full material"
+            && current[1].kind == ReferenceKind::TranscriptBackground,
+        "current material did not replace only the transcript background"
+    );
+    ensure!(
+        assistant::with_transcript_background(current.clone(), "new full material".into())?
+            == current,
+        "reopening appended the same full background twice"
+    );
+    ensure!(
+        assistant::with_transcript_background(current, "x".repeat(120_001)).is_err(),
+        "oversized current material was accepted"
+    );
+    results.push(json!({"workflow":"打开助手自动替换当前全文背景且保留选区引用","passed":true}));
     std::fs::write(
         lib.root.join("request-evidence.json"),
         serde_json::to_vec_pretty(&requests)?,
