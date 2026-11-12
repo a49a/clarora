@@ -190,14 +190,72 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
         "switching back to the first profile lost its config or secret"
     );
     ensure!(
-        backup::Storage::save_profile(&lib, " 备用桶 ", second, "x", "").is_err(),
+        backup::Storage::save_profile(&lib, " 备用桶 ", second.clone(), "x", "").is_err(),
         "duplicate storage profile name was accepted"
+    );
+    let renamed = backup::Storage::rename_profile(&lib, &second_profile.id, "备用桶二")?;
+    ensure!(
+        renamed.name == "备用桶二"
+            && backup::list_profiles(&lib)?
+                .iter()
+                .any(|profile| profile.id == second_profile.id && profile.name == "备用桶二"),
+        "storage profile rename was not persisted"
+    );
+    ensure!(
+        backup::Storage::rename_profile(&lib, &second_profile.id, "当前存储").is_err(),
+        "duplicate storage profile rename was accepted"
+    );
+    backup::Storage::delete_profile(&lib, &first.id)?;
+    ensure!(
+        backup::list_profiles(&lib)?.len() == 1
+            && credentials::get(&lib, &format!("storage-{first_key}")).is_err(),
+        "deleting an inactive profile did not remove its unshared credential"
+    );
+    let mut third = second.clone();
+    third.endpoint = "https://storage-c.example.invalid".into();
+    third.bucket = "third-bucket".into();
+    third.prefix = "clarora-c".into();
+    let third_profile = backup::Storage::save_profile(&lib, "第三配置", third, "third-key", "")?;
+    backup::Storage::delete_profile(&lib, &third_profile.id)?;
+    ensure!(
+        backup::list_profiles(&lib)?.len() == 1
+            && backup::profiles(&lib)?.1 == second_profile.id
+            && serde_json::from_str::<backup::StorageConfig>(&lib.setting("storage_config")?)?
+                .endpoint
+                == second.endpoint,
+        "deleting the active profile did not fall back to the remaining profile"
+    );
+    ensure!(
+        backup::Storage::delete_profile(&lib, &second_profile.id).is_err(),
+        "the last storage profile was deleted"
     );
     backup::select_profile(&lib, &second_profile.id)?;
     backup::Storage::load(&lib)?;
     ensure!(
-        backup::list_profiles(&lib)?.len() == 2,
+        backup::list_profiles(&lib)?.len() == 1,
         "selecting profiles changed the saved list"
+    );
+
+    let rotate = Library::open(lib.root.join("rotate-credentials"))?;
+    let mut rotate_config = first.config.clone();
+    rotate_config.endpoint = "https://rotate.example.invalid".into();
+    rotate_config.bucket = "rotate-bucket".into();
+    backup::Storage::save(&rotate, rotate_config.clone(), "rotate-old", "")?;
+    let old_rotation_key =
+        serde_json::from_str::<backup::StorageConfig>(&rotate.setting("storage_config")?)?
+            .credential_id;
+    let mut rotate_config: backup::StorageConfig =
+        serde_json::from_str(&rotate.setting("storage_config")?)?;
+    rotate_config.prefix = "clarora-rotated".into();
+    backup::Storage::save(&rotate, rotate_config, "rotate-new", "")?;
+    let new_rotation_key =
+        serde_json::from_str::<backup::StorageConfig>(&rotate.setting("storage_config")?)?
+            .credential_id;
+    ensure!(
+        new_rotation_key != old_rotation_key
+            && credentials::get(&rotate, &format!("storage-{old_rotation_key}")).is_err()
+            && credentials::get(&rotate, &format!("storage-{new_rotation_key}"))? == "rotate-new",
+        "rotating a storage secret left the previous credential behind"
     );
 
     let oss = Library::open(lib.root.join("oss-normalize"))?;

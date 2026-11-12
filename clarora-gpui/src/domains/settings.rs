@@ -10,6 +10,8 @@ pub(super) enum Command {
     ImportLegacyCredentials,
     SaveStorage,
     SaveStorageProfile,
+    RenameStorageProfile,
+    DeleteStorageProfile(String),
     SelectStorageProfile(String),
     Models(String),
     SelectModel(String),
@@ -25,6 +27,8 @@ impl Command {
                     | Command::SelectAiProfile(_)
                     | Command::SaveStorage
                     | Command::SaveStorageProfile
+                    | Command::RenameStorageProfile
+                    | Command::DeleteStorageProfile(_)
                     | Command::SelectStorageProfile(_)
             ),
             ..Effects::default()
@@ -284,6 +288,81 @@ impl Command {
                         profile.name
                     ),
                 );
+            }
+
+            Command::RenameStorageProfile => {
+                ensure!(
+                    !app.tasks.foreground.is_running(),
+                    "请先完成当前任务再重命名存储配置"
+                );
+                let id = app.data.active_storage_profile.clone();
+                ensure!(!id.is_empty(), "请先选择一个存储配置");
+                let name = app.value("storage_profile_name", cx);
+                let profile = backup::Storage::rename_profile(&app.lib, &id, &name)?;
+                app.report_status(
+                    FeedbackKind::Info,
+                    format!("存储配置已重命名为“{}”", profile.name),
+                );
+            }
+
+            Command::DeleteStorageProfile(id) => {
+                ensure!(
+                    !app.tasks.foreground.is_running(),
+                    "请先完成当前任务再删除存储配置"
+                );
+                let profile = app
+                    .data
+                    .storage_profiles
+                    .iter()
+                    .find(|profile| profile.id == id)
+                    .cloned()
+                    .context("存储配置不存在，请刷新后重试")?;
+                let view = cx.entity().downgrade();
+                window.open_dialog(cx, move |dialog, window, cx| {
+                    let view = view.clone();
+                    let id = id.clone();
+                    dialog
+                        .title("删除这个存储配置？")
+                        .confirm()
+                        .w((window.viewport_size().width - px(32.)).min(px(480.)))
+                        .button_props(
+                            DialogButtonProps::default()
+                                .cancel_text("取消")
+                                .ok_text("确认删除")
+                                .ok_variant(ButtonVariant::Danger),
+                        )
+                        .child(div().text_sm().child(format!("配置：{}", profile.name)))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                    "只会删除本机配置和未共享的密钥；云端的备份文件不会被删除。",
+                                ),
+                        )
+                        .on_ok(move |_, _, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                match backup::Storage::delete_profile(&this.lib, &id) {
+                                    Ok(()) => {
+                                        this.cloud.plan = None;
+                                        this.cloud.versions.clear();
+                                        this.cloud.status.clear();
+                                        this.refresh_view_data();
+                                        this.report_status(
+                                            FeedbackKind::Info,
+                                            "已删除存储配置并切换到剩余配置".into(),
+                                        );
+                                    }
+                                    Err(error) => this.report_status(
+                                        FeedbackKind::Error,
+                                        format!("删除存储配置失败：{error:#}"),
+                                    ),
+                                }
+                                cx.notify();
+                            });
+                            true
+                        })
+                });
             }
 
             Command::SelectModel(model) => {

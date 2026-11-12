@@ -214,15 +214,16 @@ impl AppView {
                 .child(div().text_sm().text_color(cx.theme().muted_foreground)
                     .child("云备份中的 bilibili 原视频仅保存来源链接，恢复后按需下载；字幕、学习记录和本地视频文件继续备份。本机 ZIP 保留可用视频原文件。"))
                 .when(!self.data.storage_profiles.is_empty(), |panel| {
-                    let active = self
+                    let active_profile = self
                         .data
                         .storage_profiles
                         .iter()
-                        .find(|profile| profile.id == self.data.active_storage_profile)
+                        .find(|profile| profile.id == self.data.active_storage_profile);
+                    let active = active_profile
                         .map(|profile| profile.name.as_str())
                         .unwrap_or("未选择");
                     let busy = self.tasks.foreground.is_running();
-                    let options = self
+                    let mut options: Vec<_> = self
                         .data
                         .storage_profiles
                         .iter()
@@ -235,6 +236,14 @@ impl AppView {
                             )
                         })
                         .collect();
+                    if let Some(profile) = active_profile {
+                        options.push((
+                            format!("删除“{}”…", profile.name),
+                            Action::DeleteStorageProfile(profile.id.clone()),
+                            false,
+                            busy,
+                        ));
+                    }
                     panel.child(self.surface_menu(
                         "storage-profile",
                         format!("当前存储：{active} ▾"),
@@ -242,7 +251,7 @@ impl AppView {
                         cx,
                     ))
                 })
-                .child(self.field("storage_profile_name", "配置名称（另存为新配置时使用）"))
+                .child(self.field("storage_profile_name", "配置名称（重命名或另存为时使用）"))
                 .child(self.field("provider", "存储类型 s3 / oss"))
                 .child(self.field("endpoint", "Endpoint"))
                 .child(self.field("region", "Region"))
@@ -255,7 +264,7 @@ impl AppView {
                 .child(div().text_xs().text_color(cx.theme().muted_foreground)
                     .child("阿里云 OSS：存储类型选 oss，Endpoint 填 https://oss-cn-hangzhou.aliyuncs.com，Region 填 cn-hangzhou（不是 auto 或 oss-cn-hangzhou），Bucket 单独填写。"))
                 .child(div().text_xs().text_color(cx.theme().muted_foreground)
-                    .child("「保存当前配置」更新正在使用的存储，密钥留空则沿用已保存的密钥；「另存为新配置」会再存一份并立即切换。"))
+                    .child("「保存当前配置」更新正在使用的存储，密钥留空则沿用已保存的密钥；「另存为新配置」会再存一份并立即切换；「重命名当前配置」使用上方配置名称。"))
                 .child(
                     div()
                         .flex()
@@ -275,6 +284,19 @@ impl AppView {
                             )
                             .outline()
                             .disabled(self.tasks.foreground.is_running()),
+                        )
+                        .child(
+                            self.button(
+                                "rename-storage-profile",
+                                "重命名当前配置",
+                                Action::RenameStorageProfile,
+                                cx,
+                            )
+                            .outline()
+                            .disabled(
+                                self.tasks.foreground.is_running()
+                                    || self.data.active_storage_profile.is_empty(),
+                            ),
                         ),
                 )
                 .child(

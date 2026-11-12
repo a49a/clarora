@@ -13,6 +13,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub type ObjectHead = (u64, Option<String>, Option<String>);
+
 pub(crate) fn check_cancel(cancel: &Cancel) -> Result<()> {
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
     Ok(())
@@ -538,6 +540,27 @@ fn encode(value: &str) -> String {
 fn encode_path(value: &str) -> String {
     value.split('/').map(encode).collect::<Vec<_>>().join("/")
 }
+/// Best-effort cleanup after a profile is deleted or its key is rotated.
+fn remove_credentials_if_unused(lib: &Library, credential_id: &str) {
+    if credential_id.is_empty() {
+        return;
+    }
+    let Ok((profiles, _)) = profiles(lib) else {
+        return;
+    };
+    if profiles
+        .iter()
+        .any(|profile| profile.config.credential_id == credential_id)
+    {
+        return;
+    }
+    for name in [
+        format!("storage-{credential_id}"),
+        format!("token-{credential_id}"),
+    ] {
+        let _ = crate::credentials::delete(lib, &name);
+    }
+}
 impl Storage {
     pub fn incremental_supported(&self) -> bool {
         self.config.provider == "s3"
@@ -627,6 +650,8 @@ impl Storage {
     /// Update the active profile. A blank secret keeps the stored credential so
     /// editing an endpoint or bucket does not require retyping the key.
     pub fn save(lib: &Library, mut c: StorageConfig, secret: &str, token: &str) -> Result<()> {
+        let rotating = !secret.trim().is_empty();
+        let previous = c.credential_id.clone();
         let (secret, token) = if secret.trim().is_empty() {
             if c.credential_id.is_empty() {
                 let current: StorageConfig =
@@ -647,7 +672,11 @@ impl Storage {
             (secret.to_owned(), token.to_owned())
         };
         Self::persist(lib, c, &secret, &token)?;
-        sync_active_profile(lib)
+        sync_active_profile(lib)?;
+        if rotating && !previous.is_empty() {
+            remove_credentials_if_unused(lib, &previous);
+        }
+        Ok(())
     }
 
     /// Save the form as a new named profile and make it active. A blank secret
@@ -689,6 +718,47 @@ impl Storage {
         lib.set_setting(PROFILES_KEY, &serde_json::to_string(&saved)?)?;
         lib.set_setting(ACTIVE_PROFILE_KEY, &profile.id)?;
         Ok(profile)
+    }
+
+    /// Rename one saved profile without changing which profile is active.
+    pub fn rename_profile(lib: &Library, profile_id: &str, name: &str) -> Result<StorageProfile> {
+        let name = validate_profile_name(name)?;
+        let (mut profiles, _) = profiles(lib)?;
+        ensure!(
+            !profiles
+                .iter()
+                .any(|profile| profile.id != profile_id && profile.name.eq_ignore_ascii_case(name)),
+            "已有同名存储配置，请换一个名称"
+        );
+        let profile = profiles
+            .iter_mut()
+            .find(|profile| profile.id == profile_id)
+            .context("存储配置不存在，请刷新后重试")?;
+        profile.name = name.to_owned();
+        let renamed = profile.clone();
+        lib.set_setting(PROFILES_KEY, &serde_json::to_string(&profiles)?)?;
+        Ok(renamed)
+    }
+
+    /// Delete a saved profile and switch to the first remaining profile when
+    /// the active one disappears. Credentials shared by another profile are
+    /// left in place; unshared storage/token entries are removed.
+    pub fn delete_profile(lib: &Library, profile_id: &str) -> Result<()> {
+        let (mut profiles, active) = profiles(lib)?;
+        ensure!(profiles.len() > 1, "至少保留一个存储配置");
+        let index = profiles
+            .iter()
+            .position(|profile| profile.id == profile_id)
+            .context("存储配置不存在，请刷新后重试")?;
+        let removed = profiles.remove(index);
+        let next = profiles.first().cloned().context("至少保留一个存储配置")?;
+        lib.set_setting(PROFILES_KEY, &serde_json::to_string(&profiles)?)?;
+        if active == removed.id {
+            lib.set_setting(ACTIVE_PROFILE_KEY, &next.id)?;
+            lib.set_setting("storage_config", &serde_json::to_string(&next.config)?)?;
+        }
+        remove_credentials_if_unused(lib, &removed.config.credential_id);
+        Ok(())
     }
     /// Local protocol fixture only: numeric loopback address and fixed fake credentials.
     /// Saved application configurations still require HTTPS and never use this transport.
@@ -769,6 +839,7 @@ impl Storage {
         )
         .await
     }
+    #[allow(clippy::too_many_arguments)] // private HTTP primitive: one call site builds every option
     async fn response_with_headers(
         &self,
         client: &reqwest::Client,
@@ -1139,7 +1210,7 @@ impl<'a> Objects<'a> {
         self.checked(response)?;
         Ok(())
     }
-    pub fn head(&self, key: &str) -> Result<Option<(u64, Option<String>, Option<String>)>> {
+    pub fn head(&self, key: &str) -> Result<Option<ObjectHead>> {
         let response = self.raw("HEAD", key, None, &BTreeMap::new())?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
