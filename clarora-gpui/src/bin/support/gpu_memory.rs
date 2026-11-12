@@ -119,7 +119,7 @@ pub fn worker(output: &Path, unbounded: bool) -> Result<()> {
             let paused = (6. ..8.).contains(&seconds);
             if !hidden && (!paused || self.frame.is_none()) {
                 self.serial += 1;
-                let (w, h) = if (8. ..11.).contains(&seconds) && self.serial % 2 == 0 {
+                let (w, h) = if (8. ..11.).contains(&seconds) && self.serial.is_multiple_of(2) {
                     (1280, 720)
                 } else {
                     (1024, 768)

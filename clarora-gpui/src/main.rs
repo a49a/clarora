@@ -613,10 +613,10 @@ impl AppView {
             this.tasks.title_events = Some(rx);
             std::thread::spawn(move || {
                 for base in sources {
-                    if let Ok(series) = bilibili::fetch(&base, &process::cancel_token()) {
-                        if tx.send((base, series.title)).is_err() {
-                            break;
-                        }
+                    if let Ok(series) = bilibili::fetch(&base, &process::cancel_token())
+                        && tx.send((base, series.title)).is_err()
+                    {
+                        break;
                     }
                 }
             });
@@ -650,10 +650,10 @@ impl AppView {
             })
             .detach();
         }
-        if this.page == "speaking" {
-            if let Err(error) = this.reload_speaking_questions(window, cx) {
-                this.report_status(FeedbackKind::Error, format!("读取口语题库失败：{error:#}"));
-            }
+        if this.page == "speaking"
+            && let Err(error) = this.reload_speaking_questions(window, cx)
+        {
+            this.report_status(FeedbackKind::Error, format!("读取口语题库失败：{error:#}"));
         }
         let owner = cx.entity().downgrade();
         this.writing = Some(cx.new(|cx| {
@@ -826,16 +826,16 @@ impl AppView {
         if this.page == "listening" {
             this.restore_listening();
         }
-        if let Ok(saved) = this.lib.setting("pdf_current") {
-            if let Ok(value) = serde_json::from_str::<Value>(&saved) {
-                let path = PathBuf::from(value["path"].as_str().unwrap_or(""));
-                if path.is_file() {
-                    this.pdf_path = Some(path);
-                    this.pdf_page = value["page"].as_u64().unwrap_or(0).min(u16::MAX as u64) as u16;
-                    this.pdf_width = value["width"].as_i64().unwrap_or(1000) as i32;
-                    if this.page == "pdf" {
-                        this.render_pdf();
-                    }
+        if let Ok(saved) = this.lib.setting("pdf_current")
+            && let Ok(value) = serde_json::from_str::<Value>(&saved)
+        {
+            let path = PathBuf::from(value["path"].as_str().unwrap_or(""));
+            if path.is_file() {
+                this.pdf_path = Some(path);
+                this.pdf_page = value["page"].as_u64().unwrap_or(0).min(u16::MAX as u64) as u16;
+                this.pdf_width = value["width"].as_i64().unwrap_or(1000) as i32;
+                if this.page == "pdf" {
+                    this.render_pdf();
                 }
             }
         }
@@ -944,46 +944,46 @@ impl AppView {
                 &json!({"id":self.audio.current_id,"position":self.audio_saved_position()})
                     .to_string(),
             );
-        } else if self.page == "video" {
-            if let Some(path) = &self.video.path {
-                let playback = self.media.player.snapshot();
-                // A page switch can happen before the UI's next clock poll,
-                // or while the player still reports the previous audio/card.
-                if self.media.session.is_video()
-                    && self.media.session.path.as_ref() == Some(path)
-                    && self.media.matches_snapshot(&playback)
-                    && playback.path == path.to_string_lossy()
-                    && playback.duration > 0.
-                    && playback.position.is_finite()
-                    && playback.position >= 0.
-                {
-                    // A page return rebuilds triple repeat from play one. Save
-                    // the validated sentence start so loadfile's start cannot
-                    // later overwrite its seek with a mid-sentence bookmark.
-                    let position = self
-                        .media
-                        .session
-                        .video_sentence()
-                        .filter(|session| {
-                            let (a, b) = session.range;
-                            session.total.is_some()
-                                && a.is_finite()
-                                && b.is_finite()
-                                && a >= 0.
-                                && a < b
-                                && b <= playback.duration
-                                && self.video.cues.get(session.index).is_some_and(|cue| {
-                                    (cue.start - a).abs() < 0.001
-                                        && (cue.end.min(playback.duration) - b).abs() < 0.001
-                                })
-                        })
-                        .map(|session| session.range.0)
-                        .unwrap_or(playback.position);
-                    let _ = self.lib.set_setting(
-                        "last_video_position",
-                        &json!({"path":path,"position":position}).to_string(),
-                    );
-                }
+        } else if self.page == "video"
+            && let Some(path) = &self.video.path
+        {
+            let playback = self.media.player.snapshot();
+            // A page switch can happen before the UI's next clock poll,
+            // or while the player still reports the previous audio/card.
+            if self.media.session.is_video()
+                && self.media.session.path.as_ref() == Some(path)
+                && self.media.matches_snapshot(&playback)
+                && playback.path == path.to_string_lossy()
+                && playback.duration > 0.
+                && playback.position.is_finite()
+                && playback.position >= 0.
+            {
+                // A page return rebuilds triple repeat from play one. Save
+                // the validated sentence start so loadfile's start cannot
+                // later overwrite its seek with a mid-sentence bookmark.
+                let position = self
+                    .media
+                    .session
+                    .video_sentence()
+                    .filter(|session| {
+                        let (a, b) = session.range;
+                        session.total.is_some()
+                            && a.is_finite()
+                            && b.is_finite()
+                            && a >= 0.
+                            && a < b
+                            && b <= playback.duration
+                            && self.video.cues.get(session.index).is_some_and(|cue| {
+                                (cue.start - a).abs() < 0.001
+                                    && (cue.end.min(playback.duration) - b).abs() < 0.001
+                            })
+                    })
+                    .map(|session| session.range.0)
+                    .unwrap_or(playback.position);
+                let _ = self.lib.set_setting(
+                    "last_video_position",
+                    &json!({"path":path,"position":position}).to_string(),
+                );
             }
         }
     }
@@ -1022,13 +1022,9 @@ impl AppView {
         if self.page == "discover" && !self.cards.is_empty() {
             let due = &self.loads.discover_due;
             let favorites = &self.loads.discover_favorites;
-            if let Some(index) = clarora_gpui::discover::next(
-                &self.cards,
-                &self.history,
-                self.index,
-                &due,
-                &favorites,
-            ) {
+            if let Some(index) =
+                clarora_gpui::discover::next(&self.cards, &self.history, self.index, due, favorites)
+            {
                 let next = &self.cards[index];
                 if !next.media.is_empty() {
                     self.media.preload_card(
@@ -1835,6 +1831,6 @@ impl Drop for AppView {
             cancel.store(true, Ordering::SeqCst);
         }
         self.save_media_position();
-        let _ = self.lib.stat("listen_seconds", self.media.stats_ticks);
+        self.flush_media_stats();
     }
 }

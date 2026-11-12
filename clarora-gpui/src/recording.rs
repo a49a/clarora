@@ -33,14 +33,14 @@ where
     Ok(device.build_input_stream(
         config,
         move |data: &[T], _| {
-            if let Ok(mut guard) = writer.lock() {
-                if let Some(writer) = guard.as_mut() {
-                    for &sample in data {
-                        if let Err(e) = writer.write_sample(sample.to_sample::<i16>()) {
-                            *write_error.lock().unwrap() = Some(e.to_string());
-                            write_stop.store(true, Ordering::SeqCst);
-                            break;
-                        }
+            if let Ok(mut guard) = writer.lock()
+                && let Some(writer) = guard.as_mut()
+            {
+                for &sample in data {
+                    if let Err(e) = writer.write_sample(sample.to_sample::<i16>()) {
+                        *write_error.lock().unwrap() = Some(e.to_string());
+                        write_stop.store(true, Ordering::SeqCst);
+                        break;
                     }
                 }
             }

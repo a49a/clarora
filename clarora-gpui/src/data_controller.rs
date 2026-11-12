@@ -130,32 +130,32 @@ impl AppView {
                 self.index = 0;
             }
         }
-        if let Some(cues) = snapshot.cues {
-            if !same_cues(&cues, &self.audio.cues) {
-                self.audio
-                    .pending_repeat_pause
-                    .get_or_insert(self.media.player.snapshot().paused);
-                self.audio
-                    .pending_repeat_position
-                    .get_or_insert(self.media.player.snapshot().position);
-                self.reset_audio_sentence_request();
-                self.audio.cues = cues;
-                self.invalidate_blind();
-                self.audio.scroll.reset(self.audio.cues.len());
-                self.audio.active = None;
-                self.audio.current_scroll.set_offset(Point::default());
-            }
+        if let Some(cues) = snapshot.cues
+            && !same_cues(&cues, &self.audio.cues)
+        {
+            self.audio
+                .pending_repeat_pause
+                .get_or_insert(self.media.player.snapshot().paused);
+            self.audio
+                .pending_repeat_position
+                .get_or_insert(self.media.player.snapshot().position);
+            self.reset_audio_sentence_request();
+            self.audio.cues = cues;
+            self.invalidate_blind();
+            self.audio.scroll.reset(self.audio.cues.len());
+            self.audio.active = None;
+            self.audio.current_scroll.set_offset(Point::default());
         }
         if let Some(points) = snapshot.audio_key_points {
             self.audio.key_points = points;
         }
-        if let Some(cues) = snapshot.video_cues {
-            if !same_cues(&cues, &self.video.cues) {
-                self.video.set_cues(cues);
-                self.video.active = None;
-                self.video.material = None;
-                self.video.material_error.clear();
-            }
+        if let Some(cues) = snapshot.video_cues
+            && !same_cues(&cues, &self.video.cues)
+        {
+            self.video.set_cues(cues);
+            self.video.active = None;
+            self.video.material = None;
+            self.video.material_error.clear();
         }
         self.clip_catalog = snapshot.clip_catalog;
         self.refresh_saved_ranges();

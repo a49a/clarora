@@ -20,7 +20,7 @@ pub(super) enum Command {
     LibraryStudy(bool),
     MergeAudios,
     CheckAudio(String),
-    CommandImport,
+    RunImport,
     ConfigureCommandImport,
     SaveCommandImport,
     NameImportedAudio,
@@ -361,7 +361,7 @@ impl Command {
                 );
             }
 
-            Command::CommandImport => {
+            Command::RunImport => {
                 let command = app.import_command.clone();
                 ensure!(
                     !app.tasks.foreground.is_running(),

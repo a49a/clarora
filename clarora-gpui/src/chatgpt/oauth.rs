@@ -371,10 +371,10 @@ pub(super) async fn sign_in(
         if new {
             pairs.append_pair("agent_name_hint", "Clarora");
         } else {
-            if let Ok(Some(session)) = storage::session(&client.lib, &pending.1) {
-                if !session.id_token.is_empty() {
-                    pairs.append_pair("id_token_hint", &session.id_token);
-                }
+            if let Ok(Some(session)) = storage::session(&client.lib, &pending.1)
+                && !session.id_token.is_empty()
+            {
+                pairs.append_pair("id_token_hint", &session.id_token);
             }
             if !pending.1.email.is_empty() {
                 pairs.append_pair("login_hint", &pending.1.email);

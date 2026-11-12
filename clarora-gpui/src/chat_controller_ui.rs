@@ -116,27 +116,26 @@ impl AppView {
             && !self.chat.running
             && self.assistant.error.is_empty()
             && !self.chat.is_loading()
+            && let Some((question, references)) = &self.assistant.pending
         {
-            if let Some((question, references)) = &self.assistant.pending {
-                let sent = self.chat.history.iter().rev().find(|m| m["role"] == "user");
-                if sent.is_some_and(|m| {
-                    m["content"].as_str() == Some(question)
-                        && clarora_gpui::assistant::references(m) == *references
-                }) {
-                    if self.value("question", cx) == *question {
-                        self.set("question", String::new(), window, cx);
-                    }
-                    if self.assistant.references == *references {
-                        self.assistant.references.clear();
-                        if let Err(error) = self.persist_assistant_references() {
-                            self.report_status(
-                                FeedbackKind::Error,
-                                format!("引用草稿保存失败：{error:#}"),
-                            );
-                        }
-                    }
-                    self.assistant.pending = None;
+            let sent = self.chat.history.iter().rev().find(|m| m["role"] == "user");
+            if sent.is_some_and(|m| {
+                m["content"].as_str() == Some(question)
+                    && clarora_gpui::assistant::references(m) == *references
+            }) {
+                if self.value("question", cx) == *question {
+                    self.set("question", String::new(), window, cx);
                 }
+                if self.assistant.references == *references {
+                    self.assistant.references.clear();
+                    if let Err(error) = self.persist_assistant_references() {
+                        self.report_status(
+                            FeedbackKind::Error,
+                            format!("引用草稿保存失败：{error:#}"),
+                        );
+                    }
+                }
+                self.assistant.pending = None;
             }
         }
         update.changed
@@ -160,7 +159,7 @@ impl AppView {
                 Ok(saved) => {
                     self.focus_note_close_saved = Some(note.to_owned());
                     self.focus_notes.insert(0, saved);
-                    self.focus_notes.truncate(20);
+                    self.focus_notes.truncate(100);
                 }
                 Err(error) => {
                     self.report_status(
@@ -243,18 +242,15 @@ impl AppView {
                     cx.notify();
                     return false;
                 }
-                if self.timer.active_round() && self.timer.is_running() {
-                    if let Err(error) =
+                if self.timer.active_round()
+                    && self.timer.is_running()
+                    && let Err(error) =
                         self.timer
                             .interrupt(&self.lib, focus_timer::now_ms(), false)
-                    {
-                        self.report_status(
-                            FeedbackKind::Error,
-                            format!("专注进度保存失败：{error:#}"),
-                        );
-                        cx.notify();
-                        return false;
-                    }
+                {
+                    self.report_status(FeedbackKind::Error, format!("专注进度保存失败：{error:#}"));
+                    cx.notify();
+                    return false;
                 }
                 #[cfg(debug_assertions)]
                 self.diagnostic_closing(window, cx);

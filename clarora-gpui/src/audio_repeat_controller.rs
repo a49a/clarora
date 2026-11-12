@@ -261,18 +261,17 @@ impl AppView {
         if self.page != "listening" || !self.audio.repeat_mode.is_sentence() {
             return Ok(false);
         }
-        if let Some(session) = self.media.session.audio_sentence() {
-            if self
+        if let Some(session) = self.media.session.audio_sentence()
+            && self
                 .media
                 .player
                 .snapshot()
                 .sentence_repeat
                 .as_ref()
                 .is_some_and(|r| r.request_id == session.request_id && r.finished)
-            {
-                self.start_audio_sentence(session.index, false)?;
-                return Ok(true);
-            }
+        {
+            self.start_audio_sentence(session.index, false)?;
+            return Ok(true);
         }
         Ok(false)
     }
@@ -305,21 +304,20 @@ impl AppView {
             {
                 let paused = self.audio.pending_repeat_pause.unwrap_or(state.paused);
                 self.start_audio_sentence(index, paused)?;
-                if paused {
-                    if let Some(session) = self
+                if paused
+                    && let Some(session) = self
                         .media
                         .session
                         .audio_sentence()
                         .filter(|s| position >= s.range.0 && position < s.range.1)
-                    {
-                        session.seek(
-                            &self.media.player,
-                            &path,
-                            &self.audio.cues,
-                            position,
-                            state.duration,
-                        )?;
-                    }
+                {
+                    session.seek(
+                        &self.media.player,
+                        &path,
+                        &self.audio.cues,
+                        position,
+                        state.duration,
+                    )?;
                 }
                 Ok(true)
             } else {

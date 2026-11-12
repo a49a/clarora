@@ -117,7 +117,9 @@ impl Collection {
                     .find(|v| v.series.as_ref().is_some_and(|old| old.base == series.base))
                 {
                     let selected = self.selected.as_ref() == Some(&video.id);
-                    merge_series(existing.series.as_mut().unwrap(), series);
+                    if let Some(existing_series) = existing.series.as_mut() {
+                        merge_series(existing_series, series);
+                    }
                     if selected {
                         existing.path = video.path;
                         self.selected = Some(existing.id.clone());
@@ -266,16 +268,11 @@ impl Collection {
         // Also absorb legacy local records that now have a known source.
         let old_ids: Vec<_> = added
             .iter()
-            .map(|id| {
-                (
-                    id.clone(),
-                    next.items
-                        .iter()
-                        .find(|v| &v.id == id)
-                        .unwrap()
-                        .path
-                        .clone(),
-                )
+            .filter_map(|id| {
+                next.items
+                    .iter()
+                    .find(|v| &v.id == id)
+                    .map(|video| (id.clone(), video.path.clone()))
             })
             .collect();
         next.group_parts();
@@ -402,14 +399,13 @@ fn title(path: &Path, series: Option<&bilibili::Series>) -> String {
             .unwrap_or(path);
         let stem = first.file_stem().unwrap_or_default().to_string_lossy();
         let source = s.base.rsplit('/').next().unwrap_or_default();
-        if let Some((name, suffix)) = stem.rsplit_once(" [") {
-            if suffix
+        if let Some((name, suffix)) = stem.rsplit_once(" [")
+            && suffix
                 .strip_suffix(']')
                 .is_some_and(|id| id == source || id.starts_with(&format!("{source}_p")))
-                && !name.trim().is_empty()
-            {
-                return name.trim().to_owned();
-            }
+            && !name.trim().is_empty()
+        {
+            return name.trim().to_owned();
         }
         if !stem.trim().is_empty() {
             return stem.into_owned();

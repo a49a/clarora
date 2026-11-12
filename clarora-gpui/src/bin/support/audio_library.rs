@@ -59,7 +59,7 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
         "字幕附件筛选失败"
     );
     ensure!(!state.preview.is_empty(), "所选音频字幕预览丢失");
-    audio_library::move_records(&lib, &a, &b, &[key.clone()])?;
+    audio_library::move_records(&lib, &a, &b, std::slice::from_ref(&key))?;
     ensure!(
         lib.list("listening_audios")?[0]["practice_id"] == b,
         "移动组未保存"
@@ -80,7 +80,7 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
         "跨组勾选未隔离"
     );
     ensure!(
-        audio_library::delete_records(&lib, &a, &[key.clone()]).is_err(),
+        audio_library::delete_records(&lib, &a, std::slice::from_ref(&key)).is_err(),
         "旧组删除快照可删除其他组音频"
     );
     lib.import_audio(&a, fixture)?;
@@ -92,7 +92,7 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
     let second_id = text(&second, "id");
     audio_library::rename(&lib, "listening_audios", &second_id, "Lesson Alpha")?;
     ensure!(
-        audio_library::move_records(&lib, &a, &b, &[second_id.clone()]).is_err(),
+        audio_library::move_records(&lib, &a, &b, std::slice::from_ref(&second_id)).is_err(),
         "目标同名冲突未拒绝"
     );
     ensure!(
@@ -138,7 +138,7 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
         state.visible(&lib.list("listening_audios")?, &b, "alpha")[0]["id"] == key,
         "排序后音频身份错位"
     );
-    audio_library::delete_records(&lib, &b, &[key.clone()])?;
+    audio_library::delete_records(&lib, &b, std::slice::from_ref(&key))?;
     ensure!(
         Path::new(&audio).is_file() && Path::new(&subtitle).is_file(),
         "移除记录误删附件"
@@ -291,7 +291,7 @@ fn run_inline_rename(lib: &Library, fixture: &Path, results: &mut Vec<Value>) ->
     ensure!(state.renaming.is_none(), "切换组未清理行内编辑");
 
     state.begin_rename(&a, &lib.list("listening_audios")?, &other_id)?;
-    audio_library::move_records(&lib, &a, &b, &[other_id.clone()])?;
+    audio_library::move_records(&lib, &a, &b, std::slice::from_ref(&other_id))?;
     ensure!(
         state.save_rename(&lib, &a, "Moved by mistake").is_err()
             && state.renaming.is_some()
@@ -302,7 +302,7 @@ fn run_inline_rename(lib: &Library, fixture: &Path, results: &mut Vec<Value>) ->
     ensure!(state.renaming.is_none(), "后台移动后未清理行内编辑");
 
     state.begin_rename(&b, &lib.list("listening_audios")?, &remote_id)?;
-    audio_library::delete_records(&lib, &b, &[remote_id.clone()])?;
+    audio_library::delete_records(&lib, &b, std::slice::from_ref(&remote_id))?;
     state.sync(&b, &lib.list("listening_audios")?);
     ensure!(state.renaming.is_none(), "目标被删除后未清理行内编辑");
     let reopened = Library::open(lib.root.clone())?;

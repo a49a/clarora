@@ -11,6 +11,7 @@ use std::{
 use uuid::Uuid;
 
 pub type Row = Map<String, Value>;
+pub(crate) type VaultSnapshot = (BTreeMap<String, Vec<Row>>, BTreeMap<String, String>);
 mod audio;
 mod cards;
 pub(crate) mod schema;
@@ -203,12 +204,11 @@ impl Library {
                 }
                 if path.is_dir() {
                     walk(&path, out)?
-                } else if let Ok(body) = fs::read_to_string(&path) {
-                    if let Some(stem) = path.file_stem() {
-                        if !body.trim().is_empty() {
-                            out.push((stem.to_string_lossy().into(), body));
-                        }
-                    }
+                } else if let Ok(body) = fs::read_to_string(&path)
+                    && let Some(stem) = path.file_stem()
+                    && !body.trim().is_empty()
+                {
+                    out.push((stem.to_string_lossy().into(), body));
                 }
             }
             Ok(())
@@ -255,9 +255,7 @@ impl Library {
     }
     /// Tables and setting metadata belong to one WAL read snapshot. Callers must
     /// explicitly whitelist any settings they publish; credentials are never tables here.
-    pub(crate) fn vault_with_settings(
-        &self,
-    ) -> Result<(BTreeMap<String, Vec<Row>>, BTreeMap<String, String>)> {
+    pub(crate) fn vault_with_settings(&self) -> Result<VaultSnapshot> {
         let mut db = self.db()?;
         let tx = db.transaction()?;
         let data = TABLES
@@ -333,10 +331,11 @@ pub fn parse_words(content: &str) -> Vec<(String, String)> {
                 return None;
             }
             for sep in ["\t", ",", "，", " - ", " : ", "："] {
-                if let Some((a, b)) = line.split_once(sep) {
-                    if !a.trim().is_empty() && !b.trim().is_empty() {
-                        return Some((a.trim().into(), b.trim().into()));
-                    }
+                if let Some((a, b)) = line.split_once(sep)
+                    && !a.trim().is_empty()
+                    && !b.trim().is_empty()
+                {
+                    return Some((a.trim().into(), b.trim().into()));
                 }
             }
             None

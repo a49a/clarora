@@ -324,10 +324,10 @@ impl Probe {
             8 => {
                 let state = app.media.player.snapshot();
                 if !state.paused
-                    || !state
+                    || state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|r| r.request_id == self.video_request)
+                        .is_none_or(|r| r.request_id != self.video_request)
                 {
                     return Ok(false);
                 }

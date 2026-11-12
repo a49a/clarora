@@ -675,7 +675,7 @@ fn response_protocol(
                 answer = reply.answer;
                 if !success {
                     reasons.push("unsuccessful or invalid response was accepted");
-                } else if answer != "你好 🌱" || !chunks.last().is_some_and(|s| s == "你好 🌱")
+                } else if answer != "你好 🌱" || chunks.last().is_none_or(|s| s != "你好 🌱")
                 {
                     reasons.push("valid response or final progress lost its answer");
                 }

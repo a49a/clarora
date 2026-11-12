@@ -98,12 +98,12 @@ impl State {
         }
         self.preview.clear();
         self.subtitle_count = 0;
-        if let Some(row) = rows.iter().find(|r| text(r, "id") == self.selected) {
-            if let Ok(body) = fs::read_to_string(text(row, "subtitle_uri")) {
-                let cues = subtitles::parse(&body);
-                self.subtitle_count = cues.len();
-                self.preview = cues.into_iter().take(5).collect();
-            }
+        if let Some(row) = rows.iter().find(|r| text(r, "id") == self.selected)
+            && let Ok(body) = fs::read_to_string(text(row, "subtitle_uri"))
+        {
+            let cues = subtitles::parse(&body);
+            self.subtitle_count = cues.len();
+            self.preview = cues.into_iter().take(5).collect();
         }
     }
     pub fn visible<'a>(&self, rows: &'a [Row], group: &str, query: &str) -> Vec<&'a Row> {

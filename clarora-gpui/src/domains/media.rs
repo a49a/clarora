@@ -52,17 +52,17 @@ impl Command {
                     self,
                     Command::Boundary(..) | Command::Word(..) | Command::Mark(..)
                 ),
-            leave_video_sentence: match self {
+            leave_video_sentence: matches!(
+                self,
                 Command::Seek(..)
-                | Command::SeekTo(..)
-                | Command::Boundary(..)
-                | Command::Mark(..)
-                | Command::Repeat
-                | Command::LoopMode(..)
-                | Command::Subtitle(..)
-                | Command::SubtitleImport(..) => true,
-                _ => false,
-            },
+                    | Command::SeekTo(..)
+                    | Command::Boundary(..)
+                    | Command::Mark(..)
+                    | Command::Repeat
+                    | Command::LoopMode(..)
+                    | Command::Subtitle(..)
+                    | Command::SubtitleImport(..)
+            ),
             ..Effects::default()
         }
     }

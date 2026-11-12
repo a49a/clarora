@@ -173,10 +173,10 @@ pub fn profiles(lib: &Library) -> Result<(Vec<Profile>, String)> {
     } else {
         serde_json::from_str(&raw).context("已保存的 AI 配置格式无效")?
     };
-    if profiles.is_empty() {
-        if let Some(profile) = default_profile(&load_config(lib)?) {
-            profiles.push(profile);
-        }
+    if profiles.is_empty()
+        && let Some(profile) = default_profile(&load_config(lib)?)
+    {
+        profiles.push(profile);
     }
     let stored = lib.setting(ACTIVE_PROFILE_KEY)?;
     let active = if profiles.iter().any(|profile| profile.id == stored) {
@@ -834,8 +834,8 @@ pub fn score(reference: &str, actual: &str) -> Result<Value> {
     for (i, row) in grid.iter_mut().enumerate() {
         row[0] = i
     }
-    for j in 0..=b.len() {
-        grid[0][j] = j
+    for (j, cell) in grid[0].iter_mut().enumerate() {
+        *cell = j;
     }
     for i in 1..=a.len() {
         for j in 1..=b.len() {

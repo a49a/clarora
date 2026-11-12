@@ -415,13 +415,13 @@ impl Render for HistoryView {
                 (!user).then_some(message)
             };
             let mut references = assistant::references(message);
-            if references.is_empty() {
-                if let Some(text) = message["reference"].as_str().filter(|s| !s.is_empty()) {
-                    references.push(Reference {
-                        text: assistant::plain_reference(text),
-                        ..Default::default()
-                    });
-                }
+            if references.is_empty()
+                && let Some(text) = message["reference"].as_str().filter(|s| !s.is_empty())
+            {
+                references.push(Reference {
+                    text: assistant::plain_reference(text),
+                    ..Default::default()
+                });
             }
             history = history.child(self.turn(
                 Turn {

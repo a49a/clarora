@@ -307,7 +307,8 @@ pub fn merge(lib: &Library, rows: &[Row], practice: &str, cancel: &Cancel) -> Re
         if complete {
             fs::write(&subtitle, subtitles::srt(&cues))?;
         }
-        let row=json!({"id":key,"practice_id":practice,"name":format!("合并 {} 条 · {}",rows.len(),&key[..6]),"audio_uri":output,"subtitle_uri":if complete {subtitle.to_string_lossy().into_owned()}else{String::new()},"created_at":now()}).as_object().unwrap().clone();
+        let row = json!({"id":key,"practice_id":practice,"name":format!("合并 {} 条 · {}",rows.len(),&key[..6]),"audio_uri":output,"subtitle_uri":if complete {subtitle.to_string_lossy().into_owned()}else{String::new()},"created_at":now()});
+        let row = row.as_object().context("合并音频记录无效")?.clone();
         let db = lib.db()?;
         db.busy_timeout(Duration::from_millis(50))?;
         let waiting = Instant::now();
@@ -332,7 +333,12 @@ pub fn merge(lib: &Library, rows: &[Row], practice: &str, cancel: &Cancel) -> Re
             sources: rows.iter().map(|r| text(r, "id")).collect(),
         };
         let record = json!({"id":id(),"kind":MERGE,"payload":serde_json::to_string(&relationship)?,"created_at":now()});
-        insert(&tx, "ai_records", record.as_object().unwrap(), false)?;
+        insert(
+            &tx,
+            "ai_records",
+            record.as_object().context("合并来源记录无效")?,
+            false,
+        )?;
         check(cancel)?;
         tx.commit()?;
         Ok(Merged {

@@ -38,14 +38,12 @@ fn pdfium() -> Result<Pdfium> {
             Pdfium::pdfium_platform_library_name_at_path(&std::path::PathBuf::from(path)),
         )?));
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            if let Ok(bindings) =
-                Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(parent))
-            {
-                return Ok(Pdfium::new(bindings));
-            }
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+        && let Ok(bindings) =
+            Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(parent))
+    {
+        return Ok(Pdfium::new(bindings));
     }
     ensure!(
         !crate::runtime::packaged(),
@@ -66,12 +64,8 @@ pub fn pdf_text(path: &Path, page: u16) -> Result<String> {
     ensure!(count > 0, "PDF 没有页面");
     Ok(doc.pages().get(page.min(count - 1))?.text()?.all())
 }
-pub fn render_pdf(
-    lib: &Library,
-    path: &Path,
-    page: u16,
-    width: i32,
-) -> Result<(String, u16, Vec<(String, u16)>)> {
+pub type PdfPageRender = (String, u16, Vec<(String, u16)>);
+pub fn render_pdf(lib: &Library, path: &Path, page: u16, width: i32) -> Result<PdfPageRender> {
     let pdf = pdfium()?;
     let doc = pdf.load_pdf_from_file(path, None)?;
     let count = doc.pages().len();
@@ -249,8 +243,8 @@ fn anki_text(body: &str) -> Result<Vec<(String, String)>> {
             anyhow::bail!("Anki 双引号后应为分隔符或换行")
         } else if c == Some('"') && field.is_empty() {
             quoted = true
-        } else {
-            field.push(c.unwrap());
+        } else if let Some(c) = c {
+            field.push(c);
         }
     }
     if rows.is_empty() {

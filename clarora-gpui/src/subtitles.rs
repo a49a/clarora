@@ -71,23 +71,23 @@ pub fn parse(body: &str) -> Vec<Cue> {
     let mut i = 0;
     let tags = regex::Regex::new("<[^>]*>").unwrap();
     while i < lines.len() {
-        if let Some((a, b)) = lines[i].split_once("-->") {
-            if let (Some(start), Some(end)) = (
+        if let Some((a, b)) = lines[i].split_once("-->")
+            && let (Some(start), Some(end)) = (
                 timestamp(a.trim()),
                 timestamp(b.split_whitespace().next().unwrap_or("")),
-            ) {
-                i += 1;
-                let mut text = vec![];
-                while i < lines.len() && !lines[i].trim().is_empty() {
-                    text.push(lines[i]);
-                    i += 1
-                }
-                let text = tags.replace_all(&text.join("\n"), "").to_string();
-                if end > start && !text.trim().is_empty() {
-                    cues.push(Cue { start, end, text });
-                }
-                continue;
+            )
+        {
+            i += 1;
+            let mut text = vec![];
+            while i < lines.len() && !lines[i].trim().is_empty() {
+                text.push(lines[i]);
+                i += 1
             }
+            let text = tags.replace_all(&text.join("\n"), "").to_string();
+            if end > start && !text.trim().is_empty() {
+                cues.push(Cue { start, end, text });
+            }
+            continue;
         }
         i += 1;
     }
@@ -169,11 +169,12 @@ pub fn merge(existing: &[Cue], new: &[Cue], zh: bool) -> Result<Vec<Cue>> {
         if text.is_empty() {
             continue;
         }
-        if let Some(last) = output.last_mut() {
-            if last.text == text && (last.end - a).abs() < 0.001 {
-                last.end = b;
-                continue;
-            }
+        if let Some(last) = output.last_mut()
+            && last.text == text
+            && (last.end - a).abs() < 0.001
+        {
+            last.end = b;
+            continue;
         }
         output.push(Cue {
             start: a,

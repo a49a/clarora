@@ -95,11 +95,11 @@ impl Selection {
         };
     }
     pub fn extend(&mut self, offset: usize, moved: bool) {
-        if self.selecting {
-            if let Some(doc) = &self.document {
-                self.head = doc.boundary(offset);
-                self.dragged |= moved;
-            }
+        if self.selecting
+            && let Some(doc) = &self.document
+        {
+            self.head = doc.boundary(offset);
+            self.dragged |= moved;
         }
     }
     pub fn finish(&mut self) {

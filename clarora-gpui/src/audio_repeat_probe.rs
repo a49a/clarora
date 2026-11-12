@@ -702,11 +702,11 @@ impl Probe {
                 app.handle(Action::AudioRepeat(6), window, cx);
             }
             3 => {
-                if !app
+                if app
                     .media
                     .session
                     .audio_sentence()
-                    .is_some_and(|s| s.index == 1)
+                    .is_none_or(|s| s.index != 1)
                 {
                     return Ok(false);
                 }
@@ -749,12 +749,12 @@ impl Probe {
                     .audio_sentence()
                     .context("seek loop")?
                     .request_id;
-                if !app
+                if app
                     .media
                     .snapshot
                     .sentence_repeat
                     .as_ref()
-                    .is_some_and(|r| r.request_id == self.request)
+                    .is_none_or(|r| r.request_id != self.request)
                 {
                     return Ok(false);
                 }

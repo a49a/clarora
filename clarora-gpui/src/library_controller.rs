@@ -66,23 +66,23 @@ fn read_cues(path: &str) -> Result<Vec<Cue>> {
 }
 
 fn segment(cards: &mut Vec<Card>, row: &Row, cues: &[Cue]) {
-    if let (Some(a), Some(b)) = (cues.first(), cues.last()) {
-        if b.end - a.start >= 3. {
-            let key = format!("segment:{}:{}", text(row, "id"), a.start);
-            if cards.iter().any(|c| c.kind == "clip" && c.id == key) {
-                return;
-            }
-            let (front, back) = subtitles::languages(cues);
-            cards.push(Card {
-                kind: "clip".into(),
-                id: key,
-                front,
-                back,
-                media: text(row, "audio_uri"),
-                start: a.start,
-                end: b.end,
-            });
+    if let (Some(a), Some(b)) = (cues.first(), cues.last())
+        && b.end - a.start >= 3.
+    {
+        let key = format!("segment:{}:{}", text(row, "id"), a.start);
+        if cards.iter().any(|c| c.kind == "clip" && c.id == key) {
+            return;
         }
+        let (front, back) = subtitles::languages(cues);
+        cards.push(Card {
+            kind: "clip".into(),
+            id: key,
+            front,
+            back,
+            media: text(row, "audio_uri"),
+            start: a.start,
+            end: b.end,
+        });
     }
 }
 
@@ -291,21 +291,12 @@ struct Shared {
 
 /// One worker, one replaceable pending request, and one result slot. Refreshes
 /// never wait for file/SQLite work and cannot accumulate threads or snapshots.
+#[derive(Default)]
 pub struct Controller {
     shared: Arc<Shared>,
     generation: u64,
     wanted: Option<Key>,
     started: bool,
-}
-impl Default for Controller {
-    fn default() -> Self {
-        Self {
-            shared: Arc::default(),
-            generation: 0,
-            wanted: None,
-            started: false,
-        }
-    }
 }
 impl Controller {
     pub fn generation(&self) -> u64 {

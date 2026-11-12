@@ -157,8 +157,10 @@ fn name_order(root: &Path, cases: &mut Vec<Value>) -> Result<()> {
         catalog.learning(&rows, &other),
         &["other-a".into(), "other-z".into()],
     );
-    let mut management = audio_library::State::default();
-    management.sort = 0;
+    let mut management = audio_library::State {
+        sort: 0,
+        ..Default::default()
+    };
     let newest = inserted
         .iter()
         .rev()
@@ -285,8 +287,10 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         .iter()
         .map(|r| fs::read(text(r, "audio_uri")))
         .collect::<std::io::Result<Vec<_>>>()?;
-    let mut management = audio_library::State::default();
-    management.sort = 1;
+    let mut management = audio_library::State {
+        sort: 1,
+        ..Default::default()
+    };
     let checked = BTreeSet::from([text(&a, "id"), text(&b, "id")]);
     let ordered = management.ordered_checked(&lib.list("listening_audios")?, &group, &checked);
     ensure!(
@@ -451,14 +455,14 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         Catalog::load(&lib, &rows)?.learning(&rows, &group).len() == 2,
         "removing merged version did not restore prior learning entries"
     );
-    audio_library::move_records(&lib, &group, &other, &[merged_id.clone()])?;
+    audio_library::move_records(&lib, &group, &other, std::slice::from_ref(&merged_id))?;
     let rows = lib.list("listening_audios")?;
     let index = Catalog::load(&lib, &rows)?;
     ensure!(
         index.learning(&rows, &group).len() == 3,
         "moving merged version hides sources in old group"
     );
-    audio_library::move_records(&lib, &other, &group, &[merged_id.clone()])?;
+    audio_library::move_records(&lib, &other, &group, std::slice::from_ref(&merged_id))?;
     let reopened = Library::open(lib.root.clone())?;
     let rows = reopened.list("listening_audios")?;
     ensure!(

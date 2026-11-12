@@ -90,6 +90,7 @@ pub(super) enum Action {
     VideoExitFullscreen,
     VideoPrecision,
     VideoSubtitleSize(u8),
+    VideoRepeatTail(u16),
     VideoCaptions,
     VideoTranslate,
     VideoClearLoop,
@@ -177,6 +178,8 @@ pub(super) enum Action {
     ImportLegacyCredentials,
     SaveStorage,
     SaveStorageProfile,
+    RenameStorageProfile,
+    DeleteStorageProfile(String),
     SelectStorageProfile(String),
     Models(String),
     SelectModel(String),
@@ -324,6 +327,7 @@ impl From<Action> for Command {
             Action::VideoExitFullscreen => Routed::Video(video::Command::VideoExitFullscreen),
             Action::VideoPrecision => Routed::Video(video::Command::VideoPrecision),
             Action::VideoSubtitleSize(v0) => Routed::Video(video::Command::VideoSubtitleSize(v0)),
+            Action::VideoRepeatTail(v0) => Routed::Video(video::Command::VideoRepeatTail(v0)),
             Action::VideoCaptions => Routed::Video(video::Command::VideoCaptions),
             Action::VideoTranslate => Routed::Video(video::Command::VideoTranslate),
             Action::VideoClearLoop => Routed::Video(video::Command::VideoClearLoop),
@@ -432,19 +436,25 @@ impl From<Action> for Command {
             }
             Action::SaveStorage => Routed::Settings(settings::Command::SaveStorage),
             Action::SaveStorageProfile => Routed::Settings(settings::Command::SaveStorageProfile),
+            Action::RenameStorageProfile => {
+                Routed::Settings(settings::Command::RenameStorageProfile)
+            }
+            Action::DeleteStorageProfile(v0) => {
+                Routed::Settings(settings::Command::DeleteStorageProfile(v0))
+            }
             Action::SelectStorageProfile(v0) => {
                 Routed::Settings(settings::Command::SelectStorageProfile(v0))
             }
             Action::Models(v0) => Routed::Settings(settings::Command::Models(v0)),
             Action::SelectModel(v0) => Routed::Settings(settings::Command::SelectModel(v0)),
-            Action::CloudList => Routed::Cloud(cloud::Command::CloudList),
-            Action::CloudBackup => Routed::Cloud(cloud::Command::CloudBackup),
-            Action::CloudRestore(v0) => Routed::Cloud(cloud::Command::CloudRestore(v0)),
-            Action::CloudSync => Routed::Cloud(cloud::Command::CloudSync),
-            Action::CloudAutoSync => Routed::Cloud(cloud::Command::CloudAutoSync),
-            Action::CloudRetention(v0, v1) => Routed::Cloud(cloud::Command::CloudRetention(v0, v1)),
-            Action::CloudCleanupPreview => Routed::Cloud(cloud::Command::CloudCleanupPreview),
-            Action::CloudCleanup => Routed::Cloud(cloud::Command::CloudCleanup),
+            Action::CloudList => Routed::Cloud(cloud::Command::List),
+            Action::CloudBackup => Routed::Cloud(cloud::Command::Backup),
+            Action::CloudRestore(v0) => Routed::Cloud(cloud::Command::Restore(v0)),
+            Action::CloudSync => Routed::Cloud(cloud::Command::Sync),
+            Action::CloudAutoSync => Routed::Cloud(cloud::Command::AutoSync),
+            Action::CloudRetention(v0, v1) => Routed::Cloud(cloud::Command::Retention(v0, v1)),
+            Action::CloudCleanupPreview => Routed::Cloud(cloud::Command::CleanupPreview),
+            Action::CloudCleanup => Routed::Cloud(cloud::Command::Cleanup),
             Action::PdfPage(v0) => Routed::Reading(reading::Command::PdfPage(v0)),
             Action::PdfZoom(v0) => Routed::Reading(reading::Command::PdfZoom(v0)),
             Action::DocumentCopy => Routed::Reading(reading::Command::DocumentCopy),
@@ -462,7 +472,7 @@ impl From<Action> for Command {
             Action::MergeAudios => Routed::Library(library::Command::MergeAudios),
             Action::CheckAudio(v0) => Routed::Library(library::Command::CheckAudio(v0)),
             Action::Suspend(v0) => Routed::Cards(cards::Command::Suspend(v0)),
-            Action::CommandImport => Routed::Library(library::Command::CommandImport),
+            Action::CommandImport => Routed::Library(library::Command::RunImport),
             Action::CommandImportSpeaking(group) => {
                 Routed::Speech(speech::Command::ImportSpeakingGroup(group))
             }
@@ -571,10 +581,10 @@ impl Effects {
         if self.restore_focus && !app.subtitle_text.borrow().focus.is_focused(window) {
             window.focus(&app.focus);
         }
-        if self.refresh_chat {
-            if let Err(error) = app.chat.refresh() {
-                app.report_status(FeedbackKind::Error, format!("刷新会话失败：{error:#}"));
-            }
+        if self.refresh_chat
+            && let Err(error) = app.chat.refresh()
+        {
+            app.report_status(FeedbackKind::Error, format!("刷新会话失败：{error:#}"));
         }
         app.sync_assistant(window, cx);
     }

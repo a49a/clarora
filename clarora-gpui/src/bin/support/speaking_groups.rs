@@ -127,7 +127,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
     let mut edited = both.clone();
     edited.answer_draft = "The draft has changed.".into();
     let edited = speaking::save(&lib, edited, AudioEdit::Keep)?;
-    ensure!(edited.reviews == [overview.clone()]);
+    ensure!(edited.reviews.as_slice() == std::slice::from_ref(&overview));
     let line_edits = speaking::review_draft(&lib, &both, ReviewMode::LineEdits, &cancel)?;
     ensure!(line_edits.revision_preview()?.as_deref() == Some("To start\n第二段"));
     ensure!(

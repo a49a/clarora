@@ -28,16 +28,14 @@ pub fn extract(lib: &Library, path: &Path, cancel: &Cancel) -> Result<Waveform> 
         "{}.json",
         hex::encode(Sha256::digest(identity.as_bytes()))
     ));
-    if let Ok(bytes) = fs::read(&cache) {
-        if let Ok(waveform) = serde_json::from_slice::<Waveform>(&bytes) {
-            if waveform.duration > 0.
-                && waveform.duration.is_finite()
-                && !waveform.peaks.is_empty()
-                && waveform.peaks.len() <= 1024
-            {
-                return Ok(waveform);
-            }
-        }
+    if let Ok(bytes) = fs::read(&cache)
+        && let Ok(waveform) = serde_json::from_slice::<Waveform>(&bytes)
+        && waveform.duration > 0.
+        && waveform.duration.is_finite()
+        && !waveform.peaks.is_empty()
+        && waveform.peaks.len() <= 1024
+    {
+        return Ok(waveform);
     }
     let temp = directory.join(format!("{}.wav", id()));
     let result = (|| {

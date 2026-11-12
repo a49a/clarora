@@ -59,7 +59,7 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
         requested: 0,
         current: Some(0),
     };
-    c.add(&[a.clone()], Some(&series))?;
+    c.add(std::slice::from_ref(&a), Some(&series))?;
     c.select(&ids[0])?;
     c.save(&lib)?;
     ensure!(

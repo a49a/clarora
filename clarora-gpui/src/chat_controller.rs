@@ -56,7 +56,7 @@ struct Loaded {
 }
 
 enum Reply {
-    Loaded(Command, std::result::Result<Loaded, String>),
+    Loaded(Command, std::result::Result<Box<Loaded>, String>),
     Saved(Draft),
     Failed(String),
 }
@@ -293,7 +293,7 @@ impl Controller {
                     }
                     self.pending = None;
                     let loaded = match loaded {
-                        Ok(loaded) => loaded,
+                        Ok(loaded) => *loaded,
                         Err(error) => {
                             self.retry_after =
                                 Some((command.context.clone(), Instant::now() + RETRY));
@@ -537,7 +537,7 @@ fn worker(lib: Library, shared: Shared, replies: mpsc::Sender<Reply>) {
             if let Err(error) = &result {
                 failure = Some(error.clone());
             }
-            let _ = replies.send(Reply::Loaded(command, result));
+            let _ = replies.send(Reply::Loaded(command, result.map(Box::new)));
         }
         for draft in drafts {
             match write_latest(&lib, &draft, &mut written) {

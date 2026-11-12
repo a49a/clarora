@@ -41,11 +41,11 @@ pub fn tool(name: &str) -> Result<PathBuf> {
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         dirs.push(PathBuf::from(local).join("Microsoft/WinGet/Links"));
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            dirs.insert(0, parent.join("tools"));
-            dirs.insert(0, parent.into());
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        dirs.insert(0, parent.join("tools"));
+        dirs.insert(0, parent.into());
     }
     dirs.into_iter()
         .filter(|d| d.is_absolute())

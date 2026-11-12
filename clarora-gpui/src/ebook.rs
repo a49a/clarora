@@ -815,13 +815,13 @@ fn parse_epub(
             } else {
                 format!("{path}#{fragment}")
             };
-            if let Some(&page) = locations.get(&key).or_else(|| locations.get(&path)) {
-                if !label.trim().is_empty() {
-                    toc.push(Navigation {
-                        label: label.split_whitespace().collect::<Vec<_>>().join(" "),
-                        page,
-                    });
-                }
+            if let Some(&page) = locations.get(&key).or_else(|| locations.get(&path))
+                && !label.trim().is_empty()
+            {
+                toc.push(Navigation {
+                    label: label.split_whitespace().collect::<Vec<_>>().join(" "),
+                    page,
+                });
             }
         }
     };
@@ -863,7 +863,7 @@ fn parse_epub(
 }
 fn unicode(bytes: &[u8]) -> Result<String> {
     let text = if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
-        ensure!(bytes.len() % 2 == 0, "TXT UTF-16 长度无效");
+        ensure!(bytes.len().is_multiple_of(2), "TXT UTF-16 长度无效");
         let little = bytes[0] == 0xff;
         String::from_utf16(
             &bytes[2..]

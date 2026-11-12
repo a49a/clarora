@@ -614,15 +614,14 @@ impl Render for FloatingImport {
 impl AppView {
     pub(super) fn toggle_floating_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_floating_names(cx);
-        if let Some(handle) = self.floating_window.take() {
-            if handle
+        if let Some(handle) = self.floating_window.take()
+            && handle
                 .update(cx, |_, window, _| window.remove_window())
                 .is_ok()
-            {
-                let _ = self.lib.set_setting("floating_import_open", "false");
-                cx.notify();
-                return;
-            }
+        {
+            let _ = self.lib.set_setting("floating_import_open", "false");
+            cx.notify();
+            return;
         }
         if let Err(error) = self.refresh_speaking_groups() {
             self.report_status(FeedbackKind::Error, format!("读取口语分组失败：{error:#}"));
@@ -694,13 +693,12 @@ impl AppView {
         else {
             return Ok(());
         };
-        if let Some(handle) = self.floating_name_window {
-            if handle
+        if let Some(handle) = self.floating_name_window
+            && handle
                 .update(cx, |_, window, _| window.activate_window())
                 .is_ok()
-            {
-                return Ok(());
-            }
+        {
+            return Ok(());
         }
         let Some(mut report) = self.command_imported.clone() else {
             return Ok(());
@@ -1014,13 +1012,13 @@ mod native {
     pub fn configure(window: &Window) {
         use objc2::{msg_send, runtime::AnyObject};
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        if let Ok(handle) = HasWindowHandle::window_handle(window) {
-            if let RawWindowHandle::AppKit(handle) = handle.as_raw() {
-                unsafe {
-                    let view = handle.ns_view.as_ptr() as *mut AnyObject;
-                    let panel: *mut AnyObject = msg_send![view, window];
-                    let _: () = msg_send![panel, setHidesOnDeactivate: false];
-                }
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::AppKit(handle) = handle.as_raw()
+        {
+            unsafe {
+                let view = handle.ns_view.as_ptr() as *mut AnyObject;
+                let panel: *mut AnyObject = msg_send![view, window];
+                let _: () = msg_send![panel, setHidesOnDeactivate: false];
             }
         }
     }
@@ -1033,18 +1031,18 @@ mod native {
             runtime::{AnyClass, AnyObject},
         };
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        if let Ok(handle) = HasWindowHandle::window_handle(window) {
-            if let RawWindowHandle::AppKit(handle) = handle.as_raw() {
-                // GPUI 0.2.2's start_window_move is a no-op on macOS.
-                unsafe {
-                    let view = handle.ns_view.as_ptr() as *mut AnyObject;
-                    let panel: *mut AnyObject = msg_send![view, window];
-                    if let Some(class) = AnyClass::get(c"NSApplication") {
-                        let app: *mut AnyObject = msg_send![class, sharedApplication];
-                        let event: *mut AnyObject = msg_send![app, currentEvent];
-                        if !panel.is_null() && !event.is_null() {
-                            let _: () = msg_send![panel, performWindowDragWithEvent: event];
-                        }
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::AppKit(handle) = handle.as_raw()
+        {
+            // GPUI 0.2.2's start_window_move is a no-op on macOS.
+            unsafe {
+                let view = handle.ns_view.as_ptr() as *mut AnyObject;
+                let panel: *mut AnyObject = msg_send![view, window];
+                if let Some(class) = AnyClass::get(c"NSApplication") {
+                    let app: *mut AnyObject = msg_send![class, sharedApplication];
+                    let event: *mut AnyObject = msg_send![app, currentEvent];
+                    if !panel.is_null() && !event.is_null() {
+                        let _: () = msg_send![panel, performWindowDragWithEvent: event];
                     }
                 }
             }

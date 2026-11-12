@@ -80,7 +80,7 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
     let mut favorites = clarora_gpui::video_library::Collection::load(&title_lib)?;
     let mut old_series = series.clone();
     old_series.title.clear();
-    let ids = favorites.add(&[path.clone()], Some(&old_series))?;
+    let ids = favorites.add(std::slice::from_ref(&path), Some(&old_series))?;
     favorites.select(&ids[0])?;
     ensure!(
         favorites.active().unwrap().title == "课程名称",
@@ -96,7 +96,7 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
         favorites.active().unwrap().title == "整条课程标题",
         "标题重启丢失"
     );
-    favorites.add(&[path.clone()], Some(&old_series))?;
+    favorites.add(std::slice::from_ref(&path), Some(&old_series))?;
     ensure!(
         favorites.active().unwrap().title == "整条课程标题",
         "旧分P快照覆盖整条标题"

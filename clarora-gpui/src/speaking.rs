@@ -526,10 +526,10 @@ fn save_question(
         tx.commit()?;
         Ok(question)
     })();
-    if result.is_err() {
-        if let Some(audio) = staged {
-            let _ = fs::remove_file(audio.path);
-        }
+    if result.is_err()
+        && let Some(audio) = staged
+    {
+        let _ = fs::remove_file(audio.path);
     }
     result
 }

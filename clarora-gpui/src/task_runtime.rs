@@ -40,6 +40,7 @@ impl<U, C> Clone for Reporter<U, C> {
     }
 }
 impl<U, C> Reporter<U, C> {
+    #[allow(clippy::result_unit_err)] // mpsc::SendError carries the update and is intentionally discarded
     pub fn send(&self, update: U) -> std::result::Result<(), ()> {
         self.tx
             .send(Packet::Progress(self.id, update))

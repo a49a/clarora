@@ -165,31 +165,27 @@ impl AppView {
             };
             changed = true;
         }
-        if self.page == "sentences" {
-            if let (Some(results), Some(queue)) =
+        if self.page == "sentences"
+            && let (Some(results), Some(queue)) =
                 (&self.sentences.results, &mut self.sentences.audition)
-            {
-                match queue.poll(&results.hits) {
-                    Ok(updated) => changed |= updated,
-                    Err(error) => {
-                        let message = format!("{error:#}");
-                        if self.sentences.error != message {
-                            self.sentences.error = message;
-                            changed = true;
-                        }
+        {
+            match queue.poll(&results.hits) {
+                Ok(updated) => changed |= updated,
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    if self.sentences.error != message {
+                        self.sentences.error = message;
+                        changed = true;
                     }
                 }
-                if changed {
-                    if let Some(index) = queue.index {
-                        self.sentences.page = index / PAGE_SIZE;
-                    }
-                }
-                // Paused and completed queues must not force continuous UI rebuilds.
-                let playback = queue.snapshot();
-                changed |=
-                    clarora_gpui::media::controls_changed(&self.sentences.playback, &playback);
-                self.sentences.playback = playback;
             }
+            if changed && let Some(index) = queue.index {
+                self.sentences.page = index / PAGE_SIZE;
+            }
+            // Paused and completed queues must not force continuous UI rebuilds.
+            let playback = queue.snapshot();
+            changed |= clarora_gpui::media::controls_changed(&self.sentences.playback, &playback);
+            self.sentences.playback = playback;
         }
         changed
     }
@@ -401,8 +397,11 @@ impl AppView {
             .gap_3()
             .border_color(cx.theme().primary)
             .child(transport);
-        if let Some((index, hit)) = selected.and_then(|i| results.hits.get(i).map(|h| (i, h))) {
-            let state = queue.unwrap().snapshot();
+        if let (Some((index, hit)), Some(queue)) = (
+            selected.and_then(|i| results.hits.get(i).map(|h| (i, h))),
+            queue,
+        ) {
+            let state = queue.snapshot();
             now = now
                 .child(
                     div()
@@ -415,9 +414,9 @@ impl AppView {
                             hit.label,
                             clock(hit.cue.start),
                             clock(hit.cue.end),
-                            if queue.unwrap().is_loading() {
+                            if queue.is_loading() {
                                 " · 正在载入"
-                            } else if queue.unwrap().finished {
+                            } else if queue.finished {
                                 " · 已播完"
                             } else {
                                 ""

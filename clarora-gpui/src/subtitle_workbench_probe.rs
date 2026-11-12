@@ -342,7 +342,7 @@ impl Probe {
                         );
                         let height = f32::from(bounds.height);
                         ensure!(
-                            height >= 80. && height <= 260.,
+                            (80. ..=260.).contains(&height),
                             "assistant editor is too small or unbounded: {case}, {mode:?}, width={width}, height={height}"
                         );
                         ensure!(

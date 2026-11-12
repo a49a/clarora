@@ -157,7 +157,7 @@ impl Startup {
                 _ => {
                     ensure!(startup.diagnostic.is_none(), "每次只能运行一个原生诊断");
                     startup.diagnostic = Some(Launch {
-                        entry: entry.unwrap(),
+                        entry: entry.context("未知诊断入口")?,
                         out: path,
                     });
                 }

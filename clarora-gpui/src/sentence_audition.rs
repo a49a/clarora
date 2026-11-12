@@ -57,12 +57,12 @@ impl Audition {
         self.error.clear();
         self.request = None;
         self.player.set("pause", "yes");
-        if self.loading.is_none() {
-            if let Err(error) = self.install(hits) {
-                self.error = format!("{error:#}");
-                self.finished = true;
-                return Err(error);
-            }
+        if self.loading.is_none()
+            && let Err(error) = self.install(hits)
+        {
+            self.error = format!("{error:#}");
+            self.finished = true;
+            return Err(error);
         }
         Ok(())
     }

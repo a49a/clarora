@@ -187,7 +187,7 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
         "改名改变媒体内容"
     );
     let moved_id = text(&batch.audios[0], "id");
-    audio_library::move_records(lib, &first, &second, &[moved_id.clone()])?;
+    audio_library::move_records(lib, &first, &second, std::slice::from_ref(&moved_id))?;
     ensure!(
         batch.rename(lib, 0, "不应改动").is_err(),
         "已移动音频仍被改名"

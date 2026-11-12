@@ -438,11 +438,11 @@ impl Flow {
                 )?;
             }
             13 => {
-                if !app
+                if app
                     .media
                     .session
                     .audio_sentence()
-                    .is_some_and(|s| s.index == 1)
+                    .is_none_or(|s| s.index != 1)
                 {
                     return Ok(false);
                 }
@@ -693,11 +693,11 @@ impl Flow {
             27 => self.double_click_word(app, Surface::Audio, window, cx, observations)?,
             30 => {
                 if app.media.snapshot.paused
-                    || !app
+                    || app
                         .media
                         .session
                         .audio_sentence()
-                        .is_some_and(|session| session.request_id != self.word_request)
+                        .is_none_or(|session| session.request_id == self.word_request)
                 {
                     ensure!(
                         self.started.elapsed() < Duration::from_secs(2),

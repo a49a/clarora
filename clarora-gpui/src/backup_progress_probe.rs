@@ -60,10 +60,10 @@ impl Fixture {
                         break;
                     }
                 };
-                if let Err(error) = Self::serve(&mut stream, &worker) {
-                    if !worker.stop.load(Ordering::SeqCst) {
-                        *worker.error.lock().unwrap() = Some(format!("{error:#}"));
-                    }
+                if let Err(error) = Self::serve(&mut stream, &worker)
+                    && !worker.stop.load(Ordering::SeqCst)
+                {
+                    *worker.error.lock().unwrap() = Some(format!("{error:#}"));
                 }
             }
         });
@@ -569,11 +569,11 @@ impl Probe {
             }
             7 => {
                 self.running(app, cx)?;
-                if !app
+                if app
                     .tasks
                     .backup_progress
                     .as_ref()
-                    .is_some_and(|progress| progress.bytes_sent > 0)
+                    .is_none_or(|progress| progress.bytes_sent == 0)
                 {
                     return Ok(false);
                 }

@@ -75,11 +75,11 @@ fn stable_identity(spec: &TableSpec, row: &Row, words: &BTreeMap<String, String>
             json!(word_reference(&text(&row, "card_id"), words)),
         );
     }
-    if table == "discover_favorites" {
-        if let Some(id) = text(&row, "key").strip_prefix("word:") {
-            let value = format!("word:{}", word_reference(id, words));
-            row.insert("key".into(), json!(value));
-        }
+    if table == "discover_favorites"
+        && let Some(id) = text(&row, "key").strip_prefix("word:")
+    {
+        let value = format!("word:{}", word_reference(id, words));
+        row.insert("key".into(), json!(value));
     }
     spec.identity(&row)
 }
@@ -205,10 +205,11 @@ fn capture(lib: &Library, scope: &str, cancel: &Cancel) -> Result<Local> {
     drop(statement);
     for deleted in [true, false] {
         for ((table, _), (_, _, is_deleted, payload)) in &revisions {
-            if table == "words" && *is_deleted == deleted {
-                if let Ok(row) = serde_json::from_str::<Row>(payload) {
-                    word_ids.insert(text(&row, "id"), text(&row, "word"));
-                }
+            if table == "words"
+                && *is_deleted == deleted
+                && let Ok(row) = serde_json::from_str::<Row>(payload)
+            {
+                word_ids.insert(text(&row, "id"), text(&row, "word"));
             }
         }
     }

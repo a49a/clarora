@@ -176,12 +176,12 @@ impl Probe {
                 self.note("model download has independent task lane", app);
             }
             1 => {
-                if !app
+                if app
                     .tasks
                     .models
                     .progress
                     .as_ref()
-                    .is_some_and(|p| p.downloaded > 0)
+                    .is_none_or(|p| p.downloaded == 0)
                 {
                     return Ok(false);
                 }
@@ -333,12 +333,12 @@ impl Probe {
                 self.start(app, window, cx, false)?;
             }
             5 => {
-                if !app
+                if app
                     .tasks
                     .models
                     .progress
                     .as_ref()
-                    .is_some_and(|p| p.downloaded > 0)
+                    .is_none_or(|p| p.downloaded == 0)
                 {
                     return Ok(false);
                 }
@@ -365,15 +365,24 @@ impl Probe {
                 let mut before: Value = serde_json::from_str(&app.lib.setting("ai_config")?)?;
                 before["legacy_marker"] = json!("retain");
                 app.lib.set_setting("ai_config", &before.to_string())?;
+                // The full suite may leave a downloaded SenseVoice directory in
+                // this fixture. This branch specifically exercises the
+                // unavailable-model path, so make that precondition explicit.
+                let unavailable = app.lib.root.join("models/sense-voice");
+                if unavailable.exists() {
+                    fs::remove_dir_all(&unavailable)?;
+                }
                 app.set("base_url", "unsaved-api-draft", window, cx);
                 app.set("daily_limit", "123", window, cx);
                 let limit = app.lib.setting("daily_limit")?;
 
                 app.handle(Action::SelectModel("sense-voice".into()), window, cx);
                 ensure!(
-                    app.lib.setting("ai_config")? == before.to_string()
+                    serde_json::from_str::<Value>(&app.lib.setting("ai_config")?)? == before
                         && app.value("engine", cx) == "compatible",
-                    "unavailable model changed configuration or draft"
+                    "unavailable model changed configuration or draft: config={}, engine={}",
+                    app.lib.setting("ai_config")?,
+                    app.value("engine", cx)
                 );
                 app.lib.db()?.execute_batch(
                     "CREATE TRIGGER reject_model_selection BEFORE UPDATE ON app_settings
@@ -381,7 +390,7 @@ impl Probe {
                 )?;
                 app.handle(Action::SelectModel("medium.en".into()), window, cx);
                 ensure!(
-                    app.lib.setting("ai_config")? == before.to_string()
+                    serde_json::from_str::<Value>(&app.lib.setting("ai_config")?)? == before
                         && app.value("engine", cx) == "compatible"
                         && app
                             .data

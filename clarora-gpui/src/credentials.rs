@@ -53,6 +53,24 @@ pub fn get_optional(lib: &Library, name: &str) -> Result<String> {
     }
     Ok(local(lib, name)?.unwrap_or_default())
 }
+/// Best-effort removal of one credential. Deleting a missing keychain entry is
+/// not an error: profile cleanup must stay idempotent.
+pub fn delete(lib: &Library, name: &str) -> Result<()> {
+    let mut cache = cache().lock().unwrap();
+    if secure_mode(lib)? {
+        if let Ok(entry) = keyring::Entry::new("Clarora-GPUI", name) {
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        cache.remove(name);
+        return Ok(());
+    }
+    lib.db()?
+        .execute("DELETE FROM local_credentials WHERE name=?", [name])?;
+    Ok(())
+}
 /// Store new credential names and their config reference atomically in ordinary mode.
 pub fn store_config(
     lib: &Library,

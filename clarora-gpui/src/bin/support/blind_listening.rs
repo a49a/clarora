@@ -113,8 +113,10 @@ pub fn run(lib: &Library, media: &std::path::Path, results: &mut Vec<Value>) -> 
             &json!({"bilingual":chinese,"mixed_line":mixed,"english_only":"","preference_reopened":true}),
         )?,
     )?;
-    let mut chinese_state = State::default();
-    chinese_state.enabled = true;
+    let mut chinese_state = State {
+        enabled: true,
+        ..Default::default()
+    };
     ensure!(
         chinese_state.reference_for(true).is_empty(),
         "查看前泄漏中文"
@@ -210,8 +212,10 @@ pub fn run(lib: &Library, media: &std::path::Path, results: &mut Vec<Value>) -> 
         ensure!(Instant::now() < deadline, "暂停未确认");
         thread::sleep(Duration::from_millis(20));
     };
-    let mut state = State::default();
-    state.enabled = true;
+    let mut state = State {
+        enabled: true,
+        ..Default::default()
+    };
     ensure!(state.reference().is_empty(), "隐藏态泄漏引用");
     state.revealed = resolve(&cues, snap.position, snap.duration);
     ensure!(

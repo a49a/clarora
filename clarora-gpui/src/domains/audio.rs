@@ -48,10 +48,7 @@ impl Command {
                         | Command::AudioBlindRow(..)
                         | Command::AudioClipMode
                 ),
-            leave_video_sentence: match self {
-                Command::Transcribe => true,
-                _ => false,
-            },
+            leave_video_sentence: matches!(self, Command::Transcribe),
             ..Effects::default()
         }
     }
@@ -410,10 +407,10 @@ impl Command {
 
             Command::AudioFollow => {
                 app.audio.follow = !app.audio.follow;
-                if app.audio.follow {
-                    if let Some(i) = app.audio.active {
-                        app.audio.center.request(i);
-                    }
+                if app.audio.follow
+                    && let Some(i) = app.audio.active
+                {
+                    app.audio.center.request(i);
                 }
             }
 

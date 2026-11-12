@@ -259,11 +259,7 @@ impl Flow {
                     "second Space did not hide answer or flipped twice"
                 );
                 self.note("second Space hides answer with exactly one flip per key");
-                let bounds = FRONT
-                    .get_or_init(Default::default)
-                    .lock()
-                    .unwrap()
-                    .clone()
+                let bounds = (*FRONT.get_or_init(Default::default).lock().unwrap())
                     .context("card front probe was not painted")?;
                 ensure!(
                     bounds.size.width > px(80.) && bounds.size.height > px(20.),

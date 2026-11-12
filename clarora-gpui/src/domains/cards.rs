@@ -96,8 +96,8 @@ impl Command {
                                 &app.cards,
                                 &app.history,
                                 app.index,
-                                &due,
-                                &favorites,
+                                due,
+                                favorites,
                             )
                             .unwrap_or(0)
                         };

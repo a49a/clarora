@@ -96,12 +96,13 @@ pub fn inspect() -> Report {
         let mut path = library_candidates(&candidates)
             .into_iter()
             .find(|path| path.is_file());
-        if name == "PDFium" && !packaged() {
-            if let Some(dir) = std::env::var_os("PDFIUM_LIB_PATH") {
-                path = Some(PathBuf::from(dir).join(candidates[0]))
-                    .filter(|p| p.is_file())
-                    .or(path);
-            }
+        if name == "PDFium"
+            && !packaged()
+            && let Some(dir) = std::env::var_os("PDFIUM_LIB_PATH")
+        {
+            path = Some(PathBuf::from(dir).join(candidates[0]))
+                .filter(|p| p.is_file())
+                .or(path);
         }
         report.components.push(Component {
             name: name.into(),
@@ -147,7 +148,8 @@ pub fn check(output: &Path) -> Result<Report> {
             "PDFium" => documents::check_pdf_runtime().map(|_| "PDFium 绑定正常".into()),
             "clarora-asr" | "clarora-tts" => {
                 // Both helpers intentionally return 2 and a usage message without arguments.
-                let result = std::process::Command::new(component.path.as_ref().unwrap()).output();
+                let path = component.path.as_ref().context("原生语音助手路径缺失")?;
+                let result = std::process::Command::new(path).output();
                 result.context("无法启动原生语音助手").and_then(|result| {
                     anyhow::ensure!(
                         result.status.code() == Some(2),
@@ -162,7 +164,7 @@ pub fn check(output: &Path) -> Result<Report> {
                 })
             }
             name => process::run(
-                component.path.as_ref().unwrap(),
+                component.path.as_ref().context("组件路径缺失")?,
                 &[if name == "yt-dlp" {
                     "--version"
                 } else {

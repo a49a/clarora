@@ -155,10 +155,10 @@ impl AppView {
                     let completed_backup = self.tasks.backup_progress.is_some();
                     let completed_sync = matches!(&result, Ok(Outcome::CloudSynced(..)));
                     let completed_chat = request.is_some();
-                    if let Some(request) = &request {
-                        if !self.accept_chat_task(request, done.cancelled, &result) {
-                            continue;
-                        }
+                    if let Some(request) = &request
+                        && !self.accept_chat_task(request, done.cancelled, &result)
+                    {
+                        continue;
                     }
                     let mut completion = domains::Completion {
                         cancelled: done.cancelled,

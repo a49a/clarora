@@ -213,7 +213,12 @@ pub fn save(
         } else {
             json!({"id":key,"en_text":front,"zh_text":back,"video_uri":output.to_string_lossy(),"created_at":now()})
         };
-        data::insert(&tx, table(kind)?, row.as_object().unwrap(), false)?;
+        data::insert(
+            &tx,
+            table(kind)?,
+            row.as_object().context("片段记录无效")?,
+            false,
+        )?;
         let payload = serde_json::to_string(&Origin {
             source,
             start: a,
@@ -224,7 +229,7 @@ pub fn save(
             "ai_records",
             json!({"id":origin_id(kind,&key),"kind":ORIGIN,"payload":payload,"created_at":now()})
                 .as_object()
-                .unwrap(),
+                .context("片段来源记录无效")?,
             false,
         )?;
         ensure!(!cancel.load(Ordering::SeqCst), "已取消");
@@ -278,11 +283,11 @@ pub fn map_sources(
         .filter(|r| text(r, "kind") == ORIGIN)
     {
         let mut origin: Origin = serde_json::from_str(&text(row, "payload"))?;
-        if origin.source.page == "video" {
-            if let Some(key) = mapped.get(&origin.source.key) {
-                origin.source.key = key.clone();
-                row.insert("payload".into(), json!(serde_json::to_string(&origin)?));
-            }
+        if origin.source.page == "video"
+            && let Some(key) = mapped.get(&origin.source.key)
+        {
+            origin.source.key = key.clone();
+            row.insert("payload".into(), json!(serde_json::to_string(&origin)?));
         }
     }
     Ok(())
@@ -292,11 +297,11 @@ pub fn map_audio(row: &mut Row, mapping: &HashMap<(String, String), String>) -> 
         return Ok(());
     }
     let mut origin: Origin = serde_json::from_str(&text(row, "payload"))?;
-    if origin.source.page == "listening" {
-        if let Some(key) = mapping.get(&("audio".into(), origin.source.key.clone())) {
-            origin.source.key = key.clone();
-            row.insert("payload".into(), json!(serde_json::to_string(&origin)?));
-        }
+    if origin.source.page == "listening"
+        && let Some(key) = mapping.get(&("audio".into(), origin.source.key.clone()))
+    {
+        origin.source.key = key.clone();
+        row.insert("payload".into(), json!(serde_json::to_string(&origin)?));
     }
     Ok(())
 }

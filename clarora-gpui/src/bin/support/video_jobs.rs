@@ -137,9 +137,8 @@ pub fn run(lib: &Library, fixture: &std::path::Path, results: &mut Vec<Value>) -
     );
     second.cancel.store(true, Ordering::SeqCst);
     let cancelled = loop {
-        match second.events.recv_timeout(Duration::from_secs(15))? {
-            Event::Finished(r) => break r,
-            _ => {}
+        if let Event::Finished(r) = second.events.recv_timeout(Duration::from_secs(15))? {
+            break r;
         }
     };
     ensure!(

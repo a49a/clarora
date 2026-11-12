@@ -621,7 +621,7 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         current: Some(0),
     };
     let mut collection = clarora_gpui::video_library::Collection::default();
-    collection.add(&[path.clone()], Some(&series))?;
+    collection.add(std::slice::from_ref(&path), Some(&series))?;
     collection.save(&va)?;
     let cues = clarora_gpui::subtitles::parse(
         "1\n00:00:00,000 --> 00:00:01,000\nPortable subtitle.\n跨设备字幕。\n",

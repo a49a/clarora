@@ -183,13 +183,12 @@ impl Library {
         let timestamp = graded_at.format("%Y-%m-%d %H:%M:%S").to_string();
         tx.execute("INSERT INTO review_schedule(card_kind,card_id,ease,interval_days,due_at,reps,lapses,last_graded_at,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(card_kind,card_id) DO UPDATE SET ease=excluded.ease,interval_days=excluded.interval_days,due_at=excluded.due_at,reps=excluded.reps,lapses=excluded.lapses,last_graded_at=excluded.last_graded_at,created_at=CASE WHEN review_schedule.reps=0 THEN excluded.created_at ELSE review_schedule.created_at END",params![card.kind,card.id,next_ease,days,due,reps+1.,lapses,timestamp,timestamp])?;
         tx.execute("INSERT INTO study_stats(day,review_count) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET review_count=review_count+1",[graded_at.with_timezone(&Local).format("%Y-%m-%d").to_string()])?;
-        if reps == 0. {
-            if let Some(index) = CardKind::ALL
+        if reps == 0.
+            && let Some(index) = CardKind::ALL
                 .iter()
                 .position(|kind| kind.as_str() == card.kind)
-            {
-                tx.execute("INSERT INTO app_settings(key,value) VALUES('review_new_card_next_kind',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[CardKind::ALL[(index + 1) % CardKind::ALL.len()].as_str()])?;
-            }
+        {
+            tx.execute("INSERT INTO app_settings(key,value) VALUES('review_new_card_next_kind',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[CardKind::ALL[(index + 1) % CardKind::ALL.len()].as_str()])?;
         }
         tx.commit()?;
         Ok(due)

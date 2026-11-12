@@ -716,7 +716,10 @@ impl RenderWorker {
                         // Write directly into the immutable image's eventual owner.
                         // There is no scratch-frame -> image full-frame copy.
                         let mut buffer = vec![0u8; stride * height as usize];
-                        ensure!((buffer.as_ptr() as usize) % 4 == 0, "视频帧像素未对齐");
+                        ensure!(
+                            (buffer.as_ptr() as usize).is_multiple_of(4),
+                            "视频帧像素未对齐"
+                        );
                         let mut params = [
                             Param {
                                 kind: 17,
@@ -1196,11 +1199,10 @@ fn worker(
                             && repeat.state.request_id == request_id
                             && repeat.state.path == path
                             && native_path(&api, handle) == path
-                    }) {
-                        if let Err(error) = seek_running_sentence_repeat(&api, handle, repeat, time)
-                        {
-                            shared.lock().unwrap().error = error.to_string();
-                        }
+                    }) && let Err(error) =
+                        seek_running_sentence_repeat(&api, handle, repeat, time)
+                    {
+                        shared.lock().unwrap().error = error.to_string();
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}

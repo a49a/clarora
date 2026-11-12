@@ -442,7 +442,7 @@ impl AppView {
                         };
                         self.surface_menu(
                             "ai-provider",
-                            format!("服务类型：{} ▾", ai::provider_label(&selected)),
+                            format!("服务类型：{} ▾", ai::provider_label(selected)),
                             vec![
                                 (
                                     ai::provider_label(ai::PROVIDER_CUSTOM).into(),

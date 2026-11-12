@@ -504,29 +504,28 @@ pub fn save(lib: &Library, entry: &Entry) -> Result<Entry> {
     } else {
         None
     };
-    if let Some(group_id) = &entry.group_id {
-        if previous.as_ref().and_then(|entry| entry.group_id.as_ref()) != Some(group_id) {
-            ensure!(
-                tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM ai_records WHERE id=? AND kind='writing_group')",
-                    [group_id],
-                    |row| row.get::<_, bool>(0)
-                )?,
-                "目标写作分组不存在，请刷新列表"
-            );
-        }
+    if let Some(group_id) = &entry.group_id
+        && previous.as_ref().and_then(|entry| entry.group_id.as_ref()) != Some(group_id)
+    {
+        ensure!(
+            tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM ai_records WHERE id=? AND kind='writing_group')",
+                [group_id],
+                |row| row.get::<_, bool>(0)
+            )?,
+            "目标写作分组不存在，请刷新列表"
+        );
     }
-    if let Some(previous) = &previous {
-        if previous.title == entry.title
-            && previous.prompt == entry.prompt
-            && previous.prompt_markdown == entry.prompt_markdown
-            && previous.answer == entry.answer
-            && previous.minimum_words == entry.minimum_words
-            && previous.tags == entry.tags
-            && previous.group_id == entry.group_id
-        {
-            return Ok(previous.clone());
-        }
+    if let Some(previous) = &previous
+        && previous.title == entry.title
+        && previous.prompt == entry.prompt
+        && previous.prompt_markdown == entry.prompt_markdown
+        && previous.answer == entry.answer
+        && previous.minimum_words == entry.minimum_words
+        && previous.tags == entry.tags
+        && previous.group_id == entry.group_id
+    {
+        return Ok(previous.clone());
     }
     let time = timestamp();
     let saved = Entry {

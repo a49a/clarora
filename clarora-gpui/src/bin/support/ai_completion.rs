@@ -68,10 +68,11 @@ impl Fixture {
                     "application/json"
                 };
                 // Oversized responses can be rejected while the server is still sending.
-                if let Err(error) = response(&mut socket, 200, kind, body.as_bytes()) {
-                    if !case.starts_with("oversize-") && case != "cancel-progress" {
-                        return Err(error);
-                    }
+                if let Err(error) = response(&mut socket, 200, kind, body.as_bytes())
+                    && !case.starts_with("oversize-")
+                    && case != "cancel-progress"
+                {
+                    return Err(error);
                 }
             }
             Ok(())
