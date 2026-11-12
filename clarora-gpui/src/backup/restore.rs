@@ -4,7 +4,11 @@ use super::check_cancel;
 use super::manifest::{
     LibraryState, Manifest, map_manifest, map_media, material_context, safe_setting,
 };
-use crate::data::{Library, Row, id, insert, schema::TABLES, text};
+use crate::data::{
+    Library, Row, id, insert,
+    schema::{OPTIONAL_TABLES, TABLES},
+    text,
+};
 use crate::process::Cancel;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -188,6 +192,9 @@ fn merge_snapshot(
     check_cancel(cancel)?;
     tx.busy_timeout(Duration::from_secs(10))?;
     let mut data = original_data.clone();
+    for table in OPTIONAL_TABLES {
+        data.entry((*table).into()).or_default();
+    }
     let mut library = library.cloned();
     if let Some(library) = &mut library {
         prepare_library(&tx, &mut data, library, cancel)?;
@@ -256,10 +263,11 @@ fn merge_snapshot(
                     .ok();
             }
             let key = if let Some(existing) = existing {
-                if table == "ai_records" && text(&row, "kind") == "chat" {
-                    if let Some(library) = &library {
-                        repair_chat_context(&tx, &existing, &text(&row, "payload"), library)?;
-                    }
+                if table == "ai_records"
+                    && text(&row, "kind") == "chat"
+                    && let Some(library) = &library
+                {
+                    repair_chat_context(&tx, &existing, &text(&row, "payload"), library)?;
                 }
                 existing
             } else {
@@ -304,13 +312,13 @@ fn merge_snapshot(
         let mut row = row.clone();
         let key = text(&row, "key");
         let mut payload: Value = serde_json::from_str(&text(&row, "payload"))?;
-        if let Some((kind, old)) = key.split_once(':') {
-            if let Some(mapped) = mapping.get(&(kind.into(), old.into())) {
-                let key = format!("{kind}:{mapped}");
-                payload["key"] = json!(key);
-                row.insert("key".into(), json!(key));
-                row.insert("payload".into(), json!(payload.to_string()));
-            }
+        if let Some((kind, old)) = key.split_once(':')
+            && let Some(mapped) = mapping.get(&(kind.into(), old.into()))
+        {
+            let key = format!("{kind}:{mapped}");
+            payload["key"] = json!(key);
+            row.insert("key".into(), json!(key));
+            row.insert("payload".into(), json!(payload.to_string()));
         }
         insert(&tx, "discover_favorites", &row, true)?;
     }
@@ -503,14 +511,14 @@ fn prepare_library(
             current.selected = imported.selected.clone();
         }
         let value = setting_in(db, "last_video_position")?;
-        if let Ok(mut position) = serde_json::from_str::<Value>(&value) {
-            if let Some(path) = position["path"].as_str().and_then(|old| repaired.get(old)) {
-                position["path"] = json!(path);
-                db.execute(
-                    "UPDATE app_settings SET value=? WHERE key='last_video_position'",
-                    [position.to_string()],
-                )?;
-            }
+        if let Ok(mut position) = serde_json::from_str::<Value>(&value)
+            && let Some(path) = position["path"].as_str().and_then(|old| repaired.get(old))
+        {
+            position["path"] = json!(path);
+            db.execute(
+                "UPDATE app_settings SET value=? WHERE key='last_video_position'",
+                [position.to_string()],
+            )?;
         }
         current.validate()?;
         library.videos = Some(current);
@@ -555,14 +563,13 @@ fn prepare_library(
         .flatten()
         .filter(|row| text(row, "kind") == "chat")
     {
-        if let Ok(mut payload) = serde_json::from_str::<Value>(&text(row, "payload")) {
-            if let Some(context) = payload["context"]
+        if let Ok(mut payload) = serde_json::from_str::<Value>(&text(row, "payload"))
+            && let Some(context) = payload["context"]
                 .as_str()
                 .and_then(|old| contexts.get(old))
-            {
-                payload["context"] = json!(context);
-                row.insert("payload".into(), json!(payload.to_string()));
-            }
+        {
+            payload["context"] = json!(context);
+            row.insert("payload".into(), json!(payload.to_string()));
         }
     }
     let mut drafts = vec![];
@@ -602,13 +609,13 @@ fn merge_library(
         check_cancel(cancel)?;
         ensure!(safe_setting(key), "备份包含不允许的设置");
         let (mut key, mut value) = (key.clone(), value.clone());
-        if let Some(id) = key.strip_prefix("key_points_") {
-            if let Some(mapped) = mapping.get(&("audio".into(), id.into())) {
-                key = format!("key_points_{mapped}");
-            }
+        if let Some(id) = key.strip_prefix("key_points_")
+            && let Some(mapped) = mapping.get(&("audio".into(), id.into()))
+        {
+            key = format!("key_points_{mapped}");
         }
-        if ["library_group", "last_listening_audio"].contains(&key.as_str()) {
-            if let Some(mapped) = mapping.get(&(
+        if ["library_group", "last_listening_audio"].contains(&key.as_str())
+            && let Some(mapped) = mapping.get(&(
                 if key == "library_group" {
                     "practice"
                 } else {
@@ -616,9 +623,9 @@ fn merge_library(
                 }
                 .into(),
                 value.clone(),
-            )) {
-                value = mapped.clone();
-            }
+            ))
+        {
+            value = mapped.clone();
         }
         if key == "last_listening_position" {
             let mut position: Value = serde_json::from_str(&value)?;
@@ -649,7 +656,7 @@ pub fn import_sqlite(lib: &Library, path: &Path) -> Result<usize> {
             [table],
             |r| r.get(0),
         )?;
-        if exists == 0 && table == "sentence_cards" {
+        if exists == 0 && (table == "sentence_cards" || OPTIONAL_TABLES.contains(&table)) {
             data.insert(table.to_string(), vec![]);
             continue;
         }

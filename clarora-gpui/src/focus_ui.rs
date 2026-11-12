@@ -155,23 +155,21 @@ impl AppView {
                     )
                 },
             )
-            .when(self.timer.active_round() || self.focus_note_open, |row| {
-                row.child(
-                    self.button(
-                        "focus-note-toggle",
-                        if self.focus_note_open {
-                            "收起想法"
-                        } else {
-                            "记想法"
-                        },
-                        Action::FocusNoteToggle,
-                        cx,
-                    )
-                    .outline()
-                    .selected(self.focus_note_open)
-                    .tooltip("专注时想到的内容先记在这里，结束后仍会保留"),
+            .child(
+                self.button(
+                    "focus-note-toggle",
+                    if self.focus_note_open {
+                        "收起想法"
+                    } else {
+                        "想法"
+                    },
+                    Action::FocusNoteToggle,
+                    cx,
                 )
-            });
+                .outline()
+                .selected(self.focus_note_open)
+                .tooltip("随时记录或查看专注想法；内容和来源都保存在本机"),
+            );
         div()
             .id("global-focus-timer")
             .flex_shrink_0()
@@ -205,8 +203,14 @@ impl AppView {
     }
 
     fn focus_note_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut notes = div().flex().flex_col().gap_2().id("focus-recent-notes");
-        for note in self.focus_notes.iter().take(3) {
+        let mut notes = div()
+            .id("focus-recent-notes")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .max_h(px(220.))
+            .overflow_y_scroll();
+        for note in self.focus_notes.iter() {
             let time = chrono::DateTime::from_timestamp_millis(note.created_ms as i64)
                 .map(|date| {
                     date.with_timezone(&chrono::Local)
@@ -401,6 +405,14 @@ impl AppView {
                 Some(3) => "疲劳",
                 _ => "未评价",
             };
+            let interval = if round.distractions == 0 {
+                "本轮无分心".to_string()
+            } else {
+                format!(
+                    "每 {:.1} 分钟分心一次",
+                    (round.actual_ms as f64 / 60_000.) / round.distractions as f64
+                )
+            };
             view = view.child(
                 div()
                     .border_t_1()
@@ -408,7 +420,7 @@ impl AppView {
                     .pt_2()
                     .text_sm()
                     .child(format!(
-                        "{date} · 实际 {} / 目标 {} 分钟 · 分心 {} 次 · {fatigue}",
+                        "{date} · 实际 {} / 目标 {} 分钟 · 分心 {} 次 · {interval} · {fatigue}",
                         clock((round.actual_ms / 1000) as f64),
                         round.goal_ms / 60_000,
                         round.distractions
@@ -433,7 +445,7 @@ impl AppView {
                     .child("专注时点顶部「记想法」，临时的念头、疑问和待办会保存在这里。"),
             );
         }
-        for (i, note) in self.focus_notes.iter().take(10).enumerate() {
+        for (i, note) in self.focus_notes.iter().enumerate() {
             let time = chrono::DateTime::from_timestamp_millis(note.created_ms as i64)
                 .map(|date| {
                     date.with_timezone(&chrono::Local)

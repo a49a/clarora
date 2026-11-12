@@ -158,6 +158,28 @@ pub(crate) const TABLES: &[TableSpec] = &[
         media: &[],
     },
     TableSpec {
+        name: "focus_sessions",
+        columns: &[
+            "id",
+            "ended_ms",
+            "goal_ms",
+            "actual_ms",
+            "distractions",
+            "fatigue",
+            "review_pending",
+        ],
+        sync_key: &["id"],
+        card: None,
+        media: &[],
+    },
+    TableSpec {
+        name: "focus_notes",
+        columns: &["id", "created_ms", "body"],
+        sync_key: &["id"],
+        card: None,
+        media: &[],
+    },
+    TableSpec {
         name: "discover_favorites",
         columns: &["key", "payload"],
         sync_key: &["key"],
@@ -180,6 +202,10 @@ pub(crate) const SETTINGS: TableSpec = TableSpec {
     card: None,
     media: &[],
 };
+
+/// Tables added after the original portable backup format. Older ZIP/RN
+/// snapshots do not contain them, so import treats a missing table as empty.
+pub(crate) const OPTIONAL_TABLES: &[&str] = &["focus_sessions", "focus_notes"];
 
 pub(crate) fn table_spec(name: &str) -> Option<&'static TableSpec> {
     TABLES.iter().find(|spec| spec.name == name)

@@ -2,7 +2,7 @@
 use super::check_cancel;
 use crate::data::{
     Library, Row, id,
-    schema::{PREFERENCES, TABLES},
+    schema::{OPTIONAL_TABLES, PREFERENCES, TABLES},
     text,
 };
 use crate::process::Cancel;
@@ -216,10 +216,10 @@ fn library_state(
         .flatten()
         .filter(|row| text(row, "kind") == "chat")
     {
-        if let Ok(payload) = serde_json::from_str::<Value>(&text(row, "payload")) {
-            if let Some(context) = payload["context"].as_str() {
-                contexts.insert(context.to_string());
-            }
+        if let Ok(payload) = serde_json::from_str::<Value>(&text(row, "payload"))
+            && let Some(context) = payload["context"].as_str()
+        {
+            contexts.insert(context.to_string());
         }
     }
     for key in settings.keys() {
@@ -273,12 +273,11 @@ fn library_state(
                 video: video.to_string_lossy().into_owned(),
                 subtitle: subtitle.clone(),
             });
-            if !contexts.is_empty() {
-                if let Ok(material) =
+            if !contexts.is_empty()
+                && let Ok(material) =
                     crate::video_qa::build(&video, &cues, crate::video_qa::Scope::All, 0., "")
-                {
-                    add("video", &video, Some(-1), &material.key);
-                }
+            {
+                add("video", &video, Some(-1), &material.key);
             }
             for index in 0..if contexts.is_empty() { 0 } else { cues.len() } {
                 check_cancel(cancel)?;
@@ -470,6 +469,9 @@ pub fn validate(manifest: &mut Manifest) -> Result<()> {
         "备份版本或标识错误"
     );
     manifest.data.entry("sentence_cards".into()).or_default();
+    for table in OPTIONAL_TABLES {
+        manifest.data.entry((*table).into()).or_default();
+    }
     for spec in TABLES {
         let table = spec.name;
         let columns = spec.columns;

@@ -100,13 +100,13 @@ impl Cloud {
                         body.extend_from_slice(&chunk[..n]);
                     }
                     let body = if method == "PUT" {
-                        if key.contains("/media/") {
-                            if let Some(path) = mutation.lock().unwrap().take() {
-                                fs::OpenOptions::new()
-                                    .append(true)
-                                    .open(path)?
-                                    .write_all(b"changed during upload")?;
-                            }
+                        if key.contains("/media/")
+                            && let Some(path) = mutation.lock().unwrap().take()
+                        {
+                            fs::OpenOptions::new()
+                                .append(true)
+                                .open(path)?
+                                .write_all(b"changed during upload")?;
                         }
                         store.lock().unwrap().insert(key, body);
                         vec![]
@@ -263,6 +263,24 @@ fn assert_restored(
             && lib.setting("command")?.is_empty(),
         "sensitive settings restored"
     );
+    let focus: (i64, i64, i64, i64, Option<i64>, i64) = lib.db()?.query_row(
+        "SELECT ended_ms,goal_ms,actual_ms,distractions,fatigue,review_pending FROM focus_sessions WHERE id='backup-focus'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+    )?;
+    ensure!(
+        focus == (1_760_000_000_000, 1_500_000, 1_320_000, 3, Some(2), 1),
+        "focus session was not restored: {focus:?}"
+    );
+    let note: String = lib.db()?.query_row(
+        "SELECT body FROM focus_notes WHERE id='backup-note'",
+        [],
+        |row| row.get(0),
+    )?;
+    ensure!(
+        note == "需要在恢复后保留的想法",
+        "focus note was not restored"
+    );
     if decode {
         let player = Player::without_audio_device();
         player.open_range(&video.path, 0.25, 0., true);
@@ -382,6 +400,18 @@ pub fn run(parent: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result
         source.set_setting(key, "PRIVATE_SENTINEL_SHOULD_NOT_EXPORT")?;
     }
     source.db()?.execute("INSERT INTO local_credentials(name,value) VALUES('sentinel','PRIVATE_SENTINEL_SHOULD_NOT_EXPORT')",[])?;
+    source.db()?.execute(
+        "INSERT INTO focus_sessions(id,ended_ms,goal_ms,actual_ms,distractions,fatigue,review_pending) VALUES(?,?,?,?,?,?,?)",
+        rusqlite::params!["backup-focus", 1_760_000_000_000_i64, 1_500_000_i64, 1_320_000_i64, 3_i64, 2_i64, 1_i64],
+    )?;
+    source.db()?.execute(
+        "INSERT INTO focus_notes(id,created_ms,body) VALUES(?,?,?)",
+        rusqlite::params![
+            "backup-note",
+            1_760_000_000_000_i64,
+            "需要在恢复后保留的想法"
+        ],
+    )?;
     source.set_setting("video_subtitle_size", "28")?;
     let archive = root.join("full-library.zip");
     backup::export_local_cancellable(&source, &archive, &cancel)?;
@@ -402,6 +432,15 @@ pub fn run(parent: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result
             .as_object()
             .is_some_and(|s| s.len() == 2),
         "B站云备份没有保存分P来源链接"
+    );
+    ensure!(
+        cloud_manifest["data"]["focus_sessions"]
+            .as_array()
+            .is_some_and(|rows| rows.len() == 1)
+            && cloud_manifest["data"]["focus_notes"]
+                .as_array()
+                .is_some_and(|rows| rows.len() == 1),
+        "云备份没有包含专注记录或想法"
     );
     let video_bytes = fs::read(fixture)?;
     ensure!(

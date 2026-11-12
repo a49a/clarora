@@ -82,7 +82,7 @@ impl Command {
                 let body = app.value("focus_note", cx);
                 let note = focus_notes::save(&app.lib, &body, now)?;
                 app.focus_notes.insert(0, note);
-                app.focus_notes.truncate(20);
+                app.focus_notes.truncate(100);
                 app.set("focus_note", "", window, cx);
                 app.report_status(
                     FeedbackKind::Info,

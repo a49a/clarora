@@ -100,6 +100,14 @@ impl AppView {
             // Starting/resuming focus is an explicit return to video learning.
             // Window activation/fullscreen do not change GPUI's input focus.
             window.focus(&self.focus);
+            // A pending focus update from the assistant input can be applied
+            // after this handler returns. Reassert on the next frame so focus
+            // mode never leaves keyboard input in the now-hidden editor.
+            cx.defer_in(window, |app, window, cx| {
+                if app.focus_mode.active() && app.page == "video" && !window.has_active_dialog(cx) {
+                    window.focus(&app.focus);
+                }
+            });
         }
         self.timer_seconds = self.timer.display_seconds(now);
         if starting {
@@ -597,15 +605,15 @@ pub(super) mod native {
         {
             use objc2::{msg_send, runtime::AnyObject};
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            if let Ok(handle) = HasWindowHandle::window_handle(window) {
-                if let RawWindowHandle::AppKit(h) = handle.as_raw() {
-                    unsafe {
-                        let view = h.ns_view.as_ptr() as *mut AnyObject;
-                        let panel: *mut AnyObject = msg_send![view, window];
-                        let _: () = msg_send![panel,setLevel:1000isize];
-                        let _: () = msg_send![panel,setCollectionBehavior:(1usize|(1<<8))];
-                        let _: () = msg_send![panel,setHidesOnDeactivate:true];
-                    }
+            if let Ok(handle) = HasWindowHandle::window_handle(window)
+                && let RawWindowHandle::AppKit(h) = handle.as_raw()
+            {
+                unsafe {
+                    let view = h.ns_view.as_ptr() as *mut AnyObject;
+                    let panel: *mut AnyObject = msg_send![view, window];
+                    let _: () = msg_send![panel,setLevel:1000isize];
+                    let _: () = msg_send![panel,setCollectionBehavior:(1usize|(1<<8))];
+                    let _: () = msg_send![panel,setHidesOnDeactivate:true];
                 }
             }
         }

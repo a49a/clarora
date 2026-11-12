@@ -291,9 +291,20 @@ impl Probe {
                 app.inputs["question"].update(cx, |state, cx| state.focus(w, cx));
                 app.handle(Action::FocusResume, w, cx);
                 ensure!(
-                    app.focus_mode.active() && w.focused(cx) == Some(app.focus.clone()),
-                    "FocusStart left video keyboard focus in the old input/menu"
+                    app.focus_mode.active(),
+                    "FocusStart did not activate strict focus: {}",
+                    app.status
                 );
+                // The assistant input may have a focus update queued behind
+                // this handler. Let the loop apply the deferred video focus
+                // instead of asserting synchronously on a racy frame.
+                self.stage = 17;
+                return Ok(false);
+            }
+            17 => {
+                if w.focused(cx) != Some(app.focus.clone()) {
+                    return Ok(false);
+                }
                 Self::keys(w, cx, &["right"]);
                 self.stage = 4;
             }
@@ -340,9 +351,17 @@ impl Probe {
                 app.stop_focus_mode(w, cx);
                 app.handle(Action::FocusResume, w, cx);
                 ensure!(
-                    app.focus_mode.active() && w.focused(cx) == Some(app.focus.clone()),
-                    "FocusResume did not restore video keyboard focus"
+                    app.focus_mode.active(),
+                    "FocusResume did not activate strict focus: {}",
+                    app.status
                 );
+                self.stage = 18;
+                return Ok(false);
+            }
+            18 => {
+                if w.focused(cx) != Some(app.focus.clone()) {
+                    return Ok(false);
+                }
                 Self::keys(w, cx, &["left"]);
                 self.stage = 7;
             }
@@ -674,8 +693,7 @@ impl Probe {
                             let height = f32::from(measured.height);
                             ensure!(
                                 f32::from(measured.width) <= width + 1.
-                                    && height >= 30.
-                                    && height <= 160.,
+                                    && (30. ..=160.).contains(&height),
                                 "focus bar overflow: {name}, {mode:?}, fullscreen={full}, width={width}, measured={measured:?}"
                             );
                             rows.push(json!({"bar":name,"theme":format!("{mode:?}"),"fullscreen":full,"available_width":width,"width":f32::from(measured.width),"height":height}));

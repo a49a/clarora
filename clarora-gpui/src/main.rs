@@ -388,7 +388,7 @@ impl AppView {
                     None,
                 ),
             };
-        let focus_notes = focus_notes::list(&lib, 20).unwrap_or_default();
+        let focus_notes = focus_notes::list(&lib, 100).unwrap_or_default();
         let mut this = Self {
             #[cfg(debug_assertions)]
             diagnostic: None,

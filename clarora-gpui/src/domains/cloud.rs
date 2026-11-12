@@ -1,14 +1,14 @@
 //! Cloud commands own their action effects and execution.
 use super::*;
 pub(super) enum Command {
-    CloudList,
-    CloudBackup,
-    CloudRestore(String),
-    CloudSync,
-    CloudAutoSync,
-    CloudRetention(u8, usize),
-    CloudCleanupPreview,
-    CloudCleanup,
+    List,
+    Backup,
+    Restore(String),
+    Sync,
+    AutoSync,
+    Retention(u8, usize),
+    CleanupPreview,
+    Cleanup,
 }
 impl Command {
     pub(super) fn effects(&self, _app: &AppView) -> Effects {
@@ -21,7 +21,7 @@ impl Command {
         cx: &mut Context<AppView>,
     ) -> Result<()> {
         match self {
-            Command::CloudList => app.begin_scoped(
+            Command::List => app.begin_scoped(
                 TaskScope::Application,
                 "正在读取备份版本…",
                 move |lib, cancel, _| {
@@ -31,7 +31,7 @@ impl Command {
                 },
             ),
 
-            Command::CloudBackup => {
+            Command::Backup => {
                 ensure!(
                     !app.tasks.foreground.is_running(),
                     "已有任务正在执行，请完成或取消后重试"
@@ -75,7 +75,7 @@ impl Command {
                 app.tasks.notice = Some(TaskNotice::new("云备份", "正在整理资料和附件…"));
             }
 
-            Command::CloudRestore(key) => app.begin_scoped(
+            Command::Restore(key) => app.begin_scoped(
                 TaskScope::Application,
                 "正在校验并恢复备份…",
                 move |lib, cancel, _| {
@@ -87,9 +87,9 @@ impl Command {
                 },
             ),
 
-            Command::CloudSync => app.cloud_sync(window, cx)?,
+            Command::Sync => app.cloud_sync(window, cx)?,
 
-            Command::CloudAutoSync => {
+            Command::AutoSync => {
                 app.cloud.automatic = !app.cloud.automatic;
                 app.lib.set_setting(
                     "cloud_auto_sync_v3",
@@ -109,7 +109,7 @@ impl Command {
                 );
             }
 
-            Command::CloudRetention(which, value) => {
+            Command::Retention(which, value) => {
                 match which {
                     0 => {
                         ensure!((1..=10000).contains(&value), "保留份数无效");
@@ -132,7 +132,7 @@ impl Command {
                 app.cloud.plan = None;
             }
 
-            Command::CloudCleanupPreview => {
+            Command::CleanupPreview => {
                 let policy = app.cloud.retention.clone();
                 app.begin_scoped(
                     TaskScope::Application,
@@ -145,7 +145,7 @@ impl Command {
                 );
             }
 
-            Command::CloudCleanup => {
+            Command::Cleanup => {
                 let plan = app.cloud.plan.clone().context("请先预览可清理内容")?;
                 app.begin_scoped(
                     TaskScope::Application,
@@ -276,30 +276,31 @@ impl Completed {
             }
 
             Completed::LibraryRestored(_count, videos) => {
-                if app.video.path.as_ref().is_none_or(|path| !path.is_file()) {
-                    if let Some(video) = videos.active().filter(|v| v.path.is_file()) {
-                        app.video.path = Some(video.path.clone());
-                        app.video.series = video.series.clone();
-                    }
+                if app.video.path.as_ref().is_none_or(|path| !path.is_file())
+                    && let Some(video) = videos.active().filter(|v| v.path.is_file())
+                {
+                    app.video.path = Some(video.path.clone());
+                    app.video.series = video.series.clone();
                 }
                 app.video.collection = videos;
-                if app.pdf_path.as_ref().is_none_or(|path| !path.is_file()) {
-                    if let Ok(saved) = app.lib.setting("pdf_current") {
-                        if let Ok(value) = serde_json::from_str::<Value>(&saved) {
-                            let path = PathBuf::from(value["path"].as_str().unwrap_or(""));
-                            if path.is_file() && ebook::supported(&path) {
-                                app.pdf_path = Some(path);
-                                app.pdf_page =
-                                    value["page"].as_u64().unwrap_or(0).min(u16::MAX as u64) as u16;
-                                app.pdf_width =
-                                    value["width"].as_i64().unwrap_or(1000).clamp(300, 3000) as i32;
-                                app.pdf_image = None;
-                                app.ebook_reading = None;
-                                app.document_text.clear();
-                            }
-                        }
+                if app.pdf_path.as_ref().is_none_or(|path| !path.is_file())
+                    && let Ok(saved) = app.lib.setting("pdf_current")
+                    && let Ok(value) = serde_json::from_str::<Value>(&saved)
+                {
+                    let path = PathBuf::from(value["path"].as_str().unwrap_or(""));
+                    if path.is_file() && ebook::supported(&path) {
+                        app.pdf_path = Some(path);
+                        app.pdf_page =
+                            value["page"].as_u64().unwrap_or(0).min(u16::MAX as u64) as u16;
+                        app.pdf_width =
+                            value["width"].as_i64().unwrap_or(1000).clamp(300, 3000) as i32;
+                        app.pdf_image = None;
+                        app.ebook_reading = None;
+                        app.document_text.clear();
                     }
                 }
+                app.focus_notes = focus_notes::list(&app.lib, 100).unwrap_or_default();
+                app.refresh_view_data();
                 app.report_status(FeedbackKind::Info, "资料、附件与学习进度已恢复".into());
             }
         }
