@@ -573,6 +573,13 @@ impl AppView {
             .and_then(|value| value.parse::<u8>().ok())
             .filter(|size| [14, 16, 20, 24, 28, 32].contains(size))
             .unwrap_or(16);
+        this.video.repeat_tail_ms = this
+            .lib
+            .setting("video_repeat_tail_ms")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|ms| [200, 350, 500, 650].contains(ms))
+            .unwrap_or(350);
         this.audio.font_size = this
             .lib
             .setting("subtitle_font_size")

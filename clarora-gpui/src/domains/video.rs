@@ -6,6 +6,7 @@ pub(super) enum Command {
     VideoExitFullscreen,
     VideoPrecision,
     VideoSubtitleSize(u8),
+    VideoRepeatTail(u16),
     VideoCaptions,
     VideoTranslate,
     VideoClearLoop,
@@ -49,6 +50,7 @@ impl Command {
                     Command::VideoTimelineSeek(..)
                         | Command::VideoPrecision
                         | Command::VideoSubtitleSize(..)
+                        | Command::VideoRepeatTail(..)
                         | Command::VideoCaptions
                         | Command::VideoClearLoop
                         | Command::VideoRepeatCue
@@ -158,6 +160,16 @@ impl Command {
                 app.lib
                     .set_setting("video_subtitle_size", &size.to_string())?;
                 app.video.subtitle_size = size;
+            }
+
+            Command::VideoRepeatTail(ms) => {
+                ensure!(
+                    [200, 350, 500, 650].contains(&ms),
+                    "逐句尾音需要 0.2–0.65 秒"
+                );
+                app.lib
+                    .set_setting("video_repeat_tail_ms", &ms.to_string())?;
+                app.video.repeat_tail_ms = ms;
             }
 
             Command::VideoPrecision => app.video.precision = !app.video.precision,
@@ -560,10 +572,10 @@ impl Command {
 
             Command::VideoFollow => {
                 app.video.follow = !app.video.follow;
-                if app.video.follow {
-                    if let Some(i) = app.video.active {
-                        app.video.center.request(i);
-                    }
+                if app.video.follow
+                    && let Some(i) = app.video.active
+                {
+                    app.video.center.request(i);
                 }
             }
 
@@ -709,13 +721,12 @@ impl Completed {
 
             Completed::PartVideo(mut series, index, path, new_file, origin, from_end) => {
                 if context.cancelled {
-                    if new_file {
-                        if let Some(parent) = path
+                    if new_file
+                        && let Some(parent) = path
                             .parent()
                             .filter(|p| p.starts_with(app.lib.root.join("downloads")))
-                        {
-                            let _ = fs::remove_dir_all(parent);
-                        }
+                    {
+                        let _ = fs::remove_dir_all(parent);
                     }
                     app.report_status(FeedbackKind::Info, "已取消分P下载".into());
                 } else {
@@ -730,7 +741,7 @@ impl Completed {
                     }
                     let saved = (|| -> Result<()> {
                         let mut videos = video_library::Collection::load(&app.lib)?;
-                        videos.add(&[path.clone()], Some(&series))?;
+                        videos.add(std::slice::from_ref(&path), Some(&series))?;
                         videos.save(&app.lib)?;
                         app.video.collection = videos;
                         Ok(())
@@ -820,20 +831,20 @@ pub(super) fn leave(app: &mut AppView, next: &str) {
     }
 }
 pub(super) fn enter(app: &mut AppView) {
-    if app.page == "video" {
-        if let Some(path) = app.video.path.clone() {
-            let position = app
-                .lib
-                .setting("last_video_position")
-                .ok()
-                .and_then(|value| serde_json::from_str::<Value>(&value).ok())
-                .filter(|value| value["path"].as_str() == path.to_str())
-                .and_then(|value| value["position"].as_f64())
-                .filter(|position| position.is_finite() && *position >= 0.)
-                .unwrap_or(0.);
-            app.open_at(path, position, true);
-            app.video.tab = 3;
-        }
+    if app.page == "video"
+        && let Some(path) = app.video.path.clone()
+    {
+        let position = app
+            .lib
+            .setting("last_video_position")
+            .ok()
+            .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+            .filter(|value| value["path"].as_str() == path.to_str())
+            .and_then(|value| value["position"].as_f64())
+            .filter(|position| position.is_finite() && *position >= 0.)
+            .unwrap_or(0.);
+        app.open_at(path, position, true);
+        app.video.tab = 3;
     }
 }
 

@@ -562,6 +562,14 @@ impl AppView {
                 )
             })
             .collect::<Vec<_>>();
+        options.extend([200, 350, 500, 650].into_iter().map(|ms| {
+            (
+                format!("逐句尾音 {:.2}s", ms as f64 / 1000.),
+                Action::VideoRepeatTail(ms),
+                self.video.repeat_tail_ms == ms,
+                false,
+            )
+        }));
         options.extend(
             [("关闭循环", 0), ("单集循环", 1), ("A–B 片段循环", 2)]
                 .into_iter()

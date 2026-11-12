@@ -14,6 +14,8 @@ pub struct Session {
     pub range: (f64, f64),
     pub request_id: u64,
     completed: bool,
+    pad_end: bool,
+    padding: f64,
 }
 
 /// Human-readable label for finite sentence repetition counts.
@@ -43,6 +45,11 @@ pub enum Transition {
     Completed,
 }
 
+/// A small tail after the subtitle timestamp so final consonants such as the
+/// English plural "s" are not cut off. It is clamped before the next cue.
+pub const END_PADDING: f64 = 0.35;
+const END_GAP: f64 = 0.03;
+
 fn range(cue: &Cue, duration: f64) -> Option<(f64, f64)> {
     let end = cue.end.min(duration);
     (duration.is_finite()
@@ -52,6 +59,23 @@ fn range(cue: &Cue, duration: f64) -> Option<(f64, f64)> {
         && cue.start >= 0.
         && end > cue.start)
         .then_some((cue.start, end))
+}
+
+/// Playback range: the subtitle interval plus a quiet tail, bounded by the
+/// next valid cue so one sentence does not swallow the start of the next.
+fn playback_range(cues: &[Cue], index: usize, duration: f64, padding: f64) -> Option<(f64, f64)> {
+    let cue = cues.get(index)?;
+    let (start, cue_end) = range(cue, duration)?;
+    let next_start = cues[index + 1..]
+        .iter()
+        .filter_map(|cue| range(cue, duration).map(|(start, _)| start))
+        .find(|next| *next > start);
+    let mut end = (cue_end + padding.clamp(0.2, 0.65)).min(duration);
+    if let Some(next) = next_start {
+        end = end.min(next - END_GAP);
+    }
+    end = end.max(cue_end);
+    Some((start, end))
 }
 
 /// Move relative to the current subtitle; in a gap, choose the nearest cue in
@@ -107,10 +131,45 @@ impl Session {
         total: Option<u32>,
         duration: f64,
     ) -> Result<Self> {
-        let range = cues
-            .get(index)
-            .and_then(|cue| range(cue, duration))
-            .context("本句字幕时间无效")?;
+        Self::start_inner(player, path, cues, index, total, duration, false, 0.)
+    }
+
+    /// Video sentence playback uses a short quiet tail so final consonants are
+    /// not clipped. Audio keeps the exact subtitle bounds.
+    pub fn start_padded(
+        player: &Player,
+        path: &Path,
+        cues: &[Cue],
+        index: usize,
+        total: Option<u32>,
+        duration: f64,
+        padding: f64,
+    ) -> Result<Self> {
+        Self::start_inner(
+            player,
+            path,
+            cues,
+            index,
+            total,
+            duration,
+            true,
+            padding.clamp(0.2, 0.65),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // internal constructor: one call site per playback mode
+    fn start_inner(
+        player: &Player,
+        path: &Path,
+        cues: &[Cue],
+        index: usize,
+        total: Option<u32>,
+        duration: f64,
+        pad_end: bool,
+        padding: f64,
+    ) -> Result<Self> {
+        let range =
+            Self::range_for(cues, index, duration, pad_end, padding).context("本句字幕时间无效")?;
         let request_id = player.repeat_sentence(path, range.0, range.1, total)?;
         Ok(Self {
             index,
@@ -118,7 +177,23 @@ impl Session {
             range,
             request_id,
             completed: false,
+            pad_end,
+            padding,
         })
+    }
+
+    fn range_for(
+        cues: &[Cue],
+        index: usize,
+        duration: f64,
+        pad_end: bool,
+        padding: f64,
+    ) -> Option<(f64, f64)> {
+        if pad_end {
+            playback_range(cues, index, duration, padding)
+        } else {
+            cues.get(index).and_then(|cue| range(cue, duration))
+        }
     }
 
     pub fn neighbor(&self, cues: &[Cue], next: bool, duration: f64) -> Option<usize> {
@@ -141,11 +216,9 @@ impl Session {
         duration: f64,
     ) -> Result<()> {
         ensure!(
-            cues.get(self.index)
-                .and_then(|cue| range(cue, duration))
-                .is_some_and(|(a, b)| {
-                    (a - self.range.0).abs() < 0.001 && (b - self.range.1).abs() < 0.001
-                }),
+            Self::range_for(cues, self.index, duration, self.pad_end, self.padding).is_some_and(
+                |(a, b)| { (a - self.range.0).abs() < 0.001 && (b - self.range.1).abs() < 0.001 }
+            ),
             "字幕时间轴已更新，请重新选择重复句"
         );
         player.seek_sentence_repeat(path, self.request_id, position)
@@ -163,7 +236,16 @@ impl Session {
         let Some(index) = self.neighbor(cues, next, duration) else {
             return Ok(false);
         };
-        *self = Self::start(player, path, cues, index, self.total, duration)?;
+        *self = Self::start_inner(
+            player,
+            path,
+            cues,
+            index,
+            self.total,
+            duration,
+            self.pad_end,
+            self.padding,
+        )?;
         Ok(true)
     }
 
@@ -174,9 +256,13 @@ impl Session {
         cues: &[Cue],
         snapshot: &Playback,
     ) -> Result<Transition> {
-        let current = cues
-            .get(self.index)
-            .and_then(|cue| range(cue, snapshot.duration));
+        let current = Self::range_for(
+            cues,
+            self.index,
+            snapshot.duration,
+            self.pad_end,
+            self.padding,
+        );
         ensure!(
             current.is_some_and(
                 |(a, b)| (a - self.range.0).abs() <= 0.001 && (b - self.range.1).abs() <= 0.001

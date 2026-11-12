@@ -481,10 +481,10 @@ impl Probe {
                         .session
                         .video_sentence()
                         .is_some_and(|s| s.total.is_some() && s.index == 0)
-                    || !state
+                    || state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.total_plays == Some(3))
+                        .is_none_or(|s| s.total_plays != Some(3))
                 {
                     return Ok(false);
                 }
@@ -492,7 +492,7 @@ impl Probe {
                     app.media
                         .session
                         .video_sentence()
-                        .is_some_and(|s| s.range == (0.3, 0.34)),
+                        .is_some_and(|s| padded_range(s, 0.3, 0.34)),
                     "新P套用了上一P的范围或没有跳过无效首句"
                 );
                 ensure!(
@@ -538,10 +538,10 @@ impl Probe {
                         .session
                         .video_sentence()
                         .is_some_and(|s| s.total.is_some() && s.index == 0)
-                    || !state
+                    || state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.total_plays == Some(3))
+                        .is_none_or(|s| s.total_plays != Some(3))
                 {
                     return Ok(false);
                 }
@@ -611,11 +611,11 @@ impl Probe {
                     .media
                     .session
                     .video_sentence()
-                    .is_some_and(|s| s.total.is_some() && s.range == (0.4, 0.44))
-                    || !state
+                    .is_some_and(|s| s.total.is_some() && padded_range(s, 0.4, 0.44))
+                    || state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.total_plays == Some(3))
+                        .is_none_or(|s| s.total_plays != Some(3))
                 {
                     return Ok(false);
                 }
@@ -637,10 +637,10 @@ impl Probe {
                         .session
                         .video_sentence()
                         .is_some_and(|s| s.total.is_some() && s.index == 0)
-                    || !state
+                    || state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.total_plays == Some(3))
+                        .is_none_or(|s| s.total_plays != Some(3))
                 {
                     return Ok(false);
                 }
@@ -801,15 +801,13 @@ impl Probe {
             27 => {
                 let state = app.media.player.snapshot();
                 if state.path != path.to_string_lossy()
-                    || !app
-                        .media
-                        .session
-                        .video_sentence()
-                        .is_some_and(|s| s.total.is_some() && s.index == 2 && s.range == (8., 12.))
-                    || !state
+                    || !app.media.session.video_sentence().is_some_and(|s| {
+                        s.total.is_some() && s.index == 2 && padded_range(s, 8., 12.)
+                    })
+                    || state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.total_plays == Some(3))
+                        .is_none_or(|s| s.total_plays != Some(3))
                 {
                     return Ok(false);
                 }
@@ -831,12 +829,12 @@ impl Probe {
                 if app.tasks.foreground.is_running()
                     || state.path != other_video(&app.lib).to_string_lossy()
                     || !app.media.session.video_sentence().is_some_and(|s| {
-                        s.total.is_some() && s.index == 1 && s.range == (1.2, 1.24)
+                        s.total.is_some() && s.index == 1 && padded_range(s, 1.2, 1.24)
                     })
-                    || !state
+                    || state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.total_plays == Some(3))
+                        .is_none_or(|s| s.total_plays != Some(3))
                 {
                     return Ok(false);
                 }
@@ -954,7 +952,7 @@ impl Probe {
                     || !state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.start == 4. && s.end == 8. && s.total_plays == Some(3))
+                        .is_some_and(|s| padded_native(s, 4., 8.) && s.total_plays == Some(3))
                 {
                     return Ok(false);
                 }
@@ -979,7 +977,7 @@ impl Probe {
                             .media
                             .session
                             .video_sentence()
-                            .is_some_and(|s| s.index == 1 && s.range == (4., 8.)),
+                            .is_some_and(|s| s.index == 1 && padded_range(s, 4., 8.)),
                     "句内音轨定位改变了当前句或模式"
                 );
                 ensure!(request == self.timeline_request, "句内定位重建了三次请求");
@@ -1001,8 +999,7 @@ impl Probe {
                     || state.position > 7.6
                     || !state.sentence_repeat.as_ref().is_some_and(|s| {
                         s.request_id == self.timeline_request
-                            && s.start == 4.
-                            && s.end == 8.
+                            && padded_native(s, 4., 8.)
                             && s.total_plays == Some(3)
                             && s.current_play == 1
                     })
@@ -1030,8 +1027,7 @@ impl Probe {
                     || state.position >= 8.
                     || !state.sentence_repeat.as_ref().is_some_and(|s| {
                         s.request_id == self.timeline_request
-                            && s.start == 4.
-                            && s.end == 8.
+                            && padded_native(s, 4., 8.)
                             && s.total_plays == Some(3)
                             && s.current_play == 1
                     })
@@ -1048,7 +1044,7 @@ impl Probe {
                 if !state.paused
                     || (state.position - 4.).abs() > 0.18
                     || !state.sentence_repeat.as_ref().is_some_and(|s| {
-                        s.request_id == self.timeline_request && s.start == 4. && s.end == 8.
+                        s.request_id == self.timeline_request && padded_native(s, 4., 8.)
                     })
                 {
                     return Ok(false);
@@ -1063,7 +1059,7 @@ impl Probe {
                     || state.position < 7.9
                     || state.position >= 8.
                     || !state.sentence_repeat.as_ref().is_some_and(|s| {
-                        s.request_id == self.timeline_request && s.start == 4. && s.end == 8.
+                        s.request_id == self.timeline_request && padded_native(s, 4., 8.)
                     })
                 {
                     return Ok(false);
@@ -1109,8 +1105,7 @@ impl Probe {
                     || (state.position - 3.).abs() > 0.18
                     || !state.sentence_repeat.as_ref().is_some_and(|s| {
                         s.request_id == self.timeline_request
-                            && s.start == 3.
-                            && s.end == 4.
+                            && padded_native(s, 3., 4.)
                             && s.total_plays == Some(3)
                     })
                 {
@@ -1124,11 +1119,10 @@ impl Probe {
                 let state = app.media.player.snapshot();
                 if !state.paused
                     || state.position < 3.9
-                    || state.position >= 4.
+                    || state.position >= 4. + clarora_gpui::video_repeat::END_PADDING
                     || !state.sentence_repeat.as_ref().is_some_and(|s| {
                         s.request_id == self.timeline_request
-                            && s.start == 3.
-                            && s.end == 4.
+                            && padded_native(s, 3., 4.)
                             && s.total_plays == Some(3)
                     })
                 {
@@ -1145,7 +1139,7 @@ impl Probe {
                             .media
                             .session
                             .video_sentence()
-                            .is_some_and(|s| s.index == 2 && s.range == (7., 8.)),
+                            .is_some_and(|s| s.index == 2 && padded_range(s, 7., 8.)),
                     "音轨仅句内定位后方向键不能正常切换字幕句"
                 );
                 self.record(app, "音轨仅限当前句/方向键仍能切下一句并保留三次")?;
@@ -1213,10 +1207,9 @@ impl Probe {
                 let state = app.media.player.snapshot();
                 if !state.paused
                     || state.position < 6.9
-                    || state.position >= 7.
+                    || state.position >= 7. + clarora_gpui::video_repeat::END_PADDING
                     || !state.sentence_repeat.as_ref().is_some_and(|s| {
-                        s.start == 6.
-                            && s.end == 7.
+                        padded_native(s, 6., 7.)
                             && s.total_plays == Some(3)
                             && s.current_play == 1
                             && app.media.session.video_sentence().is_some_and(|session| {
@@ -1275,7 +1268,7 @@ impl Probe {
                     || !state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.start == 1. && s.end == 2. && s.total_plays == Some(3))
+                        .is_some_and(|s| padded_native(s, 1., 2.) && s.total_plays == Some(3))
                 {
                     return Ok(false);
                 }
@@ -1306,7 +1299,7 @@ impl Probe {
                     || !state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.start == 4. && s.end == 5. && s.total_plays == Some(3))
+                        .is_some_and(|s| padded_native(s, 4., 5.) && s.total_plays == Some(3))
                 {
                     return Ok(false);
                 }
@@ -1329,7 +1322,7 @@ impl Probe {
                     || !state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.start == 4. && s.end == 5. && s.total_plays == Some(3))
+                        .is_some_and(|s| padded_native(s, 4., 5.) && s.total_plays == Some(3))
                 {
                     return Ok(false);
                 }
@@ -1352,7 +1345,7 @@ impl Probe {
                     || !state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.start == 8. && s.end == 9. && s.total_plays == Some(3))
+                        .is_some_and(|s| padded_native(s, 8., 9.) && s.total_plays == Some(3))
                 {
                     return Ok(false);
                 }
@@ -1426,7 +1419,7 @@ impl Probe {
                     || !state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.start == 6. && s.end == 7. && s.total_plays == Some(3))
+                        .is_some_and(|s| padded_native(s, 6., 7.) && s.total_plays == Some(3))
                 {
                     return Ok(false);
                 }
@@ -1453,10 +1446,10 @@ impl Probe {
                         .session
                         .video_sentence()
                         .is_some_and(|s| s.total.is_some() && s.range.1 < 2.)
-                    || !state
+                    || state
                         .sentence_repeat
                         .as_ref()
-                        .is_some_and(|s| s.total_plays == Some(3))
+                        .is_none_or(|s| s.total_plays != Some(3))
                 {
                     return Ok(false);
                 }
@@ -2229,10 +2222,9 @@ impl Probe {
                 .media
                 .session
                 .video_sentence()
-                .is_some_and(|s| s.total.is_some() && s.index == 1 && s.range == (4., 8.))
+                .is_some_and(|s| s.total.is_some() && s.index == 1 && padded_range(s, 4., 8.))
             && state.sentence_repeat.as_ref().is_some_and(|s| {
-                s.start == 4.
-                    && s.end == 8.
+                padded_native(s, 4., 8.)
                     && s.total_plays == Some(3)
                     && s.current_play == 1
                     && app
@@ -2271,4 +2263,16 @@ impl Probe {
                 .expect("draw fullscreen assistant diagnostic");
         });
     }
+}
+
+fn padded_range(session: clarora_gpui::video_repeat::Session, start: f64, cue_end: f64) -> bool {
+    session.range.0 == start
+        && session.range.1 >= cue_end
+        && session.range.1 <= cue_end + clarora_gpui::video_repeat::END_PADDING + 0.001
+}
+
+fn padded_native(repeat: &clarora_gpui::media::SentenceRepeat, start: f64, cue_end: f64) -> bool {
+    repeat.start == start
+        && repeat.end >= cue_end
+        && repeat.end <= cue_end + clarora_gpui::video_repeat::END_PADDING + 0.001
 }

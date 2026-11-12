@@ -287,16 +287,16 @@ impl AppView {
             .unwrap_or_else(|| self.media.player.snapshot().paused)
     }
     pub(super) fn toggle_pending_video_start(&mut self) -> bool {
-        if self.page == "video" && self.media.session.is_video() {
-            if let Some(pending) = self
+        if self.page == "video"
+            && self.media.session.is_video()
+            && let Some(pending) = self
                 .video
                 .pending_start
                 .as_mut()
                 .filter(|p| p.revision == self.media.session.revision())
-            {
-                pending.paused = !pending.paused;
-                return true;
-            }
+        {
+            pending.paused = !pending.paused;
+            return true;
         }
         false
     }
@@ -748,27 +748,26 @@ impl AppView {
             return;
         };
         // A completed first cue must not auto-advance after cancelling its prompt.
-        if !prompt.next {
-            if let Some(session) = self
+        if !prompt.next
+            && let Some(session) = self
                 .media
                 .session
                 .video_sentence()
                 .filter(|s| s.total.is_some())
+        {
+            let (index, total, request_id) = (session.index, session.total, session.request_id);
+            if self
+                .media
+                .player
+                .snapshot()
+                .sentence_repeat
+                .as_ref()
+                .is_some_and(|s| s.request_id == request_id && s.finished)
             {
-                let (index, total, request_id) = (session.index, session.total, session.request_id);
-                if self
-                    .media
-                    .player
-                    .snapshot()
-                    .sentence_repeat
-                    .as_ref()
-                    .is_some_and(|s| s.request_id == request_id && s.finished)
-                {
-                    if let Err(error) = self.start_video_sentence_repeat(Some(index), total) {
-                        self.report_status(FeedbackKind::Error, error.to_string());
-                    }
-                    self.media.player.set("pause", "yes");
+                if let Err(error) = self.start_video_sentence_repeat(Some(index), total) {
+                    self.report_status(FeedbackKind::Error, error.to_string());
                 }
+                self.media.player.set("pause", "yes");
             }
         }
     }
@@ -973,16 +972,17 @@ impl AppView {
         let index = index
             .or_else(|| self.video_repeat_cue())
             .context("当前没有带时间轴的字幕，请先选择一句字幕")?;
-        self.media
-            .session
-            .set_video_sentence(Some(clarora_gpui::video_repeat::Session::start(
+        self.media.session.set_video_sentence(Some(
+            clarora_gpui::video_repeat::Session::start_padded(
                 &self.media.player,
                 &path,
                 &self.video.cues,
                 index,
                 total,
                 playback.duration,
-            )?));
+                f64::from(self.video.repeat_tail_ms) / 1000.,
+            )?,
+        ));
         self.video.sentence_repeat = total;
         self.video.pending_start = None;
         self.media.session.mode = PlaybackMode::Normal;

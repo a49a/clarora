@@ -214,6 +214,7 @@ pub(crate) fn table_spec(name: &str) -> Option<&'static TableSpec> {
 pub(crate) const PREFERENCES: &[&str] = &[
     "video_captions_enabled",
     "video_subtitle_size",
+    "video_repeat_tail_ms",
     "subtitle_font_size",
     "blind_chinese_hint",
     "video_auto_next",

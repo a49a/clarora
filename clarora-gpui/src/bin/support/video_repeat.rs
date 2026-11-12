@@ -212,6 +212,16 @@ fn sequence(
     );
     checks.push(json!({"scenario":"每句四遍前两遍无字幕、每句六遍前三遍无字幕，其余模式不隐藏","passed":true}));
 
+    let padded = Session::start_padded(player, video, &cues, 0, Some(3), duration, 0.5)?;
+    ensure!(
+        padded.range.1 >= cues[0].end + 0.2
+            && padded.range.1 <= cues[0].end + 0.5 + 0.001
+            && padded.range.1 < cues[2].start,
+        "自定义逐句尾音未按字幕间隙裁切: {:?}",
+        padded.range
+    );
+    checks.push(json!({"scenario":"可配置逐句尾音按 0.5 秒扩展且不越过下一条字幕","passed":true}));
+
     let mut session = Session::start(player, video, &cues, 0, Some(3), duration)?;
     for (index, next) in [(0, 2), (2, 3)] {
         let old_request = session.request_id;
