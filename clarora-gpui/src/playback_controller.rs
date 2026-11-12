@@ -12,6 +12,7 @@ impl AppView {
         let chat_changed = self.poll_chat(window, cx);
         self.poll_auto_cloud_sync(window, cx);
         if self.poll_close(window, cx) {
+            self.flush_media_stats();
             return;
         }
         if self.poll_speaking_waveform() {
@@ -21,17 +22,17 @@ impl AppView {
         if self.poll_diagnostic(window, cx) {
             return;
         }
-        if let Some(rx) = &self.audio.waveform_rx {
-            if let Ok(result) = rx.try_recv() {
-                match result {
-                    Ok(waveform) => self.audio.waveform = Some(waveform),
-                    Err(error) => {
-                        self.report_status(FeedbackKind::Error, format!("波形读取失败：{error}"))
-                    }
+        if let Some(rx) = &self.audio.waveform_rx
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(waveform) => self.audio.waveform = Some(waveform),
+                Err(error) => {
+                    self.report_status(FeedbackKind::Error, format!("波形读取失败：{error}"))
                 }
-                self.audio.waveform_rx = None;
-                cx.notify();
             }
+            self.audio.waveform_rx = None;
+            cx.notify();
         }
         let playback_changed = self.media.poll();
         if self.page == "listening" {
@@ -39,10 +40,11 @@ impl AppView {
             if active != self.audio.active {
                 self.audio.active = active;
                 self.audio.current_scroll.set_offset(Point::default());
-                if self.audio.follow && !self.has_subtitle_selection() {
-                    if let Some(i) = active {
-                        self.audio.center.request(i);
-                    }
+                if self.audio.follow
+                    && !self.has_subtitle_selection()
+                    && let Some(i) = active
+                {
+                    self.audio.center.request(i);
                 }
             }
         }
@@ -50,10 +52,11 @@ impl AppView {
             let active = video_subtitles::active(&self.video.cues, self.media.snapshot.position);
             if active != self.video.active {
                 self.video.active = active;
-                if self.video.follow && !self.has_subtitle_selection() {
-                    if let Some(i) = active {
-                        self.video.center.request(i);
-                    }
+                if self.video.follow
+                    && !self.has_subtitle_selection()
+                    && let Some(i) = active
+                {
+                    self.video.center.request(i);
                 }
             }
         }
@@ -109,25 +112,11 @@ impl AppView {
             || playback_changed
             || data_changed
             || chat_changed;
-        if !self.media.snapshot.paused
-            && self.media.snapshot.duration > 0.
-            && self.page != "meditation"
-        {
-            self.media.stats_ticks += 0.05;
-            if self.media.stats_ticks >= 30. {
-                if self.media.session.is_audio(&self.audio.current_id) {
-                    let _ = self.lib.set_setting(
-                        "last_listening_position",
-                        &json!({"id":self.audio.current_id,"position":self.audio_saved_position()})
-                            .to_string(),
-                    );
-                }
-                let _ = self.lib.stat("listen_seconds", self.media.stats_ticks);
-                self.media.stats_ticks = 0.;
-                if self.page == "stats" {
-                    self.refresh_view_data();
-                }
-            }
+        let stats_snapshot = self.media.snapshot.clone();
+        let stats_active =
+            !stats_snapshot.paused && stats_snapshot.duration > 0. && self.page != "meditation";
+        if self.settle_media_stats(&stats_snapshot, stats_active) && self.page == "stats" {
+            self.refresh_view_data();
         }
         changed |= self.poll_tasks(window, cx);
         changed |= self.poll_chatgpt(cx);
@@ -137,16 +126,15 @@ impl AppView {
         changed |= self.poll_video_sentence_repeat();
         changed |= self.poll_audio_sentence_repeat();
         changed |= self.poll_audio_review();
-        if let (Some(a), Some(b)) = (self.media.session.loop_a, self.media.session.loop_b) {
-            if self.media.session.sentence().is_none()
-                && self.media.session.mode == PlaybackMode::Ab
-                && !self.media.snapshot.paused
-                && self.media.snapshot.position >= b
-            {
-                self.media
-                    .player
-                    .command(["seek".into(), a.to_string(), "absolute+exact".into()]);
-            }
+        if let (Some(a), Some(b)) = (self.media.session.loop_a, self.media.session.loop_b)
+            && self.media.session.sentence().is_none()
+            && self.media.session.mode == PlaybackMode::Ab
+            && !self.media.snapshot.paused
+            && self.media.snapshot.position >= b
+        {
+            self.media
+                .player
+                .command(["seek".into(), a.to_string(), "absolute+exact".into()]);
         }
         if self.media.session.owner().is_some()
             && self.media.session.sentence().is_none()
@@ -251,18 +239,54 @@ impl AppView {
         let previous_error = self.chat.error.clone();
         self.sync_assistant(window, cx);
         changed |= previous_context != self.chat.context || previous_error != self.chat.error;
-        if self.tasks.foreground.is_running() {
-            if let Some(started) = self.tasks.foreground.started() {
-                let elapsed = started.elapsed().as_secs();
-                if elapsed != self.tasks.progress_elapsed {
-                    self.tasks.progress_elapsed = elapsed;
-                    changed = true;
-                }
+        if self.tasks.foreground.is_running()
+            && let Some(started) = self.tasks.foreground.started()
+        {
+            let elapsed = started.elapsed().as_secs();
+            if elapsed != self.tasks.progress_elapsed {
+                self.tasks.progress_elapsed = elapsed;
+                changed = true;
             }
         }
         changed |= self.tick_feedback();
         if changed {
             cx.notify();
         }
+    }
+
+    fn settle_media_stats(&mut self, snapshot: &Playback, active: bool) -> bool {
+        if !self.media.stats.observe(
+            &snapshot.path,
+            snapshot.position,
+            self.media.rate,
+            active,
+            Instant::now(),
+        ) {
+            return false;
+        }
+        self.flush_media_stats()
+    }
+
+    pub(super) fn flush_media_stats(&mut self) -> bool {
+        let seconds = self.media.stats.take();
+        if seconds <= 0. {
+            return false;
+        }
+        if let Err(error) = self.lib.stat("listen_seconds", seconds) {
+            self.media.stats.restore(seconds);
+            self.report_status(
+                FeedbackKind::Error,
+                format!("媒体播放时长保存失败：{error:#}"),
+            );
+            return false;
+        }
+        if self.media.session.is_audio(&self.audio.current_id) {
+            let _ = self.lib.set_setting(
+                "last_listening_position",
+                &json!({"id":self.audio.current_id,"position":self.audio_saved_position()})
+                    .to_string(),
+            );
+        }
+        true
     }
 }

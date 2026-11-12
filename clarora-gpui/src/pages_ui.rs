@@ -895,85 +895,85 @@ impl AppView {
                                 count,
                                 cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                                     range
-                                        .map(|i| {
-                                            let series = this.video.series.as_ref().unwrap();
-                                            let part = &series.parts[i];
+                                        .filter_map(|i| {
+                                            let series = this.video.series.as_ref()?;
+                                            let part = series.parts.get(i)?;
                                             let playing = this.media.session.is_video()
                                                 && series.current == Some(i)
                                                 && part.path.as_ref()
                                                     == this.media.session.path.as_ref();
-                                            div()
-                                                .id(("bili-part", i))
-                                                .h(px(64.))
-                                                .w_full()
-                                                .px_3()
-                                                .py_2()
-                                                .flex()
-                                                .items_center()
-                                                .gap_2()
-                                                .cursor_pointer()
-                                                .bg(if playing {
-                                                    cx.theme().accent
-                                                } else {
-                                                    cx.theme().background
-                                                })
-                                                .child(
-                                                    div()
-                                                        .w(px(32.))
-                                                        .flex_shrink_0()
-                                                        .text_sm()
-                                                        .text_color(cx.theme().primary)
-                                                        .child(format!("P{}", part.number)),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .flex()
-                                                        .flex_col()
-                                                        .gap_1()
-                                                        .child(
-                                                            div()
-                                                                .text_sm()
-                                                                .truncate()
-                                                                .child(part.title.clone()),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_xs()
-                                                                .text_color(
-                                                                    cx.theme().muted_foreground,
-                                                                )
-                                                                .child(format!(
-                                                                    "{} · {}",
-                                                                    clock(part.duration),
-                                                                    if playing {
-                                                                        "正在播放"
-                                                                    } else if series
-                                                                        .cached(i)
-                                                                        .is_some()
-                                                                    {
-                                                                        "已下载"
-                                                                    } else {
-                                                                        "点击下载并播放"
-                                                                    }
-                                                                )),
-                                                        ),
-                                                )
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        if this.tasks.foreground.is_running()
-                                                            == false
-                                                        {
-                                                            this.handle(
-                                                                Action::SelectPart(i),
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        }
-                                                    },
-                                                ))
-                                                .into_any_element()
+                                            Some(
+                                                div()
+                                                    .id(("bili-part", i))
+                                                    .h(px(64.))
+                                                    .w_full()
+                                                    .px_3()
+                                                    .py_2()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .cursor_pointer()
+                                                    .bg(if playing {
+                                                        cx.theme().accent
+                                                    } else {
+                                                        cx.theme().background
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .w(px(32.))
+                                                            .flex_shrink_0()
+                                                            .text_sm()
+                                                            .text_color(cx.theme().primary)
+                                                            .child(format!("P{}", part.number)),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap_1()
+                                                            .child(
+                                                                div()
+                                                                    .text_sm()
+                                                                    .truncate()
+                                                                    .child(part.title.clone()),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .text_color(
+                                                                        cx.theme().muted_foreground,
+                                                                    )
+                                                                    .child(format!(
+                                                                        "{} · {}",
+                                                                        clock(part.duration),
+                                                                        if playing {
+                                                                            "正在播放"
+                                                                        } else if series
+                                                                            .cached(i)
+                                                                            .is_some()
+                                                                        {
+                                                                            "已下载"
+                                                                        } else {
+                                                                            "点击下载并播放"
+                                                                        }
+                                                                    )),
+                                                            ),
+                                                    )
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            if !this.tasks.foreground.is_running() {
+                                                                this.handle(
+                                                                    Action::SelectPart(i),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            }
+                                                        },
+                                                    ))
+                                                    .into_any_element(),
+                                            )
                                         })
                                         .collect::<Vec<_>>()
                                 }),
@@ -1422,126 +1422,7 @@ impl AppView {
                     );
                 }
             }
-            "stats" => {
-                let rows = &self.data.stats;
-                let listening: f64 = rows
-                    .iter()
-                    .filter_map(|r| r["listen_seconds"].as_f64())
-                    .sum();
-                let review: f64 = rows.iter().filter_map(|r| r["review_count"].as_f64()).sum();
-                let pomodoro: f64 = rows
-                    .iter()
-                    .filter_map(|r| r["pomodoro_count"].as_f64())
-                    .sum();
-                content = content.child(
-                    div()
-                        .flex()
-                        .gap_4()
-                        .flex_wrap()
-                        .child(
-                            panel(cx)
-                                .child("累计听力")
-                                .child(format!("{:.1} 分钟", listening / 60.)),
-                        )
-                        .child(panel(cx).child("复习卡片").child(format!("{review:.0} 张")))
-                        .child(
-                            panel(cx)
-                                .child("完成番茄钟")
-                                .child(format!("{pomodoro:.0} 轮")),
-                        ),
-                );
-                let mut heatmap = div().flex().gap_1().flex_wrap().max_w(px(650.));
-                for day in (0..119).rev() {
-                    let date = (chrono::Local::now() - chrono::Duration::days(day))
-                        .format("%Y-%m-%d")
-                        .to_string();
-                    let count = rows
-                        .iter()
-                        .find(|r| text(r, "day") == date)
-                        .and_then(|r| r["review_count"].as_f64())
-                        .unwrap_or(0.);
-                    heatmap =
-                        heatmap.child(div().size(px(20.)).rounded_sm().bg(rgb(if count > 30. {
-                            0x17604c
-                        } else if count > 10. {
-                            0x459d7a
-                        } else if count > 0. {
-                            0x9ed6b5
-                        } else {
-                            0xe6e9e4
-                        })));
-                }
-                content = content.child("最近 17 周复习热力图").child(heatmap);
-                let mut listening_chart = div().flex().gap_1().items_end().h(px(160.));
-                let days = (0..14)
-                    .rev()
-                    .map(|day| {
-                        let date = (chrono::Local::now() - chrono::Duration::days(day))
-                            .format("%Y-%m-%d")
-                            .to_string();
-                        let seconds = rows
-                            .iter()
-                            .find(|r| text(r, "day") == date)
-                            .and_then(|r| r["listen_seconds"].as_f64())
-                            .unwrap_or(0.);
-                        (date, seconds)
-                    })
-                    .collect::<Vec<_>>();
-                let maximum = days.iter().map(|(_, seconds)| *seconds).fold(60., f64::max);
-                for (day, seconds) in days {
-                    listening_chart = listening_chart.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .justify_end()
-                            .items_center()
-                            .w(px(45.))
-                            .gap_1()
-                            .child(format!("{:.0}m", seconds / 60.))
-                            .child(
-                                div()
-                                    .w(px(24.))
-                                    .h(px((seconds / maximum * 100.).max(2.) as f32))
-                                    .bg(cx.theme().primary),
-                            )
-                            .child(day[5..].to_string()),
-                    );
-                }
-                content = content.child("最近 14 天听力时长").child(listening_chart);
-                let attempts = &self.data.speaking;
-                let mut trend = div().flex().gap_2().items_end().h(px(140.));
-                for record in attempts.iter().rev() {
-                    let accuracy = record["score"]["accuracy"]
-                        .as_f64()
-                        .or_else(|| record["accuracy"].as_f64().map(|v| v * 100.))
-                        .unwrap_or(0.);
-                    trend = trend.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .justify_end()
-                            .items_center()
-                            .gap_1()
-                            .child(format!("{accuracy:.0}%"))
-                            .child(
-                                div()
-                                    .w(px(20.))
-                                    .h(px(accuracy.clamp(2., 100.) as f32))
-                                    .bg(cx.theme().primary),
-                            ),
-                    );
-                }
-                content = content.child("最近 20 次跟读准确度").child(trend);
-
-                for row in rows.iter().rev().take(14) {
-                    content = content.child(format!(
-                        "{} · 复习 {} · 听力 {:.1} 分钟",
-                        text(row, "day"),
-                        text(row, "review_count"),
-                        row["listen_seconds"].as_f64().unwrap_or(0.) / 60.
-                    ));
-                }
-            }
+            "stats" => content = content.child(super::stats_ui::content(self, cx)),
             "meditation" => {
                 content = content
                     .child(

@@ -6,13 +6,23 @@ use crate::{
 };
 use anyhow::Result;
 use serde_json::Value;
-use std::{collections::BTreeSet, fs, path::PathBuf, sync::OnceLock};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::PathBuf,
+    sync::OnceLock,
+};
 
 #[derive(Default)]
 pub struct State {
     pub speaking: Vec<Value>,
     pub ocr: Vec<Value>,
     pub stats: Vec<Row>,
+    /// Actual focus-round minutes keyed by local day.
+    pub focus_by_day: BTreeMap<String, f64>,
+    /// All finished focus rounds, used for the distraction-interval stat.
+    pub focus_minutes: f64,
+    pub focus_distractions: u64,
     pub words: Vec<Row>,
     pub document_files: Vec<PathBuf>,
     pub available_audio: BTreeSet<String>,
@@ -68,6 +78,34 @@ impl State {
             let speaking = records(lib, "speaking", 20)?;
             let ocr = records(lib, "ocr", 30)?;
             let stats = lib.list("study_stats")?;
+            let mut focus_by_day = BTreeMap::new();
+            let mut focus_minutes = 0.;
+            let mut focus_distractions = 0_u64;
+            for row in lib.rows(
+                "SELECT ended_ms,actual_ms,distractions FROM focus_sessions",
+                &[],
+            )? {
+                let (Some(ended), Some(actual)) = (
+                    row.get("ended_ms").and_then(Value::as_u64),
+                    row.get("actual_ms").and_then(Value::as_u64),
+                ) else {
+                    continue;
+                };
+                let Some(date) = chrono::DateTime::from_timestamp_millis(ended as i64) else {
+                    continue;
+                };
+                let day = date
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d")
+                    .to_string();
+                let minutes = actual as f64 / 60_000.;
+                *focus_by_day.entry(day).or_insert(0.) += minutes;
+                focus_minutes += minutes;
+                focus_distractions += row
+                    .get("distractions")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+            }
             let words = lib.list("words")?;
             let mut document_files = vec![];
             for entry in fs::read_dir(lib.root.join("pdf"))? {
@@ -94,6 +132,9 @@ impl State {
                 speaking,
                 ocr,
                 stats,
+                focus_by_day,
+                focus_minutes,
+                focus_distractions,
                 words,
                 document_files,
                 available_audio,

@@ -10,6 +10,7 @@ pub mod discover;
 pub mod documents;
 pub mod ebook;
 pub mod media;
+pub mod media_stats;
 mod network;
 mod object_storage;
 pub mod process;

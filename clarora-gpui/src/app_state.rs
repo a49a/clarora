@@ -199,7 +199,7 @@ pub(super) struct PlaybackState {
     pub(super) rate: f64,
     pub(super) volume: f64,
     pub(super) volume_before_mute: f64,
-    pub(super) stats_ticks: f64,
+    pub(super) stats: clarora_gpui::media_stats::MediaStats,
 }
 impl PlaybackState {
     pub(super) fn poll(&mut self) -> bool {
@@ -289,7 +289,7 @@ impl PlaybackState {
             rate: 1.,
             volume: 100.,
             volume_before_mute: 100.,
-            stats_ticks: 0.,
+            stats: Default::default(),
         }
     }
 }

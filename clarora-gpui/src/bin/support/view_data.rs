@@ -57,6 +57,19 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
             [format!("unrelated-chat-{n}")],
         )?;
     }
+    let now = clarora_gpui::focus_timer::now_ms();
+    for (suffix, actual_ms, distractions) in [("a", 20 * 60_000, 3), ("b", 20 * 60_000, 2)] {
+        tx.execute(
+            "INSERT INTO focus_sessions(id,ended_ms,goal_ms,actual_ms,distractions) VALUES(?,?,?,?,?)",
+            rusqlite::params![
+                format!("focus-{suffix}"),
+                now,
+                25 * 60_000,
+                actual_ms,
+                distractions
+            ],
+        )?;
+    }
     tx.commit()?;
     lib.put("words", json!({"id":1,"word":"cache","meaning":"缓存","source":"fixture","created_at":"2020-01-01"}))?;
     lib.put(
@@ -110,6 +123,13 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         state.stats == lib.list("study_stats")? && state.words == lib.list("words")?,
         "general data ordering changed"
+    );
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    ensure!(
+        state.focus_by_day.get(&today).copied().unwrap_or_default() == 40.
+            && state.focus_minutes == 40.
+            && state.focus_distractions == 5,
+        "today's focus minutes/distractions were not aggregated from real sessions"
     );
     ensure!(
         state

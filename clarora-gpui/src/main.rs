@@ -60,6 +60,7 @@ mod sentence_search_probe;
 mod sentence_search_ui;
 mod settings_ui;
 mod speaking_ui;
+mod stats_ui;
 mod subtitle_follow_ui;
 mod subtitle_text_ui;
 #[cfg(debug_assertions)]
