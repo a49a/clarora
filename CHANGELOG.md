@@ -34,6 +34,7 @@
 
 ### Changed
 
+- 根目录 `npm run macos` / `npm run windows` 不再启动 React Native 桌面端，改为提示使用 `npm run gpui`；README 和文档移除 RN 桌面构建入口。
 - 音频「截取片段」和视频「A–B 精听工具」打开时默认使用当前句起止作为 A/B，仍可继续拖动边界调整。
 - 「图转文字」和「闪卡列表」页面在导航与页头显示 Beta 标记。
 - RN 的 macOS / Windows 桌面构建标记为弃用；桌面主版本使用 GPUI，Android / iOS RN 继续维护。
