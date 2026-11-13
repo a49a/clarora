@@ -178,13 +178,15 @@ pub fn load(lib: &Library, key: &Key, include_runtime: bool) -> Result<Snapshot>
     };
     let mut discover_due = None;
     let mut discover_favorites = None;
-    let filter = if key.card_filter.is_empty() {
+    let filter = if key.page == "saved" || key.card_filter.is_empty() {
         "all"
     } else {
         &key.card_filter
     };
     let cards = if key.page == "flashcard" {
         Some(lib.cards_for_kind(key.due, filter)?)
+    } else if key.page == "saved" {
+        Some(lib.cards(false)?)
     } else if key.page == "discover" {
         let favorites = lib.list("discover_favorites")?;
         discover_favorites = Some(favorites.iter().map(|r| text(r, "key")).collect());

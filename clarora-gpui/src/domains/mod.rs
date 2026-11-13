@@ -67,6 +67,8 @@ pub(super) enum Action {
     Previous,
     Grade(String),
     ReviewMode(bool),
+    ReviewLoop(bool),
+    ReviewAll,
     Saved(bool),
     Filter(String),
     SaveSentence,
@@ -102,6 +104,7 @@ pub(super) enum Action {
     VideoCancelPart,
     VideoPlayCue(usize),
     VideoCopySubtitle(Option<usize>),
+    VideoSaveCue(usize),
     LoopMode(usize),
     Mute,
     Subtitle(i64, bool),
@@ -157,9 +160,11 @@ pub(super) enum Action {
     Translate,
     Record,
     StopRecord,
+    OcrDelete(String),
     Timer(u64),
     TimerPause,
     TimerReset,
+    StatsRange(u8),
     FocusStart(u64),
     FocusResume,
     FocusEmergency,
@@ -170,6 +175,7 @@ pub(super) enum Action {
     FocusNoteToggle,
     FocusNoteSave,
     FocusNoteDelete(String),
+    Shortcuts,
     SaveAi,
     SaveAiProfile,
     SelectAiProfile(String),
@@ -177,6 +183,7 @@ pub(super) enum Action {
     CredentialMode(bool),
     ImportLegacyCredentials,
     SaveStorage,
+    TestStorage,
     SaveStorageProfile,
     RenameStorageProfile,
     DeleteStorageProfile(String),
@@ -217,8 +224,6 @@ pub(super) enum Action {
     NameImportedAudio,
     CloseFloatingNames,
     Refresh,
-    GraphSelect(String),
-    GraphList(i64),
 }
 
 enum Routed {
@@ -304,6 +309,8 @@ impl From<Action> for Command {
             Action::Previous => Routed::Cards(cards::Command::Previous),
             Action::Grade(v0) => Routed::Cards(cards::Command::Grade(v0)),
             Action::ReviewMode(v0) => Routed::Cards(cards::Command::ReviewMode(v0)),
+            Action::ReviewLoop(v0) => Routed::Cards(cards::Command::ReviewLoop(v0)),
+            Action::ReviewAll => Routed::Cards(cards::Command::ReviewAll),
             Action::Saved(v0) => Routed::Cards(cards::Command::Saved(v0)),
             Action::Filter(v0) => Routed::Cards(cards::Command::Filter(v0)),
             Action::SaveSentence => Routed::Cards(cards::Command::SaveSentence),
@@ -343,6 +350,7 @@ impl From<Action> for Command {
             Action::VideoCancelPart => Routed::Video(video::Command::VideoCancelPart),
             Action::VideoPlayCue(v0) => Routed::Video(video::Command::VideoPlayCue(v0)),
             Action::VideoCopySubtitle(v0) => Routed::Video(video::Command::VideoCopySubtitle(v0)),
+            Action::VideoSaveCue(v0) => Routed::Media(media::Command::VideoSaveCue(v0)),
             Action::LoopMode(v0) => Routed::Media(media::Command::LoopMode(v0)),
             Action::Mute => Routed::Media(media::Command::Mute),
             Action::Subtitle(v0, v1) => Routed::Media(media::Command::Subtitle(v0, v1)),
@@ -409,9 +417,11 @@ impl From<Action> for Command {
             Action::Translate => Routed::Audio(audio::Command::Translate),
             Action::Record => Routed::Speech(speech::Command::Record),
             Action::StopRecord => Routed::Speech(speech::Command::StopRecord),
+            Action::OcrDelete(v0) => Routed::Speech(speech::Command::OcrDelete(v0)),
             Action::Timer(v0) => Routed::Focus(focus::Command::Timer(v0)),
             Action::TimerPause => Routed::Focus(focus::Command::TimerPause),
             Action::TimerReset => Routed::Focus(focus::Command::TimerReset),
+            Action::StatsRange(v0) => Routed::Shell(shell::Command::StatsRange(v0)),
             Action::FocusStart(v0) => Routed::Focus(focus::Command::FocusStart(v0)),
             Action::FocusResume => Routed::Focus(focus::Command::FocusResume),
             Action::FocusEmergency => Routed::Focus(focus::Command::FocusEmergency),
@@ -424,6 +434,7 @@ impl From<Action> for Command {
             Action::FocusNoteToggle => Routed::Focus(focus::Command::FocusNoteToggle),
             Action::FocusNoteSave => Routed::Focus(focus::Command::FocusNoteSave),
             Action::FocusNoteDelete(id) => Routed::Focus(focus::Command::FocusNoteDelete(id)),
+            Action::Shortcuts => Routed::Shell(shell::Command::Shortcuts),
             Action::SaveAi => Routed::Settings(settings::Command::SaveAi),
             Action::SaveAiProfile => Routed::Settings(settings::Command::SaveAiProfile),
             Action::SelectAiProfile(v0) => Routed::Settings(settings::Command::SelectAiProfile(v0)),
@@ -435,6 +446,7 @@ impl From<Action> for Command {
                 Routed::Settings(settings::Command::ImportLegacyCredentials)
             }
             Action::SaveStorage => Routed::Settings(settings::Command::SaveStorage),
+            Action::TestStorage => Routed::Cloud(cloud::Command::TestStorage),
             Action::SaveStorageProfile => Routed::Settings(settings::Command::SaveStorageProfile),
             Action::RenameStorageProfile => {
                 Routed::Settings(settings::Command::RenameStorageProfile)
@@ -487,8 +499,6 @@ impl From<Action> for Command {
             Action::NameImportedAudio => Routed::Library(library::Command::NameImportedAudio),
             Action::CloseFloatingNames => Routed::Library(library::Command::CloseFloatingNames),
             Action::Refresh => Routed::Shell(shell::Command::Refresh),
-            Action::GraphSelect(v0) => Routed::Shell(shell::Command::GraphSelect(v0)),
-            Action::GraphList(v0) => Routed::Shell(shell::Command::GraphList(v0)),
         })
     }
 }
@@ -610,6 +620,7 @@ pub(super) fn complete(
             cloud::Completed::LibraryRestored(v0, v1).apply(app, context, window, cx)
         }
         Outcome::Message(v0) => tasks::Completed::Message(v0).apply(app, context, window, cx),
+        Outcome::ClipSaved => audio::Completed::ClipSaved.apply(app, context, window, cx),
         Outcome::Issue(v0) => tasks::Completed::Issue(v0).apply(app, context, window, cx),
         Outcome::Parts(v0) => video::Completed::Parts(v0).apply(app, context, window, cx),
         Outcome::PartVideo(v0, v1, v2, v3, v4, v5) => {

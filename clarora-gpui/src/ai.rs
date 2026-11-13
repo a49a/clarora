@@ -807,6 +807,17 @@ pub fn save_record(lib: &Library, kind: &str, payload: Value) -> Result<String> 
     )?;
     Ok(key)
 }
+/// Delete one locally stored AI record by its payload page id; no raw image is kept.
+pub fn delete_record(lib: &Library, kind: &str, page_id: &str) -> Result<()> {
+    ensure!(!page_id.is_empty(), "记录 ID 无效");
+    let db = lib.db()?;
+    let changed = db.execute(
+        "DELETE FROM ai_records WHERE kind=? AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.pageId') END=?",
+        params![kind, page_id],
+    )?;
+    ensure!(changed > 0, "记录不存在或已删除");
+    Ok(())
+}
 pub fn save_chat(
     lib: &Library,
     session: &str,

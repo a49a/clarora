@@ -6,8 +6,8 @@ pub(super) enum Command {
     Navigation,
     FloatingImport,
     Refresh,
-    GraphSelect(String),
-    GraphList(i64),
+    StatsRange(u8),
+    Shortcuts,
 }
 impl Command {
     pub(super) fn effects(&self, app: &AppView) -> Effects {
@@ -31,14 +31,18 @@ impl Command {
         cx: &mut Context<AppView>,
     ) -> Result<()> {
         match self {
-            Command::GraphSelect(node) => app.graph_node = node,
-
-            Command::GraphList(list) => app.graph_list = list,
-
             Command::Page(page) => navigate(app, page, window, cx)?,
 
             Command::Refresh => {
                 app.refresh();
+            }
+
+            Command::Shortcuts => app.show_shortcuts(window, cx),
+
+            Command::StatsRange(range) => {
+                ensure!(range <= 3, "统计范围无效");
+                app.stats_range = range;
+                cx.notify();
             }
 
             Command::Pick(kind) => {

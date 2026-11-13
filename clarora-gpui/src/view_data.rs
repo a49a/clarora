@@ -10,7 +10,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::PathBuf,
-    sync::OnceLock,
 };
 
 #[derive(Default)]
@@ -20,6 +19,7 @@ pub struct State {
     pub stats: Vec<Row>,
     /// Actual focus-round minutes keyed by local day.
     pub focus_by_day: BTreeMap<String, f64>,
+    pub focus_distractions_by_day: BTreeMap<String, u64>,
     /// All finished focus rounds, used for the distraction-interval stat.
     pub focus_minutes: f64,
     pub focus_distractions: u64,
@@ -73,12 +73,12 @@ fn audio_exists(uri: &str) -> bool {
 impl State {
     /// All I/O is completed into a temporary value before replacing the snapshot.
     pub fn reload(&mut self, lib: &Library, audios: &[Row]) -> Result<()> {
-        let _ = graph();
         let loaded = (|| -> Result<Self> {
             let speaking = records(lib, "speaking", 20)?;
-            let ocr = records(lib, "ocr", 30)?;
+            let ocr = records(lib, "ocr", 100)?;
             let stats = lib.list("study_stats")?;
             let mut focus_by_day = BTreeMap::new();
+            let mut focus_distractions_by_day = BTreeMap::new();
             let mut focus_minutes = 0.;
             let mut focus_distractions = 0_u64;
             for row in lib.rows(
@@ -99,12 +99,14 @@ impl State {
                     .format("%Y-%m-%d")
                     .to_string();
                 let minutes = actual as f64 / 60_000.;
-                *focus_by_day.entry(day).or_insert(0.) += minutes;
-                focus_minutes += minutes;
-                focus_distractions += row
+                let distractions = row
                     .get("distractions")
                     .and_then(Value::as_u64)
                     .unwrap_or_default();
+                *focus_by_day.entry(day.clone()).or_insert(0.) += minutes;
+                *focus_distractions_by_day.entry(day).or_insert(0) += distractions;
+                focus_minutes += minutes;
+                focus_distractions += distractions;
             }
             let words = lib.list("words")?;
             let mut document_files = vec![];
@@ -133,6 +135,7 @@ impl State {
                 ocr,
                 stats,
                 focus_by_day,
+                focus_distractions_by_day,
                 focus_minutes,
                 focus_distractions,
                 words,
@@ -163,12 +166,4 @@ impl State {
             }
         }
     }
-}
-
-pub fn graph() -> &'static Value {
-    static GRAPH: OnceLock<Value> = OnceLock::new();
-    GRAPH.get_or_init(|| {
-        serde_json::from_str(include_str!("../../clarora-app/assets/graph-data.json"))
-            .expect("the bundled public graph data must be valid JSON")
-    })
 }

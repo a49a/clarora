@@ -23,6 +23,7 @@ impl Render for AppView {
             .find(|(key, _, _)| *key == self.page)
             .map(|(_, a, b)| (*a, *b))
             .unwrap_or(("Clarora", ""));
+        let beta = matches!(self.page.as_str(), "ocr" | "saved");
         if self.video.fullscreen {
             if window.is_fullscreen() {
                 if !self.video.fullscreen_seen {
@@ -44,6 +45,9 @@ impl Render for AppView {
                 .size_full()
                 .child(self.fullscreen_video(window, cx))
                 .children(assistant)
+                .when(self.focus_note_open, |view| {
+                    view.child(self.focus_note_overlay(window, cx))
+                })
                 .children(selection)
                 .children(self.feedback_view(window, cx))
                 .children(self.video_part_confirmation_view(window, cx))
@@ -91,6 +95,7 @@ impl Render for AppView {
                 );
             }
             let selected = self.page == key;
+            let beta = matches!(key, "ocr" | "saved");
             let label = PAGES
                 .iter()
                 .find(|(page, _, _)| *page == key)
@@ -132,7 +137,27 @@ impl Render for AppView {
                             cx.theme().muted_foreground
                         },
                     ))
-                    .child(div().flex_1().child(label))
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(label)
+                            .when(beta, |v| {
+                                v.child(
+                                    div()
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded_full()
+                                        .bg(cx.theme().primary.opacity(0.14))
+                                        .text_color(cx.theme().primary)
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Beta"),
+                                )
+                            }),
+                    )
                     .when(selected, |v| {
                         v.child(div().size(px(5.)).rounded_full().bg(cx.theme().primary))
                     })
@@ -396,6 +421,9 @@ impl Render for AppView {
             }))
             .on_action(cx.listener(|this, _: &AskVideoAll, window, cx| {
                 this.handle(Action::VideoAskTranscript, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &Shortcuts, window, cx| {
+                this.handle(Action::Shortcuts, window, cx);
             }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.handle(Action::Page("settings".into()), window, cx);
@@ -693,9 +721,28 @@ impl Render for AppView {
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(27.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(title),
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .text_size(px(27.))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .child(title),
+                                            )
+                                            .when(beta, |v| {
+                                                v.child(
+                                                    div()
+                                                        .px_2()
+                                                        .py_0p5()
+                                                        .rounded_full()
+                                                        .bg(cx.theme().primary.opacity(0.14))
+                                                        .text_color(cx.theme().primary)
+                                                        .text_xs()
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .child("Beta"),
+                                                )
+                                            }),
                                     )
                                     .child(
                                         div()
@@ -751,7 +798,26 @@ impl Render for AppView {
                             .child(content),
                     ),
             )
-            .when_some(assistant, |view, assistant| view.child(assistant))
+            .when_some(assistant, |view, assistant| {
+                if window.viewport_size().width < px(900.) {
+                    view.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .bottom_0()
+                            .w(px(400.))
+                            .max_w(relative(0.94))
+                            .shadow_lg()
+                            .child(assistant),
+                    )
+                } else {
+                    view.child(assistant)
+                }
+            })
+            .when(self.focus_note_open, |view| {
+                view.child(self.focus_note_overlay(window, cx))
+            })
             .children(self.selection_offer(window, cx))
             .children(self.feedback_view(window, cx))
             .children(self.video_part_confirmation_view(window, cx))

@@ -7,6 +7,8 @@ pub(super) enum Command {
     Previous,
     Grade(String),
     ReviewMode(bool),
+    ReviewLoop(bool),
+    ReviewAll,
     Saved(bool),
     Filter(String),
     SaveSentence,
@@ -28,6 +30,8 @@ impl Command {
                         | Command::Previous
                         | Command::Grade(..)
                         | Command::ReviewMode(..)
+                        | Command::ReviewLoop(..)
+                        | Command::ReviewAll
                         | Command::Saved(..)
                         | Command::Filter(..)
                         | Command::Favorite
@@ -58,6 +62,30 @@ impl Command {
                 app.due = due;
                 app.refresh();
                 app.revealed = false;
+            }
+
+            Command::ReviewLoop(enabled) => {
+                app.review_loop = enabled;
+                app.lib
+                    .set_setting("review_loop", if enabled { "true" } else { "false" })?;
+                app.report_status(
+                    FeedbackKind::Info,
+                    if enabled {
+                        "已开启循环复习：最后一张后回到第一张"
+                    } else {
+                        "已关闭循环复习：到最后一张停止"
+                    }
+                    .into(),
+                );
+            }
+
+            Command::ReviewAll => {
+                app.due = false;
+                app.index = 0;
+                app.history.clear();
+                app.revealed = false;
+                app.handle(Action::Page("flashcard".into()), window, cx);
+                app.play_card();
             }
 
             Command::Filter(filter) => {
@@ -101,8 +129,16 @@ impl Command {
                             )
                             .unwrap_or(0)
                         };
+                    } else if app.index + 1 < app.cards.len() {
+                        app.index += 1;
+                    } else if app.review_loop {
+                        app.index = 0;
                     } else {
-                        app.index = (app.index + 1) % app.cards.len();
+                        app.report_status(
+                            FeedbackKind::Info,
+                            "已到最后一张；循环复习已关闭".into(),
+                        );
+                        return Ok(());
                     }
                     app.revealed = false;
                     app.play_card();
@@ -110,7 +146,13 @@ impl Command {
             }
 
             Command::Previous => {
-                app.index = app.history.pop().unwrap_or(app.index.saturating_sub(1));
+                app.index = app.history.pop().unwrap_or_else(|| {
+                    if app.review_loop && app.index == 0 && !app.cards.is_empty() {
+                        app.cards.len() - 1
+                    } else {
+                        app.index.saturating_sub(1)
+                    }
+                });
                 app.revealed = false;
                 app.play_card();
             }

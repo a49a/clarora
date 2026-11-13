@@ -44,9 +44,166 @@ impl AppView {
         true
     }
 
+    fn saved_cards_view(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let mut view = div().flex().flex_col().gap_4().w_full();
+        view = view.child(
+            panel(cx).child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .flex_wrap()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xl()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("闪卡列表"),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!(
+                                        "共 {} 张卡片 · 回顾全部原文、译文和媒体片段",
+                                        self.cards.len()
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .child(
+                                self.button(
+                                    "saved-review-loop",
+                                    if self.review_loop {
+                                        "循环复习 ✓"
+                                    } else {
+                                        "循环复习"
+                                    },
+                                    Action::ReviewLoop(!self.review_loop),
+                                    cx,
+                                )
+                                .outline()
+                                .selected(self.review_loop)
+                                .tooltip("开启后最后一张的下一张会回到第一张；关闭则停在最后一张"),
+                            )
+                            .child(
+                                self.button("saved-review", "复习全部卡片", Action::ReviewAll, cx)
+                                    .primary(),
+                            ),
+                    ),
+            ),
+        );
+        if self.cards.is_empty() {
+            view = view.child(
+                panel(cx)
+                    .child(div().text_lg().child("还没有闪卡"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("在闪卡复习或随便学学中创建的卡片会集中显示在这里。"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .child(
+                                self.button(
+                                    "saved-empty-review",
+                                    "去闪卡复习",
+                                    Action::Page("flashcard".into()),
+                                    cx,
+                                )
+                                .primary(),
+                            )
+                            .child(
+                                self.button(
+                                    "saved-empty-import",
+                                    "导入词表",
+                                    Action::Pick("words".into()),
+                                    cx,
+                                )
+                                .outline(),
+                            ),
+                    ),
+            );
+            return view.into_any_element();
+        }
+        for (index, card) in self.cards.iter().enumerate() {
+            let kind = match card.kind.as_str() {
+                "word" => "单词",
+                "sentence" => "句子",
+                "clip" => "听力片段",
+                "video" => "视频片段",
+                _ => "AI 问答",
+            };
+            let mut item = panel(cx)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(cx.theme().primary)
+                                .child(kind.to_string()),
+                        )
+                        .when(!card.media.is_empty(), |v| {
+                            v.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("含媒体片段"),
+                            )
+                        }),
+                )
+                .child(
+                    TextView::markdown(
+                        SharedString::from(format!("saved-card-front-{index}")),
+                        card.front.clone(),
+                        window,
+                        cx,
+                    )
+                    .selectable(true),
+                );
+            if !card.back.trim().is_empty() {
+                item = item.child(
+                    TextView::markdown(
+                        SharedString::from(format!("saved-card-back-{index}")),
+                        card.back.clone(),
+                        window,
+                        cx,
+                    )
+                    .selectable(true),
+                );
+            }
+            view = view.child(item);
+        }
+        view.into_any_element()
+    }
+
     pub(super) fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut content = div().flex().flex_col().gap_5().w_full();
-        if matches!(self.page.as_str(), "flashcard" | "discover") && !self.cards_ready() {
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .w_full()
+            .when(self.page == "listening", |v| v.h_full().min_h_0());
+        if matches!(self.page.as_str(), "flashcard" | "discover" | "saved") && !self.cards_ready() {
             return content
                 .child(
                     panel(cx)
@@ -142,6 +299,21 @@ impl AppView {
                         .flex_wrap()
                         .child(self.button("previous", "上一条", Action::Previous, cx))
                         .child(self.button("next", "下一条", Action::Next, cx).primary())
+                        .child(
+                            self.button(
+                                "review-loop",
+                                if self.review_loop {
+                                    "循环复习 ✓"
+                                } else {
+                                    "循环复习"
+                                },
+                                Action::ReviewLoop(!self.review_loop),
+                                cx,
+                            )
+                            .outline()
+                            .selected(self.review_loop)
+                            .tooltip("开启后最后一张的下一张会回到第一张；关闭则停在最后一张"),
+                        )
                         .child(self.button("favorite", "收藏 / 取消", Action::Favorite, cx))
                         .child(format!(
                             "{} / {}",
@@ -153,6 +325,36 @@ impl AppView {
                             self.cards.len()
                         )),
                 );
+                if !discover && self.cards.is_empty() {
+                    content = content.child(
+                        panel(cx)
+                            .child("还没有可复习的卡片")
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("先导入词表、收藏一个音频片段，或从一句话开始建立学习资料。"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .flex_wrap()
+                                    .child(self.button(
+                                        "empty-import-words",
+                                        "导入词表",
+                                        Action::Pick("words".into()),
+                                        cx,
+                                    ))
+                                    .child(self.button(
+                                        "empty-go-listening",
+                                        "去音频学习",
+                                        Action::Page("listening".into()),
+                                        cx,
+                                    )),
+                            ),
+                    );
+                }
                 if discover {
                     content = content.child(
                         div()
@@ -716,6 +918,9 @@ impl AppView {
                                         &this.video.cues,
                                         this.media.snapshot.position,
                                     );
+                                let saved = this.saved_at(false, cue.start, cue.end);
+                                let (cue_front, _) =
+                                    subtitles::languages(std::slice::from_ref(cue));
                                 div()
                                     .id(("video-cue", i))
                                     .w_full()
@@ -792,6 +997,38 @@ impl AppView {
                                                             |_, _, cx| cx.stop_propagation(),
                                                         ),
                                                     )
+                                                    .child(if saved.is_empty() {
+                                                        this.button(
+                                                            format!("video-cue-save-{i}"),
+                                                            "收藏本句",
+                                                            Action::VideoSaveCue(i),
+                                                            cx,
+                                                        )
+                                                        .ghost()
+                                                        .disabled(
+                                                            this.tasks.foreground.is_running()
+                                                                || cue_front.trim().is_empty(),
+                                                        )
+                                                        .tooltip("用本句时间范围导出片段并加入闪卡")
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            |_, _, cx| cx.stop_propagation(),
+                                                        )
+                                                    } else {
+                                                        this.button(
+                                                            format!("video-cue-saved-{i}"),
+                                                            "已收藏",
+                                                            Action::SavedClips(saved),
+                                                            cx,
+                                                        )
+                                                        .ghost()
+                                                        .selected(true)
+                                                        .tooltip("已加入闪卡 · 点击管理收藏复习")
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            |_, _, cx| cx.stop_propagation(),
+                                                        )
+                                                    })
                                                     .child(
                                                         this.button(
                                                             format!(
@@ -1285,20 +1522,70 @@ impl AppView {
                     .primary()
                     .disabled(self.tasks.foreground.is_running()),
                 );
-                if !self.output.is_empty() {
+                if self.data.ocr.is_empty() {
                     content = content.child(
-                        TextView::markdown("ocr-output", self.output.clone(), window, cx)
-                            .selectable(true),
+                        panel(cx).child("还没有识别记录").child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("导入一张图片开始识别；结果会保存在本机，可复制或删除。"),
+                        ),
+                    );
+                } else {
+                    content = content.child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().muted_foreground)
+                            .child("识别记录"),
                     );
                 }
                 for (i, record) in self.data.ocr.iter().enumerate() {
+                    let body = record["text"].as_str().unwrap_or("").to_string();
+                    let page_id = record["pageId"].as_str().unwrap_or("").to_string();
                     content = content.child(
                         panel(cx)
-                            .child(record["name"].as_str().unwrap_or("图片").to_string())
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_2()
+                                    .flex_wrap()
+                                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
+                                        record["name"].as_str().unwrap_or("图片").to_string(),
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .gap_2()
+                                            .flex_wrap()
+                                            .child(
+                                                self.button(
+                                                    format!("ocr-copy-{i}"),
+                                                    "复制",
+                                                    Action::CopySelection(body.clone()),
+                                                    cx,
+                                                )
+                                                .outline()
+                                                .disabled(body.trim().is_empty()),
+                                            )
+                                            .child(
+                                                self.button(
+                                                    format!("ocr-delete-{i}"),
+                                                    "删除",
+                                                    Action::OcrDelete(page_id.clone()),
+                                                    cx,
+                                                )
+                                                .outline()
+                                                .disabled(page_id.is_empty()),
+                                            ),
+                                    ),
+                            )
                             .child(
                                 TextView::markdown(
                                     SharedString::from(format!("ocr-record-{i}")),
-                                    record["text"].as_str().unwrap_or("").to_string(),
+                                    body,
                                     window,
                                     cx,
                                 )
@@ -1307,120 +1594,8 @@ impl AppView {
                     );
                 }
             }
-            "graph" => {
-                let graph = clarora_gpui::view_data::graph();
-                let nodes = graph["nodes"].as_array().map(Vec::as_slice).unwrap_or(&[]);
-                content = content.child(Input::new(&self.inputs["search"]));
-                let mut lists = std::collections::BTreeSet::new();
-                for n in nodes {
-                    if let Some(list) = n["list_num"].as_i64() {
-                        lists.insert(list);
-                    }
-                }
-                let mut filters = div().flex().gap_2().flex_wrap().child(self.button(
-                    "graph-all",
-                    "全部",
-                    Action::GraphList(0),
-                    cx,
-                ));
-                for list in lists {
-                    filters = filters.child(self.button(
-                        format!("graph-list-{list}"),
-                        format!("List {list}"),
-                        Action::GraphList(list),
-                        cx,
-                    ));
-                }
-                content = content.child(filters);
-                let query = self.value("search", cx).to_lowercase();
-                let selected = nodes.iter().find(|n| n["id"] == self.graph_node);
-                if let Some(node) = selected {
-                    let mut body = format!("## {}\n\n", node["label"].as_str().unwrap_or(""));
-                    for key in ["pron", "category", "kaofa", "etymology", "mnemonic"] {
-                        if let Some(text) = node[key].as_str().filter(|s| !s.is_empty()) {
-                            body.push_str(text);
-                            body.push_str("\n\n");
-                        }
-                    }
-                    for sense in node["senses"].as_array().into_iter().flatten() {
-                        body.push_str(&format!(
-                            "{}  {}\n\n",
-                            sense["en"].as_str().unwrap_or(""),
-                            sense["zh"].as_str().unwrap_or("")
-                        ));
-                    }
-                    let detail = panel(cx).child(
-                        TextView::markdown("graph-node-material", body, window, cx)
-                            .selectable(true),
-                    );
-                    let mut related = div().flex().gap_2().flex_wrap();
-                    for (i, edge) in graph["links"].as_array().into_iter().flatten().enumerate() {
-                        let other = if edge["source"] == self.graph_node {
-                            &edge["target"]
-                        } else if edge["target"] == self.graph_node {
-                            &edge["source"]
-                        } else {
-                            continue;
-                        };
-                        if let Some(target) = nodes.iter().find(|n| n["id"] == *other) {
-                            related = related.child(self.button(
-                                format!("graph-edge-{i}"),
-                                format!(
-                                    "{} · {}",
-                                    edge["link_type"].as_str().unwrap_or("关联"),
-                                    target["label"].as_str().unwrap_or("")
-                                ),
-                                Action::GraphSelect(other.as_str().unwrap_or("").into()),
-                                cx,
-                            ));
-                        }
-                    }
-                    content = content.child(detail.child(related));
-                }
-                let mut nodes_view = div().flex().gap_2().flex_wrap();
-                for node in nodes.iter().filter(|n| {
-                    (self.graph_list == 0 || n["list_num"] == self.graph_list)
-                        && n["label"]
-                            .as_str()
-                            .unwrap_or("")
-                            .to_lowercase()
-                            .contains(&query)
-                }) {
-                    nodes_view = nodes_view.child(self.button(
-                        format!("graph-node-{}", node["id"]),
-                        node["label"].as_str().unwrap_or("").to_string(),
-                        Action::GraphSelect(node["id"].as_str().unwrap_or("").into()),
-                        cx,
-                    ));
-                }
-                content = content.child(nodes_view);
-                let words = self
-                    .data
-                    .words
-                    .iter()
-                    .filter(|r| text(r, "word").to_lowercase().contains(&query))
-                    .take(300)
-                    .map(|row| format!("{} — {}", text(row, "word"), text(row, "meaning")))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if !words.is_empty() {
-                    content = content.child(
-                        TextView::html(
-                            "word-list-material",
-                            format!(
-                                "<p>{}</p>",
-                                words
-                                    .replace('&', "&amp;")
-                                    .replace('<', "&lt;")
-                                    .replace('>', "&gt;")
-                                    .replace('\n', "<br/>")
-                            ),
-                            window,
-                            cx,
-                        )
-                        .selectable(true),
-                    );
-                }
+            "saved" => {
+                content = content.child(self.saved_cards_view(window, cx));
             }
             "stats" => content = content.child(super::stats_ui::content(self, cx)),
             "meditation" => {

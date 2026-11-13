@@ -59,6 +59,7 @@ mod saved_clip_ui;
 mod sentence_search_probe;
 mod sentence_search_ui;
 mod settings_ui;
+mod shortcuts_ui;
 mod speaking_ui;
 mod stats_ui;
 mod subtitle_follow_ui;
@@ -153,6 +154,7 @@ actions!(
         DownloadLocalModel,
         CancelTask,
         OpenSettings,
+        Shortcuts,
         ToggleVideoFullscreen,
         ExitVideoFullscreen,
         FullscreenPlayPause,
@@ -176,8 +178,8 @@ const PAGES: &[(&str, &str, &str)] = &[
     ("writing", "写作练习", "保存草稿与 AI 批改"),
     ("library", "音频管理", "整理练习组"),
     ("pdf", "文档阅读", "PDF / EPUB / TXT"),
-    ("ocr", "拍照识字", "从图片提取"),
-    ("graph", "词汇表", "发现词语关系"),
+    ("ocr", "图转文字", "从图片提取"),
+    ("saved", "闪卡列表", "全部复习卡片"),
     ("stats", "学习统计", "记录每一点进步"),
     ("meditation", "冥想放松", "给专注留白"),
     ("settings", "设置", "AI 与存储"),
@@ -193,12 +195,12 @@ const NAV_ORDER: &[&str] = &[
     "library",
     "pdf",
     "ocr",
-    "graph",
     "stats",
     "meditation",
     "settings",
     "discover",
     "flashcard",
+    "saved",
 ];
 use domains::Action;
 
@@ -250,6 +252,7 @@ struct AppView {
     due: bool,
     card_filter: String,
     saved_only: bool,
+    review_loop: bool,
     history: Vec<usize>,
     output: String,
     backups: Vec<String>,
@@ -262,6 +265,7 @@ struct AppView {
     timer_seconds: u64,
     timer_retry: Option<Instant>,
     focus_mode: focus_mode_ui::Mode,
+    stats_range: u8,
     focus_notes: Vec<focus_notes::Note>,
     focus_note_open: bool,
     focus_note_close_saved: Option<String>,
@@ -283,8 +287,6 @@ struct AppView {
     floating_name_window: Option<AnyWindowHandle>,
     command_imported: Option<clarora_gpui::command_import::Report>,
     import_command: String,
-    graph_node: String,
-    graph_list: i64,
 }
 impl AppView {
     fn new(lib: Library, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -422,6 +424,10 @@ impl AppView {
                 .unwrap_or(1.),
             tts_last: None,
             import_command: lib.setting("command").unwrap_or_default(),
+            review_loop: lib
+                .setting("review_loop")
+                .map(|value| value != "false")
+                .unwrap_or(true),
             lib,
             writing: None,
             page: "flashcard".into(),
@@ -455,6 +461,7 @@ impl AppView {
             timer,
             timer_retry: None,
             focus_mode: focus_mode_ui::Mode::default(),
+            stats_range: 0,
             focus_notes,
             focus_note_open: false,
             focus_note_close_saved: None,
@@ -475,8 +482,6 @@ impl AppView {
             floating_window: None,
             floating_name_window: None,
             command_imported: None,
-            graph_node: "demo-1".into(),
-            graph_list: 0,
         };
         if let Some(warning) = timer_warning {
             this.report_status(FeedbackKind::Error, warning);
@@ -1670,6 +1675,7 @@ fn main() -> Result<()> {
                 KeyBinding::new("f11", ToggleVideoFullscreen, None),
                 KeyBinding::new("space", FullscreenPlayPause, Some("VideoFullscreen")),
                 KeyBinding::new("escape", ExitVideoFullscreen, Some("VideoFullscreen")),
+                KeyBinding::new("f1", Shortcuts, None),
                 KeyBinding::new("cmd-,", OpenSettings, None),
                 KeyBinding::new("ctrl-,", OpenSettings, None),
                 KeyBinding::new("cmd-q", Quit, None),
@@ -1716,6 +1722,7 @@ fn main() -> Result<()> {
                 Menu {
                     name: "Clarora".into(),
                     items: vec![
+                        MenuItem::action("键盘快捷键", Shortcuts),
                         MenuItem::action("设置…", OpenSettings),
                         MenuItem::action("显示或隐藏左侧导航", ToggleNavigation),
                         MenuItem::action("切换浅色 / 深色", ToggleAppearance),

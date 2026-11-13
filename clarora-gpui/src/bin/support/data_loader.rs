@@ -108,6 +108,22 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             .is_some_and(|c| c.len() == 1 && c[0].id == "clip"),
         "saved-only filter changed"
     );
+    let saved_page = load(
+        &lib,
+        &Key {
+            page: "saved".into(),
+            ..discover.clone()
+        },
+        false,
+    )?;
+    ensure!(
+        saved_page.cards.as_ref().is_some_and(|c| {
+            c.len() == 2
+                && c.iter().any(|card| card.id == "sentence")
+                && c.iter().any(|card| card.id == "clip")
+        }),
+        "saved flashcard page did not load all cards"
+    );
     let flashcards = load(
         &lib,
         &Key {

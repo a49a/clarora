@@ -83,9 +83,7 @@ fn paths(name: &str) -> Option<&'static str> {
         "ocr" => {
             "<path d='M8 3H4a1 1 0 0 0-1 1v4m13-5h4a1 1 0 0 1 1 1v4M3 16v4a1 1 0 0 0 1 1h4m8 0h4a1 1 0 0 0 1-1v-4M8 16l4-9 4 9m-6.5-3h5'/>"
         }
-        "graph" => {
-            "<circle cx='12' cy='5' r='3'/><circle cx='5' cy='19' r='3'/><circle cx='19' cy='19' r='3'/><path d='m10.5 8-4 8m7-8 4 8M8 19h8'/>"
-        }
+        "saved" => "<path d='M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16l-6-4Z'/>",
         "stats" => "<path d='M4 3v17h17M8 16v-5m5 5V7m5 9V4'/>",
         "meditation" => "<path d='M20 3C10 2 3 6 4 13a7 7 0 0 0 11 6c5-4 4-9 5-16ZM3 22 16 8'/>",
         "settings" => {

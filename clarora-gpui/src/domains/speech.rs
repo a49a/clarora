@@ -5,6 +5,7 @@ pub(super) enum Command {
     ImportSpeakingGroup(String),
     Record,
     StopRecord,
+    OcrDelete(String),
     TtsDownload,
     TtsGenerate,
     TtsVoice(i32),
@@ -28,6 +29,51 @@ impl Command {
             Command::ImportSpeakingGroup(group) => {
                 app.start_speaking_command_import_to(group, None, window, cx);
             }
+            Command::OcrDelete(page_id) => {
+                ensure!(!page_id.is_empty(), "识别记录无效");
+                let view = cx.entity().downgrade();
+                window.open_dialog(cx, move |dialog, window, _| {
+                    let view = view.clone();
+                    dialog
+                        .title("删除识别记录？")
+                        .confirm()
+                        .w((window.viewport_size().width - px(32.)).min(px(440.)))
+                        .button_props(
+                            DialogButtonProps::default()
+                                .cancel_text("取消")
+                                .ok_text("删除")
+                                .ok_variant(ButtonVariant::Danger),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .child("只删除本机识别文本；原始图片不纳入备份，删除后无法恢复。"),
+                        )
+                        .on_ok({
+                            let page_id = page_id.clone();
+                            move |_, _, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    match ai::delete_record(&this.lib, "ocr", &page_id) {
+                                        Ok(()) => {
+                                            this.refresh();
+                                            this.report_status(
+                                                FeedbackKind::Info,
+                                                "已删除识别记录".into(),
+                                            );
+                                        }
+                                        Err(error) => this.report_status(
+                                            FeedbackKind::Error,
+                                            format!("删除失败：{error:#}"),
+                                        ),
+                                    }
+                                    cx.notify();
+                                });
+                                true
+                            }
+                        })
+                });
+            }
+
             Command::Delete => app.open_speaking_delete_dialog(window, cx)?,
             Command::BatchImport => app.open_speaking_batch_import_dialog(window, cx)?,
             Command::Score => {

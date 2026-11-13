@@ -117,13 +117,33 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         "speaking cap/order or malformed JSON filtering failed"
     );
     ensure!(
-        state.ocr.len() == 30 && state.ocr[0]["index"] == 34 && state.ocr[29]["index"] == 5,
+        state.ocr.len() == 35 && state.ocr[0]["index"] == 34 && state.ocr[34]["index"] == 0,
         "OCR cap/order or malformed JSON filtering failed"
     );
     ensure!(
         state.stats == lib.list("study_stats")? && state.words == lib.list("words")?,
         "general data ordering changed"
     );
+    lib.put(
+        "ai_records",
+        json!({"id":"delete-fixture","kind":"ocr","payload":json!({"pageId":"delete-page","text":"delete me"}).to_string(),"created_at":"2031-01-01"}),
+    )?;
+    clarora_gpui::ai::delete_record(&lib, "ocr", "delete-page")?;
+    let remaining: i64 = lib.db()?.query_row(
+        "SELECT count(*) FROM ai_records WHERE id='delete-fixture'",
+        [],
+        |row| row.get(0),
+    )?;
+    ensure!(
+        remaining == 0,
+        "OCR delete by page id left the record behind"
+    );
+    record(
+        &root,
+        &mut evidence,
+        "ocr-delete-by-page-id",
+        json!({"passed":true,"remaining":remaining}),
+    )?;
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     ensure!(
         state.focus_by_day.get(&today).copied().unwrap_or_default() == 40.
@@ -295,27 +315,16 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         state.tts_ready,
         "Kokoro readiness did not use required-file validation"
     );
-    let graph = view_data::graph();
-    ensure!(
-        graph["nodes"].as_array().is_some_and(|n| !n.is_empty()),
-        "public graph data empty"
-    );
-    for _ in 0..1000 {
-        ensure!(
-            std::ptr::eq(graph, view_data::graph()),
-            "graph cache reparsed data"
-        );
-    }
     record(
         &root,
         &mut evidence,
-        "kokoro-required-files-and-once-parsed-public-graph",
-        json!({"tts_ready":true,"graph_nodes":graph["nodes"].as_array().unwrap().len(),"same_graph_reference_checks":1000}),
+        "kokoro-required-files",
+        json!({"tts_ready":true}),
     )?;
     lib.db()?.execute(
         "VACUUM INTO ?1",
         [root.join("view-data.sqlite").to_string_lossy().as_ref()],
     )?;
-    results.push(json!({"workflow":"界面记录与文件缓存 → 显式刷新 → SQLite/配置/目录故障保留快照 → 无密钥解析 → 公共词图常驻","passed":true,"cases":evidence.len(),"report":root.join("view-data-evidence.json"),"sqlite":root.join("view-data.sqlite")}));
+    results.push(json!({"workflow":"界面记录与文件缓存 → 显式刷新 → SQLite/配置/目录故障保留快照 → 无密钥解析","passed":true,"cases":evidence.len(),"report":root.join("view-data-evidence.json"),"sqlite":root.join("view-data.sqlite")}));
     Ok(())
 }
