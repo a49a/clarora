@@ -42,18 +42,15 @@ RN 的 macOS / Windows 桌面构建已弃用，请使用上面的 GPUI 桌面主
 
 桌面 GPUI 原生客户端位于 `clarora-gpui/`，使用 Rust；React Native 客户端位于 `clarora-app/`，两者启动方式独立。GPUI 日常启动用 `make gpui`（Windows 用 `powershell -File clarora-gpui/scripts/dev.ps1`），完整打包步骤见下方[从源码打包桌面应用](#从源码打包桌面应用)。
 
-RN 的 macOS / Windows 桌面构建已弃用，下面的 `npm run macos` / `npm run windows` 仅用于历史维护；Android / iOS 继续维护。
+RN 的 macOS / Windows 桌面构建已弃用，不再提供使用或构建入口；桌面请使用 GPUI。Android / iOS 仍维护。
 
-RN 开发需要 Node.js 24、对应平台开发工具。macOS 还需要 Xcode、CocoaPods、libmpv 和 whisper.cpp：
+RN 移动端开发需要 Node.js 24、Android Studio 或 Xcode：
 
 ```sh
-brew install mpv whisper.cpp
 npm run setup
 npm start
-# 另开终端，选择一个平台：
-npm run macos
+# 另开终端，选择移动平台：
 npm run android
-npm run windows
 npm run ios
 ```
 
@@ -65,9 +62,7 @@ brew install mpv ffmpeg yt-dlp cmake whisper.cpp
 
 直接 `cargo run` 打开 PDF 时如果提示缺少 `libpdfium.dylib`，执行 `python3 clarora-gpui/scripts/install-pdfium.py clarora-gpui/target/debug`，或改用会自动准备 PDFium 的 `make gpui`。
 
-Windows/iOS 的 RN 构建步骤和平台限制见[平台说明](docs/platform-builds.md)。桌面 GPUI 需要 Rust 1.93.1；Windows 还需要 Visual Studio 2022 的 C++ 桌面工作负载与 Windows SDK。`.github/workflows/` 中的 CI 在推送与 PR 时运行共享代码的类型检查和测试，并编译验证 Android / macOS / iOS；Windows 安装包随推送构建，也可手动触发。共享代码和自动化测试不等同于四个平台的真机验收。
-
-`npm run macos` 会检查本机 Pods；首次构建或原生依赖锁文件不一致时自动执行 `pod install`，因此需要先安装 CocoaPods。修改 Podfile 后，可在 `clarora-app/` 中执行 `npm run macos:pods` 手动更新依赖。`Pods/` 是本地生成内容，不提交到仓库。
+Android / iOS 的 RN 构建步骤和平台限制见[平台说明](docs/platform-builds.md)。桌面 GPUI 需要 Rust 1.93.1；Windows 还需要 Visual Studio 2022 的 C++ 桌面工作负载与 Windows SDK。`.github/workflows/` 中的 CI 在推送与 PR 时运行共享代码的类型检查和测试，并编译验证 Android / iOS。共享代码和自动化测试不等同于移动端真机验收。
 
 ```sh
 npm run typecheck

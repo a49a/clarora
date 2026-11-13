@@ -26,23 +26,19 @@ For signed mobile builds and distribution, see [Mobile Releases](docs/mobile-rel
 
 ## Development
 
-The RN macOS and Windows desktop builds are deprecated; `npm run macos` / `npm run windows` remain only for historical maintenance. Android / iOS stay maintained.
+The RN macOS and Windows desktop builds are deprecated; there is no supported use or build entry for them. Use the GPUI desktop client instead. Android and iOS remain maintained.
 
-Requires Node.js 24 and platform-specific toolchains. macOS additionally needs Xcode, CocoaPods, libmpv, and whisper-cpp (`brew install mpv whisper-cpp`); the project looks for these under `/opt/homebrew` — adjust Xcode Header / Library Search Paths for other install locations.
+Requires Node.js 24 plus Android Studio or Xcode:
 
 ```sh
 npm run setup
 npm start
-# In a separate terminal, pick a platform:
-npm run macos
+# In a separate terminal, pick a mobile platform:
 npm run android
-npm run windows
 npm run ios
 ```
 
-See [Platform Notes](docs/platform-builds.md) for Windows / iOS build steps and platform limitations. CI in `.github/workflows/` runs shared-code type checking and tests on push and PR, and compiles Android / macOS / iOS; the Windows package is built on push or can be triggered manually. Shared code and automated tests are not equivalent to on-device acceptance for all four platforms.
-
-`npm run macos` checks local Pods; it runs `pod install` automatically on first build or when the native dependency lockfile changes, so CocoaPods must be installed first. After modifying a Podfile, run `npm run macos:pods` in `clarora-app/` to update dependencies manually. `Pods/` is generated locally and not committed to the repository.
+See [Platform Notes](docs/platform-builds.md) for Android / iOS build steps and platform limitations. CI in `.github/workflows/` runs shared-code type checking and tests on push and PR, and compiles Android / iOS. Shared code and automated tests are not equivalent to on-device acceptance.
 
 ```sh
 npm run typecheck
