@@ -2,6 +2,7 @@
 use super::*;
 pub(super) enum Command {
     List,
+    TestStorage,
     Backup,
     Restore(String),
     Sync,
@@ -30,6 +31,25 @@ impl Command {
                     ))
                 },
             ),
+
+            Command::TestStorage => {
+                ensure!(
+                    !app.tasks.foreground.is_running(),
+                    "请先完成当前任务再测试存储连接"
+                );
+                app.begin_scoped(
+                    TaskScope::Application,
+                    "正在测试存储连接…",
+                    move |lib, cancel, _| {
+                        let storage = backup::Storage::load(&lib)?;
+                        let versions = storage.versions(&cancel)?;
+                        Ok(Outcome::Message(format!(
+                            "存储连接正常，读取到 {} 个备份版本",
+                            versions.len()
+                        )))
+                    },
+                );
+            }
 
             Command::Backup => {
                 ensure!(

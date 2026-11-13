@@ -297,6 +297,11 @@ impl AppView {
                                 self.tasks.foreground.is_running()
                                     || self.data.active_storage_profile.is_empty(),
                             ),
+                        )
+                        .child(
+                            self.button("test-storage", "测试连接", Action::TestStorage, cx)
+                                .outline()
+                                .disabled(self.tasks.foreground.is_running()),
                         ),
                 )
                 .child(
