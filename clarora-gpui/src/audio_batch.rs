@@ -34,6 +34,7 @@ pub struct Plan {
     mode: Mode,
     rows: Vec<Row>,
     single: bool,
+    retranslate: bool,
 }
 #[derive(Default, Serialize)]
 pub struct Report {
@@ -82,6 +83,12 @@ fn english(s: &str) -> bool {
 }
 fn has_english(cues: &[Cue]) -> bool {
     cues.iter().any(|c| c.text.lines().any(english))
+}
+fn english_lines(text: &str) -> String {
+    text.lines()
+        .filter(|line| !chinese(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 fn contents(uri: &str) -> Result<Option<Vec<u8>>> {
     if uri.is_empty() {
@@ -179,7 +186,14 @@ impl Plan {
             mode,
             rows: vec![row],
             single: true,
+            retranslate: false,
         })
+    }
+    /// Explicit re-translation replaces existing Chinese instead of skipping it.
+    pub fn single_retranslate(row: Row) -> Result<Self> {
+        let mut plan = Self::single(row, Mode::Chinese)?;
+        plan.retranslate = true;
+        Ok(plan)
     }
     pub fn new(lib: &Library, group: &str, mode: Mode) -> Result<Self> {
         let group_name = lib
@@ -207,6 +221,7 @@ impl Plan {
             mode,
             rows,
             single: false,
+            retranslate: false,
         })
     }
     pub fn run(&self, lib: &Library, cancel: &Cancel, mut progress: impl FnMut(&str)) -> Report {
@@ -271,7 +286,9 @@ impl Plan {
                 return Ok(false);
             }
             Mode::Chinese
-                if !input.cues.is_empty() && input.cues.iter().all(|c| chinese(&c.text)) =>
+                if !self.retranslate
+                    && !input.cues.is_empty()
+                    && input.cues.iter().all(|c| chinese(&c.text)) =>
             {
                 progress("已有中文字幕，跳过");
                 return Ok(false);
@@ -328,10 +345,21 @@ impl Plan {
             .cues
             .iter()
             .enumerate()
-            .filter(|(_, c)| !chinese(&c.text) && c.text.lines().any(english))
+            .filter(|(_, c)| {
+                let source = english_lines(&c.text);
+                if self.retranslate {
+                    source.lines().any(english)
+                } else {
+                    !chinese(&c.text) && source.lines().any(english)
+                }
+            })
             .map(|(i, _)| i)
             .collect::<Vec<_>>();
         if missing.is_empty() {
+            ensure!(
+                !self.retranslate,
+                "没有可翻译的英文字幕，请先导入或生成英文原文字幕"
+            );
             return Ok(changed);
         }
         let mut output = input.cues.clone();
@@ -355,7 +383,13 @@ impl Plan {
             ));
             let source = missing[offset..end]
                 .iter()
-                .map(|&i| input.cues[i].clone())
+                .map(|&i| {
+                    let mut cue = input.cues[i].clone();
+                    if self.retranslate {
+                        cue.text = english_lines(&cue.text);
+                    }
+                    cue
+                })
                 .collect::<Vec<_>>();
             let translated = ai::translate(lib, &source, cancel)?;
             for (&index, cue) in missing[offset..end].iter().zip(translated) {
@@ -369,7 +403,12 @@ impl Plan {
                     !chinese.trim().is_empty(),
                     "模型未返回有效中文，原字幕未覆盖"
                 );
-                output[index].text = format!("{}\n{}", input.cues[index].text, chinese);
+                let original = if self.retranslate {
+                    english_lines(&input.cues[index].text)
+                } else {
+                    input.cues[index].text.clone()
+                };
+                output[index].text = format!("{original}\n{chinese}");
             }
             offset = end;
         }

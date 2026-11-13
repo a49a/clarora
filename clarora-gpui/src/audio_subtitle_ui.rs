@@ -62,6 +62,7 @@ impl AppView {
         let available = !self.audio.current_id.is_empty();
         let busy = self.tasks.audio_subtitles.lane.is_running();
         let has_cues = !self.audio.cues.is_empty();
+        let has_chinese = video_subtitles::has_chinese(&self.audio.cues);
         let generating = self.tasks.audio_subtitles.working(
             &self.audio.current_id,
             clarora_gpui::audio_batch::Mode::English,
@@ -116,6 +117,8 @@ impl AppView {
                     "audio-translate-subtitles",
                     if translating {
                         "翻译中…"
+                    } else if has_chinese {
+                        "重新翻译"
                     } else {
                         "翻译成中文"
                     },
@@ -131,6 +134,8 @@ impl AppView {
                     "已有任务正在处理，可切换音频试听；完成或在顶部取消后可再次生成"
                 } else if !has_cues {
                     "请先生成字幕，或从“更多”导入原文字幕"
+                } else if has_chinese {
+                    "已有中文字幕；重新翻译会覆盖现有译文"
                 } else {
                     "翻译已有字幕，保留原文与时间轴"
                 }),

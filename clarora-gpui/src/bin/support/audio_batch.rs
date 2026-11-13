@@ -438,6 +438,18 @@ fn run_single(parent: &Library, server: &Server, results: &mut Vec<Value>) -> Re
             && body(&lib, &key)?.contains("批量中文译文"),
         "single translate did not save bilingual subtitles"
     );
+    let retranslated =
+        Plan::single_retranslate(row(&lib, &key)?)?.run(&lib, &process::cancel_token(), |_| {});
+    let retranslated_body = body(&lib, &key)?;
+    ensure!(
+        retranslated.translated == 1
+            && retranslated.skipped == 0
+            && retranslated.failed.is_empty()
+            && retranslated_body.matches("批量中文译文").count() == 2
+            && !retranslated_body.contains("批量中文译文\n批量中文译文")
+            && retranslated_body.contains("Generated English first."),
+        "single re-translate skipped or duplicated existing Chinese"
+    );
     let mixed = audio(
         &lib,
         &group,

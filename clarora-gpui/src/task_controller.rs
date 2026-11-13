@@ -4,6 +4,7 @@ pub(super) enum Outcome {
     CredentialMode(bool),
     LibraryRestored(usize, video_library::Collection),
     Message(String),
+    ClipSaved,
     Issue(String),
     Parts(bilibili::Series),
     PartVideo(bilibili::Series, usize, PathBuf, bool, u64, bool),

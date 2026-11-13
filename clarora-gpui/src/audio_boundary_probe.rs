@@ -184,10 +184,16 @@ impl Probe {
                 }
                 app.media.player.set("pause", "yes");
                 app.media.player.command(["seek", "1.4", "absolute+exact"]);
+                let cue = app.audio.cues[1].clone();
                 if !app.audio.clip_mode {
                     app.handle(Action::AudioClipMode, window, cx);
                 }
-                let cue = app.audio.cues[1].clone();
+                ensure!(
+                    app.audio.clip_mode
+                        && app.media.session.loop_a == Some(cue.start)
+                        && app.media.session.loop_b == Some(cue.end),
+                    "A-B default did not use the active sentence boundaries"
+                );
                 app.handle(Action::Boundary(cue.start, true), window, cx);
                 app.handle(Action::Boundary(cue.end, false), window, cx);
                 ensure!(

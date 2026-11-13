@@ -377,7 +377,47 @@ impl Command {
                     app.set_audio_repeat_mode(0)?;
                 }
                 app.audio.clip_mode = !app.audio.clip_mode;
-                if !app.audio.clip_mode {
+                if app.audio.clip_mode {
+                    let has_range = app
+                        .media
+                        .session
+                        .loop_a
+                        .zip(app.media.session.loop_b)
+                        .is_some_and(|(a, b)| b > a);
+                    if !has_range && app.media.session.is_audio(&app.audio.current_id) {
+                        let position = app.media.snapshot.position;
+                        let duration = app.media.snapshot.duration;
+                        let index =
+                            video_subtitles::active(&app.audio.cues, position).or_else(|| {
+                                clarora_gpui::video_repeat::at_or_next(
+                                    &app.audio.cues,
+                                    position,
+                                    duration,
+                                )
+                            });
+                        if let Some(cue) = index.and_then(|i| app.audio.cues.get(i)).cloned() {
+                            let end = cue.end.min(duration);
+                            if duration > 0. && end > cue.start {
+                                let paused = app.media.snapshot.paused;
+                                app.media.session.loop_a = Some(cue.start);
+                                app.media.session.loop_b = Some(end);
+                                app.media.session.mode = PlaybackMode::Ab;
+                                app.media.player.command([
+                                    "seek".into(),
+                                    cue.start.to_string(),
+                                    "absolute+exact".into(),
+                                ]);
+                                if paused {
+                                    app.media.player.set("pause", "yes");
+                                }
+                                app.report_status(
+                                    FeedbackKind::Info,
+                                    "已按当前句设置 A–B，可拖动波形边界调整".into(),
+                                );
+                            }
+                        }
+                    }
+                } else {
                     app.media.session.loop_a = None;
                     app.media.session.loop_b = None;
                     if app.media.session.mode == PlaybackMode::Ab {
@@ -456,16 +496,9 @@ impl Command {
                 );
             }
 
-            action @ (Command::Transcribe | Command::Translate) => {
-                let mode = if matches!(action, Command::Transcribe) {
-                    clarora_gpui::audio_batch::Mode::English
-                } else {
-                    clarora_gpui::audio_batch::Mode::Chinese
-                };
+            Command::Transcribe => {
+                let mode = clarora_gpui::audio_batch::Mode::English;
                 let row = app.selected().context("请先选择音频")?;
-                if mode == clarora_gpui::audio_batch::Mode::Chinese {
-                    ensure!(!app.audio.cues.is_empty(), "请先导入或生成原文字幕");
-                }
                 let target = audio_subtitles_controller::Target {
                     audio: Some(text(&row, "id")),
                     name: text(&row, "name"),
@@ -475,6 +508,43 @@ impl Command {
                     clarora_gpui::audio_batch::Plan::single(row, mode)?,
                     target,
                 )?;
+            }
+
+            Command::Translate => {
+                if video_subtitles::has_chinese(&app.audio.cues) {
+                    let view = cx.entity().downgrade();
+                    window.open_dialog(cx, move |dialog, window, _cx| {
+                        let view = view.clone();
+                        dialog
+                            .title("重新翻译中文字幕？")
+                            .confirm()
+                            .w((window.viewport_size().width - px(32.)).min(px(480.)))
+                            .button_props(
+                                DialogButtonProps::default()
+                                    .cancel_text("取消")
+                                    .ok_text("重新翻译"),
+                            )
+                            .child(
+                                div().text_sm().child(
+                                    "已有中文字幕会被新译文覆盖，英文字幕和时间轴保持不变。",
+                                ),
+                            )
+                            .on_ok(move |_, _window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    if let Err(error) = this.begin_audio_translate() {
+                                        this.report_status(
+                                            FeedbackKind::Error,
+                                            format!("重新翻译失败：{error:#}"),
+                                        );
+                                    }
+                                    cx.notify();
+                                });
+                                true
+                            })
+                    });
+                    return Ok(());
+                }
+                app.begin_audio_translate()?;
             }
 
             Command::AudioGroupSubtitles(mode) => {
@@ -496,8 +566,28 @@ impl Command {
     }
 }
 
+impl AppView {
+    fn begin_audio_translate(&mut self) -> Result<()> {
+        let row = self.selected().context("请先选择音频")?;
+        ensure!(!self.audio.cues.is_empty(), "请先导入或生成原文字幕");
+        let mode = clarora_gpui::audio_batch::Mode::Chinese;
+        let target = audio_subtitles_controller::Target {
+            audio: Some(text(&row, "id")),
+            name: text(&row, "name"),
+            mode,
+        };
+        let plan = if video_subtitles::has_chinese(&self.audio.cues) {
+            clarora_gpui::audio_batch::Plan::single_retranslate(row)?
+        } else {
+            clarora_gpui::audio_batch::Plan::single(row, mode)?
+        };
+        self.begin_audio_subtitles(plan, target)
+    }
+}
+
 // Completion policy belongs to this domain: cancellation may race a durable commit.
 pub(super) enum Completed {
+    ClipSaved,
     KeyPoints(String, Vec<ai::KeyPoint>),
     TtsReady(Row),
     AudioMerged(clarora_gpui::audio_tools::Merged),
@@ -511,6 +601,15 @@ impl Completed {
         cx: &mut Context<AppView>,
     ) {
         match self {
+            Completed::ClipSaved => {
+                app.audio.clip_mode = false;
+                app.media.session.loop_a = None;
+                app.media.session.loop_b = None;
+                if app.media.session.mode == PlaybackMode::Ab {
+                    app.media.session.mode = PlaybackMode::Normal;
+                }
+                app.report_status(FeedbackKind::Info, "片段已存为闪卡，已退出 A-B 精听".into());
+            }
             Completed::AudioMerged(merged) => {
                 context.cancelled = false;
                 if app.audio.practice_id == text(&merged.row, "practice_id") {

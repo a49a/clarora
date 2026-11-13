@@ -375,6 +375,44 @@ impl AppView {
             )
             .into_any_element()
     }
+    fn audio_empty_state(&self, cx: &Context<Self>) -> AnyElement {
+        panel(cx)
+            .flex_1()
+            .justify_center()
+            .child(div().text_lg().child("这个练习组还没有可学习的音频"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("可以切换到其他练习组，或导入一段音频。字幕可以稍后生成或导入。"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        self.button(
+                            "empty-import-audio",
+                            "导入音频",
+                            Action::Pick("audio".into()),
+                            cx,
+                        )
+                        .primary(),
+                    )
+                    .child(
+                        self.button(
+                            "empty-manage-audio",
+                            "管理音频",
+                            Action::Page("library".into()),
+                            cx,
+                        )
+                        .outline(),
+                    ),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn audio_study(
         &mut self,
         window: &mut Window,
@@ -941,7 +979,8 @@ impl AppView {
                         && !self.audio.cues.is_empty(),
                     |v| v.child(self.audio_current_cue(active, window, cx)),
                 )
-                .when(self.audio.cues.is_empty(), |v| {
+                .when(audios.is_empty(), |v| v.child(self.audio_empty_state(cx)))
+                .when(!audios.is_empty() && self.audio.cues.is_empty(), |v| {
                     v.child(
                         div()
                             .flex_1()
@@ -1255,9 +1294,8 @@ impl AppView {
         }
         div()
             .w_full()
-            .h(px(
-                (f32::from(window.viewport_size().height) - 206.).max(360.)
-            ))
+            .flex_1()
+            .min_h(px(360.))
             .flex()
             .flex_col()
             .overflow_hidden()
