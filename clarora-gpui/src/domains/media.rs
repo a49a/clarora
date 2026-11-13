@@ -18,6 +18,7 @@ pub(super) enum Command {
     Subtitle(i64, bool),
     SubtitleImport(bool),
     Clip,
+    VideoSaveCue(usize),
 }
 impl Command {
     pub(super) fn effects(&self, app: &AppView) -> Effects {
@@ -362,9 +363,13 @@ impl Command {
                 let path = app.media.session.path.clone().context("请先打开媒体")?;
                 let a = app.media.session.loop_a.context("请先设置 A 点")?;
                 let b = app.media.session.loop_b.context("请先设置 B 点")?;
-                let front = app.value("front", cx);
-                let back = app.value("back", cx);
                 let is_audio = app.page == "listening";
+                let (front, back) = if is_audio {
+                    (app.value("front", cx), app.value("back", cx))
+                } else {
+                    subtitles::excerpt(&app.video.cues, a, b)
+                };
+                ensure!(!front.trim().is_empty(), "所选范围没有可保存的字幕原文");
                 let source = if is_audio {
                     clip_marks::Source::audio(&app.audio.current_id)
                 } else {
@@ -375,7 +380,36 @@ impl Command {
                     "正在导出片段…",
                     move |lib, cancel, _| {
                         clip_marks::save(&lib, source, &path, a, b, &front, &back, &cancel)?;
-                        Ok(Outcome::Message("片段已存为闪卡，字幕已加下划线".into()))
+                        Ok(if is_audio {
+                            Outcome::ClipSaved
+                        } else {
+                            Outcome::Message("片段已存为闪卡，字幕已加下划线".into())
+                        })
+                    },
+                );
+            }
+
+            Command::VideoSaveCue(index) => {
+                ensure!(app.page == "video", "请先进入视频学习");
+                ensure!(!app.tasks.foreground.is_running(), "请等待当前任务完成");
+                let path = app.media.session.path.clone().context("请先打开视频")?;
+                let cue = app
+                    .video
+                    .cues
+                    .get(index)
+                    .context("字幕已改变，请重试")?
+                    .clone();
+                let (front, back) = subtitles::languages(std::slice::from_ref(&cue));
+                ensure!(!front.trim().is_empty(), "本句没有可保存的原文");
+                let source = clip_marks::Source::video(&path);
+                app.begin_scoped(
+                    TaskScope::Application,
+                    "正在导出本句…",
+                    move |lib, cancel, _| {
+                        clip_marks::save(
+                            &lib, source, &path, cue.start, cue.end, &front, &back, &cancel,
+                        )?;
+                        Ok(Outcome::Message("本句已存为闪卡，字幕已加下划线".into()))
                     },
                 );
             }

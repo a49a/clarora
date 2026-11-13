@@ -60,7 +60,7 @@ impl Command {
                         | Command::VideoPlayCue(..)
                 )),
             leave_video_sentence: match self {
-                Command::VideoTranscribe => app.video.pending_start.is_none(),
+                Command::VideoTranscribe => false,
                 Command::VideoClearLoop | Command::VideoRemove(..) => true,
                 _ => false,
             },
@@ -134,25 +134,41 @@ impl Command {
                 ensure!(app.tasks.video_job.is_none(), "请先完成后台字幕生成再翻译");
                 ensure!(app.page == "video", "请先进入视频学习");
                 ensure!(!app.tasks.foreground.is_running(), "请等待当前任务完成");
-                let video = app.media.session.path.clone().context("请先打开视频")?;
                 video_subtitles::english_source(&app.video.cues)?;
-                let source = app.video.cues.clone();
-                app.begin_subtitle(
-                    "生成中文字幕",
-                    "正在准备英文字幕…",
-                    move |lib, cancel, tx| {
-                        let (path, cues) = video_subtitles::translate_with_progress(
-                            &lib,
-                            &video,
-                            &source,
-                            &cancel,
-                            |stage| {
-                                let _ = tx.send(TaskUpdate::SubtitleProgress(stage.into()));
-                            },
-                        )?;
-                        Ok(Outcome::VideoTranslated(video, path, source, cues))
-                    },
-                );
+                if video_subtitles::has_chinese(&app.video.cues) {
+                    let view = cx.entity().downgrade();
+                    window.open_dialog(cx, move |dialog, window, _cx| {
+                        let view = view.clone();
+                        dialog
+                            .title("重新翻译中文字幕？")
+                            .confirm()
+                            .w((window.viewport_size().width - px(32.)).min(px(480.)))
+                            .button_props(
+                                DialogButtonProps::default()
+                                    .cancel_text("取消")
+                                    .ok_text("重新翻译"),
+                            )
+                            .child(
+                                div().text_sm().child(
+                                    "当前中文字幕会被新译文覆盖，英文字幕和时间轴保持不变。",
+                                ),
+                            )
+                            .on_ok(move |_, _window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    if let Err(error) = this.begin_video_translate() {
+                                        this.report_status(
+                                            FeedbackKind::Error,
+                                            format!("重新翻译失败：{error:#}"),
+                                        );
+                                    }
+                                    cx.notify();
+                                });
+                                true
+                            })
+                    });
+                    return Ok(());
+                }
+                app.begin_video_translate()?;
             }
 
             Command::VideoSubtitleSize(size) => {
@@ -170,9 +186,58 @@ impl Command {
                 app.lib
                     .set_setting("video_repeat_tail_ms", &ms.to_string())?;
                 app.video.repeat_tail_ms = ms;
+                if app.media.session.video_sentence().is_some() {
+                    app.report_status(
+                        FeedbackKind::Info,
+                        "逐句尾音已保存；重新开启逐句循环后生效".into(),
+                    );
+                }
             }
 
-            Command::VideoPrecision => app.video.precision = !app.video.precision,
+            Command::VideoPrecision => {
+                app.video.precision = !app.video.precision;
+                if app.video.precision && app.media.session.is_video() {
+                    let has_range = app
+                        .media
+                        .session
+                        .loop_a
+                        .zip(app.media.session.loop_b)
+                        .is_some_and(|(a, b)| b > a);
+                    if !has_range {
+                        let position = app.media.snapshot.position;
+                        let duration = app.media.snapshot.duration;
+                        let index =
+                            video_subtitles::active(&app.video.cues, position).or_else(|| {
+                                clarora_gpui::video_repeat::at_or_next(
+                                    &app.video.cues,
+                                    position,
+                                    duration,
+                                )
+                            });
+                        if let Some(cue) = index.and_then(|i| app.video.cues.get(i)).cloned() {
+                            let end = cue.end.min(duration);
+                            if duration > 0. && end > cue.start {
+                                let paused = app.media.snapshot.paused;
+                                app.media.session.loop_a = Some(cue.start);
+                                app.media.session.loop_b = Some(end);
+                                app.media.session.mode = PlaybackMode::Ab;
+                                app.media.player.command([
+                                    "seek".into(),
+                                    cue.start.to_string(),
+                                    "absolute+exact".into(),
+                                ]);
+                                if paused {
+                                    app.media.player.set("pause", "yes");
+                                }
+                                app.report_status(
+                                    FeedbackKind::Info,
+                                    "已按当前句设置 A–B，可拖动进度条边界调整".into(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
 
             Command::VideoClearLoop => {
                 app.media.session.loop_a = None;
@@ -849,6 +914,29 @@ pub(super) fn enter(app: &mut AppView) {
 }
 
 impl AppView {
+    fn begin_video_translate(&mut self) -> Result<()> {
+        let video = self.media.session.path.clone().context("请先打开视频")?;
+        video_subtitles::english_source(&self.video.cues)?;
+        let source = self.video.cues.clone();
+        self.begin_subtitle(
+            "生成中文字幕",
+            "正在准备英文字幕…",
+            move |lib, cancel, tx| {
+                let (path, cues) = video_subtitles::translate_with_progress(
+                    &lib,
+                    &video,
+                    &source,
+                    &cancel,
+                    |stage| {
+                        let _ = tx.send(TaskUpdate::SubtitleProgress(stage.into()));
+                    },
+                )?;
+                Ok(Outcome::VideoTranslated(video, path, source, cues))
+            },
+        );
+        Ok(())
+    }
+
     pub(crate) fn poll_video_titles(&mut self) -> bool {
         let mut changed = false;
         if let Some(rx) = &self.tasks.title_events {

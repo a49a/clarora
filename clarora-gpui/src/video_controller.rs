@@ -571,7 +571,9 @@ impl AppView {
             }
             Err(error) => {
                 self.clear_video_sentence_repeat();
-                self.report_status(FeedbackKind::Error, error.to_string());
+                if self.video.repeat_resume.is_none() {
+                    self.report_status(FeedbackKind::Error, error.to_string());
+                }
                 true
             }
         }

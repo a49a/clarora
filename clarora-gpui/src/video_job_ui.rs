@@ -31,6 +31,7 @@ impl AppView {
                 "生成当前视频字幕".into(),
             )
         };
+        self.video.repeat_resume = self.video.sentence_repeat.map(Some);
         self.tasks.video_error.clear();
         self.tasks.video_notice = Some(TaskNotice::new(
             &title,
@@ -167,6 +168,27 @@ impl AppView {
                         self.media
                             .player
                             .command(["sub-add".into(), subtitle, "select".into()]);
+                        let paused = self.video_playback_paused();
+                        if let Some(total) = self.video.repeat_resume.take() {
+                            let index = video_subtitles::active(
+                                &self.video.cues,
+                                self.media.snapshot.position,
+                            )
+                            .or_else(|| {
+                                self.video
+                                    .cues
+                                    .iter()
+                                    .position(|cue| cue.start > self.media.snapshot.position)
+                            });
+                            if let Err(error) = self.start_video_sentence_repeat(index, total) {
+                                self.report_status(
+                                    FeedbackKind::Error,
+                                    format!("字幕已生成，但恢复逐句重复失败：{error:#}"),
+                                );
+                            } else if paused {
+                                self.media.player.set("pause", "yes");
+                            }
+                        }
                         self.refresh_saved_ranges();
                         self.refresh();
                     }
@@ -205,6 +227,7 @@ impl AppView {
                             n.detail.push_str(&format!("\n{}", self.tasks.video_error));
                         }
                     }
+                    self.video.repeat_resume = None;
                     self.tasks.video_job = None;
                 }
             }

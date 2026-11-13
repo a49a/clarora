@@ -6,6 +6,7 @@ impl AppView {
         let busy = self.tasks.foreground.is_running() || self.tasks.video_job.is_some();
         let no_media = !self.media.session.is_video() || self.media.session.path.is_none();
         let no_cues = self.video.cues.is_empty();
+        let has_chinese = video_subtitles::has_chinese(&self.video.cues);
         let no_english = self.video.transcript.text.is_empty();
         let scope = self
             .video
@@ -156,13 +157,27 @@ impl AppView {
                         .disabled(busy || no_media),
                     )
                     .child(
-                        self.button("video-translate-zh", "翻译中文", Action::VideoTranslate, cx)
-                            .outline()
-                            .flex_1()
-                            .min_w_0()
-                            .h(px(32.))
-                            .px_2()
-                            .disabled(no_cues || busy || no_media),
+                        self.button(
+                            "video-translate-zh",
+                            if has_chinese {
+                                "重新翻译"
+                            } else {
+                                "翻译中文"
+                            },
+                            Action::VideoTranslate,
+                            cx,
+                        )
+                        .outline()
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(32.))
+                        .px_2()
+                        .disabled(no_cues || busy || no_media)
+                        .tooltip(if has_chinese {
+                            "已有中文字幕；重新翻译会覆盖现有译文"
+                        } else {
+                            "将英文字幕翻译为中文，保留原文与时间轴"
+                        }),
                     )
                     .child(self.surface_menu("video-subtitle-more", "更多 ▾".into(), more, cx)),
             )

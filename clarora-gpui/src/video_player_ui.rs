@@ -212,8 +212,35 @@ impl AppView {
                     && self.media.snapshot.path == p.to_string_lossy()
             });
         let frame = self.media.snapshot.frame.clone().filter(|_| active);
-        let active_caption = if self.video_repeat_blind()
-            || !active
+        let blind_caption = if !active
+            || !self.video.captions_enabled
+            || self.video.caption_source == VideoCaptionSource::Hidden
+        {
+            None
+        } else if let Some(session) = self.media.session.video_sentence()
+            && let Some(total) = session.total
+        {
+            let blind = clarora_gpui::video_repeat::blind_plays(total);
+            if blind == 0 {
+                None
+            } else if let Some(state) = self
+                .media
+                .snapshot
+                .sentence_repeat
+                .as_ref()
+                .filter(|state| state.request_id == session.request_id && !state.finished)
+            {
+                (state.current_play <= blind)
+                    .then(|| format!("盲听 {}/{}", state.current_play, blind))
+            } else {
+                Some("盲听".into())
+            }
+        } else {
+            None
+        };
+        let active_caption = if let Some(caption) = blind_caption {
+            caption
+        } else if !active
             || !self.video.captions_enabled
             || self.media.snapshot.subtitle_is_bitmap
             || self.video.caption_source == VideoCaptionSource::Hidden
@@ -562,14 +589,6 @@ impl AppView {
                 )
             })
             .collect::<Vec<_>>();
-        options.extend([200, 350, 500, 650].into_iter().map(|ms| {
-            (
-                format!("逐句尾音 {:.2}s", ms as f64 / 1000.),
-                Action::VideoRepeatTail(ms),
-                self.video.repeat_tail_ms == ms,
-                false,
-            )
-        }));
         options.extend(
             [("关闭循环", 0), ("单集循环", 1), ("A–B 片段循环", 2)]
                 .into_iter()
@@ -651,6 +670,33 @@ impl AppView {
                         sentence_options,
                         cx,
                     ))
+                    .when(
+                        self.media.session.video_sentence().is_some()
+                            || self.video.sentence_repeat.is_some(),
+                        |row| {
+                            row.child(
+                                self.player_menu(
+                                    "video-repeat-tail",
+                                    format!(
+                                        "尾音 {:.2}s ▾",
+                                        self.video.repeat_tail_ms as f64 / 1000.
+                                    ),
+                                    [200, 350, 500, 650]
+                                        .into_iter()
+                                        .map(|ms| {
+                                            (
+                                                format!("逐句尾音 {:.2}s", ms as f64 / 1000.),
+                                                Action::VideoRepeatTail(ms),
+                                                self.video.repeat_tail_ms == ms,
+                                                false,
+                                            )
+                                        })
+                                        .collect(),
+                                    cx,
+                                ),
+                            )
+                        },
+                    )
                     .child(self.player_menu(
                         "video-speed",
                         format!("{}× ▾", self.media.rate),

@@ -119,6 +119,8 @@ pub(super) struct VideoState {
     pub(super) parts_scroll: UniformListScrollHandle,
     pub(super) active: Option<usize>,
     pub(super) sentence_repeat: Option<u32>,
+    /// Preserve a sentence-repeat mode while background subtitles replace cues.
+    pub(super) repeat_resume: Option<Option<u32>>,
     pub(super) repeat_mode: PlaybackMode,
     pub(super) pending_start: Option<PendingVideoStart>,
     pub(super) part_confirmation: Option<video_controller::PartConfirmation>,
@@ -170,6 +172,7 @@ impl VideoState {
             parts_scroll: UniformListScrollHandle::new(),
             active: None,
             sentence_repeat: None,
+            repeat_resume: None,
             repeat_mode: PlaybackMode::Normal,
             pending_start: None,
             part_confirmation: None,
