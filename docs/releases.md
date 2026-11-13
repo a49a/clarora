@@ -1,5 +1,7 @@
 # 发布流程（Release Runbook）
 
+> **RN 桌面发行弃用（2026-11-13）：** RN 的 macOS / Windows 桌面构建已弃用，不再作为桌面主版本发布目标；新桌面发布走 `clarora-gpui/` 的打包流程。本文件保留用于 RN 移动端和历史版本维护。
+
 版本唯一真源是 git tag（`v0.2.0` 格式）。打 tag 并推送后，Release 工作流自动构建
 macOS dmg、Windows zip 与未签名 iOS IPA，生成校验和，并创建 GitHub Release。
 配置 Android 签名 secrets 且将仓库变量 `CLARORA_ANDROID_RELEASE_ENABLED` 设为 `true` 时，工作流还会构建签名 Android APK；未启用时元数据把 Android 标为 `planned`。

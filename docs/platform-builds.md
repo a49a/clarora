@@ -1,17 +1,19 @@
 # React Native 多平台工程
 
-四个平台当前提供源码和构建入口；v0.1.0 起提供 macOS / Windows 安装包（见 GitHub Releases）。
+> **弃用说明（2026-11-13）：** React Native 的 **macOS / Windows 桌面构建已弃用**，不再作为桌面主版本推荐或发布目标。桌面请使用 [`clarora-gpui/`](../clarora-gpui/)；Android / iOS 的 RN 构建继续维护。现有 RN 桌面构建脚本与历史 Release 保留，仅用于旧版本维护。
 
 | 平台 | 实现 | 当前范围 |
 | --- | --- | --- |
-| macOS | `clarora-app/macos/`，React Native macOS 0.76 + libmpv | 共用 `App.tsx` / `shared/`；端侧离线字幕（whisper.cpp / SenseVoice）、PDF 阅读（PDFKit）、目录与命令导入、音频合并、libmpv 视频与双字幕同显、桌面快捷键 |
-| Windows | `clarora-app/windows/`，React Native Windows 0.76.17 | 共用 `App.tsx` / `shared/`；端侧离线字幕（clarora_asr）、PDF 阅读（pdfium）、Windows 原生文件、SQLite、音频、片段预加载、录音、键盘与视频适配 |
-| Android | `clarora-app/android/` + `clarora-app/shared/` | 复用移动学习页面；系统文件选择、音频播放与变速、上滑切换；macOS 合并的音频经同步下发 |
-| iOS | `clarora-app/ios/` + `clarora-app/shared/` | 复用移动学习页面；新增文件选择、剪贴板、播放/倍速/循环、片段双播放器预加载、跟读录音及休息音乐适配；需设备验证 |
+| macOS | `clarora-app/macos/`，React Native macOS 0.76 + libmpv | **已弃用**：历史桌面构建，保留源码与构建说明供旧版本维护；新桌面版本请使用 `clarora-gpui/` |
+| Windows | `clarora-app/windows/`，React Native Windows 0.76.17 | **已弃用**：历史桌面构建，保留源码与构建说明供旧版本维护；新桌面版本请使用 `clarora-gpui/` |
+| Android | `clarora-app/android/` + `clarora-app/shared/` | 继续维护；复用移动学习页面、系统文件选择、音频播放与变速、上滑切换；macOS 合并的音频经同步下发 |
+| iOS | `clarora-app/ios/` + `clarora-app/shared/` | 继续维护；复用移动学习页面、文件选择、剪贴板、播放/倍速/循环、片段双播放器预加载、跟读录音及休息音乐适配；需设备验证 |
 
-> **Anki 卡组导入**为桌面端能力：macOS / Windows 均提供“Anki 卡组”入口，格式和合并规则见 [Anki 导入说明](anki-import.md)。移动端不做 Anki 导入——在桌面端导入的卡片经「同步与备份」下发到移动端。
+> **Anki 卡组导入**为桌面端能力：GPUI 桌面主版本（macOS / Windows）提供“Anki 卡组”入口，格式和合并规则见 [Anki 导入说明](anki-import.md)。移动端不做 Anki 导入——在桌面端导入的卡片经「同步与备份」下发到移动端。
 
-## macOS
+## macOS（RN 桌面构建，已弃用）
+
+> 该平台仅用于旧版本维护，不再作为桌面主版本发布。新桌面版本使用 [`clarora-gpui/`](../clarora-gpui/)。
 
 需要 macOS 11 或更新版本，以及 Node.js 24、Xcode、CocoaPods。视频播放使用 libmpv（`brew install mpv`），端侧字幕使用 whisper.cpp（`brew install whisper-cpp`），均从 `/opt/homebrew`（Homebrew 默认位置）查找；其他安装路径需要调整 `macos/Clarora.xcodeproj` 的 Header / Library Search Paths。
 
@@ -52,7 +54,9 @@ npm run macos
 - 目录批量导入、命令导入、音频合并（AVFoundation）、双字幕同显与视频学习（libmpv）为 macOS 专属能力。
 - 命令导入需要 App Sandbox 保持关闭（`macos/Clarora-macOS/Clarora.entitlements` 中 `com.apple.security.app-sandbox` 为 `false`），此配置用于直接分发的构建。
 
-## Windows
+## Windows（RN 桌面构建，已弃用）
+
+> 该平台仅用于旧版本维护，不再作为桌面主版本发布。新桌面版本使用 [`clarora-gpui/`](../clarora-gpui/)。
 
 使用 Windows 10 2004（19041）或更新版本。开发需要 Node.js 24、Visual Studio 2022 的 UWP / C++ 开发工具、Windows SDK 10.0.22621、.NET 8 SDK。使用官方 RNW 0.76 的 UWP C# 模板和旧架构，避免同时升级现有 Mac、Android、iOS 桥接层。
 

@@ -3,7 +3,7 @@
 - **闪卡与复习**：单词、音频片段、AI 问答卡；SM-2 计划复习；文本、目录和 Anki 导入（Anki 卡组支持 macOS / Windows 桌面端；移动端不做导入，桌面导入的卡片经「同步与备份」下发）。
 - **音视频学习**：逐句字幕、倍速、循环、双语字幕合并、片段收藏、音频管理与原生播放。
 - **随便学学**：混合推荐本地学习内容，支持收藏和音频片段预加载。
-- **学习辅助**：统计、专注模式、冥想、主题、词汇关系图。
+- **学习辅助**：统计、专注模式、冥想、主题、闪卡列表。
 - **自有存储备份**：客户端直连 S3 兼容存储或阿里云 OSS，保留版本，在其他设备选择备份合并。
 - **自定义 AI API**：聊天、流式回答、重点标注、翻译、OCR、转写与跟读文本对齐评分。用户自行配置模型与密钥。
 - **端侧字幕（macOS / Windows）**：whisper.cpp 与 SenseVoice 本地模型离线生成字幕，音频不上传；英文转中文再走聊天 API。模型在设置中一键下载。
@@ -14,10 +14,10 @@
 | 模块 | 功能概览 |
 | --- | --- |
 | 音频学习 | 逐句字幕、翻译与真实波形；A/B 选取重点并保存片段闪卡；AI 标重点在原文用下划线标记；收藏片段用绿色下划线标记并可连续复习；盲听、单句循环、每句三/五遍、拖选复制与问 AI、跨音视频句型搜索。 |
-| 视频学习 | 本地视频与 bilibili 分 P；主副字幕、翻译、文稿与 SRT；A/B 精听与片段闪卡；每句三/四/五/六遍，四/六遍前半隐藏字幕；全屏播放与逐句定位。 |
+| 视频学习 | 本地视频与 bilibili 分 P；主副字幕、翻译、文稿与 SRT；A/B 精听与片段闪卡；字幕行一键收藏本句；每句三/四/五/六遍，四/六遍前半隐藏字幕；全屏播放与逐句定位。 |
 | 文档阅读 | PDF/EPUB/TXT，书库与目录侧栏，缩放、重排、独立阅读进度，当前片段问 AI。 |
 | 口语与写作 | 口语分组、音频题目、草稿与目标词数、AI 批改、按命令导入/删除题目；写作多篇草稿、AI 批改、快照与历史。 |
-| 跟读与识字 | 录音/选录音、逐词对齐、AI 点评、图片 OCR。 |
+| 跟读与图转文字 | 录音/选录音、逐词对齐、AI 点评、图片转文字。 |
 | 闪卡与助手 | 五类卡片、SM-2、每日额度、文本/目录/Anki 导入；全局学习助手支持选区引用、会话历史和问答卡。 |
 | 专注与资料 | 专注目标、分心/疲劳、随时记录的想法、训练建议；统计页分开展示专注时长与媒体播放时长；本机 ZIP、命名云存储配置、S3/R2 同步与 OSS 兼容备份。 |
 
@@ -34,11 +34,15 @@
 
 安装包未做代码签名：macOS 首次打开如被 Gatekeeper 拦截，右键 App 选「打开」，或执行 `xattr -dr com.apple.quarantine /Applications/Clarora.app`；Windows 安装器未签名，SmartScreen 提示属正常现象。应用内下载语音模型，安装包不包含模型或个人学习资料。
 
+RN 的 macOS / Windows 桌面构建已弃用，请使用上面的 GPUI 桌面主版本；Android / iOS RN 继续维护。
+
 移动端继续使用独立标注的 RN 版本；Android APK 与 iOS 渠道以下载页和对应 Release 资产为准。iOS 未签名包需要自行签名后安装，不能下载后直接安装。构建与分发配置见[移动端发布](docs/mobile-releases.md)。
 
 ## 开发
 
 桌面 GPUI 原生客户端位于 `clarora-gpui/`，使用 Rust；React Native 客户端位于 `clarora-app/`，两者启动方式独立。GPUI 日常启动用 `make gpui`（Windows 用 `powershell -File clarora-gpui/scripts/dev.ps1`），完整打包步骤见下方[从源码打包桌面应用](#从源码打包桌面应用)。
+
+RN 的 macOS / Windows 桌面构建已弃用，下面的 `npm run macos` / `npm run windows` 仅用于历史维护；Android / iOS 继续维护。
 
 RN 开发需要 Node.js 24、对应平台开发工具。macOS 还需要 Xcode、CocoaPods、libmpv 和 whisper.cpp：
 
@@ -212,7 +216,24 @@ cd clarora\clarora-gpui
 
 在「设置 → AI 服务」配置兼容 API 的 Base URL、API Key 和模型名称。聊天/翻译使用 `/chat/completions`；OCR 需要视觉模型；转写使用 `/audio/transcriptions`，模型必须支持 `verbose_json` 与 `segments` 时间轴。可以分别配置聊天和转写服务，也可使用用户自行运行的兼容本地服务。
 
+本地模型可按准确度和耗时取舍：英语转写可先用 `small.en` 完成大部分字幕；`medium.en` 更准确，但耗时更长，后续只对字幕明显不准确的音频单独改用 `medium.en`。中文或多语言请使用 `small`、SenseVoice 或 `large-v3-turbo`，`.en` 模型仅适用于英语。
+
 OCR 与跟读结果保存在本机。跟读评分比较识别文本与参考句，并非声学发音评测。没有 AI 配置时，本地导入、播放和复习仍可使用。
+
+## 支持 Clarora
+
+如果 Clarora 对你的学习有帮助，欢迎请我喝杯咖啡。打赏完全自愿，不影响任何功能。
+
+<table>
+  <tr>
+    <th align="center">支付宝</th>
+    <th align="center">微信</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/assets/alipay.png" alt="支付宝打赏码" width="240" /></td>
+    <td align="center"><img src="docs/assets/wechat-pay.png" alt="微信打赏码" width="240" /></td>
+  </tr>
+</table>
 
 ## 仓库结构
 
@@ -223,7 +244,7 @@ OCR 与跟读结果保存在本机。跟读评分比较识别文本与参考句�
 | `tool/` | 客户端图标生成工具 |
 | `docs/` | 客户端构建与存储同步说明 |
 
-根 LICENSE 保留现有 BSD-3-Clause 声明。内置图谱使用本项目原创的小型示例数据；第三方词书和个人学习素材不随源码发布。第三方依赖、模型服务及 libmpv 等的许可需按实际分发内容另行核对。
+根 LICENSE 保留现有 BSD-3-Clause 声明。RN 端内置图谱使用本项目原创的小型示例数据；第三方词书和个人学习素材不随源码发布。第三方依赖、模型服务及 libmpv 等的许可需按实际分发内容另行核对。
 
 
 桌面 Anki 导入：macOS / Windows 在闪卡页面选择“Anki 导入”，支持卡包和 Anki `.txt` / `.tsv` 文本；格式、合并规则与限制见 [导入说明](docs/anki-import.md)。
