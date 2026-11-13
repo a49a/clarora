@@ -82,6 +82,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let fullscreen = self.video.fullscreen;
+        let compact = window.viewport_size().width < px(900.);
         let foreground = if fullscreen {
             rgb(0xe8f0eb).into()
         } else {
@@ -127,7 +128,7 @@ impl AppView {
                     .text_color(primary)
                     .child(clock(self.timer_seconds as f64)),
             )
-            .when(self.timer.focus(), |row| {
+            .when(self.timer.focus() && !compact, |row| {
                 row.child(
                     div()
                         .text_xs()
@@ -137,24 +138,10 @@ impl AppView {
             .child(div().text_xs().child(status))
             .when(self.timer.active_round(), |row| {
                 row.child(
-                    self.button(
-                        "focus-add-distraction",
-                        format!("分心 {} · +1", self.timer.distractions()),
-                        Action::FocusDistraction,
-                        cx,
-                    )
-                    .outline(),
+                    self.button("focus-finish-round", "结束本轮", Action::FocusFinish, cx)
+                        .outline(),
                 )
             })
-            .when(
-                self.timer.active_round() && (!self.focus_mode.active() || reached),
-                |row| {
-                    row.child(
-                        self.button("focus-finish-round", "结束本轮", Action::FocusFinish, cx)
-                            .outline(),
-                    )
-                },
-            )
             .child(
                 self.button(
                     "focus-note-toggle",
@@ -169,9 +156,23 @@ impl AppView {
                 .outline()
                 .selected(self.focus_note_open)
                 .tooltip("随时记录或查看专注想法；内容和来源都保存在本机"),
-            );
+            )
+            .when(self.timer.active_round(), |row| {
+                row.child(self.surface_menu(
+                    "focus-more",
+                    format!("更多 · 分心 {}", self.timer.distractions()),
+                    vec![(
+                        "记录一次分心 +1".into(),
+                        Action::FocusDistraction,
+                        false,
+                        !self.timer.active_round(),
+                    )],
+                    cx,
+                ))
+            });
         div()
             .id("global-focus-timer")
+            .relative()
             .flex_shrink_0()
             .min_w_0()
             .px_4()
@@ -192,9 +193,6 @@ impl AppView {
             .flex_col()
             .gap_2()
             .child(row)
-            .when(self.focus_note_open, |bar| {
-                bar.child(self.focus_note_editor(window, cx))
-            })
             .when_some(
                 self.timer.recent().first().filter(|r| r.review_pending),
                 |bar, round| bar.child(self.focus_review(round, true, cx)),
@@ -202,7 +200,11 @@ impl AppView {
             .into_any_element()
     }
 
-    fn focus_note_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn focus_note_editor(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut notes = div()
             .id("focus-recent-notes")
             .flex()
@@ -232,19 +234,57 @@ impl AppView {
                             .text_color(cx.theme().muted_foreground)
                             .child(time),
                     )
+                    .child({
+                        let body = note.body.clone();
+                        div()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                    if event.click_count == 2 {
+                                        this.handle(
+                                            Action::CopySelection(body.clone()),
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                }),
+                            )
+                            .child(
+                                TextView::html(
+                                    SharedString::from(format!("focus-recent-note-{}", note.id)),
+                                    note_html(&note.body),
+                                    window,
+                                    cx,
+                                )
+                                .selectable(true),
+                            )
+                    })
                     .child(
-                        TextView::html(
-                            SharedString::from(format!("focus-recent-note-{}", note.id)),
-                            note_html(&note.body),
-                            window,
+                        self.button(
+                            format!("focus-recent-copy-{}", note.id),
+                            "复制",
+                            Action::CopySelection(note.body.clone()),
                             cx,
                         )
-                        .selectable(true),
+                        .small()
+                        .outline(),
                     ),
             );
         }
+        let body = self.value("focus_note", cx);
+        let length = body.chars().count();
+        let over_limit = length > focus_notes::MAX_CHARS;
         div()
             .id("focus-note-editor")
+            .w_full()
+            .max_h(px(520.))
+            .overflow_y_scroll()
+            .p_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .shadow_lg()
             .flex()
             .flex_col()
             .gap_2()
@@ -257,11 +297,17 @@ impl AppView {
                     .flex_wrap()
                     .child(
                         self.button("focus-note-save", "保存想法", Action::FocusNoteSave, cx)
-                            .primary(),
+                            .primary()
+                            .disabled(body.trim().is_empty() || over_limit),
                     )
+                    .child(div().text_xs().text_color(if over_limit {
+                        cx.theme().danger
+                    } else {
+                        cx.theme().muted_foreground
+                    }).child(format!("{length} / {}", focus_notes::MAX_CHARS)))
                     .child(
                         self.button("focus-note-close", "收起", Action::FocusNoteToggle, cx)
-                            .ghost(),
+                            .outline(),
                     )
                     .child(
                         div()
@@ -275,10 +321,32 @@ impl AppView {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("最近记录"),
+                        .child("最近记录 · 双击整条想法可复制"),
                 )
                 .child(notes)
             })
+            .into_any_element()
+    }
+
+    pub(super) fn focus_note_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let compact = window.viewport_size().width < px(900.);
+        let left = if compact || self.video.fullscreen {
+            px(16.)
+        } else {
+            px(248.)
+        };
+        div()
+            .absolute()
+            .occlude()
+            .top(px(104.))
+            .left(left)
+            .when(compact, |view| view.right(px(16.)))
+            .when(!compact, |view| view.w(px(460.)))
+            .child(self.focus_note_editor(window, cx))
             .into_any_element()
     }
 
@@ -474,15 +542,46 @@ impl AppView {
                                     .text_color(cx.theme().muted_foreground)
                                     .child(time),
                             )
-                            .child(
-                                TextView::html(
-                                    SharedString::from(format!("focus-note-body-{}", note.id)),
-                                    note_html(&note.body),
-                                    window,
-                                    cx,
-                                )
-                                .selectable(true),
-                            ),
+                            .child({
+                                let body = note.body.clone();
+                                div()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(
+                                            move |this, event: &MouseDownEvent, window, cx| {
+                                                if event.click_count == 2 {
+                                                    this.handle(
+                                                        Action::CopySelection(body.clone()),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        TextView::html(
+                                            SharedString::from(format!(
+                                                "focus-note-body-{}",
+                                                note.id
+                                            )),
+                                            note_html(&note.body),
+                                            window,
+                                            cx,
+                                        )
+                                        .selectable(true),
+                                    )
+                            }),
+                    )
+                    .child(
+                        self.button(
+                            format!("focus-note-copy-{i}"),
+                            "复制",
+                            Action::CopySelection(note.body.clone()),
+                            cx,
+                        )
+                        .small()
+                        .outline(),
                     )
                     .child(
                         self.button(
@@ -492,7 +591,7 @@ impl AppView {
                             cx,
                         )
                         .small()
-                        .ghost(),
+                        .outline(),
                     ),
             );
         }

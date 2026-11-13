@@ -4,45 +4,107 @@ use super::*;
 pub(super) fn content(app: &AppView, cx: &mut Context<AppView>) -> Div {
     let mut content = div();
     let rows = &app.data.stats;
+    let range = app.stats_range;
+    let days = match range {
+        0 => 1,
+        1 => 7,
+        2 => 14,
+        _ => 0,
+    };
+    let today = chrono::Local::now().date_naive();
+    let in_range = |day: &str| {
+        range == 3
+            || chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
+                .is_ok_and(|date| date <= today && date > today - chrono::Duration::days(days))
+    };
+    let focus_minutes: f64 = if range == 3 {
+        app.data.focus_minutes
+    } else {
+        app.data
+            .focus_by_day
+            .iter()
+            .filter(|(day, _)| in_range(day))
+            .map(|(_, minutes)| *minutes)
+            .sum()
+    };
+    let focus_distractions: u64 = if range == 3 {
+        app.data.focus_distractions
+    } else {
+        app.data
+            .focus_distractions_by_day
+            .iter()
+            .filter(|(day, _)| in_range(day))
+            .map(|(_, count)| *count)
+            .sum()
+    };
     let listening: f64 = rows
         .iter()
+        .filter(|row| in_range(&text(row, "day")))
         .filter_map(|r| r["listen_seconds"].as_f64())
         .sum();
-    let review: f64 = rows.iter().filter_map(|r| r["review_count"].as_f64()).sum();
+    let review: f64 = rows
+        .iter()
+        .filter(|row| in_range(&text(row, "day")))
+        .filter_map(|r| r["review_count"].as_f64())
+        .sum();
     let pomodoro: f64 = rows
         .iter()
+        .filter(|row| in_range(&text(row, "day")))
         .filter_map(|r| r["pomodoro_count"].as_f64())
         .sum();
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let focus_today = app.data.focus_by_day.get(&today).copied().unwrap_or(0.);
-    let average_interval = if app.data.focus_distractions == 0 {
+    let range_label = match range {
+        0 => "今日",
+        1 => "近 7 天",
+        2 => "近 14 天",
+        _ => "累计",
+    };
+    let average_interval = if focus_distractions == 0 {
         "暂无分心".to_string()
     } else {
-        format!(
-            "{:.1} 分钟",
-            app.data.focus_minutes / app.data.focus_distractions as f64
-        )
+        format!("{:.1} 分钟", focus_minutes / focus_distractions as f64)
     };
-    content = content.child(
+    let mut ranges = div().flex().gap_2().flex_wrap();
+    for (value, label) in [(0, "今日"), (1, "近 7 天"), (2, "近 14 天"), (3, "全部")] {
+        ranges = ranges.child(
+            app.button(
+                format!("stats-range-{value}"),
+                label,
+                Action::StatsRange(value),
+                cx,
+            )
+            .small()
+            .outline()
+            .selected(range == value),
+        );
+    }
+    content = content.child(ranges).child(
         div()
             .flex()
             .gap_4()
             .flex_wrap()
             .child(
                 panel(cx)
-                    .child("今日专注")
-                    .child(format!("{focus_today:.1} 分钟")),
+                    .child(format!("{range_label}专注"))
+                    .child(format!("{focus_minutes:.1} 分钟")),
             )
-            .child(panel(cx).child("累计平均分心间隔").child(average_interval))
             .child(
                 panel(cx)
-                    .child("累计媒体播放")
+                    .child(format!("{range_label}平均分心间隔"))
+                    .child(average_interval),
+            )
+            .child(
+                panel(cx)
+                    .child(format!("{range_label}媒体播放"))
                     .child(format!("{:.1} 分钟", listening / 60.)),
             )
-            .child(panel(cx).child("复习卡片").child(format!("{review:.0} 张")))
             .child(
                 panel(cx)
-                    .child("完成番茄钟")
+                    .child(format!("{range_label}复习卡片"))
+                    .child(format!("{review:.0} 张")),
+            )
+            .child(
+                panel(cx)
+                    .child(format!("{range_label}完成番茄钟"))
                     .child(format!("{pomodoro:.0} 轮")),
             ),
     );
@@ -104,7 +166,7 @@ pub(super) fn content(app: &AppView, cx: &mut Context<AppView>) -> Div {
             div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child("专注时长按每轮「结束本轮」的实际时长统计；媒体播放只累计未暂停的音频或视频。阅读、写作、口语、暂停和冥想不计入媒体播放。累计平均分心间隔 = 全部已结束专注轮次的实际总时长 ÷ 分心总次数。"),
+                .child("专注时长按每轮「结束本轮」的实际时长统计；媒体播放只累计未暂停的音频或视频。阅读、写作、口语、暂停和冥想不计入媒体播放。平均分心间隔 = 所选范围内已结束专注轮次的实际总时长 ÷ 分心总次数；上方卡片随范围切换。"),
         );
     let attempts = &app.data.speaking;
     let mut trend = div().flex().gap_2().items_end().h(px(140.));
@@ -161,7 +223,11 @@ fn daily_minutes_chart(cx: &Context<AppView>, days: &[(String, f64)], floor: f64
                 .child(
                     div()
                         .w(px(24.))
-                        .h(px((minutes / maximum * 100.).max(2.) as f32))
+                        .h(px(if *minutes > 0. {
+                            (minutes / maximum * 100.).max(2.) as f32
+                        } else {
+                            0.
+                        }))
                         .bg(cx.theme().primary),
                 )
                 .child(day[5..].to_string()),

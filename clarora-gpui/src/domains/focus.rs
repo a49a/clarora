@@ -50,18 +50,41 @@ impl Command {
                 app.timer_chimes.stop();
             }
             Command::FocusFinish => {
-                if app.focus_mode.active() {
-                    ensure!(
-                        app.timer.goal_met(now),
-                        "尚未达到目标，可用「紧急结束」解除电脑专注并暂停计时"
-                    );
-                    app.stop_focus_mode(window, cx);
+                if app.focus_mode.active() && !app.timer.goal_met(now) {
+                    let view = cx.entity().downgrade();
+                    window.open_dialog(cx, move |dialog, window, _cx| {
+                        let view = view.clone();
+                        dialog
+                            .title("还没达到最低目标")
+                            .confirm()
+                            .w((window.viewport_size().width - px(32.)).min(px(480.)))
+                            .button_props(
+                                DialogButtonProps::default()
+                                    .cancel_text("继续专注")
+                                    .ok_text("结束本轮")
+                                    .ok_variant(ButtonVariant::Danger),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .child("本轮会按实际专注时长记录，并解除电脑专注、退出全屏。"),
+                            )
+                            .on_ok(move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    if let Err(error) = this.finish_focus_round(window, cx) {
+                                        this.report_status(
+                                            FeedbackKind::Error,
+                                            format!("结束专注失败：{error:#}"),
+                                        );
+                                    }
+                                    cx.notify();
+                                });
+                                true
+                            })
+                    });
+                    return Ok(());
                 }
-                app.timer.finish(&app.lib, now)?;
-                app.play_timer_chime(timer_chimes::Cue::End);
-                if app.page == "stats" {
-                    app.refresh_view_data();
-                }
+                app.finish_focus_round(window, cx)?;
             }
             Command::FocusDistraction => app.timer.record_distraction(&app.lib)?,
             Command::FocusReview(id, fatigue) => {

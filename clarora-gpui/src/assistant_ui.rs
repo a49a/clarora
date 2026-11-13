@@ -104,7 +104,30 @@ impl AppView {
         if text.trim().is_empty() {
             return Ok(());
         }
-        let next = assistant::with_transcript_background(self.assistant.references.clone(), text)?;
+        let next = match assistant::with_transcript_background(
+            self.assistant.references.clone(),
+            text.clone(),
+        ) {
+            Ok(next) => next,
+            Err(error) => {
+                // Long books/transcripts can exceed the reference budget. Keep
+                // the assistant useful by falling back to the current sentence
+                // or page instead of failing the whole attachment.
+                let fallback = self.current_material_excerpt(cx);
+                if fallback.trim().is_empty() || fallback == text {
+                    return Err(error);
+                }
+                let next = assistant::with_transcript_background(
+                    self.assistant.references.clone(),
+                    fallback,
+                )?;
+                self.report_status(
+                    FeedbackKind::Info,
+                    "当前材料过长，已改为引用当前句或当前页".into(),
+                );
+                next
+            }
+        };
         if next != self.assistant.references {
             self.lib
                 .set_setting("assistant_reference_draft", &serde_json::to_string(&next)?)?;
@@ -113,6 +136,23 @@ impl AppView {
             self.assistant.error.clear();
         }
         Ok(())
+    }
+
+    fn current_material_excerpt(&self, cx: &App) -> String {
+        match self.page.as_str() {
+            "listening" | "video" => {
+                let cues = if self.page == "listening" {
+                    &self.audio.cues
+                } else {
+                    &self.video.cues
+                };
+                clarora_gpui::video_subtitles::active(cues, self.media.snapshot.position)
+                    .and_then(|index| cues.get(index))
+                    .map(|cue| cue.text.clone())
+                    .unwrap_or_default()
+            }
+            _ => self.reference(cx),
+        }
     }
 
     fn current_material_text(&self, cx: &App) -> String {

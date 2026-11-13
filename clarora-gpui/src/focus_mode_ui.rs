@@ -141,13 +141,42 @@ impl AppView {
         self.restore_focus_fullscreen(window);
         cx.notify();
     }
+    /// Complete one focus round and always release kiosk restrictions first.
+    pub(super) fn finish_focus_round(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        let now = focus_timer::now_ms();
+        if self.focus_mode.active() {
+            let owned_fullscreen = self.focus_mode.owned_fullscreen;
+            self.stop_focus_mode(window, cx);
+            self.report_status(
+                FeedbackKind::Info,
+                if owned_fullscreen {
+                    "电脑专注已解除，已退出全屏，可以切换应用或回到桌面"
+                } else {
+                    "电脑专注已解除，可以切换应用或回到桌面"
+                }
+                .into(),
+            );
+        }
+        self.timer.finish(&self.lib, now)?;
+        self.play_timer_chime(timer_chimes::Cue::End);
+        if self.page == "stats" {
+            self.refresh_view_data();
+        }
+        Ok(())
+    }
     fn restore_focus_fullscreen(&mut self, window: &mut Window) {
         if self
             .focus_mode
             .restore_fullscreen_at
             .is_some_and(|at| Instant::now() >= at)
-            && native::is_active()
         {
+            // Native restrictions are already released. Do not wait for the
+            // app to become active again: after focus ends the user may be in
+            // the kiosk fullscreen Space and unable to reach the desktop.
             self.focus_mode.restore_fullscreen_at = None;
             if window.is_fullscreen() {
                 window.toggle_fullscreen();
@@ -197,6 +226,14 @@ impl AppView {
             self.restore_focus_fullscreen(window);
             return false;
         };
+        // A completed/reset round must never leave the kiosk options active.
+        // FocusFinish normally releases first; this catches interruption and
+        // recovery paths that change the timer without going through it.
+        if !self.timer.active_round() {
+            self.stop_focus_mode(window, cx);
+            let _ = self.timer.release_strict(&self.lib);
+            return true;
+        }
         if focus_timer::now_ms() >= self.focus_mode.unlock_at_ms
             || self
                 .focus_mode
@@ -207,7 +244,7 @@ impl AppView {
             match self.timer.release_strict(&self.lib) {
                 Ok(()) => self.report_status(
                     FeedbackKind::Info,
-                    "电脑专注已解锁，本轮专注继续计时".into(),
+                    "电脑专注已解锁，已退出全屏，可以切换应用；本轮专注继续计时".into(),
                 ),
                 Err(error) => self.report_status(
                     FeedbackKind::Error,
@@ -223,8 +260,10 @@ impl AppView {
         if let Some(interruption) = interruption {
             let message = match interruption {
                 #[cfg(target_os = "macos")]
-                Interruption::Shortcut => "已通过快捷键退出电脑专注，计时已暂停",
-                Interruption::Deactivated => "Clarora 已离开前台，电脑专注已解除，计时已暂停",
+                Interruption::Shortcut => "已通过快捷键退出电脑专注并恢复桌面，计时已暂停",
+                Interruption::Deactivated => {
+                    "Clarora 已离开前台，电脑专注已解除并恢复桌面，计时已暂停"
+                }
             };
             if let Err(error) = self.interrupt_focus(
                 message,
