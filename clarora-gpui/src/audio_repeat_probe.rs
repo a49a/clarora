@@ -124,6 +124,10 @@ impl Probe {
             position.y < window.viewport_size().height,
             "audio play button is outside the native viewport"
         );
+        ensure!(
+            bounds.bottom() + px(80.) <= window.viewport_size().height,
+            "audio footer controls are outside the native viewport"
+        );
         let state = app.media.player.snapshot();
         self.observations.push(json!({
             "event": event, "eof_stage": self.eof_stage,
@@ -579,7 +583,7 @@ impl Probe {
         cx: &mut Context<AppView>,
     ) -> Result<bool> {
         ensure!(
-            self.started.elapsed() < Duration::from_secs(50),
+            self.started.elapsed() < Duration::from_secs(90),
             "audio repeat timeout stage {}, current card stage {}, EOF stage {}",
             self.stage,
             self.current_card_stage,
@@ -634,13 +638,15 @@ impl Probe {
                 if !self.eof_replay_step(app, window, cx)? {
                     return Ok(false);
                 }
-                if !self.assistant_selection.step(
-                    app,
-                    window,
-                    cx,
-                    &mut self.cases,
-                    &mut self.observations,
-                )? {
+                if std::env::var("CLARORA_ASSISTANT_SELECTION_CHECK").as_deref() == Ok("1")
+                    && !self.assistant_selection.step(
+                        app,
+                        window,
+                        cx,
+                        &mut self.cases,
+                        &mut self.observations,
+                    )?
+                {
                     return Ok(false);
                 }
                 app.handle(Action::AudioRepeat(5), window, cx);

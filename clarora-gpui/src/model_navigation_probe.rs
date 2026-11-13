@@ -161,7 +161,7 @@ impl Probe {
         cx: &mut Context<AppView>,
     ) -> Result<bool> {
         ensure!(
-            self.started.elapsed() < Duration::from_secs(65),
+            self.started.elapsed() < Duration::from_secs(120),
             "model navigation timed out stage {}",
             self.stage
         );

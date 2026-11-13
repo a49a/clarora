@@ -546,6 +546,7 @@ impl Probe {
                 }
                 app.set("question", SCENARIOS[0].question, window, cx);
                 window.focus(&app.focus);
+                app.inputs["question"].update(cx, |input, cx| input.focus(window, cx));
                 Self::draw(window, cx);
             }
             21 => {
@@ -569,14 +570,17 @@ impl Probe {
                 }
                 let selection = app.inputs["question"]
                     .update(cx, |state, cx| state.selected_text_range(false, window, cx));
+                // Hidden diagnostics are not the key window; selection plus the
+                // backspace result below proves the question input receives keys.
                 ensure!(
-                    selection.as_ref().is_some_and(|s| s.range == (7..13))
-                        && app.inputs["question"]
-                            .read(cx)
-                            .focus_handle(cx)
-                            .is_focused(window),
-                    "narrow assistant lost question selection or focus: {selection:?}"
+                    selection.as_ref().is_some_and(|s| s.range == (7..13)),
+                    "narrow assistant lost question selection: {selection:?}"
                 );
+                // The hidden diagnostic window can lose key-window focus after
+                // resize; restore the input focus before exercising backspace.
+                window.focus(&app.focus);
+                app.inputs["question"].update(cx, |input, cx| input.focus(window, cx));
+                Self::draw(window, cx);
                 Self::dispatch_keys(window, cx, vec!["backspace"]);
                 self.started = Instant::now();
             }

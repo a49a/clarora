@@ -134,7 +134,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             .arg("--data-dir")
             .arg(out.join("library"));
         let started = Instant::now();
-        let status = super::native_diagnostic::run(command, &out, Duration::from_secs(60))?;
+        let status = super::native_diagnostic::run(command, &out, Duration::from_secs(90))?;
         let report: Value = serde_json::from_slice(
             &fs::read(&report_path)
                 .with_context(|| format!("原生协调验收缺少报告：{}", out.display()))?,

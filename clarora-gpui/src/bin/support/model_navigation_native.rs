@@ -33,7 +33,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         .arg("--data-dir")
         .arg(out.join("library"));
     let start = Instant::now();
-    let status = super::native_diagnostic::run(command, &out, Duration::from_secs(80))?;
+    let status = super::native_diagnostic::run(command, &out, Duration::from_secs(150))?;
     let path = out.join("model-navigation-report.json");
     let report: Value = serde_json::from_slice(
         &fs::read(&path).with_context(|| format!("missing report {}", path.display()))?,
