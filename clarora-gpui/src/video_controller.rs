@@ -57,7 +57,8 @@ impl AppView {
         }
         let origin = self.media.session.revision();
         let downloads = self.tasks.downloads.clone();
-        self.begin(
+        self.begin_scoped(
+            TaskScope::Application,
             &format!("正在准备 P{}…", index + 1),
             move |lib, cancel, _| {
                 let path = downloads.obtain(&lib, &series, index, &cancel)?;

@@ -430,7 +430,8 @@ impl Command {
                 let origin = app.media.session.revision();
                 let downloads = app.tasks.downloads.clone();
                 let previous = app.video.series.clone();
-                app.begin(
+                app.begin_scoped(
+                    TaskScope::Application,
                     "正在识别分P并导入所选集…",
                     move |lib, cancel, _| {
                         let mut series = bilibili::fetch(&link, &cancel)?;
@@ -785,7 +786,8 @@ impl AppView {
         browser: Option<process::YoutubeBrowser>,
     ) {
         let origin = self.media.session.revision();
-        self.begin(
+        self.begin_scoped(
+            TaskScope::Application,
             "正在下载 YouTube 视频…",
             move |lib, cancel, _| match process::download_youtube_with(
                 &lib.root, &url, browser, &cancel,
