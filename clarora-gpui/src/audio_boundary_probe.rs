@@ -57,6 +57,7 @@ pub(super) struct Probe {
     observations: Vec<Value>,
     drawn: bool,
     saw_second_review_clip: bool,
+    surface: Surface,
 }
 
 impl Probe {
@@ -70,6 +71,7 @@ impl Probe {
             observations: vec![],
             drawn: false,
             saw_second_review_clip: false,
+            surface: Surface::Focus,
         }
     }
     fn draw(window: &Window, cx: &mut Context<AppView>) {
@@ -184,6 +186,16 @@ impl Probe {
                 }
                 app.media.player.set("pause", "yes");
                 app.media.player.command(["seek", "1.4", "absolute+exact"]);
+                // The player publishes its position asynchronously. Wait for the
+                // seek before opening clip mode, which defaults to the active cue.
+                if !app.media.session.is_audio(&app.audio.current_id)
+                    || clarora_gpui::video_subtitles::active(
+                        &app.audio.cues,
+                        app.media.snapshot.position,
+                    ) != Some(1)
+                {
+                    return Ok(false);
+                }
                 let cue = app.audio.cues[1].clone();
                 if !app.audio.clip_mode {
                     app.handle(Action::AudioClipMode, window, cx);
@@ -192,7 +204,15 @@ impl Probe {
                     app.audio.clip_mode
                         && app.media.session.loop_a == Some(cue.start)
                         && app.media.session.loop_b == Some(cue.end),
-                    "A-B default did not use the active sentence boundaries"
+                    "A-B default did not use the active sentence boundaries: clip={} a={:?} b={:?} cue={:?}..{:?} position={} duration={} mode={:?}",
+                    app.audio.clip_mode,
+                    app.media.session.loop_a,
+                    app.media.session.loop_b,
+                    cue.start,
+                    cue.end,
+                    app.media.snapshot.position,
+                    app.media.snapshot.duration,
+                    app.media.session.mode
                 );
                 app.handle(Action::Boundary(cue.start, true), window, cx);
                 app.handle(Action::Boundary(cue.end, false), window, cx);
@@ -213,11 +233,37 @@ impl Probe {
                     Self::draw(window, cx);
                     return Ok(false);
                 }
+                let focus_painted = !app
+                    .subtitle_text
+                    .borrow()
+                    .probe_fragments(Surface::Focus)
+                    .is_empty();
+                if !focus_painted {
+                    if !app
+                        .subtitle_text
+                        .borrow()
+                        .probe_fragments(Surface::Audio)
+                        .is_empty()
+                    {
+                        self.surface = Surface::Audio;
+                    } else {
+                        ensure!(
+                            self.stage_started.elapsed() < Duration::from_secs(5),
+                            "A/B subtitle text was not painted after enabling clip mode"
+                        );
+                        Self::draw(window, cx);
+                        return Ok(false);
+                    }
+                }
+                self.observations.push(json!({
+                    "event": "A/B marker surface",
+                    "surface": format!("{:?}", self.surface),
+                }));
                 let doc = Self::document(app);
                 let cue_text = doc.cues[1].clone();
-                let from = Self::point(app, Surface::Focus, cue_text.original.start)?;
+                let from = Self::point(app, self.surface, cue_text.original.start)?;
                 let target = doc.text.find("epsilon").context("missing A drag target")?;
-                let to = Self::point(app, Surface::Focus, target)?;
+                let to = Self::point(app, self.surface, target)?;
                 Self::drag(window, cx, from, to)?;
             }
             4 => {
@@ -250,9 +296,9 @@ impl Probe {
                     "event": "A text marker drag", "a": app.media.session.loop_a,
                     "b": app.media.session.loop_b, "expected_a": expected,
                 }));
-                let from = Self::point(app, Surface::Focus, doc.cues[1].original.end)?;
+                let from = Self::point(app, self.surface, doc.cues[1].original.end)?;
                 let target = doc.text.find("zeta").context("missing B drag target")?;
-                let to = Self::point(app, Surface::Focus, target)?;
+                let to = Self::point(app, self.surface, target)?;
                 Self::drag(window, cx, from, to)?;
             }
             5 => {
