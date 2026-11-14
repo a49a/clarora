@@ -70,6 +70,6 @@ xcodebuild -workspace Clarora.xcworkspace -scheme Clarora-iOS \
 
 构建并实际验证安装包后，再添加对应下载渠道。Android 使用 APK 地址，iOS 官网渠道使用 TestFlight 或 App Store 链接，GitHub Release 可另提供明确标注、需要用户自行签名的 IPA；未签名 IPA 不代表渠道已开放。移动端发布与发版步骤见 [移动端发布](mobile-releases.md)。桌面 GPUI 发行使用独立流程。
 
-## bilibili 视频下载导入
+## bilibili / YouTube 视频下载导入
 
-RN 移动端不提供桌面视频下载入口。桌面 GPUI 的 bilibili 导入与验证见 [桌面说明](../clarora-gpui/README.md) 和 [bilibili 导入说明](bilibili-import.md)。
+RN 移动端不提供桌面视频下载入口。桌面 GPUI 的 bilibili 与 YouTube 导入及验证见 [桌面说明](../clarora-gpui/README.md) 和 [bilibili 导入说明](bilibili-import.md)。
