@@ -660,6 +660,7 @@ impl AppView {
                 }
             }
             "video" => {
+                let youtube_browser = self.video.youtube_browser;
                 let download_panel = panel(cx)
                     .child(
                         div()
@@ -681,17 +682,17 @@ impl AppView {
                                     .child(
                                         div()
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .child("从 bilibili 开始一堂课"),
+                                            .child("从 bilibili / YouTube 开始一堂课"),
                                     )
                                     .child(
                                         div()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
-                                            .child("收藏喜欢的视频，慢慢听懂每一句。"),
+                                            .child("支持 bilibili 分P与 YouTube 单视频，下载后逐句精听。"),
                                     ),
                             ),
                     )
-                    .child(self.field("bilibili", "完整视频链接或 BV / av 编号"))
+                    .child(self.field("bilibili", "bilibili / YouTube 链接，或 BV / av 编号"))
                     .child(
                         div()
                             .flex()
@@ -702,7 +703,7 @@ impl AppView {
                                     .disabled(self.tasks.foreground.is_running()),
                             )
                             .child(
-                                self.button("read-parts", "读取分P / 选集", Action::ReadParts, cx)
+                                self.button("read-parts", "读取分P（B站）", Action::ReadParts, cx)
                                     .disabled(self.tasks.foreground.is_running()),
                             )
                             .child(
@@ -714,8 +715,35 @@ impl AppView {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("自动识别分P；点击选集，未下载的集数会先下载再播放。"),
-                    );
+                            .child("bilibili 自动识别分P；YouTube 为单视频，直接下载并导入。"),
+                    )
+                    .when_some(youtube_browser, |panel, browser| {
+                        panel.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "YouTube 登录 Cookie：{}",
+                                            browser.label()
+                                        )),
+                                )
+                                .child(
+                                    self.button(
+                                        "clear-youtube-auth",
+                                        "清除登录",
+                                        Action::ClearYoutubeAuth,
+                                        cx,
+                                    )
+                                    .outline()
+                                    .disabled(self.tasks.foreground.is_running()),
+                                ),
+                        )
+                    });
                 let available = (f32::from(window.viewport_size().width)
                     - if self.navigation_open { 224. } else { 0. }
                     - 32.)
@@ -1293,7 +1321,7 @@ impl AppView {
                                         .p_5()
                                         .text_sm()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child("从 bilibili 导入或读取分P后，在这里选择集数。"),
+                                        .child("从 bilibili 导入或读取分P后，在这里选择集数；YouTube 为单视频，无需选集。"),
                                 )
                                 .child(self.button(
                                     "show-import",

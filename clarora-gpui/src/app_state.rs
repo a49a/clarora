@@ -137,6 +137,7 @@ pub(super) struct VideoState {
     pub(super) volume_dragging: bool,
     pub(super) collection: video_library::Collection,
     pub(super) remove: Option<String>,
+    pub(super) youtube_browser: Option<process::YoutubeBrowser>,
 }
 impl VideoState {
     pub(super) fn set_cues(&mut self, cues: Vec<Cue>) {
@@ -189,6 +190,7 @@ impl VideoState {
             volume_dragging: false,
             collection: Default::default(),
             remove: None,
+            youtube_browser: None,
         }
     }
 }

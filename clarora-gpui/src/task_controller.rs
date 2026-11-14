@@ -10,6 +10,8 @@ pub(super) enum Outcome {
     PartVideo(bilibili::Series, usize, PathBuf, bool, u64, bool),
     Output(String),
     VideoTranslated(PathBuf, String, Vec<Cue>, Vec<Cue>),
+    VideoDownloaded(PathBuf, u64),
+    YoutubeAuthRequired(String),
     Pdf(PathBuf, i32, documents::PdfPage),
     Ebook(ebook::Reading),
     Ocr(String),

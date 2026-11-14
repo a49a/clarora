@@ -40,6 +40,7 @@ pub(super) enum Command {
     VideoRemove(String),
     VideoConfirmRemove,
     VideoSubtitleExport,
+    ClearYoutubeAuth,
 }
 impl Command {
     pub(super) fn effects(&self, app: &AppView) -> Effects {
@@ -375,6 +376,13 @@ impl Command {
 
             Command::ReadParts => {
                 let link = app.value("bilibili", cx);
+                if process::normalize_youtube(&link).is_ok() {
+                    app.report_status(
+                        FeedbackKind::Info,
+                        "YouTube 是单视频，直接点“下载并导入”即可".into(),
+                    );
+                    return Ok(());
+                }
                 let previous = app.video.series.clone();
                 app.begin(
                     "正在读取 bilibili 分P列表…",
@@ -408,10 +416,20 @@ impl Command {
             }
 
             Command::Download => {
-                let downloads = app.tasks.downloads.clone();
+                ensure!(app.page == "video", "请先进入视频学习");
                 let link = app.value("bilibili", cx);
-                let previous = app.video.series.clone();
+                let youtube = process::normalize_youtube(&link).ok();
+                ensure!(
+                    youtube.is_some() || process::normalize_bilibili(&link).is_ok(),
+                    "请输入 bilibili 或 YouTube 单视频链接"
+                );
+                if let Some(url) = youtube {
+                    app.begin_youtube_download(url, app.video.youtube_browser);
+                    return Ok(());
+                }
                 let origin = app.media.session.revision();
+                let downloads = app.tasks.downloads.clone();
+                let previous = app.video.series.clone();
                 app.begin(
                     "正在识别分P并导入所选集…",
                     move |lib, cancel, _| {
@@ -456,6 +474,15 @@ impl Command {
                 } else {
                     app.add_subtitle_question(text, window, cx)?;
                 }
+            }
+
+            Command::ClearYoutubeAuth => {
+                app.lib.set_setting("youtube_cookie_browser", "")?;
+                app.video.youtube_browser = None;
+                app.report_status(
+                    FeedbackKind::Info,
+                    "已清除 YouTube 登录 Cookie，之后将尝试匿名下载".into(),
+                );
             }
 
             Command::VideoTranscribe => app.begin_background_subtitles(false)?,
@@ -751,19 +778,92 @@ impl Command {
     }
 }
 
+impl AppView {
+    pub(super) fn begin_youtube_download(
+        &mut self,
+        url: String,
+        browser: Option<process::YoutubeBrowser>,
+    ) {
+        let origin = self.media.session.revision();
+        self.begin(
+            "正在下载 YouTube 视频…",
+            move |lib, cancel, _| match process::download_youtube_with(
+                &lib.root, &url, browser, &cancel,
+            ) {
+                Ok(path) => Ok(Outcome::VideoDownloaded(path, origin)),
+                Err(error) if process::is_youtube_auth_error(&error) => {
+                    Ok(Outcome::YoutubeAuthRequired(url.clone()))
+                }
+                Err(error) => Err(error),
+            },
+        );
+    }
+    fn show_youtube_auth(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let mut browsers = div().flex().flex_wrap().gap_2();
+            for browser in process::YOUTUBE_BROWSERS {
+                let weak = view.clone();
+                let retry_url = url.clone();
+                let browser = *browser;
+                browsers = browsers.child(
+                    Button::new(SharedString::from(format!(
+                        "youtube-auth-{}",
+                        browser.id()
+                    )))
+                    .label(browser.label())
+                    .outline()
+                    .on_click(move |_, window, cx| {
+                        let _ = weak.update(cx, |this, cx| {
+                            let _ = this
+                                .lib
+                                .set_setting("youtube_cookie_browser", browser.id());
+                            this.video.youtube_browser = Some(browser);
+                            this.begin_youtube_download(retry_url.clone(), Some(browser));
+                            cx.notify();
+                        });
+                        window.close_dialog(cx);
+                    }),
+                );
+            }
+            dialog
+                .title("YouTube 要求登录验证")
+                .alert()
+                .w((window.viewport_size().width - px(32.)).min(px(520.)))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("关闭")
+                        .ok_variant(ButtonVariant::Secondary),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .child("YouTube 拒绝了匿名下载。请先在浏览器中登录 YouTube，再选择该浏览器重试。"),
+                )
+                .child(div().text_sm().child("选择已登录 YouTube 的浏览器："))
+                .child(browsers)
+                .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                    "Cookie 只在本机交给 yt-dlp，不会上传到 Clarora；选择会记住，可在视频导入区清除。",
+                ))
+        });
+    }
+}
+
 // Completion policy belongs to this domain: cancellation may race a durable commit.
 pub(super) enum Completed {
     Parts(bilibili::Series),
     PartVideo(bilibili::Series, usize, PathBuf, bool, u64, bool),
     VideoTranslated(PathBuf, String, Vec<Cue>, Vec<Cue>),
+    VideoDownloaded(PathBuf, u64),
+    YoutubeAuthRequired(String),
 }
 impl Completed {
     pub(super) fn apply(
         self,
         app: &mut AppView,
         context: &mut Completion,
-        _window: &mut Window,
-        _cx: &mut Context<AppView>,
+        window: &mut Window,
+        cx: &mut Context<AppView>,
     ) {
         match self {
             Completed::Parts(series) if !context.cancelled => {
@@ -781,6 +881,58 @@ impl Completed {
                 app.video.series = Some(series);
                 if app.page == "video" {
                     app.video.tab = 1;
+                }
+            }
+
+            Completed::YoutubeAuthRequired(url) => {
+                if context.cancelled {
+                    app.report_status(FeedbackKind::Info, "已取消 YouTube 视频导入".into());
+                } else {
+                    app.report_status(
+                        FeedbackKind::Error,
+                        "YouTube 要求登录验证，请选择浏览器 Cookie 重试".into(),
+                    );
+                    app.show_youtube_auth(url, window, cx);
+                }
+            }
+
+            Completed::VideoDownloaded(path, origin) => {
+                if context.cancelled {
+                    // A finished download stays in the reusable cache; a real cancel
+                    // during yt-dlp is cleaned up by download_into before it returns.
+                    app.report_status(FeedbackKind::Info, "已取消 YouTube 视频导入".into());
+                } else {
+                    let activate = app.page == "video" && app.media.session.revision() == origin;
+                    let result = if activate {
+                        app.save_media_position();
+                        app.open(path).then_some(()).context(app.status.clone())
+                    } else {
+                        (|| -> Result<()> {
+                            let mut videos = video_library::Collection::load(&app.lib)?;
+                            videos.add(std::slice::from_ref(&path), None)?;
+                            videos.save(&app.lib)?;
+                            app.video.collection = videos;
+                            Ok(())
+                        })()
+                    };
+                    match result {
+                        Ok(()) if activate => {
+                            app.video.tab = 3;
+                            app.video.tools_open = false;
+                            app.report_status(
+                                FeedbackKind::Info,
+                                "已导入 YouTube 视频，可在“我的视频”切换".into(),
+                            );
+                        }
+                        Ok(()) => app.report_status(
+                            FeedbackKind::Info,
+                            "YouTube 视频已导入，返回视频页可在“我的视频”播放".into(),
+                        ),
+                        Err(error) => app.report_status(
+                            FeedbackKind::Error,
+                            format!("YouTube 视频导入失败：{error:#}"),
+                        ),
+                    }
                 }
             }
 

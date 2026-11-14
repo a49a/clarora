@@ -157,6 +157,7 @@ pub(super) enum Action {
     VideoRemove(String),
     VideoConfirmRemove,
     VideoSubtitleExport,
+    ClearYoutubeAuth,
     Translate,
     Record,
     StopRecord,
@@ -414,6 +415,7 @@ impl From<Action> for Command {
             Action::VideoRemove(v0) => Routed::Video(video::Command::VideoRemove(v0)),
             Action::VideoConfirmRemove => Routed::Video(video::Command::VideoConfirmRemove),
             Action::VideoSubtitleExport => Routed::Video(video::Command::VideoSubtitleExport),
+            Action::ClearYoutubeAuth => Routed::Video(video::Command::ClearYoutubeAuth),
             Action::Translate => Routed::Audio(audio::Command::Translate),
             Action::Record => Routed::Speech(speech::Command::Record),
             Action::StopRecord => Routed::Speech(speech::Command::StopRecord),
@@ -629,6 +631,12 @@ pub(super) fn complete(
         Outcome::Output(v0) => assistant::Completed::Output(v0).apply(app, context, window, cx),
         Outcome::VideoTranslated(v0, v1, v2, v3) => {
             video::Completed::VideoTranslated(v0, v1, v2, v3).apply(app, context, window, cx)
+        }
+        Outcome::VideoDownloaded(v0, v1) => {
+            video::Completed::VideoDownloaded(v0, v1).apply(app, context, window, cx)
+        }
+        Outcome::YoutubeAuthRequired(v0) => {
+            video::Completed::YoutubeAuthRequired(v0).apply(app, context, window, cx)
         }
         Outcome::Pdf(v0, v1, v2) => {
             reading::Completed::Pdf(v0, v1, v2).apply(app, context, window, cx)

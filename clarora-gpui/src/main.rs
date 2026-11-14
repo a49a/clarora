@@ -304,7 +304,7 @@ impl AppView {
             ("back", "翻译 / 释义", true, false),
             (
                 "bilibili",
-                "https://www.bilibili.com/video/BV…?p=1",
+                "https://www.bilibili.com/video/BV… 或 https://youtu.be/…",
                 false,
                 false,
             ),
@@ -596,6 +596,11 @@ impl AppView {
             this.lib.setting("blind_chinese_hint").ok().as_deref() == Some("true");
         this.video.auto_next_part =
             this.lib.setting("video_auto_next").ok().as_deref() != Some("false");
+        this.video.youtube_browser = this
+            .lib
+            .setting("youtube_cookie_browser")
+            .ok()
+            .and_then(|value| process::YoutubeBrowser::from_id(&value));
         if let Some(series) = &this.video.series {
             let base = series.base.clone();
             this.set("bilibili", base, window, cx);

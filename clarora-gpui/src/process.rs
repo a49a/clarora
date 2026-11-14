@@ -219,12 +219,137 @@ pub fn normalize_bilibili(input: &str) -> Result<String> {
     };
     Ok(format!("https://www.bilibili.com/video/{video}{suffix}"))
 }
-pub fn download(root: &Path, input: &str, cancel: &Cancel) -> Result<PathBuf> {
-    let url = normalize_bilibili(input)?;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YoutubeBrowser {
+    Brave,
+    Chrome,
+    Edge,
+    Firefox,
+    Safari,
+    Vivaldi,
+}
+impl YoutubeBrowser {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Brave => "brave",
+            Self::Chrome => "chrome",
+            Self::Edge => "edge",
+            Self::Firefox => "firefox",
+            Self::Safari => "safari",
+            Self::Vivaldi => "vivaldi",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Brave => "Brave",
+            Self::Chrome => "Chrome",
+            Self::Edge => "Edge",
+            Self::Firefox => "Firefox",
+            Self::Safari => "Safari",
+            Self::Vivaldi => "Vivaldi",
+        }
+    }
+    pub fn from_id(id: &str) -> Option<Self> {
+        let browser = [
+            Self::Brave,
+            Self::Chrome,
+            Self::Edge,
+            Self::Firefox,
+            Self::Safari,
+            Self::Vivaldi,
+        ]
+        .into_iter()
+        .find(|browser| browser.id() == id)?;
+        YOUTUBE_BROWSERS.contains(&browser).then_some(browser)
+    }
+}
+#[cfg(target_os = "macos")]
+pub const YOUTUBE_BROWSERS: &[YoutubeBrowser] = &[
+    YoutubeBrowser::Chrome,
+    YoutubeBrowser::Edge,
+    YoutubeBrowser::Firefox,
+    YoutubeBrowser::Safari,
+    YoutubeBrowser::Brave,
+    YoutubeBrowser::Vivaldi,
+];
+#[cfg(target_os = "windows")]
+pub const YOUTUBE_BROWSERS: &[YoutubeBrowser] = &[
+    YoutubeBrowser::Chrome,
+    YoutubeBrowser::Edge,
+    YoutubeBrowser::Firefox,
+    YoutubeBrowser::Brave,
+    YoutubeBrowser::Vivaldi,
+];
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const YOUTUBE_BROWSERS: &[YoutubeBrowser] = &[YoutubeBrowser::Chrome, YoutubeBrowser::Firefox];
+pub fn is_youtube_auth_error(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}");
+    text.contains("Sign in to confirm") || text.contains("--cookies-from-browser")
+}
+pub fn normalize_youtube(input: &str) -> Result<String> {
+    let text = input.trim();
+    let link = regex::Regex::new(r#"https://[^\s<>「」【】]+"#)?
+        .find(text)
+        .context("请输入完整 YouTube 视频链接")?
+        .as_str()
+        .trim_end_matches(['，', '。', '；', '！', '、', '）', ')']);
+    let url = url::Url::parse(link)?;
+    ensure!(
+        [
+            Some("www.youtube.com"),
+            Some("youtube.com"),
+            Some("m.youtube.com"),
+            Some("music.youtube.com"),
+            Some("youtu.be"),
+            Some("www.youtube-nocookie.com"),
+        ]
+        .contains(&url.host_str())
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port().is_none(),
+        "仅支持 YouTube 单视频链接"
+    );
+    let path = url.path().trim_end_matches('/');
+    let id = if url.host_str() == Some("youtu.be") {
+        path.trim_start_matches('/')
+            .split('/')
+            .next()
+            .map(str::to_owned)
+    } else if path == "/watch" {
+        url.query_pairs()
+            .find(|(key, _)| key == "v")
+            .map(|(_, value)| value.into_owned())
+    } else {
+        path.strip_prefix("/shorts/")
+            .or_else(|| path.strip_prefix("/live/"))
+            .or_else(|| path.strip_prefix("/embed/"))
+            .and_then(|value| value.split('/').next())
+            .map(str::to_owned)
+    }
+    .context("YouTube 链接缺少视频 ID")?;
+    ensure!(
+        regex::Regex::new(r"^[A-Za-z0-9_-]{11}$")?.is_match(&id),
+        "YouTube 视频 ID 无效"
+    );
+    Ok(format!("https://www.youtube.com/watch?v={id}"))
+}
+fn download_url(root: &Path, url: &str, cancel: &Cancel) -> Result<PathBuf> {
+    download_into(
+        &root.join("downloads").join(crate::data::id()),
+        url,
+        None,
+        cancel,
+    )
+}
+fn download_into(
+    directory: &Path,
+    url: &str,
+    browser: Option<YoutubeBrowser>,
+    cancel: &Cancel,
+) -> Result<PathBuf> {
     let yt = tool("yt-dlp")?;
     let ffmpeg = tool("ffmpeg")?;
-    let directory = root.join("downloads").join(crate::data::id());
-    fs::create_dir_all(&directory)?;
+    fs::create_dir_all(directory)?;
     let result = (|| {
         let mut args = [
             "--ignore-config",
@@ -258,17 +383,20 @@ pub fn download(root: &Path, input: &str, cancel: &Cancel) -> Result<PathBuf> {
         ]
         .map(String::from)
         .to_vec();
+        if let Some(browser) = browser {
+            args.extend(["--cookies-from-browser".into(), browser.id().into()]);
+        }
         args.extend([
             "--ffmpeg-location".into(),
             ffmpeg
                 .parent()
                 .context("ffmpeg路径")?
                 .to_string_lossy()
-                .into(),
+                .into_owned(),
             "--paths".into(),
-            directory.to_string_lossy().into(),
+            directory.to_string_lossy().into_owned(),
             "--".into(),
-            url,
+            url.to_owned(),
         ]);
         let output = run(&yt, &args, cancel, Duration::from_secs(1800))?;
         ensure!(!cancel.load(Ordering::SeqCst), "已取消");
@@ -291,6 +419,40 @@ pub fn download(root: &Path, input: &str, cancel: &Cancel) -> Result<PathBuf> {
         let _ = fs::remove_dir_all(directory);
     }
     result
+}
+pub fn download_youtube(root: &Path, input: &str, cancel: &Cancel) -> Result<PathBuf> {
+    download_youtube_with(root, input, None, cancel)
+}
+pub fn download_youtube_with(
+    root: &Path,
+    input: &str,
+    browser: Option<YoutubeBrowser>,
+    cancel: &Cancel,
+) -> Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+    let url = normalize_youtube(input)?;
+    let directory = root
+        .join("downloads")
+        .join("remote-youtube")
+        .join(hex::encode(Sha256::digest(url.as_bytes())));
+    if let Some(path) = fs::read_dir(&directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.is_file()
+                && path.extension().and_then(|ext| ext.to_str()) == Some("mp4")
+                && fs::metadata(path).is_ok_and(|meta| meta.len() > 0)
+        })
+    {
+        return path.canonicalize().map_err(Into::into);
+    }
+    download_into(&directory, &url, browser, cancel)
+}
+pub fn download(root: &Path, input: &str, cancel: &Cancel) -> Result<PathBuf> {
+    let url = normalize_bilibili(input)?;
+    download_url(root, &url, cancel)
 }
 pub fn clip(
     source: &Path,

@@ -64,7 +64,7 @@ impl AppView {
                     .child(
                         self.button(
                             "video-collection-online",
-                            "bilibili 导入",
+                            "链接导入",
                             Action::VideoTools,
                             cx,
                         )
@@ -75,7 +75,7 @@ impl AppView {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("每个视频收藏一条 · 分P在选集中切换"),
+                    .child("每个视频收藏一条 · B站分P在选集中切换 · YouTube 为单视频"),
             );
         for video in &self.video.collection.items {
             let key = video.id.clone();
@@ -84,8 +84,13 @@ impl AppView {
             let can_download = video.series.is_some();
             let source = if video.series.is_some() {
                 "bilibili"
+            } else if video
+                .path
+                .starts_with(self.lib.root.join("downloads").join("remote-youtube"))
+            {
+                "YouTube"
             } else if video.path.starts_with(self.lib.root.join("downloads")) {
-                "已下载视频"
+                "在线视频"
             } else {
                 "本地文件"
             };
@@ -212,7 +217,7 @@ impl AppView {
         }
         if self.video.collection.items.is_empty() {
             body=body.child(div().p_4().flex().flex_col().gap_2().child(div().text_lg().child("收藏想学的视频"))
-   .child(div().text_sm().text_color(cx.theme().muted_foreground).child("可以一次导入多个本地视频，或从 bilibili 下载。所有导入结果都会保存在这里。")));
+   .child(div().text_sm().text_color(cx.theme().muted_foreground).child("可以一次导入多个本地视频，或从 bilibili / YouTube 下载。所有导入结果都会保存在这里。")));
         }
         body.into_any_element()
     }

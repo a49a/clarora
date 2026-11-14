@@ -412,8 +412,22 @@ fn title(path: &Path, series: Option<&bilibili::Series>) -> String {
         }
         return "bilibili 视频".into();
     }
-    path.file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned()
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    if path
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == "remote-youtube")
+        && let Some((name, suffix)) = stem.rsplit_once(" [")
+        && suffix.strip_suffix(']').is_some_and(|id| {
+            id.len() == 11
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        })
+        && !name.trim().is_empty()
+    {
+        return name.trim().to_owned();
+    }
+    stem.into_owned()
 }
