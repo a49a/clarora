@@ -116,6 +116,8 @@ mod video_translation;
 mod view_data;
 #[path = "support/writing.rs"]
 mod writing;
+#[path = "support/youtube_import.rs"]
+mod youtube_import;
 use anyhow::{Context, Result, ensure};
 use clarora_gpui::{
     ai, audio_tools, backup,
@@ -629,6 +631,7 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     subtitle_selection::run(&lib, results)?;
     blind_listening::run(&lib, &video, results)?;
     bilibili_parts::run(&lib, results)?;
+    youtube_import::run(&lib, results)?;
     model_progress::run(&lib, results)?;
     model_navigation_native::run(&lib.root, results)?;
     kokoro::run(&lib, results)?;

@@ -30,6 +30,10 @@ network_proxy::run(output, results)
 Library::open(output.join("batch-translate-source"))
             .and_then(|lib| video_batch_translation::run(&lib, results))
     },
+    "--youtube-import-only",0,0 => {
+let lib = Library::open(output.join(format!("youtube-import-{}", data::id())))?;
+        youtube_import::run(&lib, results)
+    },
     "--assistant-only",0,0 => {
 Library::open(output.join("assistant-source"))
             .and_then(|lib| assistant::run(&lib, results))
