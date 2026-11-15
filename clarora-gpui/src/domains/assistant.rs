@@ -32,14 +32,36 @@ impl Command {
             Command::Assistant => {
                 if app.assistant_open {
                     app.assistant_open = false;
-                    window.focus(&app.focus);
+                    if let Some(focus) = app.assistant.return_focus.take() {
+                        window.focus(&focus);
+                    } else {
+                        window.focus(&app.focus);
+                    }
                     app.lib.set_setting("assistant_open", "false")?;
                 } else {
-                    if let Err(error) = app.attach_current_background(cx) {
-                        app.report_status(
-                            FeedbackKind::Info,
-                            format!("未自动加入当前全文背景：{error:#}"),
-                        );
+                    // Reopening must restore the existing draft. Only a truly
+                    // blank first conversation initializes the current material;
+                    // otherwise moving from A to B would silently add B.
+                    let blank = !app.assistant.draft_initialized
+                        && app.assistant.references.is_empty()
+                        && app.value("question", cx).trim().is_empty()
+                        && app.chat.history.is_empty();
+                    if blank {
+                        if let Err(error) = app.attach_current_background(cx) {
+                            app.report_status(
+                                FeedbackKind::Info,
+                                format!("未自动加入当前全文背景：{error:#}"),
+                            );
+                        }
+                        if !app.assistant.references.is_empty() {
+                            app.assistant.draft_initialized = true;
+                            app.persist_assistant_references()?;
+                        }
+                    } else if !app.assistant.references.is_empty()
+                        && !app.assistant.draft_initialized
+                    {
+                        app.assistant.draft_initialized = true;
+                        app.persist_assistant_references()?;
                     }
                     app.open_assistant(window, cx);
                     app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
@@ -94,6 +116,7 @@ impl Command {
             Command::AssistantRemove(index) => {
                 if index < app.assistant.references.len() {
                     app.assistant.references.remove(index);
+                    app.assistant.draft_initialized = true;
                     app.persist_assistant_references()?;
                 }
             }
@@ -151,6 +174,10 @@ impl Command {
                 app.assistant.sessions_open = false;
                 if session.is_empty() {
                     app.assistant.references.clear();
+                    app.assistant.draft_initialized = false;
+                    app.persist_assistant_references()?;
+                } else {
+                    app.assistant.draft_initialized = true;
                     app.persist_assistant_references()?;
                 }
                 app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
@@ -178,6 +205,7 @@ impl Command {
                 }
                 let session_id = app.chat.id.clone();
                 let context = app.chat.context.clone();
+                app.assistant.draft_initialized = true;
                 let question = app.value("question", cx);
                 let references = app.assistant.references.clone();
                 clarora_gpui::assistant::validate(&references)?;

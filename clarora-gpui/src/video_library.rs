@@ -6,22 +6,34 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
-const KEY: &str = "video_favorites_v1";
+pub(crate) const FAVORITES_KEY: &str = "video_favorites_v1";
+pub(crate) const GROUPS_KEY: &str = "video_groups_v1";
+/// Pseudo group used only by the collection filter; never stored on a video.
+pub const UNGROUPED: &str = "__ungrouped__";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Video {
     pub id: String,
     pub path: PathBuf,
     pub title: String,
     pub series: Option<bilibili::Series>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Collection {
     version: u8,
     pub items: Vec<Video>,
     pub selected: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+}
+#[derive(Serialize, Deserialize)]
+struct Groups {
+    names: Vec<String>,
+    assignments: BTreeMap<String, String>,
 }
 impl Default for Collection {
     fn default() -> Self {
@@ -29,6 +41,7 @@ impl Default for Collection {
             version: 1,
             items: vec![],
             selected: None,
+            groups: vec![],
         }
     }
 }
@@ -36,14 +49,44 @@ fn normalized(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 impl Collection {
+    pub(crate) fn saved_settings(db: &rusqlite::Connection) -> Result<BTreeMap<String, String>> {
+        let mut query = db.prepare("SELECT key,value FROM app_settings WHERE key IN (?,?)")?;
+        Ok(query
+            .query_map([FAVORITES_KEY, GROUPS_KEY], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub(crate) fn from_settings(settings: &BTreeMap<String, String>) -> Result<Option<Self>> {
+        let Some(value) = settings
+            .get(FAVORITES_KEY)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        let mut collection: Self =
+            serde_json::from_str(value).context("视频收藏数据损坏，请保留资料目录后修复")?;
+        // Old versions rewrite the favorites JSON. Keep group membership in its own setting.
+        if let Some(value) = settings.get(GROUPS_KEY) {
+            let mut groups: Groups = serde_json::from_str(value).context("视频分组数据损坏")?;
+            collection.groups = groups.names;
+            for video in &mut collection.items {
+                video.group = groups.assignments.remove(&video.id).unwrap_or_default();
+            }
+        }
+        collection.sync_groups();
+        collection.validate()?;
+        Ok(Some(collection))
+    }
+
     pub fn load(lib: &Library) -> Result<Self> {
-        let value = lib.setting(KEY)?;
-        if !value.is_empty() {
-            let mut c: Self =
-                serde_json::from_str(&value).context("视频收藏数据损坏，请保留资料目录后修复")?;
-            c.validate()?;
+        let settings = Self::saved_settings(&lib.db()?)?;
+        if let Some(mut c) = Self::from_settings(&settings)? {
+            let before = serde_json::to_string(&c)?;
             c.group_parts();
-            if serde_json::to_string(&c)? != value {
+            c.sync_groups();
+            if !settings.contains_key(GROUPS_KEY) || serde_json::to_string(&c)? != before {
                 c.save(lib)?;
             }
             return Ok(c);
@@ -80,6 +123,7 @@ impl Collection {
                 title: title(&path, associated.as_ref()),
                 path,
                 series: associated,
+                group: String::new(),
             });
         }
         c.selected = c
@@ -116,6 +160,9 @@ impl Collection {
                     .iter_mut()
                     .find(|v| v.series.as_ref().is_some_and(|old| old.base == series.base))
                 {
+                    if existing.group.is_empty() {
+                        existing.group = video.group.clone();
+                    }
                     let selected = self.selected.as_ref() == Some(&video.id);
                     if let Some(existing_series) = existing.series.as_mut() {
                         merge_series(existing_series, series);
@@ -161,11 +208,64 @@ impl Collection {
         series.parts.get_mut(index).context("后台分P已不存在")?.path = Some(path.to_path_buf());
         Ok(Some(series.base.clone()))
     }
+    pub fn cache_series_part(
+        &mut self,
+        incoming: &bilibili::Series,
+        index: usize,
+        path: &Path,
+    ) -> Result<bool> {
+        let Some(video) = self.items.iter_mut().find(|video| {
+            video
+                .series
+                .as_ref()
+                .is_some_and(|series| series.base == incoming.base)
+        }) else {
+            return Ok(false);
+        };
+        ensure!(
+            path.is_absolute() && path.is_file() && std::fs::metadata(path)?.len() > 0,
+            "后台下载文件不存在或为空"
+        );
+        let series = video.series.as_mut().context("后台选集信息已改变")?;
+        let mut part = incoming
+            .parts
+            .get(index)
+            .context("后台分P已不存在")?
+            .clone();
+        part.path = Some(path.to_path_buf());
+        let cached = series.cached(index).is_some();
+        if let Some(existing) = series.parts.get_mut(index) {
+            // Keep the path used by the saved playback position if this P already plays locally.
+            if !cached {
+                existing.path = part.path;
+            }
+        } else {
+            series.parts.extend(
+                incoming.parts[series.parts.len()..index]
+                    .iter()
+                    .cloned()
+                    .map(|mut p| {
+                        p.path = None;
+                        p
+                    }),
+            );
+            series.parts.push(part);
+        }
+        Ok(true)
+    }
     pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             self.version == 1 && self.items.len() <= 10000,
             "视频收藏版本或条目数量无效"
         );
+        ensure!(self.groups.len() <= 1000, "视频分组数量无效");
+        let mut groups = BTreeSet::new();
+        for group in &self.groups {
+            ensure!(
+                valid_group(group) && groups.insert(group.to_lowercase()),
+                "视频分组名称无效或重复"
+            );
+        }
         let mut ids = BTreeSet::new();
         let mut paths = BTreeSet::new();
         for v in &self.items {
@@ -176,6 +276,12 @@ impl Collection {
                     && ids.insert(&v.id)
                     && paths.insert(&v.path),
                 "视频收藏包含无效或重复条目"
+            );
+            ensure!(
+                v.group.trim() == v.group
+                    && v.group.chars().count() <= 40
+                    && (v.group.is_empty() || groups.contains(&v.group.to_lowercase())),
+                "收藏引用了无效的视频分组"
             );
             if let Some(s) = &v.series {
                 ensure!(
@@ -202,8 +308,36 @@ impl Collection {
         Ok(())
     }
     pub fn save(&self, lib: &Library) -> Result<()> {
+        let mut db = lib.db()?;
+        let tx = db.transaction()?;
+        self.save_in(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    // The caller saves both settings in the same transaction, including during restore and sync.
+    pub(crate) fn save_in(&self, db: &rusqlite::Connection) -> Result<()> {
         self.validate()?;
-        lib.set_setting(KEY, &serde_json::to_string(self)?)
+        let mut favorites = self.clone();
+        let groups = Groups {
+            names: std::mem::take(&mut favorites.groups),
+            assignments: favorites
+                .items
+                .iter_mut()
+                .filter(|video| !video.group.is_empty())
+                .map(|video| (video.id.clone(), std::mem::take(&mut video.group)))
+                .collect(),
+        };
+        for (key, value) in [
+            (FAVORITES_KEY, serde_json::to_string(&favorites)?),
+            (GROUPS_KEY, serde_json::to_string(&groups)?),
+        ] {
+            db.execute(
+                "INSERT INTO app_settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<>excluded.value",
+                rusqlite::params![key, value],
+            )?;
+        }
+        Ok(())
     }
     /// Validate the whole import before changing the collection; preserve input ordering.
     pub fn add(
@@ -211,6 +345,20 @@ impl Collection {
         paths: &[PathBuf],
         series: Option<&bilibili::Series>,
     ) -> Result<Vec<String>> {
+        self.add_in_group(paths, series, "")
+    }
+    /// Import new videos into one group; existing favorites keep their current group.
+    pub fn add_in_group(
+        &mut self,
+        paths: &[PathBuf],
+        series: Option<&bilibili::Series>,
+        group: &str,
+    ) -> Result<Vec<String>> {
+        let group = if group == UNGROUPED { "" } else { group.trim() };
+        ensure!(
+            group.is_empty() || (group != UNGROUPED && group.chars().count() <= 40),
+            "视频分组名称无效"
+        );
         ensure!(!paths.is_empty(), "请选择视频文件");
         for path in paths {
             ensure!(
@@ -220,6 +368,9 @@ impl Collection {
             );
         }
         let mut next = self.clone();
+        if !group.is_empty() && !next.groups.iter().any(|name| name == group) {
+            next.groups.push(group.to_owned());
+        }
         let mut added = Vec::new();
         for input in paths {
             let path = normalized(input);
@@ -262,6 +413,7 @@ impl Collection {
                 title: title(&path, associated.as_ref()),
                 path,
                 series: associated,
+                group: group.to_owned(),
             });
             added.push(key);
         }
@@ -292,9 +444,115 @@ impl Collection {
                 video.sync_part();
             }
         }
+        next.sync_groups();
         next.validate()?;
         *self = next;
         Ok(added)
+    }
+    pub fn has_group(&self, group: &str) -> bool {
+        !group.is_empty()
+            && group != UNGROUPED
+            && (self.groups.iter().any(|name| name == group)
+                || self.items.iter().any(|video| video.group == group))
+    }
+    fn has_group_ci(&self, group: &str) -> bool {
+        self.groups
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(group))
+            || self
+                .items
+                .iter()
+                .any(|video| video.group.eq_ignore_ascii_case(group))
+    }
+    pub fn group_count(&self, group: &str) -> usize {
+        self.items
+            .iter()
+            .filter(|video| matches_group(video, group))
+            .count()
+    }
+    pub fn create_group(&mut self, name: &str) -> Result<String> {
+        let name = group_name(name)?;
+        ensure!(!self.has_group_ci(&name), "视频分组已存在");
+        self.groups.push(name.clone());
+        Ok(name)
+    }
+    pub fn rename_group(&mut self, old: &str, name: &str) -> Result<String> {
+        ensure!(self.has_group(old), "视频分组不存在");
+        let name = group_name(name)?;
+        ensure!(
+            name.eq_ignore_ascii_case(old) || !self.has_group_ci(&name),
+            "视频分组已存在"
+        );
+        if let Some(group) = self.groups.iter_mut().find(|group| *group == old) {
+            *group = name.clone();
+        } else {
+            self.groups.push(name.clone());
+        }
+        for video in &mut self.items {
+            if video.group == old {
+                video.group = name.clone();
+            }
+        }
+        Ok(name)
+    }
+    pub fn remove_group(&mut self, group: &str) -> Result<usize> {
+        ensure!(self.has_group(group), "视频分组不存在");
+        self.groups.retain(|name| name != group);
+        let mut moved = 0;
+        for video in &mut self.items {
+            if video.group == group {
+                video.group.clear();
+                moved += 1;
+            }
+        }
+        Ok(moved)
+    }
+    pub fn set_group(&mut self, key: &str, group: &str) -> Result<()> {
+        let group = if group == UNGROUPED { "" } else { group.trim() };
+        ensure!(group.is_empty() || self.has_group(group), "视频分组不存在");
+        if !group.is_empty() && !self.groups.iter().any(|name| name == group) {
+            self.groups.push(group.to_owned());
+        }
+        let video = self
+            .items
+            .iter_mut()
+            .find(|video| video.id == key)
+            .context("该视频已移出收藏")?;
+        video.group = group.to_owned();
+        Ok(())
+    }
+    /// Fill missing group names from videos and normalize duplicate spellings.
+    pub(crate) fn sync_groups(&mut self) {
+        let mut groups = Vec::new();
+        let mut canonical = BTreeMap::new();
+        for group in std::mem::take(&mut self.groups) {
+            let group = group.trim().to_owned();
+            if group.is_empty() || group == UNGROUPED {
+                continue;
+            }
+            let key = group.to_lowercase();
+            if let std::collections::btree_map::Entry::Vacant(entry) = canonical.entry(key) {
+                entry.insert(group.clone());
+                groups.push(group);
+            }
+        }
+        for video in &mut self.items {
+            video.group = video.group.trim().to_owned();
+            if video.group == UNGROUPED {
+                video.group.clear();
+            }
+            if video.group.is_empty() {
+                continue;
+            }
+            let key = video.group.to_lowercase();
+            if let Some(existing) = canonical.get(&key) {
+                video.group = existing.clone();
+            } else {
+                canonical.insert(key, video.group.clone());
+                groups.push(video.group.clone());
+            }
+        }
+        self.groups = groups;
     }
     pub fn select(&mut self, key: &str) -> Result<Video> {
         let video = self
@@ -333,6 +591,29 @@ impl Collection {
         Ok(video)
     }
 }
+pub(crate) fn valid_group(name: &str) -> bool {
+    name.trim() == name && !name.is_empty() && name.chars().count() <= 40 && name != UNGROUPED
+}
+
+fn group_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    ensure!(!name.is_empty(), "请输入视频分组名称");
+    ensure!(name.chars().count() <= 40, "视频分组名称不能超过 40 个字符");
+    ensure!(
+        name != UNGROUPED && name != "全部" && name != "未分组",
+        "视频分组名称无效"
+    );
+    Ok(name.to_owned())
+}
+pub fn matches_group(video: &Video, filter: &str) -> bool {
+    if filter.is_empty() {
+        true
+    } else if filter == UNGROUPED {
+        video.group.is_empty()
+    } else {
+        video.group == filter
+    }
+}
 impl Video {
     pub fn contains(&self, path: &Path) -> bool {
         normalized(&self.path) == normalized(path)
@@ -343,6 +624,19 @@ impl Video {
                         .is_some_and(|p| normalized(p) == normalized(path))
                 })
             })
+    }
+    /// Path for reopening the favorite: its current part wins, then the
+    /// favorite's own file, then any cached part for an incomplete download.
+    pub fn resume_path(&self) -> Option<PathBuf> {
+        self.series
+            .as_ref()
+            .and_then(|series| series.current)
+            .and_then(|index| self.series.as_ref()?.cached(index))
+            .or_else(|| {
+                (self.path.is_file() && std::fs::metadata(&self.path).is_ok_and(|m| m.len() > 0))
+                    .then(|| self.path.clone())
+            })
+            .or_else(|| self.playable_path())
     }
     pub fn playable_path(&self) -> Option<PathBuf> {
         if self.path.is_file() && std::fs::metadata(&self.path).is_ok_and(|m| m.len() > 0) {
@@ -413,17 +707,30 @@ fn title(path: &Path, series: Option<&bilibili::Series>) -> String {
         return "bilibili 视频".into();
     }
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    if path
+    if let Some(source) = path
         .parent()
         .and_then(Path::parent)
         .and_then(Path::file_name)
-        .is_some_and(|name| name == "remote-youtube")
+        .and_then(|name| name.to_str())
         && let Some((name, suffix)) = stem.rsplit_once(" [")
-        && suffix.strip_suffix(']').is_some_and(|id| {
-            id.len() == 11
-                && id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        && suffix.strip_suffix(']').is_some_and(|id| match source {
+            "remote-youtube" => {
+                id.len() == 11
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+            }
+            "remote-douyin" => {
+                (15..=25).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_digit())
+            }
+            "remote-x" => !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()),
+            "remote-weibo" => {
+                !id.is_empty()
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            }
+            _ => false,
         })
         && !name.trim().is_empty()
     {

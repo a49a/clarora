@@ -152,8 +152,9 @@ impl AppView {
         if let Some(cues) = snapshot.video_cues
             && !same_cues(&cues, &self.video.cues)
         {
+            // set_cues already resets the active cue unless a saved reading
+            // snapshot is being restored for this load.
             self.video.set_cues(cues);
-            self.video.active = None;
             self.video.material = None;
             self.video.material_error.clear();
         }

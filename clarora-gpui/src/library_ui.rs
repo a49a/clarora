@@ -4,7 +4,11 @@ impl AppView {
     pub(super) fn audio_library_view(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let width = (f32::from(window.viewport_size().width)
             - if self.navigation_open { 224. } else { 0. }
-            - if self.assistant_open { 400. } else { 0. }
+            - if self.assistant_embedded {
+                self.assistant_width
+            } else {
+                0.
+            }
             - 64.)
             .max(260.);
         let tall = f32::from(window.viewport_size().height) >= 680.;

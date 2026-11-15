@@ -602,11 +602,19 @@ impl Completed {
     ) {
         match self {
             Completed::ClipSaved => {
+                let start = app.media.session.loop_a;
                 app.audio.clip_mode = false;
                 app.media.session.loop_a = None;
                 app.media.session.loop_b = None;
                 if app.media.session.mode == PlaybackMode::Ab {
                     app.media.session.mode = PlaybackMode::Normal;
+                }
+                if let Some(start) = start {
+                    app.media.player.command([
+                        "seek".into(),
+                        start.to_string(),
+                        "absolute+exact".into(),
+                    ]);
                 }
                 app.report_status(FeedbackKind::Info, "片段已存为闪卡，已退出 A-B 精听".into());
             }

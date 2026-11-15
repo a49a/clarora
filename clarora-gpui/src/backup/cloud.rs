@@ -591,7 +591,7 @@ pub fn prepare(lib: &Library, cancel: &Cancel) -> Result<Prepared> {
             while taken < size {
                 check_cancel(cancel)?;
                 let n = source.read(&mut buffer[..(size - taken).min(65536) as usize])?;
-                ensure!(n > 0, "备份期间附件已改变");
+                ensure!(n > 0, "正在备份这份资料，备份结束后可重试（附件已改变）");
                 whole.update(&buffer[..n]);
                 chunk.update(&buffer[..n]);
                 taken += n as u64;
@@ -603,7 +603,10 @@ pub fn prepare(lib: &Library, cancel: &Cancel) -> Result<Prepared> {
                 key: String::new(),
             });
         }
-        ensure!(source.read(&mut buffer[..1])? == 0, "备份期间附件已改变");
+        ensure!(
+            source.read(&mut buffer[..1])? == 0,
+            "正在备份这份资料，备份结束后可重试（附件已改变）"
+        );
         manifest.files.insert(
             reference.clone(),
             format!("{}.{}", reference.trim_start_matches("media:"), extension),

@@ -139,6 +139,10 @@ impl Probe {
             && state.frame.is_some()
             && (state.position - position).abs() < 0.18
     }
+    fn at_part(app: &AppView, path: &Path) -> bool {
+        let state = app.media.player.snapshot();
+        state.path == path.to_string_lossy() && state.duration > 11.9 && state.error.is_empty()
+    }
     fn stable(&self) -> bool {
         self.entered.elapsed() >= Duration::from_millis(500)
     }
@@ -274,6 +278,7 @@ impl Probe {
                 self.record(app, "同源片段→视频恢复6.4秒并退出片段区间")?;
                 app.handle(Action::Page("settings".into()), window, cx);
                 app.lib.set_setting("last_video_position", "{broken")?;
+                app.lib.set_setting("video_progress_v1", "{broken")?;
                 app.handle(Action::Page("video".into()), window, cx);
                 self.advance();
             }
@@ -287,6 +292,7 @@ impl Probe {
                     "last_video_position",
                     &json!({"path":path,"position":-10.}).to_string(),
                 )?;
+                app.lib.set_setting("video_progress_v1", "")?;
                 app.handle(Action::Page("video".into()), window, cx);
                 self.advance();
             }
@@ -496,8 +502,9 @@ impl Probe {
                     "新P套用了上一P的范围或没有跳过无效首句"
                 );
                 ensure!(
-                    app.video.series.as_ref().and_then(|s| s.current) == Some(1),
-                    "实际播放器与选集索引不一致"
+                    app.video.series.as_ref().and_then(|s| s.current) == Some(1) && !state.paused,
+                    "跨P后仍处于暂停：paused={}",
+                    state.paused
                 );
                 self.record(app, "末句播完三遍/再次独立右键实际打开并播放缓存下一P")?;
                 self.record(app, "新P异步载入后继承三次/第一条有效字幕/新请求范围")?;
@@ -624,7 +631,15 @@ impl Probe {
                 let origin = app.media.session.revision();
                 let target = path.clone();
                 app.begin("本机异步切P夹具", move |_, _, _| {
-                    Ok(Outcome::PartVideo(series, 0, target, false, origin, false))
+                    Ok(Outcome::PartVideo {
+                        series,
+                        index: 0,
+                        path: target,
+                        origin,
+                        from_end: false,
+                        resume: false,
+                        group: String::new(),
+                    })
                 });
                 self.advance();
             }
@@ -649,7 +664,15 @@ impl Probe {
                 let origin = app.media.session.revision();
                 let target = other_video(&app.lib);
                 app.begin("本机取消结果夹具", move |_, _, _| {
-                    Ok(Outcome::PartVideo(series, 1, target, false, origin, false))
+                    Ok(Outcome::PartVideo {
+                        series,
+                        index: 1,
+                        path: target,
+                        origin,
+                        from_end: false,
+                        resume: false,
+                        group: String::new(),
+                    })
                 });
                 app.tasks
                     .foreground
@@ -671,7 +694,15 @@ impl Probe {
                 let origin = app.media.session.revision();
                 let target = other_video(&app.lib);
                 app.begin("本机迟到结果夹具", move |_, _, _| {
-                    Ok(Outcome::PartVideo(series, 1, target, false, origin, false))
+                    Ok(Outcome::PartVideo {
+                        series,
+                        index: 1,
+                        path: target,
+                        origin,
+                        from_end: false,
+                        resume: false,
+                        group: String::new(),
+                    })
                 });
                 app.handle(Action::VideoStopSentenceRepeat, window, cx);
                 self.advance();
@@ -769,8 +800,9 @@ impl Probe {
                 );
                 ensure!(
                     app.media.player.snapshot().position >= 7.95
-                        && app.media.player.snapshot().position < 10.,
-                    "普通模式回上一P没有从末句8秒开头播放"
+                        && app.media.player.snapshot().position < 10.
+                        && !app.media.player.snapshot().paused,
+                    "普通模式回上一P没有从末句8秒开头播放或仍暂停"
                 );
                 self.record(app, "普通模式两次左键回上一P从最后一句播放")?;
                 app.handle(Action::VideoSentenceRepeat(Some(0), Some(3)), window, cx);
@@ -820,7 +852,15 @@ impl Probe {
                 let origin = app.media.session.revision();
                 let target = other_video(&app.lib);
                 app.begin("异步末句夹具", move |_, _, _| {
-                    Ok(Outcome::PartVideo(series, 1, target, false, origin, true))
+                    Ok(Outcome::PartVideo {
+                        series,
+                        index: 1,
+                        path: target,
+                        origin,
+                        from_end: true,
+                        resume: false,
+                        group: String::new(),
+                    })
                 });
                 self.advance();
             }
@@ -844,7 +884,15 @@ impl Probe {
                 let origin = app.media.session.revision();
                 let target = path.clone();
                 app.begin("普通异步末句夹具", move |_, _, _| {
-                    Ok(Outcome::PartVideo(series, 0, target, false, origin, true))
+                    Ok(Outcome::PartVideo {
+                        series,
+                        index: 0,
+                        path: target,
+                        origin,
+                        from_end: true,
+                        resume: false,
+                        group: String::new(),
+                    })
                 });
                 self.advance();
             }
@@ -1602,7 +1650,14 @@ impl Probe {
                         && app.media.session.video_sentence().is_none()
                         && app.video.pending_start.is_none()
                         && state.sentence_repeat.is_none(),
-                    "明确停止后页面往返恢复了旧三次模式"
+                    "明确停止后页面往返恢复了旧三次模式: repeat={:?} session={:?} pending={} state_repeat={:?} item={:?}",
+                    app.video.sentence_repeat,
+                    app.media.session.video_sentence(),
+                    app.video.pending_start.is_some(),
+                    state.sentence_repeat,
+                    video_progress::Progress::load(&app.lib)
+                        .get(&video_progress::item_key(&app.video.collection, &path))
+                        .cloned()
                 );
                 self.record(app, "明确停止三次后切页返回继续普通模式")?;
                 app.handle(Action::SeekTo(POSITION), window, cx);
@@ -1690,10 +1745,10 @@ impl Probe {
                 self.advance();
             }
             70 => {
-                if !Self::paused_middle_repeat(app, &path) {
+                if !Self::paused_repeat_at(app, &path, POSITION) {
                     return Ok(false);
                 }
-                self.record(app, "无字幕跨页后迟到字幕恢复原位置三次且保持暂停")?;
+                self.record(app, "无字幕跨页后迟到字幕恢复句内原位置三次且保持暂停")?;
                 app.handle(Action::VideoStopSentenceRepeat, window, cx);
                 self.assistant_before_keyboard = Some((
                     app.assistant.enabled,
@@ -1717,7 +1772,7 @@ impl Probe {
                 if !self.stable() {
                     return Ok(false);
                 }
-                ensure!(Self::at(app, &path, 4.), "输入框按键改变了视频播放");
+                ensure!(Self::at(app, &path, POSITION), "输入框按键改变了视频播放");
                 ensure!(
                     app.value("question", cx).contains(' '),
                     "空格没有进入真实输入框"
@@ -1738,7 +1793,7 @@ impl Probe {
                 if !self.stable() {
                     return Ok(false);
                 }
-                ensure!(Self::at(app, &path, 4.), "IME输入按键穿透到视频");
+                ensure!(Self::at(app, &path, POSITION), "IME输入按键穿透到视频");
                 self.record(app, "真实InputState组合文字期间方向键与空格不控制视频")?;
                 app.inputs["question"].update(cx, |state, cx| state.unmark_text(window, cx));
                 app.handle(Action::Assistant, window, cx);
@@ -2179,6 +2234,326 @@ impl Probe {
                     "退出四遍盲听后仍保留单句请求"
                 );
                 self.record(app, "四遍盲听可退出并清除单句请求")?;
+                app.lib.set_setting("video_progress_v1", "")?;
+                app.lib.set_setting("last_video_position", "")?;
+                app.video_progress = video_progress::Progress::load(&app.lib);
+                app.video.series = Some(bilibili::Series {
+                    title: "Progress fixture".into(),
+                    base: "https://www.bilibili.com/video/BV1xx411c7mD".into(),
+                    requested: 0,
+                    current: Some(0),
+                    parts: vec![
+                        bilibili::Part {
+                            number: 1,
+                            title: "A".into(),
+                            duration: 12.,
+                            path: Some(path.clone()),
+                        },
+                        bilibili::Part {
+                            number: 2,
+                            title: "B".into(),
+                            duration: 12.,
+                            path: Some(other_video(&app.lib)),
+                        },
+                    ],
+                });
+                app.handle(Action::SelectPart(0), window, cx);
+                self.advance();
+            }
+            99 => {
+                if !self.stable() || !Self::at_part(app, &path) {
+                    return Ok(false);
+                }
+                app.media.player.set("pause", "yes");
+                app.handle(Action::SeekTo(2.), window, cx);
+                self.advance();
+            }
+            100 => {
+                if !Self::at(app, &path, 2.) {
+                    return Ok(false);
+                }
+                app.save_video_progress();
+                app.handle(Action::SelectPart(1), window, cx);
+                self.advance();
+            }
+            101 => {
+                let state = app.media.player.snapshot();
+                if !self.stable()
+                    || state.path != other_video(&app.lib).to_string_lossy()
+                    || state.duration < 11.9
+                    || app.video.pending_start.is_some()
+                {
+                    return Ok(false);
+                }
+                app.media.player.set("pause", "yes");
+                app.handle(Action::SeekTo(3.), window, cx);
+                self.advance();
+            }
+            102 => {
+                if !Self::at(app, &other_video(&app.lib), 3.) {
+                    return Ok(false);
+                }
+                app.save_video_progress();
+                let key_a = video_progress::item_key(&app.video.collection, &path);
+                let key_b = video_progress::item_key(&app.video.collection, &other_video(&app.lib));
+                let saved = video_progress::Progress::load(&app.lib);
+                ensure!(
+                    key_a != key_b
+                        && saved
+                            .get(&key_a)
+                            .is_some_and(|item| (item.position - 2.).abs() < 0.18)
+                        && saved
+                            .get(&key_b)
+                            .is_some_and(|item| (item.position - 3.).abs() < 0.18),
+                    "多个分P进度未按身份分别保存"
+                );
+                self.record(app, "分P A/B 各自保存 2.0/3.0 秒进度")?;
+                app.handle(Action::Page("settings".into()), window, cx);
+                self.advance();
+            }
+            103 => {
+                app.handle(Action::Page("video".into()), window, cx);
+                self.advance();
+            }
+            104 => {
+                if !self.stable()
+                    || !Self::at(app, &other_video(&app.lib), 3.)
+                    || app.video.pending_start.is_some()
+                {
+                    return Ok(false);
+                }
+                self.record(app, "切回视频恢复 B 分P的 3.0 秒")?;
+                app.handle(Action::SelectPart(0), window, cx);
+                self.advance();
+            }
+            105 => {
+                let state = app.media.player.snapshot();
+                if !self.stable()
+                    || state.path != path.to_string_lossy()
+                    || state.duration <= 0.
+                    || state.position < 1.9
+                    || state.position > 4.0
+                    || app.video.pending_start.is_some()
+                {
+                    return Ok(false);
+                }
+                ensure!(!state.paused, "手动选择分P没有开始播放");
+                self.record(app, "手动选择 A 分P恢复自己的进度并开始播放")?;
+                app.media.player.set("pause", "yes");
+                app.handle(Action::SeekTo(8.5), window, cx);
+                self.advance();
+            }
+            106 => {
+                if !Self::at(app, &path, 8.5) || app.video.cues.len() != 3 {
+                    return Ok(false);
+                }
+                app.video.tab = 1;
+                app.video.follow = false;
+                app.video.scroll.scroll_to(ListOffset {
+                    item_ix: 0,
+                    offset_in_item: px(0.),
+                });
+                app.save_video_progress();
+                app.handle(Action::Page("settings".into()), window, cx);
+                self.advance();
+            }
+            107 => {
+                app.handle(Action::Page("video".into()), window, cx);
+                self.advance();
+            }
+            108 => {
+                if !self.stable()
+                    || !Self::at(app, &path, 8.5)
+                    || app.video.pending_start.is_some()
+                    || app.video.cues.len() != 3
+                {
+                    return Ok(false);
+                }
+                ensure!(
+                    app.video.tab == 1
+                        && app.video.active == Some(2)
+                        && !app.video.follow
+                        && app.video.scroll.logical_scroll_top().item_ix == 0,
+                    "字幕页签/播放句/手动滚动未恢复：tab={} active={:?} follow={} top={} cues={} restore={:?}",
+                    app.video.tab,
+                    app.video.active,
+                    app.video.follow,
+                    app.video.scroll.logical_scroll_top().item_ix,
+                    app.video.cues.len(),
+                    app.video.reading_restore
+                );
+                self.record(app, "切回视频恢复英文字幕页签、播放句和手动滚动位置")?;
+                app.media.player.set("pause", "no");
+                app.handle(Action::SeekTo(11.8), window, cx);
+                self.advance();
+            }
+            109 => {
+                let key = video_progress::item_key(&app.video.collection, &path);
+                let done = video_progress::Progress::load(&app.lib)
+                    .get(&key)
+                    .is_some_and(|item| item.completed);
+                if !done {
+                    return Ok(false);
+                }
+                self.record(app, "播放到结尾自动标记已播完")?;
+                app.handle(Action::Page("settings".into()), window, cx);
+                self.advance();
+            }
+            110 => {
+                app.handle(Action::Page("video".into()), window, cx);
+                self.advance();
+            }
+            111 => {
+                if !self.stable()
+                    || !Self::at(app, &path, 0.)
+                    || app.video.cues.len() != 3
+                    || app.video.pending_start.is_some()
+                {
+                    return Ok(false);
+                }
+                let active = app.video.collection.active().context("视频收藏丢失")?;
+                ensure!(
+                    app.resume_state(active) == video_progress::Resume::Replay,
+                    "播完的视频没有显示重播状态"
+                );
+                self.record(app, "播完的视频重开显示重播并从 00:00 开始")?;
+                app.handle(Action::VideoSentenceRepeat(Some(1), Some(3)), window, cx);
+                app.handle(Action::VideoTimelineSeek(4.8), window, cx);
+                self.advance();
+            }
+            112 => {
+                let state = app.media.player.snapshot();
+                if (state.position - 4.8).abs() > 0.18
+                    || app
+                        .media
+                        .session
+                        .video_sentence()
+                        .is_none_or(|session| session.index != 1 || session.total != Some(3))
+                {
+                    if self.entered.elapsed() > Duration::from_secs(2) {
+                        anyhow::bail!(
+                            "句内定位未到达：position={} pending={} session={:?} repeat={:?} status={}",
+                            state.position,
+                            app.video.pending_start.is_some(),
+                            app.media.session.video_sentence(),
+                            app.video.sentence_repeat,
+                            app.status
+                        );
+                    }
+                    return Ok(false);
+                }
+                app.media.player.set("pause", "yes");
+                app.save_video_progress();
+                app.handle(Action::Page("settings".into()), window, cx);
+                self.advance();
+            }
+            113 => {
+                app.handle(Action::Page("video".into()), window, cx);
+                self.advance();
+            }
+            114 => {
+                if !self.stable() || !Self::at(app, &path, 4.8) || app.video.pending_start.is_some()
+                {
+                    return Ok(false);
+                }
+                ensure!(
+                    app.video.sentence_repeat == Some(3)
+                        && app
+                            .media
+                            .session
+                            .video_sentence()
+                            .is_some_and(|session| session.index == 1 && session.total == Some(3)),
+                    "句内续播没有恢复逐句重复范围或播放点：position={} repeat={:?} session={:?}",
+                    app.media.player.snapshot().position,
+                    app.video.sentence_repeat,
+                    app.media.session.video_sentence()
+                );
+                self.record(app, "逐句重复在句内 4.8 秒暂停后恢复同一句与播放点")?;
+                window.resize(size(px(900.), px(700.)));
+                app.open_assistant(window, cx);
+                self.advance();
+            }
+            115 => {
+                if f32::from(window.viewport_size().width) > 902. || !self.stable() {
+                    return Ok(false);
+                }
+                Self::draw(window, cx);
+                ensure!(
+                    app.assistant_open && app.assistant_page_mode && app.assistant_columns == 1,
+                    "窄窗没有切换到单列助手视图：open={} page={} columns={}",
+                    app.assistant_open,
+                    app.assistant_page_mode,
+                    app.assistant_columns
+                );
+                self.record(app, "窄窗实际挂载单列助手视图")?;
+                app.handle(Action::Assistant, window, cx);
+                window.resize(size(px(1600.), px(900.)));
+                app.open_assistant(window, cx);
+                self.advance();
+            }
+            116 => {
+                if f32::from(window.viewport_size().width) < 1595. || !self.stable() {
+                    return Ok(false);
+                }
+                Self::draw(window, cx);
+                ensure!(
+                    app.assistant_open
+                        && !app.assistant_page_mode
+                        && app.assistant_embedded
+                        && app.assistant_columns == 2,
+                    "宽窗没有实际挂载助手与学习区两列：open={} page={} embedded={} columns={}",
+                    app.assistant_open,
+                    app.assistant_page_mode,
+                    app.assistant_embedded,
+                    app.assistant_columns
+                );
+                self.record(app, "宽窗实际挂载学习区与助手两列")?;
+                app.video.fullscreen = true;
+                Self::draw(window, cx);
+                self.advance();
+            }
+            117 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                Self::draw(window, cx);
+                ensure!(
+                    app.video.fullscreen
+                        && app.assistant_open
+                        && app.assistant_embedded
+                        && app.assistant_columns == 2,
+                    "全屏宽窗没有并排学习区与助手：fullscreen={} open={} embedded={} columns={}",
+                    app.video.fullscreen,
+                    app.assistant_open,
+                    app.assistant_embedded,
+                    app.assistant_columns
+                );
+                self.record(app, "全屏宽窗实际并排学习区与助手")?;
+                window.resize(size(px(900.), px(700.)));
+                self.advance();
+            }
+            118 => {
+                if f32::from(window.viewport_size().width) > 902. || !self.stable() {
+                    return Ok(false);
+                }
+                Self::draw(window, cx);
+                ensure!(
+                    app.video.fullscreen
+                        && app.assistant_open
+                        && app.assistant_page_mode
+                        && app.assistant_columns == 1,
+                    "全屏窄窗没有切换到单列助手：fullscreen={} open={} page={} columns={}",
+                    app.video.fullscreen,
+                    app.assistant_open,
+                    app.assistant_page_mode,
+                    app.assistant_columns
+                );
+                self.record(app, "全屏窄窗实际挂载单列助手")?;
+                app.leave_video_fullscreen(window, cx);
+                ensure!(!app.video.fullscreen, "Esc 返回路径未退出全屏");
+                app.handle(Action::Assistant, window, cx);
+                app.assistant.enabled = false;
+                app.assistant.legacy = false;
                 app.handle(Action::Page("settings".into()), window, cx);
                 self.report(Some(true), None)?;
                 self.advance();
@@ -2211,10 +2586,13 @@ impl Probe {
             })
     }
     fn paused_middle_repeat(app: &AppView, path: &std::path::Path) -> bool {
+        Self::paused_repeat_at(app, path, 4.)
+    }
+    fn paused_repeat_at(app: &AppView, path: &std::path::Path, expected: f64) -> bool {
         let state = app.media.player.snapshot();
         state.path == path.to_string_lossy()
             && state.paused
-            && (state.position - 4.).abs() < 0.18
+            && (state.position - expected).abs() < 0.18
             && app.video.sentence_repeat.is_some()
             && app.media.session.mode == PlaybackMode::Normal
             && app.video.pending_start.is_none()

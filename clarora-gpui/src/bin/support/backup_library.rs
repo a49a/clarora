@@ -180,6 +180,10 @@ fn assert_restored(
     ensure!(collection.items.len() == 1, "video collection missing");
     let video = collection.active().context("selected video missing")?;
     ensure!(
+        collection.groups == vec!["课程".to_string()] && video.group == "课程",
+        "video group not restored"
+    );
+    ensure!(
         video.path.starts_with(&lib.root) && video.path.is_file(),
         "video path not relocated"
     );
@@ -341,6 +345,8 @@ pub fn run(parent: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result
     };
     let mut collection = video_library::Collection::default();
     let ids = collection.add(&[a.clone(), b.clone()], Some(&series))?;
+    let course = collection.create_group("课程")?;
+    collection.set_group(&ids[0], &course)?;
     collection.select(&ids[0])?;
     collection.save(&source)?;
     series.save(&source)?;
@@ -475,7 +481,7 @@ pub fn run(parent: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result
                 .unwrap()
                 .keys()
                 .any(|key| key.contains("/snapshots/")),
-        "changed attachment not stopped before manifest publication"
+        "changed attachment not stopped before manifest publication: {error}"
     );
     cases.push(json!({"case":"source attachment mutation prevents cloud snapshot publication","passed":true,"error":error.to_string()}));
     fs::rename(&source.root, root.join("source-unavailable"))?;

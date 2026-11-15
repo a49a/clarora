@@ -1,5 +1,6 @@
 //! Install the existing revision journal and triggers when opening a library.
 use super::schema::{PREFERENCES, SETTINGS, TABLES};
+use crate::video_library::{FAVORITES_KEY, GROUPS_KEY};
 use anyhow::Result;
 
 pub(super) fn install(db: &rusqlite::Connection) -> Result<()> {
@@ -11,7 +12,13 @@ pub(super) fn install(db: &rusqlite::Connection) -> Result<()> {
          CREATE TABLE IF NOT EXISTS cloud_sync_entities(scope TEXT NOT NULL,entity_key TEXT NOT NULL,value TEXT NOT NULL,local_sequence INTEGER NOT NULL,PRIMARY KEY(scope,entity_key));
          CREATE TABLE IF NOT EXISTS cloud_sync_status(scope TEXT PRIMARY KEY,last_success TEXT NOT NULL,last_error TEXT NOT NULL DEFAULT '');"
     )?;
-    for spec in TABLES.iter().chain([&SETTINGS]) {
+    // Keep the extra setting tracked even when an older client installed the original triggers.
+    for (spec, video_groups) in TABLES
+        .iter()
+        .chain([&SETTINGS])
+        .map(|spec| (spec, false))
+        .chain([(&SETTINGS, true)])
+    {
         let table = spec.name;
         let columns = spec.columns;
         for (name, operation, row) in [
@@ -19,11 +26,13 @@ pub(super) fn install(db: &rusqlite::Connection) -> Result<()> {
             ("update", "UPDATE", "NEW"),
             ("delete", "DELETE", "OLD"),
         ] {
-            let predicate = if table == "app_settings" {
+            let predicate = if video_groups {
+                format!("AND {row}.key='{GROUPS_KEY}'")
+            } else if table == "app_settings" {
                 let exact = PREFERENCES
                     .iter()
                     .copied()
-                    .chain(["video_favorites_v1"])
+                    .chain([FAVORITES_KEY])
                     .map(|key| format!("'{key}'"))
                     .collect::<Vec<_>>()
                     .join(",");
@@ -70,7 +79,8 @@ pub(super) fn install(db: &rusqlite::Connection) -> Result<()> {
                 ));
             }
             body.push_str(&statement(row, name == "delete", ""));
-            db.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS cloud_sync_{table}_{name} AFTER {operation} ON {table} WHEN (SELECT applying=0 AND tracking=1 FROM cloud_sync_identity WHERE singleton=1) {predicate} BEGIN {body} END;"))?;
+            let trigger = if video_groups { GROUPS_KEY } else { table };
+            db.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS cloud_sync_{trigger}_{name} AFTER {operation} ON {table} WHEN (SELECT applying=0 AND tracking=1 FROM cloud_sync_identity WHERE singleton=1) {predicate} BEGIN {body} END;"))?;
         }
     }
     Ok(())

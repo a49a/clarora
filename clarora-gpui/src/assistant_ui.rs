@@ -2,6 +2,12 @@
 use super::*;
 use clarora_gpui::assistant::{self, Reference, ReferenceKind};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Mount {
+    Column,
+    Page,
+}
+
 #[derive(Default)]
 pub(super) struct State {
     #[cfg(debug_assertions)]
@@ -10,6 +16,7 @@ pub(super) struct State {
     pub legacy: bool,
     pub references: Vec<Reference>,
     pub pending: Option<(String, Vec<Reference>)>,
+    pub draft_initialized: bool,
     pub error: String,
     pub failed_output: String,
     pub expanded: bool,
@@ -21,6 +28,7 @@ pub(super) struct State {
     pub press: Option<Point<Pixels>>,
     pub dragging: bool,
     pub offer: Option<(Reference, Point<Pixels>)>,
+    pub return_focus: Option<FocusHandle>,
 }
 impl AppView {
     // Synchronize at action/tick boundaries, before drawing. Notifying a cached
@@ -87,9 +95,20 @@ impl AppView {
         self.lib.set_setting(
             "assistant_reference_draft",
             &serde_json::to_string(&self.assistant.references)?,
+        )?;
+        self.lib.set_setting(
+            "assistant_draft_initialized",
+            if self.assistant.draft_initialized {
+                "true"
+            } else {
+                "false"
+            },
         )
     }
     pub(super) fn open_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.assistant_open {
+            self.assistant.return_focus = window.focused(cx);
+        }
         self.assistant.enabled = true;
         self.assistant_open = true;
         if let Err(error) = self.lib.set_setting("assistant_open", "true") {
@@ -104,9 +123,15 @@ impl AppView {
         if text.trim().is_empty() {
             return Ok(());
         }
+        let (source, revision) = self
+            .subtitle_source()
+            .map(|(source, revision)| (Some(source), Some(revision)))
+            .unwrap_or((None, None));
         let next = match assistant::with_transcript_background(
             self.assistant.references.clone(),
             text.clone(),
+            source.as_deref(),
+            revision.as_deref(),
         ) {
             Ok(next) => next,
             Err(error) => {
@@ -120,6 +145,8 @@ impl AppView {
                 let next = assistant::with_transcript_background(
                     self.assistant.references.clone(),
                     fallback,
+                    source.as_deref(),
+                    revision.as_deref(),
                 )?;
                 self.report_status(
                     FeedbackKind::Info,
@@ -129,13 +156,69 @@ impl AppView {
             }
         };
         if next != self.assistant.references {
-            self.lib
-                .set_setting("assistant_reference_draft", &serde_json::to_string(&next)?)?;
             self.assistant.references = next;
+            self.assistant.draft_initialized = true;
+            self.persist_assistant_references()?;
             self.assistant.expanded = true;
             self.assistant.error.clear();
         }
         Ok(())
+    }
+
+    pub(super) fn subtitle_source(&self) -> Option<(String, String)> {
+        let cues = match self.page.as_str() {
+            "video" => &self.video.cues,
+            "listening" if !self.audio.blind.enabled => &self.audio.cues,
+            _ => return None,
+        };
+        if cues.is_empty() {
+            return None;
+        }
+        let revision = clarora_gpui::assistant::subtitle_revision(cues);
+        let source = if self.page == "video" {
+            self.video
+                .collection
+                .active()
+                .map(|video| {
+                    let part = video
+                        .series
+                        .as_ref()
+                        .and_then(|series| series.current)
+                        .map_or(0, |index| index + 1);
+                    format!("video:{}:{part}", video.id)
+                })
+                .unwrap_or_else(|| {
+                    format!(
+                        "video-file:{}",
+                        self.video
+                            .path
+                            .as_ref()
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .unwrap_or_default()
+                    )
+                })
+        } else {
+            format!("audio:{}", self.audio.current_id)
+        };
+        Some((source, revision))
+    }
+    pub(super) fn add_material_background(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        let (source, revision) = self.subtitle_source().unzip();
+        self.add_assistant_reference(
+            Reference {
+                text,
+                kind: ReferenceKind::TranscriptBackground,
+                source,
+                revision,
+            },
+            window,
+            cx,
+        )
     }
 
     fn current_material_excerpt(&self, cx: &App) -> String {
@@ -203,7 +286,7 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        self.add_assistant_references(reference, None, window, cx)
+        self.add_assistant_references(reference, None, None, None, window, cx)
     }
     pub(super) fn add_subtitle_question(
         &mut self,
@@ -221,12 +304,20 @@ impl AppView {
             .map(|cue| cue.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
+        let (source, revision) = self
+            .subtitle_source()
+            .map(|(source, revision)| (Some(source), Some(revision)))
+            .unwrap_or((None, None));
         self.add_assistant_references(
             Reference {
                 text,
                 kind: ReferenceKind::SelectedSubtitle,
+                source: source.clone(),
+                revision: revision.clone(),
             },
             Some(transcript),
+            source,
+            revision,
             window,
             cx,
         )
@@ -235,10 +326,13 @@ impl AppView {
         &mut self,
         reference: Reference,
         transcript: Option<String>,
+        source: Option<String>,
+        revision: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
         ensure!(!reference.text.trim().is_empty(), "请先用鼠标选取文字");
+        let selected_text = reference.text.clone();
         let mut next = self.assistant.references.clone();
         if !next.contains(&reference) {
             next.push(reference);
@@ -252,8 +346,10 @@ impl AppView {
                 let background = Reference {
                     text,
                     kind: ReferenceKind::TranscriptBackground,
+                    source: source.clone(),
+                    revision: revision.clone(),
                 };
-                if !next.contains(&background) {
+                if background.text != selected_text && !next.contains(&background) {
                     next.push(background);
                     if let Err(error) = assistant::validate(&next) {
                         next.pop();
@@ -306,6 +402,7 @@ impl AppView {
                 Reference {
                     text: selected,
                     kind: ReferenceKind::SelectedSubtitle,
+                    ..Default::default()
                 },
                 position,
             ));
@@ -450,6 +547,7 @@ impl AppView {
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
+        mount: Mount,
     ) -> AnyElement {
         let history_view = if let Some(view) = &self.assistant.history_view {
             view.clone()
@@ -596,7 +694,21 @@ impl AppView {
                         })
                         .unwrap_or_else(|| "ChatGPT · 请登录 · 设置".into())
                 } else {
-                    "自定义 AI 服务 · 设置".into()
+                    self.data
+                        .saved_ai
+                        .as_ref()
+                        .map(|config| {
+                            format!(
+                                "{} · {} · 设置",
+                                ai::provider_label(&config.provider),
+                                if config.model.trim().is_empty() {
+                                    "请选择模型"
+                                } else {
+                                    config.model.as_str()
+                                }
+                            )
+                        })
+                        .unwrap_or_else(|| "自定义 AI 服务 · 请选择模型 · 设置".into())
                 },
                 Action::Page("settings".into()),
                 cx,
@@ -713,7 +825,18 @@ impl AppView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("✦ 学习助手"),
                     )
-                    .child(self.assistant_button("close-assistant", "收起", Action::Assistant, cx)),
+                    .child(self.assistant_button(
+                        "close-assistant",
+                        if mount == Mount::Column {
+                            "收起"
+                        } else if matches!(self.page.as_str(), "video" | "listening") {
+                            "返回字幕"
+                        } else {
+                            "返回学习"
+                        },
+                        Action::Assistant,
+                        cx,
+                    )),
             )
             .child(
                 div()
@@ -792,20 +915,17 @@ impl AppView {
         } else {
             self.chat.error.clone()
         };
-        div()
-            .id("global-assistant")
-            .absolute()
-            .right_0()
-            .top_0()
-            .h_full()
-            .w(px((if self.assistant.wide {
-                660.0_f32
-            } else {
-                480.0_f32
-            })
-            .min(f32::from(window.viewport_size().width) - 16.)))
-            .flex()
-            .flex_col()
+        let width = self
+            .assistant_width
+            .max(360.)
+            .min(if self.assistant.wide { 600. } else { 400. })
+            .min(f32::from(window.viewport_size().width) - 16.);
+        let mut root = div().id("global-assistant").h_full().flex();
+        root = match mount {
+            Mount::Column => root.w(px(width)).flex_shrink_0(),
+            Mount::Page => root.w_full().min_w_0().flex_1(),
+        };
+        root.flex_col()
             .bg(cx.theme().background)
             .border_l_1()
             .border_color(cx.theme().border)

@@ -18,7 +18,10 @@ pub(super) enum Command {
     VideoCancelPart,
     VideoPlayCue(usize),
     VideoCopySubtitle(Option<usize>),
-    Download,
+    VideoImport,
+    VideoImportRetry,
+    VideoImportEdit,
+    DismissVideoImport,
     ReadParts,
     SelectPart(usize),
     SelectPartAtEnd(usize),
@@ -36,11 +39,16 @@ pub(super) enum Command {
     VideoCopyTranscript,
     VideoAskTranscript,
     VideoSelect(String),
+    VideoSelectFromStart(String),
     VideoEpisodes(String),
     VideoRemove(String),
     VideoConfirmRemove,
     VideoSubtitleExport,
-    ClearYoutubeAuth,
+    VideoGroupFilter(String),
+    VideoGroupNew,
+    VideoGroupRename,
+    VideoGroupDelete,
+    VideoSetGroup(String, String),
 }
 impl Command {
     pub(super) fn effects(&self, app: &AppView) -> Effects {
@@ -374,33 +382,48 @@ impl Command {
                 ]);
             }
 
-            Command::ReadParts => {
-                let link = app.value("bilibili", cx);
-                if process::normalize_youtube(&link).is_ok() {
-                    app.report_status(
-                        FeedbackKind::Info,
-                        "YouTube 是单视频，直接点“下载并导入”即可".into(),
-                    );
-                    return Ok(());
+            Command::VideoImport => app.open_video_import_dialog(window, cx)?,
+
+            Command::VideoImportRetry => {
+                let draft = app
+                    .video
+                    .import_recovery
+                    .clone()
+                    .context("导入参数已失效，请重新打开导入弹框")?;
+                if app.page != "video" {
+                    app.handle(Action::Page("video".into()), window, cx);
                 }
-                let previous = app.video.series.clone();
-                app.begin(
-                    "正在读取 bilibili 分P列表…",
-                    move |_, cancel, _| {
-                        let mut series = bilibili::fetch(&link, &cancel)?;
-                        if let Some(previous) = previous.filter(|p| p.base == series.base) {
-                            for part in &mut series.parts {
-                                part.path = previous
-                                    .parts
-                                    .iter()
-                                    .find(|p| p.number == part.number)
-                                    .and_then(|p| p.path.clone());
-                            }
-                            series.current = previous.current.filter(|i| *i < series.parts.len());
-                        }
-                        Ok(Outcome::Parts(series))
-                    },
-                );
+                ensure!(app.page == "video", "请先进入视频学习");
+                app.clear_feedback_error();
+                app.begin_video_link_import(&draft.raw, false, draft.group, draft.part)?;
+                app.video.import_recovery = None;
+            }
+
+            Command::VideoImportEdit => {
+                let draft = app
+                    .video
+                    .import_recovery
+                    .clone()
+                    .context("导入参数已失效，请重新打开导入弹框")?;
+                if app.page != "video" {
+                    app.handle(Action::Page("video".into()), window, cx);
+                }
+                ensure!(app.page == "video", "请先进入视频学习");
+                app.clear_feedback_error();
+                app.video.import_edit = Some(draft);
+                app.open_video_import_dialog(window, cx)?;
+            }
+
+            Command::DismissVideoImport => {
+                app.video.import_recovery = None;
+            }
+
+            Command::ReadParts => {
+                if let Some(link) = app.video.series.as_ref().map(|series| series.base.clone()) {
+                    app.begin_video_link_import(&link, true, app.video.group.clone(), None)?;
+                } else {
+                    app.open_video_import_dialog(window, cx)?;
+                }
             }
 
             Command::SelectPart(index) => app.start_part(index),
@@ -415,45 +438,6 @@ impl Command {
                 app.media.session.end_handled = false;
             }
 
-            Command::Download => {
-                ensure!(app.page == "video", "请先进入视频学习");
-                let link = app.value("bilibili", cx);
-                let youtube = process::normalize_youtube(&link).ok();
-                ensure!(
-                    youtube.is_some() || process::normalize_bilibili(&link).is_ok(),
-                    "请输入 bilibili 或 YouTube 单视频链接"
-                );
-                if let Some(url) = youtube {
-                    app.begin_youtube_download(url, app.video.youtube_browser);
-                    return Ok(());
-                }
-                let origin = app.media.session.revision();
-                let downloads = app.tasks.downloads.clone();
-                let previous = app.video.series.clone();
-                app.begin_scoped(
-                    TaskScope::Application,
-                    "正在识别分P并导入所选集…",
-                    move |lib, cancel, _| {
-                        let mut series = bilibili::fetch(&link, &cancel)?;
-                        if let Some(previous) = previous.filter(|p| p.base == series.base) {
-                            for part in &mut series.parts {
-                                part.path = previous
-                                    .parts
-                                    .iter()
-                                    .find(|p| p.number == part.number)
-                                    .and_then(|p| p.path.clone());
-                            }
-                        }
-                        let index = series.requested;
-                        let path = downloads.obtain(&lib, &series, index, &cancel)?;
-                        let new_file = false;
-                        Ok(Outcome::PartVideo(
-                            series, index, path, new_file, origin, false,
-                        ))
-                    },
-                );
-            }
-
             Command::VideoAsk(scope) => {
                 ensure!(app.page == "video", "请先进入视频学习");
                 ensure!(!app.chat.running, "请等待当前回答完成或取消后切换引用");
@@ -464,26 +448,61 @@ impl Command {
                 let material = app.video.material.as_ref().context("请先选取字幕")?;
                 let text = clarora_gpui::assistant::plain_reference(&material.text);
                 if scope == video_qa::Scope::All {
-                    app.add_assistant_reference(
-                        clarora_gpui::assistant::Reference {
-                            text,
-                            ..Default::default()
-                        },
-                        window,
-                        cx,
-                    )?;
+                    app.add_material_background(text, window, cx)?;
                 } else {
                     app.add_subtitle_question(text, window, cx)?;
                 }
             }
 
-            Command::ClearYoutubeAuth => {
-                app.lib.set_setting("youtube_cookie_browser", "")?;
-                app.video.youtube_browser = None;
-                app.report_status(
-                    FeedbackKind::Info,
-                    "已清除 YouTube 登录 Cookie，之后将尝试匿名下载".into(),
+            Command::VideoGroupFilter(group) => {
+                ensure!(
+                    group.is_empty()
+                        || group == video_library::UNGROUPED
+                        || app.video.collection.has_group(&group),
+                    "视频分组不存在"
                 );
+                app.video.group = group;
+                app.lib
+                    .set_setting("video_group_filter", &app.video.group)?;
+            }
+
+            Command::VideoGroupNew => {
+                ensure!(!app.tasks.foreground.is_running(), "请等待当前任务完成");
+                app.open_video_group_dialog(None, window, cx);
+            }
+
+            Command::VideoGroupRename => {
+                ensure!(!app.tasks.foreground.is_running(), "请等待当前任务完成");
+                let group = app.video.group.clone();
+                ensure!(
+                    !group.is_empty() && group != video_library::UNGROUPED,
+                    "请先选择一个视频分组"
+                );
+                app.open_video_group_dialog(Some(group), window, cx);
+            }
+
+            Command::VideoGroupDelete => {
+                ensure!(!app.tasks.foreground.is_running(), "请等待当前任务完成");
+                let group = app.video.group.clone();
+                ensure!(
+                    !group.is_empty() && group != video_library::UNGROUPED,
+                    "请先选择一个视频分组"
+                );
+                app.confirm_video_group_delete(group, window, cx);
+            }
+
+            Command::VideoSetGroup(key, group) => {
+                ensure!(!app.tasks.foreground.is_running(), "请等待当前任务完成");
+                let label = if group.is_empty() || group == video_library::UNGROUPED {
+                    "未分组".into()
+                } else {
+                    group.clone()
+                };
+                let mut videos = video_library::Collection::load(&app.lib)?;
+                videos.set_group(&key, &group)?;
+                videos.save(&app.lib)?;
+                app.video.collection = videos;
+                app.report_status(FeedbackKind::Info, format!("已移动到“{label}”"));
             }
 
             Command::VideoTranscribe => app.begin_background_subtitles(false)?,
@@ -515,7 +534,7 @@ impl Command {
                     !app.tasks.foreground.is_running(),
                     "请完成或取消当前任务后再切换视频"
                 );
-                if app.select_source_only(&key, true)? {
+                if app.select_source_only(&key, true, false)? {
                     return Ok(());
                 }
                 let mut videos = video_library::Collection::load(&app.lib)?;
@@ -523,12 +542,35 @@ impl Command {
                 videos.save(&app.lib)?;
                 app.video.collection = videos;
                 app.save_media_position();
-                if !app.open(video.path) {
+                app.save_video_progress();
+                let path = video.resume_path().context("视频文件不可用")?;
+                if !app.open_continue(path, true) {
                     return Ok(());
                 }
-                app.video.tab = 3;
                 app.video.tools_open = false;
                 app.report_status(FeedbackKind::Info, format!("已选择：{}", video.title));
+            }
+
+            Command::VideoSelectFromStart(key) => {
+                ensure!(
+                    !app.tasks.foreground.is_running(),
+                    "请完成或取消当前任务后再切换视频"
+                );
+                if app.select_source_only(&key, true, true)? {
+                    return Ok(());
+                }
+                let mut videos = video_library::Collection::load(&app.lib)?;
+                let video = videos.select(&key)?;
+                videos.save(&app.lib)?;
+                app.video.collection = videos;
+                app.save_media_position();
+                app.save_video_progress();
+                let path = video.resume_path().context("视频文件不可用")?;
+                if !app.open_from_start(path, true) {
+                    return Ok(());
+                }
+                app.video.tools_open = false;
+                app.report_status(FeedbackKind::Info, format!("从头播放：{}", video.title));
             }
 
             Command::VideoEpisodes(key) => {
@@ -536,7 +578,7 @@ impl Command {
                     !app.tasks.foreground.is_running(),
                     "请完成或取消当前任务后再切换视频"
                 );
-                if app.select_source_only(&key, false)? {
+                if app.select_source_only(&key, false, false)? {
                     return Ok(());
                 }
                 if app.video.collection.selected.as_ref() != Some(&key) || app.video.path.is_none()
@@ -545,8 +587,10 @@ impl Command {
                     let video = videos.select(&key)?;
                     videos.save(&app.lib)?;
                     app.save_media_position();
+                    app.save_video_progress();
                     app.video.collection = videos;
-                    if !app.open_at(video.path, 0., true) {
+                    let path = video.resume_path().context("视频文件不可用")?;
+                    if !app.open_continue(path, false) {
                         return Ok(());
                     }
                     app.media.player.command(["set", "pause", "yes"]);
@@ -707,14 +751,7 @@ impl Command {
                 );
                 // Use the exact cached English copy text. VideoAsk(All)
                 // includes bilingual cues, timestamps and legacy wrappers.
-                app.add_assistant_reference(
-                    clarora_gpui::assistant::Reference {
-                        text: app.video.transcript.text.clone(),
-                        ..Default::default()
-                    },
-                    window,
-                    cx,
-                )?;
+                app.add_material_background(app.video.transcript.text.clone(), window, cx)?;
                 app.report_status(
                     FeedbackKind::Info,
                     "已添加英文全文引用；请在助手中检查引用并输入问题后发送".into(),
@@ -780,48 +817,367 @@ impl Command {
 }
 
 impl AppView {
-    pub(super) fn begin_youtube_download(
+    /// Follow group renames recorded while an import task was in flight and
+    /// fall back to the ungrouped bucket if the target was deleted.
+    pub(crate) fn resolve_import_group(&self, group: &str) -> String {
+        if self.video.import_active
+            && let Some(draft) = &self.video.import_draft
+        {
+            return if draft.group.is_empty() {
+                String::new()
+            } else {
+                draft.group.clone()
+            };
+        }
+        let mut current = group.to_owned();
+        let mut seen = std::collections::BTreeSet::new();
+        while seen.insert(current.clone()) {
+            let Some(next) = self.video.group_aliases.get(&current) else {
+                break;
+            };
+            current.clone_from(next);
+        }
+        if !current.is_empty() && self.video.collection.has_group(&current) {
+            current
+        } else {
+            String::new()
+        }
+    }
+
+    pub(crate) fn begin_video_link_import(
         &mut self,
+        link: &str,
+        parts_only: bool,
+        group: String,
+        selected_part: Option<usize>,
+    ) -> Result<()> {
+        ensure!(self.page == "video", "请先进入视频学习");
+        ensure!(
+            !self.tasks.foreground.is_running(),
+            "请完成或取消当前任务后再导入视频"
+        );
+        ensure!(
+            !link.trim().is_empty(),
+            "请先粘贴视频链接或输入 BV / av 编号"
+        );
+        let parsed = process::normalize_video_link(link)?;
+        if selected_part.is_some() && !matches!(parsed, process::VideoLink::Bilibili(_)) {
+            anyhow::bail!("该来源没有可选分P，请直接下载");
+        }
+        let normalized = match &parsed {
+            process::VideoLink::External(_, url) | process::VideoLink::Bilibili(url) => {
+                Some(url.clone())
+            }
+        };
+        self.video.import_draft = Some(app_state::VideoImportDraft {
+            raw: link.to_owned(),
+            normalized,
+            part: selected_part,
+            group: group.clone(),
+        });
+        self.video.import_recovery = None;
+        self.video.import_active = true;
+        match parsed {
+            process::VideoLink::External(source, url) => {
+                ensure!(!parts_only, "{} 视频请点击「下载并导入」", source.label());
+                self.begin_external_download(
+                    source,
+                    url,
+                    if source == process::VideoSource::YouTube {
+                        self.video.youtube_browser
+                    } else {
+                        None
+                    },
+                    self.media.session.revision(),
+                    group,
+                );
+            }
+            process::VideoLink::Bilibili(url) => {
+                let origin = self.media.session.revision();
+                let previous = self.video.series.clone();
+                let downloads = self.tasks.downloads.clone();
+                let (scope, label) = if parts_only {
+                    (TaskScope::Material, "正在读取 bilibili 分P列表…")
+                } else {
+                    (TaskScope::Application, "正在识别分P并导入所选集…")
+                };
+                self.begin_scoped(scope, label, move |lib, cancel, _| {
+                    let mut series = bilibili::fetch(&url, &cancel)?;
+                    if let Some(previous) = previous.filter(|p| p.base == series.base) {
+                        for part in &mut series.parts {
+                            part.path = previous
+                                .parts
+                                .iter()
+                                .find(|p| p.number == part.number)
+                                .and_then(|p| p.path.clone());
+                        }
+                        if parts_only {
+                            series.current = previous.current.filter(|i| *i < series.parts.len());
+                        }
+                    }
+                    if parts_only {
+                        return Ok(Outcome::Parts(series));
+                    }
+                    if let Some(index) = selected_part {
+                        ensure!(index < series.parts.len(), "所选分P不存在，请重新读取选集");
+                        series.requested = index;
+                    }
+                    let index = series.requested;
+                    let path = downloads.obtain(&lib, &series, index, &cancel)?;
+                    Ok(Outcome::PartVideo {
+                        series,
+                        index,
+                        path,
+                        origin,
+                        from_end: false,
+                        resume: false,
+                        group,
+                    })
+                });
+            }
+        }
+        if !self.tasks.foreground.is_running() {
+            self.video.import_active = false;
+            anyhow::bail!("{}", self.status);
+        }
+        Ok(())
+    }
+
+    fn begin_external_download(
+        &mut self,
+        source: process::VideoSource,
         url: String,
         browser: Option<process::YoutubeBrowser>,
+        origin: u64,
+        group: String,
     ) {
-        let origin = self.media.session.revision();
         self.begin_scoped(
             TaskScope::Application,
-            "正在下载 YouTube 视频…",
-            move |lib, cancel, _| match process::download_youtube_with(
-                &lib.root, &url, browser, &cancel,
+            &format!("正在下载 {} 视频…", source.label()),
+            move |lib, cancel, _| match process::download_external_with(
+                source, &lib.root, &url, browser, &cancel,
             ) {
-                Ok(path) => Ok(Outcome::VideoDownloaded(path, origin)),
-                Err(error) if process::is_youtube_auth_error(&error) => {
-                    Ok(Outcome::YoutubeAuthRequired(url.clone()))
+                Ok(path) => Ok(Outcome::VideoDownloaded(path, origin, group, source)),
+                Err(error)
+                    if source == process::VideoSource::YouTube
+                        && process::is_video_auth_error(&error) =>
+                {
+                    Ok(Outcome::VideoAuthRequired(url, origin, group, source))
                 }
                 Err(error) => Err(error),
             },
         );
     }
-    fn show_youtube_auth(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_video_group_dialog(
+        &mut self,
+        group: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = if group.is_some() {
+            "重命名视频分组"
+        } else {
+            "新建视频分组"
+        };
+        let current = group.clone().unwrap_or_default();
+        self.set("video_group_name", current, window, cx);
+        let input = self.inputs["video_group_name"].clone();
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, window, _cx| {
+            let view = view.clone();
+            let group = group.clone();
+            let input = input.clone();
+            let ok_input = input.clone();
+            let ok_view = view.clone();
+            let ok_group = group.clone();
+            dialog
+                .title(title)
+                .confirm()
+                .w((window.viewport_size().width - px(32.)).min(px(440.)))
+                .button_props(
+                    DialogButtonProps::default()
+                        .cancel_text("取消")
+                        .ok_text("保存"),
+                )
+                .child(div().w_full().child(Input::new(&input)))
+                .on_ok(move |_, _, cx| {
+                    let name = ok_input.read(cx).value().to_string();
+                    ok_view
+                        .update(cx, |this, cx| {
+                            let result = if let Some(group) = &ok_group {
+                                this.rename_video_group(group, &name)
+                            } else {
+                                this.create_video_group(&name)
+                            };
+                            match result {
+                                Ok(()) => {
+                                    cx.notify();
+                                    true
+                                }
+                                Err(error) => {
+                                    this.report_status(
+                                        FeedbackKind::Error,
+                                        format!("保存视频分组失败：{error:#}"),
+                                    );
+                                    cx.notify();
+                                    false
+                                }
+                            }
+                        })
+                        .unwrap_or(true)
+                })
+        });
+        self.inputs["video_group_name"].update(cx, |input, cx| input.focus(window, cx));
+    }
+    fn create_video_group(&mut self, name: &str) -> Result<()> {
+        let mut collection = video_library::Collection::load(&self.lib)?;
+        let group = collection.create_group(name)?;
+        collection.save(&self.lib)?;
+        self.video.collection = collection;
+        self.video.group = group.clone();
+        self.video.group_aliases.remove(&group);
+        self.lib.set_setting("video_group_filter", &group)?;
+        self.report_status(FeedbackKind::Info, format!("已创建视频分组“{group}”"));
+        Ok(())
+    }
+    pub(crate) fn rename_video_group(&mut self, old: &str, name: &str) -> Result<()> {
+        let mut collection = video_library::Collection::load(&self.lib)?;
+        let new = collection.rename_group(old, name)?;
+        collection.save(&self.lib)?;
+        self.video.collection = collection;
+        if old != new {
+            self.video.group_aliases.insert(old.to_owned(), new.clone());
+            for draft in [
+                self.video.import_draft.as_mut(),
+                self.video.import_recovery.as_mut(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if draft.group == old {
+                    draft.group = new.clone();
+                }
+            }
+        }
+        if self.video.group == old {
+            self.video.group = new.clone();
+            self.lib.set_setting("video_group_filter", &new)?;
+        }
+        self.report_status(FeedbackKind::Info, format!("已重命名为“{new}”"));
+        Ok(())
+    }
+    pub(crate) fn delete_video_group(&mut self, group: &str) -> Result<()> {
+        let mut collection = video_library::Collection::load(&self.lib)?;
+        let moved = collection.remove_group(group)?;
+        collection.save(&self.lib)?;
+        self.video.collection = collection;
+        self.video
+            .group_aliases
+            .insert(group.to_owned(), String::new());
+        for draft in [
+            self.video.import_draft.as_mut(),
+            self.video.import_recovery.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if draft.group == group {
+                draft.group.clear();
+            }
+        }
+        if self.video.group == group {
+            self.video.group.clear();
+            self.lib.set_setting("video_group_filter", "")?;
+        }
+        self.report_status(
+            FeedbackKind::Info,
+            format!("已删除视频分组；{moved} 个视频变为未分组"),
+        );
+        Ok(())
+    }
+    fn confirm_video_group_delete(
+        &mut self,
+        group: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.video.collection.group_count(&group);
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let view = view.clone();
+            let group = group.clone();
+            dialog
+                .title("删除这个视频分组？")
+                .confirm()
+                .w((window.viewport_size().width - px(32.)).min(px(440.)))
+                .button_props(
+                    DialogButtonProps::default()
+                        .cancel_text("取消")
+                        .ok_text("删除分组")
+                        .ok_variant(ButtonVariant::Danger),
+                )
+                .child(div().text_sm().child(format!("分组：{group}")))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("组内 {count} 个视频不会被删除，只会变为未分组。")),
+                )
+                .on_ok(move |_, _, cx| {
+                    view.update(cx, |this, cx| match this.delete_video_group(&group) {
+                        Ok(()) => {
+                            cx.notify();
+                            true
+                        }
+                        Err(error) => {
+                            this.report_status(
+                                FeedbackKind::Error,
+                                format!("删除视频分组失败：{error:#}"),
+                            );
+                            cx.notify();
+                            false
+                        }
+                    })
+                    .unwrap_or(true)
+                })
+        });
+    }
+    fn show_video_auth(
+        &mut self,
+        url: String,
+        origin: u64,
+        group: String,
+        source: process::VideoSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let view = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, window, cx| {
             let mut browsers = div().flex().flex_wrap().gap_2();
             for browser in process::YOUTUBE_BROWSERS {
                 let weak = view.clone();
                 let retry_url = url.clone();
+                let retry_group = group.clone();
                 let browser = *browser;
                 browsers = browsers.child(
                     Button::new(SharedString::from(format!(
-                        "youtube-auth-{}",
+                        "video-auth-{}",
                         browser.id()
                     )))
                     .label(browser.label())
                     .outline()
                     .on_click(move |_, window, cx| {
                         let _ = weak.update(cx, |this, cx| {
-                            let _ = this
-                                .lib
-                                .set_setting("youtube_cookie_browser", browser.id());
+                            let _ = this.lib.set_setting("youtube_cookie_browser", browser.id());
                             this.video.youtube_browser = Some(browser);
-                            this.begin_youtube_download(retry_url.clone(), Some(browser));
+                            let group = this.resolve_import_group(&retry_group);
+                            this.begin_external_download(
+                                source,
+                                retry_url.clone(),
+                                Some(browser),
+                                origin,
+                                group,
+                            );
                             cx.notify();
                         });
                         window.close_dialog(cx);
@@ -829,7 +1185,7 @@ impl AppView {
                 );
             }
             dialog
-                .title("YouTube 要求登录验证")
+                .title(format!("{} 需要浏览器验证", source.label()))
                 .alert()
                 .w((window.viewport_size().width - px(32.)).min(px(520.)))
                 .button_props(
@@ -840,12 +1196,16 @@ impl AppView {
                 .child(
                     div()
                         .text_sm()
-                        .child("YouTube 拒绝了匿名下载。请先在浏览器中登录 YouTube，再选择该浏览器重试。"),
+                        .child(format!(
+                            "{} 拒绝了匿名下载。请先在浏览器中打开 {} 并登录或刷新页面，再选择该浏览器重试。",
+                            source.label(),
+                            source.label()
+                        )),
                 )
-                .child(div().text_sm().child("选择已登录 YouTube 的浏览器："))
+                .child(div().text_sm().child("选择已登录对应网站的浏览器："))
                 .child(browsers)
                 .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
-                    "Cookie 只在本机交给 yt-dlp，不会上传到 Clarora；选择会记住，可在视频导入区清除。",
+                    "Cookie 由本机 yt-dlp 使用。应用会记住浏览器，你可在「导入视频」弹窗中清除。",
                 ))
         });
     }
@@ -854,10 +1214,19 @@ impl AppView {
 // Completion policy belongs to this domain: cancellation may race a durable commit.
 pub(super) enum Completed {
     Parts(bilibili::Series),
-    PartVideo(bilibili::Series, usize, PathBuf, bool, u64, bool),
+    PartVideo {
+        series: bilibili::Series,
+        index: usize,
+        path: PathBuf,
+        origin: u64,
+        from_end: bool,
+        resume: bool,
+        group: String,
+    },
     VideoTranslated(PathBuf, String, Vec<Cue>, Vec<Cue>),
-    VideoDownloaded(PathBuf, u64),
-    YoutubeAuthRequired(String),
+    VideoDownloaded(PathBuf, u64, String, process::VideoSource),
+    VideoAuthRequired(String, u64, String, process::VideoSource),
+    ClipSaved,
 }
 impl Completed {
     pub(super) fn apply(
@@ -886,32 +1255,43 @@ impl Completed {
                 }
             }
 
-            Completed::YoutubeAuthRequired(url) => {
+            Completed::VideoAuthRequired(url, origin, group, source) => {
                 if context.cancelled {
-                    app.report_status(FeedbackKind::Info, "已取消 YouTube 视频导入".into());
+                    app.report_status(
+                        FeedbackKind::Info,
+                        format!("已取消 {} 视频导入", source.label()),
+                    );
                 } else {
                     app.report_status(
                         FeedbackKind::Error,
-                        "YouTube 要求登录验证，请选择浏览器 Cookie 重试".into(),
+                        format!("{} 需要浏览器验证，请选择 Cookie 重试", source.label()),
                     );
-                    app.show_youtube_auth(url, window, cx);
+                    let group = app.resolve_import_group(&group);
+                    app.show_video_auth(url, origin, group, source, window, cx);
                 }
             }
 
-            Completed::VideoDownloaded(path, origin) => {
+            Completed::VideoDownloaded(path, origin, group, source) => {
                 if context.cancelled {
                     // A finished download stays in the reusable cache; a real cancel
-                    // during yt-dlp is cleaned up by download_into before it returns.
-                    app.report_status(FeedbackKind::Info, "已取消 YouTube 视频导入".into());
+                    // during yt-dlp is cleaned up before it returns.
+                    app.report_status(
+                        FeedbackKind::Info,
+                        format!("已取消 {} 视频导入", source.label()),
+                    );
                 } else {
+                    let group = app.resolve_import_group(&group);
                     let activate = app.page == "video" && app.media.session.revision() == origin;
                     let result = if activate {
                         app.save_media_position();
-                        app.open(path).then_some(()).context(app.status.clone())
+                        app.save_video_progress();
+                        app.open_downloaded_video(path, &group)
+                            .then_some(())
+                            .context(app.status.clone())
                     } else {
                         (|| -> Result<()> {
                             let mut videos = video_library::Collection::load(&app.lib)?;
-                            videos.add(std::slice::from_ref(&path), None)?;
+                            videos.add_in_group(std::slice::from_ref(&path), None, &group)?;
                             videos.save(&app.lib)?;
                             app.video.collection = videos;
                             Ok(())
@@ -923,33 +1303,48 @@ impl Completed {
                             app.video.tools_open = false;
                             app.report_status(
                                 FeedbackKind::Info,
-                                "已导入 YouTube 视频，可在“我的视频”切换".into(),
+                                format!("已导入 {} 视频，可在“我的视频”切换", source.label()),
                             );
                         }
                         Ok(()) => app.report_status(
                             FeedbackKind::Info,
-                            "YouTube 视频已导入，返回视频页可在“我的视频”播放".into(),
+                            format!(
+                                "{} 视频已导入，返回视频页可在“我的视频”播放",
+                                source.label()
+                            ),
                         ),
                         Err(error) => app.report_status(
                             FeedbackKind::Error,
-                            format!("YouTube 视频导入失败：{error:#}"),
+                            format!("{} 视频导入失败：{error:#}", source.label()),
                         ),
                     }
                 }
             }
 
-            Completed::PartVideo(mut series, index, path, new_file, origin, from_end) => {
+            Completed::PartVideo {
+                mut series,
+                index,
+                path,
+                origin,
+                from_end,
+                resume,
+                group,
+            } => {
                 if context.cancelled {
-                    if new_file
-                        && let Some(parent) = path
-                            .parent()
-                            .filter(|p| p.starts_with(app.lib.root.join("downloads")))
-                    {
-                        let _ = fs::remove_dir_all(parent);
-                    }
                     app.report_status(FeedbackKind::Info, "已取消分P下载".into());
                 } else {
+                    let group = app.resolve_import_group(&group);
                     series.parts[index].path = Some(path.clone());
+                    let position = if resume {
+                        app.part_resume_position(&series, index).unwrap_or(0.)
+                    } else {
+                        0.
+                    };
+                    let reading = if resume {
+                        app.part_reading(&series, index)
+                    } else {
+                        None
+                    };
                     // A downloaded part may complete after leaving and returning
                     // to the same file, or after selecting another empty source.
                     // Only the initiating playback generation may activate it;
@@ -960,17 +1355,38 @@ impl Completed {
                     }
                     let saved = (|| -> Result<()> {
                         let mut videos = video_library::Collection::load(&app.lib)?;
-                        videos.add(std::slice::from_ref(&path), Some(&series))?;
+                        if activate || !videos.cache_series_part(&series, index, &path)? {
+                            videos.add_in_group(
+                                std::slice::from_ref(&path),
+                                Some(&series),
+                                &group,
+                            )?;
+                        }
                         videos.save(&app.lib)?;
+                        if !activate
+                            && let Some(active) =
+                                app.video.series.as_mut().filter(|s| s.base == series.base)
+                            && let Some(saved) = videos
+                                .items
+                                .iter()
+                                .filter_map(|video| video.series.as_ref())
+                                .find(|s| s.base == active.base)
+                        {
+                            active.parts.clone_from(&saved.parts);
+                        }
                         app.video.collection = videos;
                         Ok(())
                     })();
                     if activate && saved.is_ok() {
+                        app.save_video_progress();
                         app.video.series = Some(series);
                         // Opening media reloads subtitles; keep the panel the user is viewing.
                         let panel = app.video.tab;
-                        if app.open_part_video(path, from_end) {
-                            app.video.tab = panel;
+                        let restore_tab = reading.is_some();
+                        if app.open_part_video_at(path, position, from_end, reading, true) {
+                            if !restore_tab {
+                                app.video.tab = panel;
+                            }
                             if app.video.sentence_repeat.is_none() && !from_end {
                                 app.media.player.set("pause", "no");
                             }
@@ -1002,6 +1418,23 @@ impl Completed {
                         );
                     }
                 }
+            }
+
+            Completed::ClipSaved => {
+                let start = app.media.session.loop_a;
+                app.media.session.loop_a = None;
+                app.media.session.loop_b = None;
+                if app.media.session.mode == PlaybackMode::Ab {
+                    app.media.session.mode = PlaybackMode::Normal;
+                }
+                if let Some(start) = start {
+                    app.media.player.command([
+                        "seek".into(),
+                        start.to_string(),
+                        "absolute+exact".into(),
+                    ]);
+                }
+                app.report_status(FeedbackKind::Info, "片段已存为闪卡，字幕已加下划线".into());
             }
 
             Completed::VideoTranslated(video, path, source, cues) if !context.cancelled => {
@@ -1053,17 +1486,7 @@ pub(super) fn enter(app: &mut AppView) {
     if app.page == "video"
         && let Some(path) = app.video.path.clone()
     {
-        let position = app
-            .lib
-            .setting("last_video_position")
-            .ok()
-            .and_then(|value| serde_json::from_str::<Value>(&value).ok())
-            .filter(|value| value["path"].as_str() == path.to_str())
-            .and_then(|value| value["position"].as_f64())
-            .filter(|position| position.is_finite() && *position >= 0.)
-            .unwrap_or(0.);
-        app.open_at(path, position, true);
-        app.video.tab = 3;
+        app.open_continue(path, false);
     }
 }
 

@@ -14,9 +14,18 @@ pub(super) struct PartConfirmation {
 
 impl AppView {
     pub(super) fn start_part(&mut self, index: usize) {
-        self.start_part_from(index, false);
+        self.start_part_with(index, false, true);
+    }
+    pub(super) fn start_part_from_start(&mut self, index: usize) {
+        self.start_part_with(index, false, false);
     }
     pub(super) fn start_part_from(&mut self, index: usize, from_end: bool) {
+        self.start_part_with(index, from_end, false);
+    }
+    pub(super) fn start_part_next(&mut self, index: usize) {
+        self.start_part_with(index, false, false);
+    }
+    fn start_part_with(&mut self, index: usize, from_end: bool, resume: bool) {
         self.video.part_confirmation = None;
         if self.tasks.foreground.is_running() {
             self.report_status(FeedbackKind::Error, "请先完成或取消当前前台任务".into());
@@ -28,20 +37,33 @@ impl AppView {
         if index >= series.parts.len() {
             return;
         }
+        self.save_media_position();
+        self.save_video_progress();
+        let reading = resume.then(|| self.part_reading(&series, index)).flatten();
+        let position = if resume && !from_end {
+            self.part_resume_position(&series, index).unwrap_or(0.)
+        } else {
+            0.
+        };
         if let Some(path) = self.tasks.downloads.cached(&series, index) {
             series.parts[index].path = Some(path.clone());
             series.current = Some(index);
             self.video.series = Some(series);
             let panel = self.video.tab;
-            if self.open_part_video(path, from_end) {
-                self.video.tab = panel;
-                if self.video.sentence_repeat.is_none() && !from_end {
+            let restore_tab = reading.is_some();
+            if self.open_part_video_at(path, position, from_end, reading, true) {
+                if !restore_tab {
+                    self.video.tab = panel;
+                }
+                if !from_end && self.video.sentence_repeat.is_none() {
                     self.media.player.set("pause", "no");
                 }
                 self.report_status(
                     FeedbackKind::Info,
                     if from_end {
                         format!("正在定位 P{} 的最后一句", index + 1)
+                    } else if resume && position > 0.01 {
+                        format!("继续播放 P{}", index + 1)
                     } else if let Some(total) = self.video.sentence_repeat {
                         format!(
                             "正在准备 P{} 的{}播放",
@@ -56,40 +78,102 @@ impl AppView {
             return;
         }
         let origin = self.media.session.revision();
+        let group = self.video.group.clone();
         let downloads = self.tasks.downloads.clone();
         self.begin_scoped(
             TaskScope::Application,
             &format!("正在准备 P{}…", index + 1),
             move |lib, cancel, _| {
                 let path = downloads.obtain(&lib, &series, index, &cancel)?;
-                // Completed files belong to the shared cache, even if this foreground request is cancelled.
-                Ok(Outcome::PartVideo(
-                    series, index, path, false, origin, from_end,
-                ))
+                Ok(Outcome::PartVideo {
+                    series,
+                    index,
+                    path,
+                    origin,
+                    from_end,
+                    resume,
+                    group,
+                })
             },
         );
+    }
+    fn attach_downloaded_subtitles(&mut self, video: &Path) {
+        if video_subtitles::load(&self.lib, video).is_ok_and(|cues| !cues.is_empty()) {
+            return;
+        }
+        let Some(subtitle) = process::downloaded_subtitle(video) else {
+            return;
+        };
+        let result = (|| -> Result<Vec<Cue>> {
+            let body = fs::read_to_string(&subtitle)
+                .with_context(|| format!("无法读取下载字幕：{}", subtitle.display()))?;
+            let mut cues = subtitles::parse(&body);
+            cues.sort_by(|a, b| a.start.total_cmp(&b.start));
+            ensure!(!cues.is_empty(), "下载的字幕没有有效时间轴");
+            video_subtitles::save(&self.lib, video, &cues, &process::cancel_token())?;
+            Ok(cues)
+        })();
+        match result {
+            Ok(cues) => self.report_status(
+                FeedbackKind::Info,
+                format!("已使用视频自带字幕 · {} 句", cues.len()),
+            ),
+            Err(error) => self.report_status(
+                FeedbackKind::Info,
+                format!("视频已下载，但自带字幕未导入：{error:#}"),
+            ),
+        }
     }
     pub(super) fn open(&mut self, path: PathBuf) -> bool {
         self.open_at(path, 0., false)
     }
+    pub(super) fn open_downloaded_video(&mut self, path: PathBuf, group: &str) -> bool {
+        self.open_at_start(path, 0., false, false, Some(group))
+    }
     pub(super) fn open_at(&mut self, path: PathBuf, position: f64, paused: bool) -> bool {
-        self.open_at_start(path, position, paused, false)
+        self.open_at_start(path, position, paused, false, None)
     }
     pub(super) fn open_part_video(&mut self, path: PathBuf, from_end: bool) -> bool {
-        self.open_at_start(path, 0., false, from_end)
+        self.open_at_start(path, 0., false, from_end, None)
     }
-    fn open_at_start(
+    pub(super) fn open_part_video_at(
+        &mut self,
+        path: PathBuf,
+        position: f64,
+        from_end: bool,
+        reading: Option<clarora_gpui::video_progress::Reading>,
+        autoplay: bool,
+    ) -> bool {
+        if !self.open_at_start(path, position, !autoplay, from_end, None) {
+            return false;
+        }
+        if let Some(reading) = reading {
+            self.video.tab = reading.tab.min(3);
+            self.video.transcript_open = reading.transcript_open;
+            self.video.reading_restore = Some(reading);
+        }
+        true
+    }
+    pub(super) fn open_at_start(
         &mut self,
         path: PathBuf,
         position: f64,
         paused: bool,
         from_end: bool,
+        download_group: Option<&str>,
     ) -> bool {
         self.video.picture_click = None;
         self.video.seek_dragging = false;
+        // A restore snapshot belongs to the file being opened; callers that
+        // want one install it after this reset.
+        self.video.reading_restore = None;
         let result = (|| -> Result<_> {
             let mut videos = video_library::Collection::load(&self.lib)?;
-            let ids = videos.add(&[path], self.video.series.as_ref())?;
+            let (series, group) = match download_group {
+                Some(group) => (None, group),
+                None => (self.video.series.as_ref(), self.video.group.as_str()),
+            };
+            let ids = videos.add_in_group(&[path], series, group)?;
             let video = videos.select(&ids[0])?;
             videos.save(&self.lib)?;
             self.video.collection = videos;
@@ -103,6 +187,7 @@ impl AppView {
             }
         };
         let path = video.path;
+        self.video.progress_key = Some(video_progress::item_key(&self.video.collection, &path));
         self.reset_audio_sentence_request();
         self.reset_video_sentence_request();
         self.video.series = video.series;
@@ -119,11 +204,6 @@ impl AppView {
                 .iter()
                 .position(|p| p.path.as_ref() == Some(&path));
             let _ = series.save(&self.lib);
-            if let Some(index) = series.current {
-                self.video
-                    .parts_scroll
-                    .scroll_to_item(index, ScrollStrategy::Center);
-            }
         }
         // Only this video's track-loop policy survives another video load.
         let mode = if self.video.sentence_repeat.is_none()
@@ -134,6 +214,8 @@ impl AppView {
             PlaybackMode::Normal
         };
         self.video.path = Some(path.clone());
+        self.attach_downloaded_subtitles(&path);
+        self.video.completion_marked = false;
         self.media.open(
             PlaybackOwner::Video,
             path.clone(),
@@ -146,15 +228,16 @@ impl AppView {
         self.audio.current_id.clear();
         self.load_video_subtitles(&path);
         if self.video.sentence_repeat.is_some() || from_end {
+            let resume_at =
+                (!from_end && position.is_finite() && position > 0.01).then_some(position);
             self.video.pending_start = Some(app_state::PendingVideoStart {
                 revision: self.media.session.revision(),
                 path: path.clone(),
                 paused,
                 from_end,
                 seek_to: None,
-                selected_time: (!from_end && position.is_finite() && position >= 0.)
-                    .then_some(position),
-                within_sentence_seek: None,
+                selected_time: resume_at,
+                within_sentence_seek: resume_at,
             });
             if from_end {
                 self.report_status(
@@ -162,6 +245,16 @@ impl AppView {
                     "正在等待上一视频字幕，从最后一句开始播放".into(),
                 );
             }
+        } else if position.is_finite() && position > 0.01 {
+            self.video.pending_start = Some(app_state::PendingVideoStart {
+                revision: self.media.session.revision(),
+                path: path.clone(),
+                paused,
+                from_end: false,
+                seek_to: Some(position),
+                selected_time: None,
+                within_sentence_seek: None,
+            });
         }
         if self.video.series.is_none() {
             let _ = self.lib.set_setting("bilibili_series", "");
@@ -324,13 +417,24 @@ impl AppView {
             return false;
         }
         if let Some(position) = pending.seek_to {
-            if (state.position - position).abs() <= 0.09 {
+            let target = position.clamp(0., state.duration);
+            if (state.position - target).abs() <= 0.09 {
                 let paused = pending.paused;
                 self.video.pending_start = None;
                 self.media
                     .player
                     .set("pause", if paused { "yes" } else { "no" });
                 return true;
+            }
+            if (target - position).abs() > 0.001 {
+                if let Some(pending) = self.video.pending_start.as_mut() {
+                    pending.seek_to = Some(target);
+                }
+                self.media.player.command([
+                    "seek".into(),
+                    target.to_string(),
+                    "absolute+exact".into(),
+                ]);
             }
             return false;
         }

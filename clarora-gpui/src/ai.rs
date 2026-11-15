@@ -105,6 +105,10 @@ pub struct Config {
     pub engine: String,
     pub credential_id: String,
     pub shared_key_source: Option<CredentialSource>,
+    /// Independent legacy transcription connection. Empty means it shares the
+    /// chat address, model and credential.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub asr_credential_id: String,
 }
 
 pub const PROVIDER_CUSTOM: &str = "custom";
@@ -202,14 +206,45 @@ pub fn select_profile(lib: &Library, profile_id: &str) -> Result<Config> {
         .into_iter()
         .find(|profile| profile.id == profile_id)
         .context("AI 配置不存在，请刷新后重试")?;
-    for endpoint in [&profile.config.base_url, &profile.config.asr_base_url] {
+    let current = load_config(lib)?;
+    let shared = transcription_shares_chat(&current);
+    let mut config = profile.config;
+    for endpoint in [&config.base_url, &config.asr_base_url] {
         if !endpoint.is_empty() {
             endpoint_url(endpoint)?;
         }
     }
-    lib.set_setting("ai_config", &serde_json::to_string(&profile.config)?)?;
-    lib.set_setting(ACTIVE_PROFILE_KEY, &profile.id)?;
-    Ok(profile.config)
+    // A profile owns the chat connection, not the transcription choice or an
+    // independently configured legacy transcription connection.
+    config.engine = current.engine.clone();
+    config.local_model = current.local_model.clone();
+    if shared {
+        config.asr_base_url = config.base_url.clone();
+        config.asr_model = config.model.clone();
+        config.asr_credential_id.clear();
+    } else {
+        config.asr_base_url = current.asr_base_url.clone();
+        config.asr_model = current.asr_model.clone();
+        config.asr_credential_id = if current.asr_credential_id.is_empty() {
+            current.credential_id.clone()
+        } else {
+            current.asr_credential_id.clone()
+        };
+    }
+    let mut db = lib.db()?;
+    let tx = db.transaction()?;
+    tx.execute(
+        "INSERT INTO app_settings(key,value) VALUES('ai_config',?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![serde_json::to_string(&config)?],
+    )?;
+    tx.execute(
+        "INSERT INTO app_settings(key,value) VALUES('ai_active_profile',?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![profile.id.clone()],
+    )?;
+    tx.commit()?;
+    Ok(config)
 }
 
 /// Keep the active profile in sync after editing the shared settings form.
@@ -240,21 +275,31 @@ pub fn save_profile(lib: &Library, name: &str, config: Config, key: &str) -> Res
             .any(|profile| profile.name.eq_ignore_ascii_case(name)),
         "已有同名配置，请换一个名称"
     );
-    if key.is_empty() {
-        save_preferences(lib, config, "")?;
-    } else {
-        save_shared(lib, config, key)?;
+    let old_config = lib.setting("ai_config")?;
+    let old_profiles = lib.setting(PROFILES_KEY)?;
+    let old_active = lib.setting(ACTIVE_PROFILE_KEY)?;
+    let result = (|| -> Result<Profile> {
+        save_chat_preferences(lib, config, key)?;
+        let profile = Profile {
+            id: id(),
+            name: name.to_owned(),
+            config: load_config(lib)?,
+        };
+        let mut saved = profiles;
+        saved.push(profile.clone());
+        // The profile list and active pointer are published only after the
+        // connection is ready; roll the connection back if that publication
+        // fails, so the next request still uses the old service.
+        lib.set_setting(PROFILES_KEY, &serde_json::to_string(&saved)?)?;
+        lib.set_setting(ACTIVE_PROFILE_KEY, &profile.id)?;
+        Ok(profile)
+    })();
+    if result.is_err() {
+        let _ = lib.set_setting("ai_config", &old_config);
+        let _ = lib.set_setting(PROFILES_KEY, &old_profiles);
+        let _ = lib.set_setting(ACTIVE_PROFILE_KEY, &old_active);
     }
-    let profile = Profile {
-        id: id(),
-        name: name.to_owned(),
-        config: load_config(lib)?,
-    };
-    let mut saved = profiles;
-    saved.push(profile.clone());
-    lib.set_setting(PROFILES_KEY, &serde_json::to_string(&saved)?)?;
-    lib.set_setting(ACTIVE_PROFILE_KEY, &profile.id)?;
-    Ok(profile)
+    result
 }
 impl Config {
     pub fn is_opencode_go(&self) -> bool {
@@ -346,6 +391,9 @@ pub fn select_local_model(lib: &Library, model: &str) -> Result<Config> {
     Ok(config)
 }
 fn credential(lib: &Library, config: &Config, role: CredentialSource) -> Result<String> {
+    if role == CredentialSource::Asr && !config.asr_credential_id.is_empty() {
+        return crate::credentials::get(lib, &format!("asr-{}", config.asr_credential_id));
+    }
     if config.credential_id.is_empty() {
         return Ok(String::new());
     }
@@ -391,10 +439,94 @@ pub fn save_preferences(lib: &Library, config: Config, key: &str) -> Result<()> 
             endpoint_url(endpoint)?;
         }
     }
-    config.credential_id = old.credential_id;
-    config.shared_key_source = Some(source);
+    let old_provider = if old.provider.trim().is_empty() {
+        PROVIDER_CUSTOM
+    } else {
+        old.provider.as_str()
+    };
+    let same_endpoint = old.base_url == config.base_url
+        || (old.base_url.trim().is_empty() && old.asr_base_url == config.base_url);
+    if old_provider == config.provider && same_endpoint {
+        config.credential_id = old.credential_id;
+        config.shared_key_source = Some(source);
+    } else {
+        config.credential_id.clear();
+        config.shared_key_source = None;
+    }
     lib.set_setting("ai_config", &serde_json::to_string(&config)?)
 }
+fn transcription_shares_chat(config: &Config) -> bool {
+    config.asr_base_url.trim().is_empty()
+        || (config.asr_base_url == config.base_url
+            && (config.asr_model.trim().is_empty() || config.asr_model == config.model))
+}
+
+fn same_chat_service(old: &Config, config: &Config) -> bool {
+    let old_provider = if old.provider.trim().is_empty() {
+        PROVIDER_CUSTOM
+    } else {
+        old.provider.as_str()
+    };
+    let provider = if config.provider.trim().is_empty() {
+        PROVIDER_CUSTOM
+    } else {
+        config.provider.as_str()
+    };
+    old_provider == provider && old.base_url == config.base_url
+}
+
+/// Save the chat service while keeping transcription consistent with the new
+/// credential. Shared transcription follows the new chat connection; an
+/// independently configured legacy transcription keeps its own address, model
+/// and credential reference.
+pub fn save_chat_preferences(lib: &Library, config: Config, key: &str) -> Result<()> {
+    let _guard = config_lock().lock().unwrap();
+    let old = load_config(lib)?;
+    let shared = transcription_shares_chat(&old);
+    let mut config = config.shared_api();
+    for endpoint in [&config.base_url, &config.asr_base_url] {
+        if !endpoint.is_empty() {
+            endpoint_url(endpoint)?;
+        }
+    }
+    config.local_model = old.local_model.clone();
+    config.engine = old.engine.clone();
+    if shared {
+        config.asr_base_url = config.base_url.clone();
+        config.asr_model = config.model.clone();
+        config.asr_credential_id.clear();
+    } else {
+        config.asr_base_url = old.asr_base_url.clone();
+        config.asr_model = old.asr_model.clone();
+        config.asr_credential_id = if old.asr_credential_id.is_empty() {
+            old.credential_id.clone()
+        } else {
+            old.asr_credential_id.clone()
+        };
+    }
+    config.shared_key_source = Some(CredentialSource::Chat);
+    if key.trim().is_empty() {
+        ensure!(
+            same_chat_service(&old, &config),
+            "更换服务类型或地址后请重新输入 API Key"
+        );
+        config.credential_id = old.credential_id;
+        return lib.set_setting("ai_config", &serde_json::to_string(&config)?);
+    }
+    config.credential_id = id();
+    let config_json = serde_json::to_string(&config)?;
+    crate::credentials::store_config(
+        lib,
+        "ai_config",
+        &config_json,
+        &[
+            (format!("chat-{}", config.credential_id), key.into()),
+            (format!("asr-{}", config.credential_id), key.into()),
+        ],
+    )?;
+    Ok(())
+}
+
 pub fn save(lib: &Library, mut config: Config, chat: &str, asr: &str) -> Result<()> {
     let _guard = config_lock().lock().unwrap();
     for endpoint in [&config.base_url, &config.asr_base_url] {

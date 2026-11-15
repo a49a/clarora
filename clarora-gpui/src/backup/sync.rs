@@ -3,6 +3,7 @@ use super::cloud::{self, Attachment, Prepared, Session, Snapshot};
 use super::*;
 use crate::data::schema::TableSpec;
 use crate::object_storage::UploadReporter;
+use crate::video_library::{Collection, FAVORITES_KEY, GROUPS_KEY};
 use std::collections::BTreeSet;
 mod apply;
 
@@ -133,8 +134,7 @@ fn capture(lib: &Library, scope: &str, cancel: &Cancel) -> Result<Local> {
             .unwrap_or_else(|| reference.into()))
     })?;
     let mut source_paths_local = BTreeMap::new();
-    let raw_collection = lib.setting("video_favorites_v1")?;
-    if let Ok(videos) = serde_json::from_str::<crate::video_library::Collection>(&raw_collection) {
+    if let Some(videos) = Collection::from_settings(&Collection::saved_settings(&lib.db()?)?)? {
         for (path, url) in source_paths(&LibraryState {
             videos: Some(videos),
             ..Default::default()
@@ -262,15 +262,20 @@ fn capture(lib: &Library, scope: &str, cancel: &Cancel) -> Result<Local> {
         }
     }
     if let Some(collection) = library.videos {
+        for group in collection.groups {
+            add(
+                "video_group",
+                json!(group.to_lowercase()),
+                json!(group),
+                Some(("app_settings".into(), json!([GROUPS_KEY]).to_string())),
+            );
+        }
         for video in collection.items {
             add(
                 "video",
                 json!(video.id),
                 serde_json::to_value(video)?,
-                Some((
-                    "app_settings".into(),
-                    json!(["video_favorites_v1"]).to_string(),
-                )),
+                Some(("app_settings".into(), json!([FAVORITES_KEY]).to_string())),
             );
         }
     }
@@ -327,10 +332,26 @@ fn capture(lib: &Library, scope: &str, cancel: &Cancel) -> Result<Local> {
         );
     }
     let mut records = BTreeMap::new();
+    let group_revision = revisions.get(&("app_settings".into(), json!([GROUPS_KEY]).to_string()));
     for (key, (kind, identity, value, raw)) in values {
         let old = observed.get(&key);
         let changed = old.is_none_or(|(e, _)| e.value.as_ref() != Some(&value));
         let revision = raw.as_ref().and_then(|r| revisions.get(r));
+        let revision = if kind == "video"
+            && old.is_some_and(|(entry, _)| {
+                entry
+                    .value
+                    .as_ref()
+                    .and_then(|video| video["group"].as_str())
+                    != value["group"].as_str()
+            }) {
+            revision
+                .into_iter()
+                .chain(group_revision)
+                .max_by_key(|r| r.1)
+        } else {
+            revision
+        };
         let individual = kind == "setting" || kind == "subtitle" || table_spec(&kind).is_some();
         let edited = individual
             && old.is_some_and(|(_, seen)| revision.is_some_and(|(_, seq, _, _)| seq > seen));
@@ -387,7 +408,8 @@ fn capture(lib: &Library, scope: &str, cancel: &Cancel) -> Result<Local> {
             })
             .or_else(|| {
                 let raw = match old.kind.as_str() {
-                    "video" => Some(json!(["video_favorites_v1"]).to_string()),
+                    "video" => Some(json!([FAVORITES_KEY]).to_string()),
+                    "video_group" => Some(json!([GROUPS_KEY]).to_string()),
                     "setting" => Some(json!([old.identity.as_str()?]).to_string()),
                     "subtitle" => {
                         let uri = old.identity.as_str()?;
@@ -447,8 +469,15 @@ fn merge(mut local: Envelope, remote: Envelope) -> Result<Envelope> {
         ensure!(
             key == entity_key(&entry.kind, &entry.identity)
                 && (table_spec(&entry.kind).is_some()
-                    || ["video", "book", "subtitle", "context", "setting"]
-                        .contains(&entry.kind.as_str()))
+                    || [
+                        "video",
+                        "video_group",
+                        "book",
+                        "subtitle",
+                        "context",
+                        "setting"
+                    ]
+                    .contains(&entry.kind.as_str()))
                 && entry.version.modified_ms >= 0
                 && entry.version.modified_ms < i64::MAX - 1
                 && !entry.version.device.is_empty()
@@ -673,11 +702,39 @@ fn snapshot(state: &Envelope) -> Result<(Snapshot, BTreeMap<String, String>)> {
         }
         let library = manifest.library.as_mut().unwrap();
         match entry.kind.as_str() {
-            "video" => library
-                .videos
-                .get_or_insert_with(Default::default)
-                .items
-                .push(serde_json::from_value(value)?),
+            "video" => {
+                let mut video: crate::video_library::Video = serde_json::from_value(value)?;
+                ensure!(entry.identity == json!(video.id), "同步视频标识无效");
+                if !video.group.is_empty()
+                    && state
+                        .records
+                        .get(&entity_key(
+                            "video_group",
+                            &json!(video.group.to_lowercase()),
+                        ))
+                        .is_some_and(|group| group.value.is_none())
+                {
+                    video.group.clear();
+                }
+                library
+                    .videos
+                    .get_or_insert_with(Collection::default)
+                    .items
+                    .push(video);
+            }
+            "video_group" => {
+                let name = value.as_str().context("同步视频分组名称无效")?;
+                ensure!(
+                    crate::video_library::valid_group(name)
+                        && entry.identity == json!(name.to_lowercase()),
+                    "同步视频分组标识无效"
+                );
+                library
+                    .videos
+                    .get_or_insert_with(Collection::default)
+                    .groups
+                    .push(name.into());
+            }
             "book" => library.books.push(serde_json::from_value(value)?),
             "subtitle" => library.subtitles.push(serde_json::from_value(value)?),
             "context" => library.contexts.push(serde_json::from_value(value)?),
@@ -701,6 +758,14 @@ fn snapshot(state: &Envelope) -> Result<(Snapshot, BTreeMap<String, String>)> {
             }
             _ => anyhow::bail!("同步包含未知资料类型"),
         }
+    }
+    if let Some(videos) = manifest
+        .library
+        .as_mut()
+        .and_then(|library| library.videos.as_mut())
+    {
+        // Older sync heads can have memberships without separate group records.
+        videos.sync_groups();
     }
     let mut words = BTreeMap::new();
     for (index, row) in manifest

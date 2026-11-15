@@ -4,6 +4,8 @@ pub(super) enum Command {
     ChatGpt(chatgpt_ui::Command),
     SaveAi,
     SaveAiProfile,
+    SaveTranscription,
+    SaveDailyLimit,
     SelectAiProfile(String),
     SelectAiProvider(String),
     CredentialMode(bool),
@@ -24,6 +26,8 @@ impl Command {
                 self,
                 Command::SaveAi
                     | Command::SaveAiProfile
+                    | Command::SaveTranscription
+                    | Command::SaveDailyLimit
                     | Command::SelectAiProfile(_)
                     | Command::SaveStorage
                     | Command::SaveStorageProfile
@@ -118,25 +122,38 @@ impl Command {
 
             Command::SaveAi => {
                 let provider = app.value("ai_provider", cx);
+                let old = ai::load_config(&app.lib).unwrap_or_default();
+                let base_url = app.value("base_url", cx);
+                let old_provider = if old.provider.trim().is_empty() {
+                    ai::PROVIDER_CUSTOM
+                } else {
+                    old.provider.as_str()
+                };
+                let provider_key = if provider.trim().is_empty() {
+                    ai::PROVIDER_CUSTOM
+                } else {
+                    provider.as_str()
+                };
+                let same_service = old_provider == provider_key && old.base_url == base_url;
                 let config = ai::Config {
                     provider: provider.clone(),
-                    base_url: app.value("base_url", cx),
+                    base_url,
                     model: app.value("model", cx),
                     vision_model: app.value("vision_model", cx),
-                    local_model: app.value("local_model", cx),
-                    engine: app.value("engine", cx),
+                    local_model: old.local_model,
+                    engine: old.engine,
+                    asr_base_url: old.asr_base_url,
+                    asr_model: old.asr_model,
                     ..Default::default()
                 };
                 let key = app.value("chat_key", cx);
                 require_preset_key(app, &provider, &key)?;
-                let limit = app.value("daily_limit", cx);
-                ensure!(limit.parse::<usize>().is_ok(), "每日新卡上限无效");
-                app.lib.set_setting("new_cards_per_day", &limit)?;
-                app.lib.set_setting("daily_limit", &limit)?;
-                app.lib.set_setting("command", &app.value("command", cx))?;
-                app.import_command = app.value("command", cx);
-                app.begin("正在保存 AI 设置…", move |lib, _, _| {
-                    ai::save_preferences(&lib, config, &key)?;
+                ensure!(
+                    !key.trim().is_empty() || same_service,
+                    "更换服务类型或地址后请重新输入 API Key"
+                );
+                app.begin("正在保存 AI 服务…", move |lib, _, _| {
+                    ai::save_chat_preferences(&lib, config, &key)?;
                     ai::sync_active_profile(&lib)?;
                     let location = if credentials::secure_mode(&lib)? {
                         "系统凭证库"
@@ -144,9 +161,66 @@ impl Command {
                         "本机 SQLite"
                     };
                     Ok(Outcome::Message(format!(
-                        "AI 设置已保存，聊天与远端转写共用配置，密钥保存在{location}"
+                        "AI 服务设置已保存，聊天与远端转写共用配置，密钥保存在{location}"
                     )))
                 });
+            }
+
+            Command::SaveTranscription => {
+                let engine = app.value("engine", cx);
+                ensure!(
+                    matches!(engine.as_str(), "local" | "compatible"),
+                    "请选择本机或远端转写"
+                );
+                let mut config = ai::load_config(&app.lib).unwrap_or_default();
+                config.engine = engine.clone();
+                config.local_model = app.value("local_model", cx);
+                if engine == "local" {
+                    ensure!(!config.local_model.trim().is_empty(), "请选择本地转写模型");
+                } else {
+                    ensure!(
+                        !config.base_url.trim().is_empty() && !config.model.trim().is_empty(),
+                        "请先保存可用的 AI 服务地址和模型"
+                    );
+                    config.asr_base_url = config.base_url.clone();
+                    config.asr_model = config.model.clone();
+                    // Choosing shared remote transcription must not keep an
+                    // independent legacy credential pointed at another service.
+                    config.asr_credential_id.clear();
+                    config.shared_key_source = Some(ai::CredentialSource::Chat);
+                }
+                app.lib
+                    .set_setting("ai_config", &serde_json::to_string(&config)?)?;
+                app.data.saved_ai = Some(config.clone());
+                app.refresh_view_data();
+                app.report_status(
+                    FeedbackKind::Info,
+                    if engine == "local" {
+                        format!("本机转写已保存：{}", config.local_model)
+                    } else {
+                        format!(
+                            "远端转写已保存：{} · {}",
+                            config.asr_base_url, config.asr_model
+                        )
+                    },
+                );
+            }
+
+            Command::SaveDailyLimit => {
+                let limit = app.value("daily_limit", cx);
+                let limit: usize = limit.parse().context("每日新卡上限无效")?;
+                ensure!((1..=1000).contains(&limit), "每日新卡上限需为 1 至 1000");
+                let mut db = app.lib.db()?;
+                let tx = db.transaction()?;
+                for key in ["new_cards_per_day", "daily_limit"] {
+                    tx.execute(
+                        "INSERT INTO app_settings(key,value) VALUES(?1,?2)
+                         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        rusqlite::params![key, limit.to_string()],
+                    )?;
+                }
+                tx.commit()?;
+                app.report_status(FeedbackKind::Info, format!("每日新卡上限已保存为 {limit}"));
             }
 
             Command::SaveAiProfile => {
@@ -154,13 +228,16 @@ impl Command {
                 let name = app.value("ai_profile_name", cx);
                 ensure!(!name.trim().is_empty(), "请先填写配置名称");
                 let provider = app.value("ai_provider", cx);
+                let old = ai::load_config(&app.lib).unwrap_or_default();
                 let config = ai::Config {
                     provider: provider.clone(),
                     base_url: app.value("base_url", cx),
                     model: app.value("model", cx),
                     vision_model: app.value("vision_model", cx),
-                    local_model: app.value("local_model", cx),
-                    engine: app.value("engine", cx),
+                    local_model: old.local_model,
+                    engine: old.engine,
+                    asr_base_url: old.asr_base_url,
+                    asr_model: old.asr_model,
                     ..Default::default()
                 };
                 let key = app.value("chat_key", cx);
@@ -202,6 +279,10 @@ impl Command {
             Command::ChatGpt(command) => app.handle_chatgpt(command, cx)?,
 
             Command::SaveStorage => {
+                ensure!(
+                    !app.tasks.cloud.is_running(),
+                    "云任务正在使用当前存储，请完成或取消后再修改存储配置"
+                );
                 app.cloud.plan = None;
                 app.cloud.versions.clear();
                 app.cloud.status.clear();
@@ -231,6 +312,10 @@ impl Command {
             }
 
             Command::SaveStorageProfile => {
+                ensure!(
+                    !app.tasks.cloud.is_running(),
+                    "云任务正在使用当前存储，请完成或取消后再修改存储配置"
+                );
                 ensure!(
                     !app.tasks.foreground.is_running(),
                     "请先完成当前任务再保存存储配置"
@@ -266,6 +351,10 @@ impl Command {
             }
 
             Command::SelectStorageProfile(id) => {
+                ensure!(
+                    !app.tasks.cloud.is_running(),
+                    "云任务正在使用当前存储，请完成或取消后再切换存储配置"
+                );
                 ensure!(
                     !app.tasks.foreground.is_running(),
                     "请先完成当前任务再切换存储配置"
@@ -306,6 +395,10 @@ impl Command {
             }
 
             Command::DeleteStorageProfile(id) => {
+                ensure!(
+                    !app.tasks.cloud.is_running(),
+                    "云任务正在使用当前存储，请完成或取消后再删除存储配置"
+                );
                 ensure!(
                     !app.tasks.foreground.is_running(),
                     "请先完成当前任务再删除存储配置"

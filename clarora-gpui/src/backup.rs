@@ -39,4 +39,4 @@ use manifest::{
     collect_cancellable, hash, map_manifest, material_context, safe_setting, source_paths,
     valid_extension,
 };
-use restore::{finish_restore, setting_in};
+use restore::finish_restore;

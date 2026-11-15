@@ -1,4 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
+mod douyin;
+mod social;
 use std::{
     fs,
     io::Read,
@@ -178,19 +180,16 @@ pub fn normalize_bilibili(input: &str) -> Result<String> {
     if id.is_match(text) {
         return Ok(format!("https://www.bilibili.com/video/{text}"));
     }
-    let link = regex::Regex::new(r#"https://[^\s<>「」【】]+"#)?
-        .find(text)
-        .context("请输入完整 bilibili 视频链接或 BV 号")?
-        .as_str()
-        .trim_end_matches(['，', '。', '；', '！', '、', '）', ')']);
+    let link = share_link(text).context("请输入完整 bilibili 视频链接或 BV 号")?;
     let url = url::Url::parse(link)?;
     ensure!(
-        [
-            Some("www.bilibili.com"),
-            Some("m.bilibili.com"),
-            Some("bilibili.com")
-        ]
-        .contains(&url.host_str())
+        url.scheme() == "https"
+            && [
+                Some("www.bilibili.com"),
+                Some("m.bilibili.com"),
+                Some("bilibili.com")
+            ]
+            .contains(&url.host_str())
             && url.username().is_empty()
             && url.password().is_none()
             && url.port().is_none(),
@@ -219,6 +218,111 @@ pub fn normalize_bilibili(input: &str) -> Result<String> {
     };
     Ok(format!("https://www.bilibili.com/video/{video}{suffix}"))
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoSource {
+    Douyin,
+    Weibo,
+    X,
+    YouTube,
+}
+
+pub enum VideoLink {
+    Bilibili(String),
+    External(VideoSource, String),
+}
+
+pub fn normalize_video_link(input: &str) -> Result<VideoLink> {
+    let text = input.trim();
+    let url = share_link(text).map(url::Url::parse).transpose()?;
+    if let Some(url) = &url
+        && let Some(source) = url.host_str().and_then(social::source_for_host)
+    {
+        return social::normalize(source, url).map(|url| VideoLink::External(source, url));
+    }
+    match url.as_ref().and_then(url::Url::host_str) {
+        Some(host) if youtube_host(host) => {
+            normalize_youtube(text).map(|url| VideoLink::External(VideoSource::YouTube, url))
+        }
+        Some(host) if douyin_host(host) => {
+            normalize_douyin(text).map(|url| VideoLink::External(VideoSource::Douyin, url))
+        }
+        Some("www.bilibili.com" | "m.bilibili.com" | "bilibili.com") => {
+            normalize_bilibili(text).map(VideoLink::Bilibili)
+        }
+        None if douyin_id(text) => {
+            normalize_douyin(text).map(|url| VideoLink::External(VideoSource::Douyin, url))
+        }
+        None if text.starts_with("BV") || text.starts_with("av") => {
+            normalize_bilibili(text).map(VideoLink::Bilibili)
+        }
+        _ => bail!("请粘贴 B 站、YouTube、抖音、微博或 X 的视频链接，或输入有效的 BV / av 编号"),
+    }
+}
+
+fn share_link(text: &str) -> Option<&str> {
+    static LINKS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"https?://[^\s<>"「」『』【】，。；！？、）]+"#)
+            .expect("valid video link pattern")
+    });
+    LINKS
+        .find(text)
+        .map(|link| link.as_str().trim_end_matches([')', ',', '.']))
+}
+
+fn youtube_host(host: &str) -> bool {
+    matches!(
+        host,
+        "www.youtube.com"
+            | "youtube.com"
+            | "m.youtube.com"
+            | "music.youtube.com"
+            | "youtu.be"
+            | "www.youtube-nocookie.com"
+    )
+}
+
+fn douyin_host(host: &str) -> bool {
+    matches!(
+        host,
+        "www.douyin.com"
+            | "douyin.com"
+            | "m.douyin.com"
+            | "v.douyin.com"
+            | "www.iesdouyin.com"
+            | "iesdouyin.com"
+    )
+}
+
+fn douyin_id(value: &str) -> bool {
+    (15..=25).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+impl VideoSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Douyin => "抖音",
+            Self::Weibo => "微博",
+            Self::X => "X",
+            Self::YouTube => "YouTube",
+        }
+    }
+
+    fn cache_folder(self) -> &'static str {
+        match self {
+            Self::Douyin => "remote-douyin",
+            Self::Weibo => "remote-weibo",
+            Self::X => "remote-x",
+            Self::YouTube => "remote-youtube",
+        }
+    }
+
+    pub fn from_cache_folder(folder: &str) -> Option<Self> {
+        [Self::Douyin, Self::Weibo, Self::X, Self::YouTube]
+            .into_iter()
+            .find(|source| source.cache_folder() == folder)
+    }
+}
+/// Browser cookie source for YouTube imports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum YoutubeBrowser {
     Brave,
@@ -282,28 +386,16 @@ pub const YOUTUBE_BROWSERS: &[YoutubeBrowser] = &[
 ];
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub const YOUTUBE_BROWSERS: &[YoutubeBrowser] = &[YoutubeBrowser::Chrome, YoutubeBrowser::Firefox];
-pub fn is_youtube_auth_error(error: &anyhow::Error) -> bool {
+pub fn is_video_auth_error(error: &anyhow::Error) -> bool {
     let text = format!("{error:#}");
     text.contains("Sign in to confirm") || text.contains("--cookies-from-browser")
 }
 pub fn normalize_youtube(input: &str) -> Result<String> {
-    let text = input.trim();
-    let link = regex::Regex::new(r#"https://[^\s<>「」【】]+"#)?
-        .find(text)
-        .context("请输入完整 YouTube 视频链接")?
-        .as_str()
-        .trim_end_matches(['，', '。', '；', '！', '、', '）', ')']);
+    let link = share_link(input.trim()).context("请输入完整 YouTube 视频链接")?;
     let url = url::Url::parse(link)?;
     ensure!(
-        [
-            Some("www.youtube.com"),
-            Some("youtube.com"),
-            Some("m.youtube.com"),
-            Some("music.youtube.com"),
-            Some("youtu.be"),
-            Some("www.youtube-nocookie.com"),
-        ]
-        .contains(&url.host_str())
+        url.scheme() == "https"
+            && url.host_str().is_some_and(youtube_host)
             && url.username().is_empty()
             && url.password().is_none()
             && url.port().is_none(),
@@ -333,18 +425,58 @@ pub fn normalize_youtube(input: &str) -> Result<String> {
     );
     Ok(format!("https://www.youtube.com/watch?v={id}"))
 }
-fn download_url(root: &Path, url: &str, cancel: &Cancel) -> Result<PathBuf> {
-    download_into(
-        &root.join("downloads").join(crate::data::id()),
-        url,
-        None,
-        cancel,
-    )
+pub fn normalize_douyin(input: &str) -> Result<String> {
+    let text = input.trim();
+    if douyin_id(text) {
+        return Ok(format!("https://www.douyin.com/video/{text}"));
+    }
+    let link = share_link(text).context("请输入完整抖音视频链接")?;
+    let url = url::Url::parse(link)?;
+    ensure!(
+        url.scheme() == "https"
+            && url.host_str().is_some_and(douyin_host)
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port().is_none(),
+        "仅支持抖音视频链接"
+    );
+    let host = url.host_str().unwrap_or_default();
+    let path = url.path().trim_end_matches('/');
+    if host == "v.douyin.com" {
+        let code = path.trim_start_matches('/');
+        ensure!(
+            !code.is_empty()
+                && code.len() <= 64
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'),
+            "抖音短链接无效"
+        );
+        return Ok(format!("https://v.douyin.com/{code}/"));
+    }
+    ensure!(
+        !path.starts_with("/note/") && !path.starts_with("/share/note/"),
+        "暂不支持抖音图文作品，请分享视频链接"
+    );
+    let id = if let Some(value) = path
+        .strip_prefix("/video/")
+        .or_else(|| path.strip_prefix("/share/video/"))
+    {
+        value.split('/').next().map(str::to_owned)
+    } else {
+        url.query_pairs()
+            .find(|(key, _)| key == "modal_id")
+            .map(|(_, value)| value.into_owned())
+    }
+    .context("抖音链接缺少视频 ID")?;
+    ensure!(douyin_id(&id), "抖音视频 ID 无效");
+    Ok(format!("https://www.douyin.com/video/{id}"))
 }
 fn download_into(
     directory: &Path,
     url: &str,
     browser: Option<YoutubeBrowser>,
+    options: &[&str],
     cancel: &Cancel,
 ) -> Result<PathBuf> {
     let yt = tool("yt-dlp")?;
@@ -359,8 +491,6 @@ fn download_into(
             "--no-color",
             "--encoding",
             "utf-8",
-            "--socket-timeout",
-            "30",
             "--retries",
             "2",
             "--fragment-retries",
@@ -386,6 +516,7 @@ fn download_into(
         if let Some(browser) = browser {
             args.extend(["--cookies-from-browser".into(), browser.id().into()]);
         }
+        args.extend(options.iter().map(|arg| (*arg).to_owned()));
         args.extend([
             "--ffmpeg-location".into(),
             ffmpeg
@@ -420,6 +551,79 @@ fn download_into(
     }
     result
 }
+/// A subtitle file written next to a downloaded video by yt-dlp. Prefer an
+/// English track, then Chinese, then any remaining SRT/VTT track.
+fn subtitle_language_tag(tag: &str) -> bool {
+    let lower = tag.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "orig" | "default" | "forced" | "sdh" | "cc" | "und"
+    ) {
+        return true;
+    }
+    if let Some(rest) = lower.strip_prefix("ai-") {
+        return subtitle_language_tag(rest);
+    }
+    let parts = lower.split('-').collect::<Vec<_>>();
+    !parts.is_empty()
+        && parts.len() <= 3
+        && parts[0].len() >= 2
+        && parts[0].len() <= 3
+        && parts[0].bytes().all(|byte| byte.is_ascii_alphabetic())
+        && parts[1..].iter().all(|part| {
+            (1..=8).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+}
+
+fn subtitle_is_for(video_stem: &str, file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    let stem = video_stem.to_ascii_lowercase();
+    let Some(extension) = lower
+        .rsplit('.')
+        .next()
+        .filter(|ext| matches!(*ext, "srt" | "vtt"))
+    else {
+        return false;
+    };
+    let Some(base) = lower.strip_suffix(&format!(".{extension}")) else {
+        return false;
+    };
+    if base == stem {
+        return true;
+    }
+    base.strip_prefix(&format!("{stem}."))
+        .is_some_and(|tag| !tag.contains('.') && subtitle_language_tag(tag))
+}
+
+pub fn downloaded_subtitle(video: &Path) -> Option<PathBuf> {
+    let directory = video.parent()?;
+    let stem = video.file_stem()?.to_str()?;
+    let mut tracks = fs::read_dir(directory)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?;
+            let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+            let lower = name.to_ascii_lowercase();
+            (matches!(extension.as_str(), "srt" | "vtt") && subtitle_is_for(stem, name))
+                .then_some((path, lower))
+        })
+        .collect::<Vec<_>>();
+    tracks.sort_by_key(|(_, name)| {
+        if name.contains(".en.") || name.ends_with(".en") {
+            0
+        } else if name.contains(".ai-en.") || name.ends_with(".ai-en") {
+            1
+        } else if name.contains(".zh") {
+            2
+        } else {
+            3
+        }
+    });
+    tracks.into_iter().map(|(path, _)| path).next()
+}
+
 pub fn download_youtube(root: &Path, input: &str, cancel: &Cancel) -> Result<PathBuf> {
     download_youtube_with(root, input, None, cancel)
 }
@@ -429,30 +633,209 @@ pub fn download_youtube_with(
     browser: Option<YoutubeBrowser>,
     cancel: &Cancel,
 ) -> Result<PathBuf> {
-    use sha2::{Digest, Sha256};
     let url = normalize_youtube(input)?;
-    let directory = root
-        .join("downloads")
-        .join("remote-youtube")
-        .join(hex::encode(Sha256::digest(url.as_bytes())));
-    if let Some(path) = fs::read_dir(&directory)
+    download_cached(
+        root,
+        DownloadCache {
+            folder: VideoSource::YouTube.cache_folder(),
+            stage_prefix: ".youtube-",
+            noun: "YouTube",
+        },
+        &url,
+        cancel,
+        |directory| {
+            download_into(
+                directory,
+                &url,
+                browser,
+                &["--socket-timeout", "30"],
+                cancel,
+            )
+        },
+    )
+}
+pub fn download_douyin(root: &Path, input: &str, cancel: &Cancel) -> Result<PathBuf> {
+    let url = douyin::resolve(&normalize_douyin(input)?, cancel)?;
+    download_cached(
+        root,
+        DownloadCache {
+            folder: VideoSource::Douyin.cache_folder(),
+            stage_prefix: ".douyin-",
+            noun: "抖音",
+        },
+        &url,
+        cancel,
+        |directory| douyin::download(directory, &url, cancel),
+    )
+}
+pub fn download_external_with(
+    source: VideoSource,
+    root: &Path,
+    input: &str,
+    browser: Option<YoutubeBrowser>,
+    cancel: &Cancel,
+) -> Result<PathBuf> {
+    match source {
+        VideoSource::YouTube => download_youtube_with(root, input, browser, cancel),
+        VideoSource::Douyin => download_douyin(root, input, cancel),
+        VideoSource::Weibo | VideoSource::X => social::download(source, root, input, cancel),
+    }
+}
+struct DownloadCache<'a> {
+    folder: &'a str,
+    stage_prefix: &'a str,
+    noun: &'a str,
+}
+fn download_cached(
+    root: &Path,
+    cache: DownloadCache<'_>,
+    url: &str,
+    cancel: &Cancel,
+    fetch: impl FnOnce(&Path) -> Result<PathBuf>,
+) -> Result<PathBuf> {
+    let DownloadCache {
+        folder,
+        stage_prefix,
+        noun,
+    } = cache;
+    use sha2::{Digest, Sha256};
+    ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+    let cache = root.join("downloads").join(folder);
+    let key = hex::encode(Sha256::digest(url.as_bytes()));
+    let directory = cache.join(format!("v2-{key}"));
+    if let Some(path) = published_video(&directory).or_else(|| legacy_video(&cache.join(key))) {
+        return path.canonicalize().map_err(Into::into);
+    }
+    fs::create_dir_all(&cache)?;
+    let stage = tempfile::Builder::new()
+        .prefix(stage_prefix)
+        .tempdir_in(&cache)?;
+    let path = fetch(stage.path())?;
+    ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("视频文件名无效")?;
+    fs::write(stage.path().join("completed"), name)?;
+    // Coordinate publication and repair across app instances, after all network work.
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(cache.join(".publish.lock"))?;
+    loop {
+        ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+        match fs2::FileExt::try_lock_exclusive(&lock) {
+            Ok(()) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("无法锁定{noun}视频缓存"));
+            }
+        }
+    }
+    if let Some(path) = published_video(&directory) {
+        return path.canonicalize().map_err(Into::into);
+    }
+    // A stale cache can remain after the user removes its media file.
+    let retired = if directory.try_exists()? {
+        let retired = tempfile::tempdir_in(&cache)?;
+        fs::rename(&directory, retired.path().join("cache"))?;
+        Some(retired)
+    } else {
+        None
+    };
+    // A directory rename publishes the completed video and its subtitles together.
+    if let Err(error) = fs::rename(stage.path(), &directory) {
+        if let Some(retired) = retired {
+            let _ = fs::rename(retired.path().join("cache"), &directory);
+        }
+        return Err(error).with_context(|| format!("无法保存{noun}视频缓存"));
+    }
+    drop(lock);
+    drop(retired);
+    directory.join(name).canonicalize().map_err(Into::into)
+}
+
+fn published_video(directory: &Path) -> Option<PathBuf> {
+    let name = fs::read_to_string(directory.join("completed")).ok()?;
+    let file = Path::new(&name);
+    if file.file_name()?.to_str()? != name {
+        return None;
+    }
+    let path = directory.join(file);
+    cached_video_file(&path).then_some(path)
+}
+
+fn legacy_video(directory: &Path) -> Option<PathBuf> {
+    fs::read_dir(directory)
         .into_iter()
         .flatten()
         .flatten()
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.is_file()
-                && path.extension().and_then(|ext| ext.to_str()) == Some("mp4")
-                && fs::metadata(path).is_ok_and(|meta| meta.len() > 0)
+        .find_map(|entry| {
+            let path = entry.path();
+            let stem = path.file_stem()?.to_str()?;
+            // yt-dlp's intermediate video has a format suffix after the video ID.
+            (stem.ends_with(']') && cached_video_file(&path)).then_some(path)
         })
-    {
-        return path.canonicalize().map_err(Into::into);
-    }
-    download_into(&directory, &url, browser, cancel)
 }
+
+fn cached_video_file(path: &Path) -> bool {
+    path.extension().and_then(|ext| ext.to_str()) == Some("mp4")
+        && fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+}
+
+fn interrupted_video_download(error: &anyhow::Error) -> bool {
+    error.to_string().split(['\r', '\n']).any(|line| {
+        let line = line.to_ascii_lowercase();
+        if line.contains("error: content too short (expected ") {
+            return true;
+        }
+        (line.contains("[download] got error:") || line.contains("unable to download video data:"))
+            && [
+                "unexpected_eof_while_reading",
+                "eof occurred in violation of protocol",
+                "timed out",
+                "connection reset",
+                "remote end closed connection",
+                "incompleteread",
+                " bytes read",
+                " bytes, expected ",
+            ]
+            .iter()
+            .any(|reason| line.contains(reason))
+    })
+}
+
 pub fn download(root: &Path, input: &str, cancel: &Cancel) -> Result<PathBuf> {
     let url = normalize_bilibili(input)?;
-    download_url(root, &url, cancel)
+    let download = |options: &[&str]| {
+        download_into(
+            &root.join("downloads").join(crate::data::id()),
+            &url,
+            None,
+            options,
+            cancel,
+        )
+    };
+    let mut options = vec![
+        "--socket-timeout",
+        "15",
+        "--retry-sleep",
+        "http:linear=1::1",
+        "--retry-sleep",
+        "fragment:linear=1::1",
+    ];
+    match download(&options) {
+        Err(error) if interrupted_video_download(&error) => {
+            ensure!(!cancel.load(Ordering::SeqCst), "已取消");
+            options.extend(["--format-sort", "res:720"]);
+            download(&options).context("B 站视频流连接中断，切换画质后仍未完成下载")
+        }
+        result => result,
+    }
 }
 pub fn clip(
     source: &Path,

@@ -2,7 +2,10 @@
 use super::*;
 pub(super) enum Command {
     Cancel,
+    CancelCloud,
+    DismissCloudNotice,
     DismissTaskNotice,
+    ToggleTasksCollapsed,
     CancelModel,
     CancelAudioSubtitles,
     DismissAudioSubtitles,
@@ -22,6 +25,28 @@ impl Command {
         match self {
             // Handled by the feedback guard before domain dispatch.
             Command::FeedbackHandled => {}
+
+            Command::CancelCloud => {
+                if app.tasks.cloud.is_running() {
+                    app.tasks.cloud.cancel();
+                    app.report_status(FeedbackKind::Progress, "正在取消云备份…".into());
+                    if let Some(notice) = app.tasks.cloud_notice.as_mut().filter(|n| n.active()) {
+                        notice.state = TaskState::Cancelling;
+                        notice.detail = "正在停止上传，请稍候…".into();
+                    }
+                }
+            }
+
+            Command::DismissCloudNotice => {
+                if !app.tasks.cloud.is_running() {
+                    app.tasks.cloud_notice = None;
+                    app.tasks.backup_progress = None;
+                }
+            }
+
+            Command::ToggleTasksCollapsed => {
+                app.tasks.collapsed = !app.tasks.collapsed;
+            }
 
             Command::DismissTaskNotice => {
                 if app.tasks.notice.as_ref().is_some_and(|n| !n.active()) {

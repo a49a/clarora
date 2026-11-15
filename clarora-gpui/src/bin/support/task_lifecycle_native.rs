@@ -35,6 +35,12 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         "worker panic produces failed notice and releases foreground lane",
         "new task can commit and reopen SQLite after panic",
         "stale chat completion cannot paint or finish a newer request",
+        "YouTube completion selects the video and retains the import group",
+        "in-flight import follows the renamed target group",
+        "in-flight import falls back to ungrouped after target deletion",
+        "failed import keeps link, selected part and group for editing",
+        "background Bilibili completion caches P2 and preserves the P1 bookmark",
+        "fullscreen YouTube verification dialog renders and accepts Escape",
     ];
     ensure!(
         status.success()

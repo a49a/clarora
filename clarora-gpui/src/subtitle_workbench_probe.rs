@@ -124,6 +124,9 @@ impl Server {
                     break;
                 }
                 let result = (|| -> Result<()> {
+                    // macOS may let accepted sockets inherit the listener's
+                    // nonblocking flag; reads must block until the request arrives.
+                    socket.set_nonblocking(false)?;
                     socket.set_read_timeout(Some(Duration::from_secs(3)))?;
                     socket.set_write_timeout(Some(Duration::from_secs(3)))?;
                     let mut input = vec![];
@@ -710,11 +713,46 @@ impl Probe {
                         && app.value("question", cx) == DRAFT,
                     "changing videos replaced pending English reference or draft"
                 );
+                // Reopening must restore the A draft without adding B's full text.
+                app.handle(Action::Assistant, window, cx);
+                ensure!(!app.assistant_open, "assistant did not close before reopen");
+                app.handle(Action::Assistant, window, cx);
+                ensure!(
+                    app.assistant_open
+                        && app.assistant.references == vec![self.reference.clone().unwrap()]
+                        && app.value("question", cx) == DRAFT
+                        && app
+                            .assistant
+                            .references
+                            .iter()
+                            .all(|reference| reference.text != OTHER),
+                    "reopening on another video added its full text to the existing draft"
+                );
                 self.no_request(app)?;
                 self.note(
-                    "switching to another real video keeps the fixed pending reference",
+                    "reopening on another video restores the A draft without adding B",
                     app,
                 )?;
+                // Clearing the draft is an explicit edit. A later reopen must not
+                // mistake it for a first open and attach B again.
+                app.assistant.references.clear();
+                app.assistant.draft_initialized = true;
+                app.persist_assistant_references()?;
+                app.set("question", "", window, cx);
+                app.handle(Action::Assistant, window, cx);
+                app.handle(Action::Assistant, window, cx);
+                ensure!(
+                    app.assistant_open && app.assistant.references.is_empty(),
+                    "cleared draft regained the current video background"
+                );
+                self.note(
+                    "cleared draft reopens empty instead of attaching the new video",
+                    app,
+                )?;
+                app.assistant.references = vec![self.reference.clone().unwrap()];
+                app.assistant.draft_initialized = true;
+                app.persist_assistant_references()?;
+                app.set("question", DRAFT, window, cx);
                 self.advance();
             }
             7 => {
@@ -863,7 +901,9 @@ impl Probe {
                     .find(|value| value["role"] == "user")
                     .and_then(|value| value["content"].as_str())
                     .context("missing user content")?;
-                let expected = format!("{QUESTION}\n\n<reference>\n{ENGLISH}\n</reference>");
+                let expected = format!(
+                    "{QUESTION}\n\n<reference kind=\"transcript_background\">\n{ENGLISH}\n</reference>"
+                );
                 ensure!(
                     content == expected,
                     "AI request was not exactly question plus the fixed plain English transcript"

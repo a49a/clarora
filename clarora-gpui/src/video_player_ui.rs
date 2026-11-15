@@ -283,10 +283,22 @@ impl AppView {
                     div()
                         .size_full()
                         .flex()
+                        .flex_col()
                         .items_center()
                         .justify_center()
+                        .gap_3()
                         .text_color(rgb(0x9bafa4))
-                        .child("打开本地视频，或从 bilibili 导入"),
+                        .child("导入或选择视频后开始学习")
+                        .child(
+                            self.button(
+                                "video-picture-import",
+                                "＋ 导入视频",
+                                Action::VideoImport,
+                                cx,
+                            )
+                            .primary()
+                            .disabled(self.tasks.foreground.is_running()),
+                        ),
                 )
             })
             .when(!active_caption.is_empty(), |v| {

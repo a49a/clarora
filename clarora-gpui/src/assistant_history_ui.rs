@@ -167,6 +167,70 @@ impl HistoryView {
             .into_any_element()
     }
 }
+enum AnswerBlock {
+    Markdown(String),
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
+}
+
+fn table_cells(line: &str) -> Vec<String> {
+    line.trim()
+        .trim_matches('|')
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect()
+}
+
+fn table_separator(line: &str) -> bool {
+    let cells = table_cells(line);
+    !cells.is_empty()
+        && cells.iter().all(|cell| {
+            let value = cell.trim_matches(':');
+            value.len() >= 3 && value.bytes().all(|byte| byte == b'-')
+        })
+}
+
+fn answer_blocks(source: &str) -> Vec<AnswerBlock> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut blocks = Vec::new();
+    let mut markdown = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let table = index + 1 < lines.len()
+            && lines[index].contains('|')
+            && table_separator(lines[index + 1]);
+        if !table {
+            markdown.push(lines[index]);
+            index += 1;
+            continue;
+        }
+        if !markdown.is_empty() {
+            blocks.push(AnswerBlock::Markdown(
+                markdown.join("\n").trim().to_string(),
+            ));
+            markdown.clear();
+        }
+        let headers = table_cells(lines[index]);
+        let mut rows = Vec::new();
+        index += 2;
+        while index < lines.len() && lines[index].contains('|') {
+            let mut row = table_cells(lines[index]);
+            row.resize(headers.len(), String::new());
+            rows.push(row);
+            index += 1;
+        }
+        blocks.push(AnswerBlock::Table { headers, rows });
+    }
+    if !markdown.is_empty() {
+        blocks.push(AnswerBlock::Markdown(
+            markdown.join("\n").trim().to_string(),
+        ));
+    }
+    blocks
+}
+
 struct Turn<'a> {
     index: usize,
     question: Option<&'a str>,
@@ -281,15 +345,7 @@ impl HistoryView {
                 ),
         );
         if let Some(answer) = turn.answer.filter(|s| !s.is_empty()) {
-            card = card.child(
-                TextView::markdown(
-                    ("assistant-answer", turn.index),
-                    answer.to_string(),
-                    window,
-                    cx,
-                )
-                .selectable(true),
-            );
+            card = card.child(self.answer_view(turn.index, answer, window, cx));
             if turn.complete {
                 card = card.child(
                     div().flex().child(
@@ -334,6 +390,86 @@ impl HistoryView {
         }
         card
     }
+    fn answer_view(
+        &self,
+        index: usize,
+        answer: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let blocks = answer_blocks(answer);
+        let mut column = div().w_full().min_w_0().flex().flex_col().gap_3();
+        for (block_index, block) in blocks.into_iter().enumerate() {
+            match block {
+                AnswerBlock::Markdown(text) if !text.is_empty() => {
+                    column = column.child(
+                        TextView::markdown(
+                            SharedString::from(format!("assistant-answer-{index}-{block_index}")),
+                            text,
+                            window,
+                            cx,
+                        )
+                        .w_full()
+                        .min_w_0()
+                        .selectable(true),
+                    );
+                }
+                AnswerBlock::Markdown(_) => {}
+                AnswerBlock::Table { headers, rows } => {
+                    let mut table = div()
+                        .id(("assistant-answer-table", index * 1000 + block_index))
+                        .w_full()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .border_1()
+                        .rounded_lg()
+                        .border_color(cx.theme().border)
+                        .flex()
+                        .flex_col();
+                    let columns = headers.len().max(1);
+                    for (row_index, row) in std::iter::once(&headers).chain(rows.iter()).enumerate()
+                    {
+                        let header = row_index == 0;
+                        let mut cells = div()
+                            .flex()
+                            .flex_row()
+                            .w_full()
+                            .min_w_0()
+                            .when(header, |row| row.bg(cx.theme().muted))
+                            .when(row_index + 1 < rows.len() + 1, |row| {
+                                row.border_b_1().border_color(cx.theme().border)
+                            });
+                        for column_index in 0..columns {
+                            cells = cells.child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .px_2()
+                                    .py_1()
+                                    .when(column_index + 1 < columns, |cell| {
+                                        cell.border_r_1().border_color(cx.theme().border)
+                                    })
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .when(header, |text| {
+                                                text.font_weight(FontWeight::SEMIBOLD)
+                                            })
+                                            .child(
+                                                row.get(column_index).cloned().unwrap_or_default(),
+                                            ),
+                                    ),
+                            );
+                        }
+                        table = table.child(cells);
+                    }
+                    column = column.child(table);
+                }
+            }
+        }
+        column.into_any_element()
+    }
+
     fn view_button(&self, conversation: bool, cx: &mut Context<Self>) -> Button {
         let active = self.show_conversation == conversation;
         let owner = self.owner.clone();

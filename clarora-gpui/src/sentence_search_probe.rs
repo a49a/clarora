@@ -54,6 +54,10 @@ impl Probe {
         app.poll_sentence_search();
         match self.stage {
             0 => {
+                // Audition timing must not depend on a usable CoreAudio device.
+                app.sentences.audition = Some(clarora_gpui::sentence_search::Audition::new(
+                    Player::without_audio_device(),
+                ));
                 app.handle(Action::Page("sentences".into()), window, cx);
                 app.inputs["sentence_query"].update(cx, |input, cx| {
                     input.set_value("When", window, cx);

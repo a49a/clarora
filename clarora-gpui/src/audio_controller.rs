@@ -167,6 +167,9 @@ impl AppView {
             FeedbackKind::Info,
             format!("重点句 {}/{} · {}", index + 1, total, range.saved.front),
         );
+        // The range load sets a temporary pause; make the review playback
+        // explicit so a short clip cannot remain parked at its start.
+        self.media.player.set("pause", "no");
         Ok(())
     }
 

@@ -26,33 +26,29 @@ impl State {
 }
 impl AppView {
     pub(super) fn cloud_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<()> {
-        ensure!(
-            !self.tasks.foreground.is_running() && !self.chat.running,
-            "请先完成当前任务再同步"
-        );
+        ensure!(!self.tasks.cloud.is_running(), "请先完成当前云任务再同步");
         self.flush_writing(cx)?;
         self.cloud.last_attempt = Instant::now();
         #[cfg(debug_assertions)]
         let fixture = self.tasks.backup_fixture;
-        self.begin_scoped(
-            TaskScope::Application,
-            "正在同步云端资料…",
-            move |lib, cancel, tx| {
-                #[cfg(debug_assertions)]
-                let storage = if let Some(address) = fixture {
-                    backup::Storage::loopback_fixture(address)?
-                } else {
-                    backup::Storage::load(&lib)?
-                };
-                #[cfg(not(debug_assertions))]
-                let storage = backup::Storage::load(&lib)?;
-                let result = storage.synchronize(&lib, &cancel, move |progress| {
-                    let _ = tx.send(TaskUpdate::BackupProgress(progress));
-                })?;
-                let videos = video_library::Collection::load(&lib)?;
-                Ok(Outcome::CloudSynced(result, videos))
-            },
-        );
+        let started = self.begin_cloud("正在同步云端资料…", move |lib, cancel, tx| {
+            #[cfg(debug_assertions)]
+            let storage = if let Some(address) = fixture {
+                backup::Storage::loopback_fixture(address)?
+            } else {
+                backup::Storage::load(&lib)?
+            };
+            #[cfg(not(debug_assertions))]
+            let storage = backup::Storage::load(&lib)?;
+            let result = storage.synchronize(&lib, &cancel, move |progress| {
+                let _ = tx.send(TaskUpdate::BackupProgress(progress));
+            })?;
+            let videos = video_library::Collection::load(&lib)?;
+            Ok(Outcome::CloudSynced(result, videos))
+        });
+        if !started {
+            return Ok(());
+        }
         self.tasks.backup_progress = Some(backup::UploadProgress {
             stage: backup::UploadStage::Preparing,
             bytes_sent: 0,
@@ -62,7 +58,6 @@ impl AppView {
             files_total: 0,
             current_name: String::new(),
         });
-        self.tasks.notice = Some(TaskNotice::new("云端同步", "正在比较变更、删除标记与附件…"));
         let _ = window;
         Ok(())
     }

@@ -278,16 +278,14 @@ pub(super) fn run(
             }
         }
         let library = manifest.library.as_mut().unwrap();
-        let old_collection = setting_in(&tx, "video_favorites_v1")?;
-        let old_selected =
-            serde_json::from_str::<crate::video_library::Collection>(&old_collection)
-                .ok()
-                .and_then(|c| c.selected);
+        let old_selected = crate::video_library::Collection::from_settings(
+            &crate::video_library::Collection::saved_settings(&tx)?,
+        )?
+        .and_then(|c| c.selected);
         let collection = library.videos.get_or_insert_with(Default::default);
         collection.selected =
             old_selected.filter(|id| collection.items.iter().any(|v| &v.id == id));
-        collection.validate()?;
-        tx.execute("INSERT INTO app_settings(key,value) VALUES('video_favorites_v1',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(collection)?])?;
+        collection.save_in(&tx)?;
         if let Some(series) = collection.active().and_then(|v| v.series.as_ref()) {
             tx.execute("INSERT INTO app_settings(key,value) VALUES('bilibili_series',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(series)?])?;
         } else {

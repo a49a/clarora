@@ -188,6 +188,10 @@ impl AppView {
         {
             if !self.media.snapshot.eof {
                 self.media.session.end_handled = false;
+                self.video.completion_marked = false;
+            } else if !self.video.completion_marked {
+                self.mark_video_completed();
+                self.video.completion_marked = true;
             }
             if self.video.auto_next_part
                 && self.media.snapshot.error.is_empty()
@@ -208,7 +212,7 @@ impl AppView {
                     .as_ref()
                     .and_then(|s| self.media.session.path.as_ref().and_then(|p| s.next_for(p)))
                 {
-                    self.start_part(next);
+                    self.start_part_next(next);
                 }
             }
         }

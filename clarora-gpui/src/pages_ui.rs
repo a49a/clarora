@@ -660,92 +660,13 @@ impl AppView {
                 }
             }
             "video" => {
-                let youtube_browser = self.video.youtube_browser;
-                let download_panel = panel(cx)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .p_2()
-                                    .rounded_lg()
-                                    .bg(cx.theme().accent)
-                                    .child(design::icon("video", cx.theme().primary)),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child("从 bilibili / YouTube 开始一堂课"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child("支持 bilibili 分P与 YouTube 单视频，下载后逐句精听。"),
-                                    ),
-                            ),
-                    )
-                    .child(self.field("bilibili", "bilibili / YouTube 链接，或 BV / av 编号"))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                self.button("download", "下载并导入", Action::Download, cx)
-                                    .primary()
-                                    .disabled(self.tasks.foreground.is_running()),
-                            )
-                            .child(
-                                self.button("read-parts", "读取分P（B站）", Action::ReadParts, cx)
-                                    .disabled(self.tasks.foreground.is_running()),
-                            )
-                            .child(
-                                self.button("cancel-download", "取消下载", Action::Cancel, cx)
-                                    .disabled(!self.tasks.foreground.is_running()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("bilibili 自动识别分P；YouTube 为单视频，直接下载并导入。"),
-                    )
-                    .when_some(youtube_browser, |panel, browser| {
-                        panel.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!(
-                                            "YouTube 登录 Cookie：{}",
-                                            browser.label()
-                                        )),
-                                )
-                                .child(
-                                    self.button(
-                                        "clear-youtube-auth",
-                                        "清除登录",
-                                        Action::ClearYoutubeAuth,
-                                        cx,
-                                    )
-                                    .outline()
-                                    .disabled(self.tasks.foreground.is_running()),
-                                ),
-                        )
-                    });
                 let available = (f32::from(window.viewport_size().width)
                     - if self.navigation_open { 224. } else { 0. }
+                    - if self.assistant_embedded {
+                        self.assistant_width
+                    } else {
+                        0.
+                    }
                     - 32.)
                     .max(300.);
                 let stacked = available < 780.;
@@ -1315,20 +1236,15 @@ impl AppView {
                                         ),
                                 );
                         } else {
-                            study = study
-                                .child(
-                                    div()
-                                        .p_5()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child("从 bilibili 导入或读取分P后，在这里选择集数；YouTube 为单视频，无需选集。"),
-                                )
-                                .child(self.button(
-                                    "show-import",
-                                    "导入视频",
-                                    Action::VideoTools,
-                                    cx,
-                                ));
+                            study = study.child(
+                                div()
+                                    .p_5()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        "在「导入视频」中粘贴 B 站、YouTube 或抖音链接；B 站读取选集后可在这里切换。",
+                                    ),
+                            );
                         }
                     }
                     _ => {}
@@ -1372,32 +1288,16 @@ impl AppView {
                         .when(!stacked, |v| v.child(divider))
                         .child(study),
                 );
-                if self.video.tools_open
-                    || !self.media.session.is_video()
-                    || self.media.session.path.is_none()
-                {
+                if self.video.tools_open {
                     content = content.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(self.button(
-                                "open-video",
-                                "打开本地视频",
-                                Action::Pick("video".into()),
-                                cx,
-                            ))
-                            .child(
-                                self.button(
-                                    "video-export-srt",
-                                    "导出 SRT",
-                                    Action::VideoSubtitleExport,
-                                    cx,
-                                )
-                                .disabled(self.video.cues.is_empty()),
-                            ),
+                        self.button(
+                            "video-export-srt",
+                            "导出 SRT",
+                            Action::VideoSubtitleExport,
+                            cx,
+                        )
+                        .disabled(self.video.cues.is_empty()),
                     );
-                    content = content.child(download_panel);
                     let mut tracks = div()
                         .flex()
                         .flex_col()

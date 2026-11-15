@@ -5,8 +5,37 @@ use crate::{ai_chat, data::Library, process::Cancel};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
+/// Content-bound subtitle revision. Timing-only revisions would treat a
+/// regenerated transcript with identical cue times as the same snapshot.
+pub fn subtitle_revision(cues: &[crate::subtitles::Cue]) -> String {
+    let mut hash = Sha256::new();
+    for cue in cues {
+        hash.update(cue.start.to_le_bytes());
+        hash.update(cue.end.to_le_bytes());
+        hash.update(cue.text.as_bytes());
+        hash.update([0xff]);
+    }
+    hex::encode(hash.finalize())
+}
+
+pub const MIN_COLUMN: f32 = 360.;
+pub const DEFAULT_COLUMN: f32 = 400.;
+pub const WIDE_COLUMN: f32 = 600.;
 pub const CONTEXT: &str = "global-learning-assistant-v1";
+
+/// Width of the assistant column after reserving the page's minimum working
+/// width. It never drops below `MIN_COLUMN`; an overlay handles narrower
+/// windows instead of forcing an unusable split.
+pub fn column_width(available: f32, minimum_content: f32, wide: bool) -> f32 {
+    let preferred = if wide { WIDE_COLUMN } else { DEFAULT_COLUMN };
+    preferred.min((available - minimum_content - 16.).max(MIN_COLUMN))
+}
+
+pub fn side_by_side(available: f32, minimum_content: f32, width: f32) -> bool {
+    available >= minimum_content + width + 16.
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReferenceKind {
@@ -33,6 +62,12 @@ pub struct Reference {
     pub text: String,
     #[serde(skip_serializing_if = "ReferenceKind::is_plain")]
     pub kind: ReferenceKind,
+    /// Local-only material identity. Never written into the outbound message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Local-only subtitle revision; keeps old snapshots distinct after regeneration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 #[derive(Deserialize)]
 struct StoredReference {
@@ -41,6 +76,10 @@ struct StoredReference {
     label: Option<Value>,
     #[serde(default)]
     kind: ReferenceKind,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    revision: Option<String>,
 }
 impl From<StoredReference> for Reference {
     fn from(stored: StoredReference) -> Self {
@@ -51,6 +90,8 @@ impl From<StoredReference> for Reference {
                 stored.text
             },
             kind: stored.kind,
+            source: stored.source,
+            revision: stored.revision,
         }
     }
 }
@@ -76,31 +117,46 @@ pub fn plain_reference(text: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-/// Replace the single transcript/background reference with the current
-/// material. Selected or manually added references are preserved.
+/// Attach/replace the full-text background for one source. Backgrounds from
+/// other materials stay so an A selection is not overwritten after switching to B.
 pub fn with_transcript_background(
     mut references: Vec<Reference>,
     text: String,
+    source: Option<&str>,
+    revision: Option<&str>,
 ) -> Result<Vec<Reference>> {
     ensure!(!text.trim().is_empty(), "当前没有可引用的全文");
     let reference = Reference {
         text,
         kind: ReferenceKind::TranscriptBackground,
+        source: source.map(str::to_owned),
+        revision: revision.map(str::to_owned),
     };
     if references.contains(&reference) {
         return Ok(references);
     }
-    references.retain(|r| r.kind != ReferenceKind::TranscriptBackground);
+    references.retain(|r| {
+        r.kind != ReferenceKind::TranscriptBackground
+            || r.source.as_deref() != source
+            || r.revision.as_deref() != revision
+    });
     references.push(reference);
     validate(&references)?;
     Ok(references)
 }
 
 pub fn validate(references: &[Reference]) -> Result<()> {
-    ensure!(
-        references.len() <= 4,
-        "一次最多引用 4 份材料，请移除后再添加"
-    );
+    let groups = references
+        .iter()
+        .map(|reference| {
+            reference
+                .source
+                .clone()
+                .unwrap_or_else(|| format!("plain:{}", reference.text))
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    ensure!(groups.len() <= 4, "一次最多引用 4 份材料，请移除后再添加");
+    ensure!(references.len() <= 8, "引用条目过多，请移除后再添加");
     ensure!(
         references
             .iter()

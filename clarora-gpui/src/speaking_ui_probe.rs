@@ -487,6 +487,10 @@ impl diagnostics::Probe for Probe {
                 ensure!(window.has_active_dialog(cx), "删除题目没有打开确认对话框");
                 window.close_dialog(cx);
                 app.speaking.layout_probe = Some(SpeakingLayoutBounds::default());
+                if app.assistant_open {
+                    app.handle(Action::Assistant, window, cx);
+                    ensure!(!app.assistant_open, "关闭助手后仍占用内容宽度");
+                }
                 window.resize(size(px(1400.), px(800.)));
                 draw_next_frame(window, cx);
             }

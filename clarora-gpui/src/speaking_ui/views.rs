@@ -7,8 +7,14 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let available =
-            f32::from(window.viewport_size().width) - 224. * self.navigation_progress() - 64.;
+        let available = f32::from(window.viewport_size().width)
+            - 224. * self.navigation_progress()
+            - if self.assistant_embedded {
+                self.assistant_width
+            } else {
+                0.
+            }
+            - 64.;
         let detail_width = (available - 42.).max(0.);
         let compare_reviews = detail_width >= 760.;
         let review_height = (f32::from(window.viewport_size().height) - 320.).clamp(360., 720.);

@@ -42,6 +42,7 @@ pub mod audio_library;
 pub mod command_import;
 
 pub mod video_library;
+pub mod video_progress;
 
 pub mod video_jobs;
 

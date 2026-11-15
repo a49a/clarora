@@ -156,6 +156,9 @@ fn referenced(lib: &Library) -> Result<Vec<String>> {
                 names.push(format!("{role}-{id}"));
             }
         }
+        if let Some(id) = c["asr_credential_id"].as_str().filter(|s| !s.is_empty()) {
+            names.push(format!("asr-{id}"));
+        }
     }
     let raw = lib.setting("storage_config")?;
     if !raw.is_empty() {

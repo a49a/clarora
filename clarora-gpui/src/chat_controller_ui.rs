@@ -128,6 +128,7 @@ impl AppView {
                 }
                 if self.assistant.references == *references {
                     self.assistant.references.clear();
+                    self.assistant.draft_initialized = true;
                     if let Err(error) = self.persist_assistant_references() {
                         self.report_status(
                             FeedbackKind::Error,

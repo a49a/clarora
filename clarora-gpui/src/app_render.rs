@@ -26,7 +26,7 @@ impl Render for AppView {
         let beta = matches!(self.page.as_str(), "ocr" | "saved");
         if self.video.fullscreen {
             if window.is_fullscreen() {
-                if !self.video.fullscreen_seen {
+                if !self.video.fullscreen_seen && !window.has_active_dialog(cx) {
                     window.focus(&self.focus);
                 }
                 self.video.fullscreen_seen = true;
@@ -37,23 +37,85 @@ impl Render for AppView {
                 self.video.fullscreen_seen = false;
             }
         }
-        if self.video.fullscreen && self.page == "video" {
-            let assistant = self.assistant_open.then(|| self.assistant_view(window, cx));
+        let fullscreen = self.video.fullscreen && self.page == "video";
+        let nav_width = if !fullscreen && self.navigation_open {
+            224.
+        } else {
+            0.
+        };
+        let available = (f32::from(window.viewport_size().width) - nav_width - 32.).max(0.);
+        let minimum_content = if matches!(self.page.as_str(), "video" | "listening") {
+            760.
+        } else {
+            620.
+        };
+        self.assistant_width = if self.assistant_open {
+            clarora_gpui::assistant::column_width(available, minimum_content, self.assistant.wide)
+        } else {
+            0.
+        };
+        self.assistant_embedded = self.assistant_open
+            && clarora_gpui::assistant::side_by_side(
+                available,
+                minimum_content,
+                self.assistant_width,
+            );
+        let fullscreen_assistant_page =
+            fullscreen && self.assistant_open && !self.assistant_embedded;
+        self.assistant_page_mode = fullscreen_assistant_page;
+        self.assistant_columns = if self.assistant_open {
+            if self.assistant_embedded { 2 } else { 1 }
+        } else {
+            0
+        };
+        if fullscreen {
+            let assistant = if self.assistant_open {
+                Some(self.assistant_view(
+                    window,
+                    cx,
+                    if self.assistant_embedded {
+                        assistant_ui::Mount::Column
+                    } else {
+                        assistant_ui::Mount::Page
+                    },
+                ))
+            } else {
+                None
+            };
             let selection = self.selection_offer(window, cx);
-            return div()
-                .relative()
-                .size_full()
-                .child(self.fullscreen_video(window, cx))
-                .children(assistant)
+            let mut root = div().relative().size_full();
+            if self.assistant_embedded {
+                root = root.flex().child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(self.fullscreen_video(window, cx)),
+                );
+                if let Some(assistant) = assistant {
+                    root = root.child(assistant);
+                }
+            } else if self.assistant_open {
+                root = root.key_context("VideoFullscreen").track_focus(&self.focus);
+                if let Some(assistant) = assistant {
+                    root = root.child(assistant);
+                }
+            } else {
+                root = root.child(self.fullscreen_video(window, cx));
+            }
+            return root
                 .when(self.focus_note_open, |view| {
                     view.child(self.focus_note_overlay(window, cx))
                 })
                 .children(selection)
                 .children(self.feedback_view(window, cx))
                 .children(self.video_part_confirmation_view(window, cx))
+                .children(Root::render_dialog_layer(window, cx))
                 .into_any_element();
         }
         let navigation_progress = self.navigation_progress();
+        let compact_video_header = self.page == "video"
+            && window.viewport_size().width - px(224. * navigation_progress) < px(380.);
         if let Some((started, _)) = self.navigation_motion {
             if started.elapsed() < Duration::from_millis(240) {
                 window.request_animation_frame();
@@ -62,10 +124,40 @@ impl Render for AppView {
             }
         }
         let content = self.content(window, cx);
-        let assistant = if self.assistant_open {
-            Some(self.assistant_view(window, cx))
+        let narrow_assistant = self.assistant_open && !self.assistant_embedded;
+        self.assistant_page_mode = narrow_assistant;
+        self.assistant_columns = if self.assistant_open {
+            if self.assistant_embedded { 2 } else { 1 }
+        } else {
+            0
+        };
+        let mount = if self.assistant_embedded {
+            assistant_ui::Mount::Column
+        } else {
+            assistant_ui::Mount::Page
+        };
+        let mut assistant = if self.assistant_open {
+            Some(self.assistant_view(window, cx, mount))
         } else {
             None
+        };
+        let page_body = if narrow_assistant {
+            assistant.take().expect("narrow assistant")
+        } else {
+            div()
+                .id("page-scroll")
+                .track_scroll(&self.page_scroll)
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .overflow_y_scroll()
+                .when(self.page == "pdf", |view| view.overflow_x_scroll())
+                .p_8()
+                .when(self.page == "video" || self.page == "listening", |v| {
+                    v.p_4()
+                })
+                .child(content)
+                .into_any_element()
         };
         let mut links = div()
             .id("navigation-scroll")
@@ -321,6 +413,11 @@ impl Render for AppView {
                     if event.dragging() {
                         let available = (f32::from(window.viewport_size().width)
                             - if this.navigation_open { 224. } else { 0. }
+                            - if this.assistant_embedded {
+                                this.assistant_width
+                            } else {
+                                0.
+                            }
                             - 32.)
                             .max(300.);
                         this.video.panel_width = (width - f32::from(event.position.x - start))
@@ -331,8 +428,10 @@ impl Render for AppView {
                     }
                 }
             }))
-            .on_action(cx.listener(|this, _: &OpenFile, _, cx| {
-                if matches!(this.page.as_str(), "writing" | "sentences") {
+            .on_action(cx.listener(|this, _: &OpenFile, window, cx| {
+                if window.has_active_dialog(cx)
+                    || matches!(this.page.as_str(), "writing" | "sentences")
+                {
                     return;
                 }
                 let kind = match this.page.as_str() {
@@ -343,7 +442,7 @@ impl Render for AppView {
                     "library" | "listening" => "audio",
                     _ => "words",
                 };
-                this.pick(kind, cx);
+                this.pick(kind, window, cx);
             }))
             .on_action(cx.listener(|this, _: &Quit, _, cx| {
                 cx.stop_propagation();
@@ -652,6 +751,7 @@ impl Render for AppView {
                     .child(
                         div()
                             .px_8()
+                            .when(compact_video_header, |header| header.px_3())
                             .py_6()
                             .when(self.page == "video" || self.page == "listening", |v| {
                                 v.py_3()
@@ -669,11 +769,13 @@ impl Render for AppView {
                                     .flex()
                                     .flex_col()
                                     .gap_2()
+                                    .when(compact_video_header, |heading| heading.w_full())
                                     .child(
                                         div()
                                             .flex()
                                             .items_center()
                                             .gap_3()
+                                            .when(compact_video_header, |row| row.flex_wrap())
                                             .child(
                                                 self.button(
                                                     "navigation-toggle",
@@ -712,24 +814,41 @@ impl Render for AppView {
                                                     "显示或隐藏左侧导航 · Ctrl+B"
                                                 }),
                                             )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child("CLARORA  /  学习空间"),
-                                            ),
+                                            .when(!compact_video_header, |row| {
+                                                row.child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child("CLARORA  /  学习空间"),
+                                                )
+                                            }),
                                     )
                                     .child(
                                         div()
                                             .flex()
                                             .items_center()
                                             .gap_2()
+                                            .when(self.page == "video", |row| row.flex_wrap())
                                             .child(
                                                 div()
                                                     .text_size(px(27.))
                                                     .font_weight(FontWeight::SEMIBOLD)
                                                     .child(title),
                                             )
+                                            .when(self.page == "video", |row| {
+                                                row.child(
+                                                    self.button(
+                                                        "video-import",
+                                                        "＋ 导入视频",
+                                                        Action::VideoImport,
+                                                        cx,
+                                                    )
+                                                    .primary()
+                                                    .h(px(32.))
+                                                    .cursor_pointer()
+                                                    .disabled(self.tasks.foreground.is_running()),
+                                                )
+                                            })
                                             .when(beta, |v| {
                                                 v.child(
                                                     div()
@@ -783,38 +902,9 @@ impl Render for AppView {
                     )
                     .child(self.focus_timer_bar(window, cx))
                     .children(self.subtitle_task_banner(cx))
-                    .child(
-                        div()
-                            .id("page-scroll")
-                            .track_scroll(&self.page_scroll)
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .when(self.page == "pdf", |view| view.overflow_x_scroll())
-                            .p_8()
-                            .when(self.page == "video" || self.page == "listening", |v| {
-                                v.p_4()
-                            })
-                            .child(content),
-                    ),
+                    .child(page_body),
             )
-            .when_some(assistant, |view, assistant| {
-                if window.viewport_size().width < px(900.) {
-                    view.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .right_0()
-                            .bottom_0()
-                            .w(px(400.))
-                            .max_w(relative(0.94))
-                            .shadow_lg()
-                            .child(assistant),
-                    )
-                } else {
-                    view.child(assistant)
-                }
-            })
+            .when_some(assistant, |view, assistant| view.child(assistant))
             .when(self.focus_note_open, |view| {
                 view.child(self.focus_note_overlay(window, cx))
             })

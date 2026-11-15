@@ -28,11 +28,12 @@ pub(super) fn check_attachments(
 ) -> Result<()> {
     for (path, stamp) in stamps {
         check_cancel(cancel)?;
-        let meta = fs::metadata(path)?;
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let meta = fs::metadata(path)
+            .with_context(|| format!("正在备份这份资料，备份结束后可重试（{name} 附件已改变）"))?;
         ensure!(
             (meta.len(), meta.modified()?) == *stamp,
-            "备份期间附件已改变，请重试：{}",
-            path.file_name().unwrap_or_default().to_string_lossy()
+            "正在备份这份资料，备份结束后可重试（{name} 附件已改变）"
         );
     }
     Ok(())

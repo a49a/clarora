@@ -413,13 +413,9 @@ fn prepare_library(
 ) -> Result<()> {
     let mut mapped = HashMap::<String, String>::new();
     if let Some(imported) = &library.videos {
-        let current = setting_in(db, "video_favorites_v1")?;
-        let mut current: crate::video_library::Collection = if current.is_empty() {
-            crate::video_library::Collection::default()
-        } else {
-            serde_json::from_str(&current).context("当前视频收藏损坏，未恢复")?
-        };
-        current.validate()?;
+        use crate::video_library::Collection;
+        let mut current =
+            Collection::from_settings(&Collection::saved_settings(db)?)?.unwrap_or_default();
         let initially_empty = current.items.is_empty();
         let mut repaired = HashMap::<String, String>::new();
         for video in &imported.items {
@@ -431,6 +427,9 @@ fn prepare_library(
                     })
             });
             if let Some(old) = old {
+                if old.group.is_empty() && !video.group.is_empty() {
+                    old.group = video.group.clone();
+                }
                 if let (Some(existing), Some(source)) = (&mut old.series, &video.series) {
                     for part in &source.parts {
                         if let Some(path) = &part.path {
@@ -506,6 +505,12 @@ fn prepare_library(
                 current.items.push(video.clone());
             }
         }
+        for group in &imported.groups {
+            if !current.groups.iter().any(|name| name == group) {
+                current.groups.push(group.clone());
+            }
+        }
+        current.sync_groups();
         // A deliberate deselection in an existing library stays deselected.
         if initially_empty {
             current.selected = imported.selected.clone();
@@ -594,8 +599,7 @@ fn merge_library(
     cancel: &Cancel,
 ) -> Result<()> {
     if let Some(videos) = &library.videos {
-        videos.validate()?;
-        db.execute("INSERT INTO app_settings(key,value) VALUES('video_favorites_v1',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(videos)?])?;
+        videos.save_in(db)?;
         if let Some(series) = videos.active().and_then(|v| v.series.as_ref()) {
             preserve_setting(db, "bilibili_series", &serde_json::to_string(series)?)?;
         }

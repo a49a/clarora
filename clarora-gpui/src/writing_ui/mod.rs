@@ -1612,7 +1612,16 @@ impl Render for WritingView {
         let navigation_width = self.owner.upgrade().map_or(px(0.), |owner| {
             px(224. * owner.read(cx).navigation_progress())
         });
-        let stacked = window.viewport_size().width - navigation_width - px(64.) < px(800.);
+        let assistant_width = self.owner.upgrade().map_or(px(0.), |owner| {
+            let owner = owner.read(cx);
+            px(if owner.assistant_embedded {
+                owner.assistant_width
+            } else {
+                0.
+            })
+        });
+        let stacked =
+            window.viewport_size().width - navigation_width - assistant_width - px(64.) < px(800.);
         let browser = self.writing_browser(stacked, cx);
         let mut content = div().w_full().min_w_0().flex().flex_col().gap_4();
         if let Some(task) = &self.correction {

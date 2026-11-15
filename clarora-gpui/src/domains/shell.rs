@@ -61,7 +61,7 @@ impl Command {
                     })
                     .detach();
                 } else {
-                    app.pick(&kind, cx);
+                    app.pick(&kind, window, cx);
                 }
             }
 
@@ -99,6 +99,7 @@ fn navigate(
     let previous = app.page.clone();
     library::leave(app);
     app.save_media_position();
+    app.save_video_progress();
     audio::leave(app, &page);
     video::leave(app, &page);
     tasks::leave(app);

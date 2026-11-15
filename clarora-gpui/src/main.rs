@@ -74,9 +74,11 @@ mod task_ui;
 #[cfg(debug_assertions)]
 mod ui_controller_probe;
 mod video_controller;
+mod video_import_ui;
 mod video_job_ui;
 mod video_library_ui;
 mod video_player_ui;
+mod video_progress_controller;
 #[cfg(debug_assertions)]
 mod video_resume_probe;
 mod video_transcript_ui;
@@ -94,7 +96,7 @@ use clarora_gpui::{
     process::{self, Cancel},
     recording::Recorder,
     subtitles::{self, Cue},
-    timer_chimes, tts, video_jobs, video_library, video_qa, video_subtitles,
+    timer_chimes, tts, video_jobs, video_library, video_progress, video_qa, video_subtitles,
     waveform::{self, Waveform},
 };
 use feedback_ui::FeedbackKind;
@@ -227,6 +229,7 @@ struct AppView {
     tasks: app_state::TasksState,
     media: app_state::PlaybackState,
     video: app_state::VideoState,
+    video_progress: video_progress::Progress,
     audio: app_state::AudioState,
     sentences: sentence_search_ui::State,
     writing: Option<Entity<writing_ui::WritingView>>,
@@ -283,6 +286,10 @@ struct AppView {
     dark: bool,
     focus: FocusHandle,
     assistant_open: bool,
+    assistant_embedded: bool,
+    assistant_page_mode: bool,
+    assistant_columns: u8,
+    assistant_width: f32,
     floating_window: Option<AnyWindowHandle>,
     floating_name_window: Option<AnyWindowHandle>,
     command_imported: Option<clarora_gpui::command_import::Report>,
@@ -290,8 +297,12 @@ struct AppView {
 }
 impl AppView {
     fn new(lib: Library, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        cx.on_release(|this: &mut Self, cx| this.rendered_images.clear(cx))
-            .detach();
+        cx.on_release(|this: &mut Self, cx| {
+            this.save_media_position();
+            this.save_video_progress();
+            this.rendered_images.clear(cx);
+        })
+        .detach();
         let mut inputs = BTreeMap::new();
         for (key, placeholder, multi, masked) in [
             ("search", "搜索内容", false, false),
@@ -300,14 +311,9 @@ impl AppView {
             ("library_name", "输入名称", false, false),
             ("library_audio_name", "音频名称", false, false),
             ("group", "练习组名称", false, false),
+            ("video_group_name", "视频分组名称", false, false),
             ("front", "原文 / 单词", true, false),
             ("back", "翻译 / 释义", true, false),
-            (
-                "bilibili",
-                "https://www.bilibili.com/video/BV… 或 https://youtu.be/…",
-                false,
-                false,
-            ),
             ("question", "输入问题或粘贴内容，Enter 换行…", true, false),
             (
                 "sentence_query",
@@ -391,6 +397,7 @@ impl AppView {
                 ),
             };
         let focus_notes = focus_notes::list(&lib, 100).unwrap_or_default();
+        let video_progress = video_progress::Progress::load(&lib);
         let mut this = Self {
             #[cfg(debug_assertions)]
             diagnostic: None,
@@ -406,6 +413,7 @@ impl AppView {
             tasks: app_state::TasksState::new(),
             media: app_state::PlaybackState::new(),
             video: app_state::VideoState::new(),
+            video_progress,
             audio: app_state::AudioState::new(&lib),
             sentences: Default::default(),
             timer_chimes: timer_chimes::Chimes::new(lib.root.join("cache/timer-chimes")),
@@ -479,6 +487,10 @@ impl AppView {
             dark: cx.theme().is_dark(),
             focus: cx.focus_handle(),
             assistant_open: false,
+            assistant_embedded: false,
+            assistant_page_mode: false,
+            assistant_columns: 0,
+            assistant_width: 0.,
             floating_window: None,
             floating_name_window: None,
             command_imported: None,
@@ -601,12 +613,19 @@ impl AppView {
             .setting("youtube_cookie_browser")
             .ok()
             .and_then(|value| process::YoutubeBrowser::from_id(&value));
-        if let Some(series) = &this.video.series {
-            let base = series.base.clone();
-            this.set("bilibili", base, window, cx);
-        }
         match video_library::Collection::load(&this.lib) {
-            Ok(videos) => this.video.collection = videos,
+            Ok(videos) => {
+                let filter = this.lib.setting("video_group_filter").unwrap_or_default();
+                this.video.group = if filter.is_empty()
+                    || filter == video_library::UNGROUPED
+                    || videos.has_group(&filter)
+                {
+                    filter
+                } else {
+                    String::new()
+                };
+                this.video.collection = videos;
+            }
             Err(e) => this.report_status(FeedbackKind::Error, format!("{e:#}")),
         }
         let sources: Vec<_> = this
@@ -694,8 +713,20 @@ impl AppView {
                 clarora_gpui::assistant::validate(&references)?;
                 Ok(references)
             }) {
-            Ok(references) => this.assistant.references = references,
+            Ok(references) => {
+                this.assistant.draft_initialized = !references.is_empty();
+                this.assistant.references = references;
+            }
             Err(error) => this.assistant.error = format!("未恢复引用草稿：{error:#}"),
+        }
+        if this
+            .lib
+            .setting("assistant_draft_initialized")
+            .ok()
+            .as_deref()
+            == Some("true")
+        {
+            this.assistant.draft_initialized = true;
         }
         if this.lib.setting("assistant_open").ok().as_deref() == Some("true") {
             this.assistant.enabled = true;
@@ -717,11 +748,18 @@ impl AppView {
         {
             this.set("storage_profile_name", profile.name.clone(), window, cx);
         }
+        let daily_limit = this
+            .lib
+            .setting("daily_limit")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| this.lib.setting("new_cards_per_day").ok())
+            .unwrap_or_else(|| "20".into());
         for (k, default) in [
             ("provider", "s3"),
             ("prefix", "clarora"),
             ("path_style", "false"),
-            ("daily_limit", "20"),
+            ("daily_limit", daily_limit.as_str()),
             ("command", ""),
         ] {
             let value = this
@@ -808,28 +846,13 @@ impl AppView {
                     .iter()
                     .position(|p| p.path.as_ref() == Some(&video.path));
             }
-            let position = this
-                .lib
-                .setting("last_video_position")
-                .ok()
-                .and_then(|v| serde_json::from_str::<Value>(&v).ok())
-                .filter(|v| v["path"].as_str() == video.path.to_str())
-                .and_then(|v| v["position"].as_f64())
-                .filter(|v| v.is_finite() && *v >= 0.)
-                .unwrap_or(0.);
             if this.page == "video" {
-                this.media.open(
-                    PlaybackOwner::Video,
-                    video.path.clone(),
-                    position,
-                    0.,
-                    true,
-                    PlaybackMode::Normal,
-                );
+                let _ = this.open_continue(video.path.clone(), false);
+            } else {
+                this.video.path = Some(video.path.clone());
+                this.load_video_subtitles(&video.path);
+                this.video.tab = 3;
             }
-            this.video.path = Some(video.path.clone());
-            this.load_video_subtitles(&video.path);
-            this.video.tab = 3;
         } else {
             this.video.series = None;
         }
@@ -1049,7 +1072,7 @@ impl AppView {
             }
         }
     }
-    fn pick(&self, kind: &str, cx: &mut Context<Self>) {
+    fn pick(&self, kind: &str, window: &mut Window, cx: &mut Context<Self>) {
         let kind = kind.to_string();
         let directory = kind == "directory";
         let audio_group = self.audio.practice_id.clone();
@@ -1059,9 +1082,14 @@ impl AppView {
             multiple: kind == "audio" || kind == "merge" || kind == "video",
             prompt: None,
         });
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = picker.await {
-                let _ = this.update(cx, |this, cx| {
+        cx.spawn_in(window, async move |this, window| {
+            let paths = match picker.await {
+                Ok(Ok(Some(paths))) => Some(paths),
+                _ => None,
+            };
+            let _ = this.update_in(window, |this, window, cx| {
+                if let Some(paths) = paths {
+                    this.video.import_edit = None;
                     if kind == "audio" && this.audio.practice_id != audio_group {
                         this.report_status(
                             FeedbackKind::Error,
@@ -1069,10 +1097,23 @@ impl AppView {
                         );
                     } else {
                         this.picked(&kind, paths);
+                        if kind == "video" {
+                            this.video.import_group = None;
+                        }
                     }
-                    cx.notify();
-                });
-            }
+                } else if kind == "video" {
+                    this.video.import_group = None;
+                    if this.video.import_edit.is_some()
+                        && let Err(error) = this.open_video_import_dialog(window, cx)
+                    {
+                        this.report_status(
+                            FeedbackKind::Error,
+                            format!("无法返回视频导入弹框：{error:#}"),
+                        );
+                    }
+                }
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -1087,8 +1128,14 @@ impl AppView {
                         !self.tasks.foreground.is_running(),
                         "请完成或取消当前任务后再导入视频"
                     );
+                    self.save_video_progress();
                     let mut videos = video_library::Collection::load(&self.lib)?;
-                    let ids = videos.add(&paths, None)?;
+                    let group = self
+                        .video
+                        .import_group
+                        .take()
+                        .unwrap_or_else(|| self.video.group.clone());
+                    let ids = videos.add_in_group(&paths, None, &group)?;
                     videos.save(&self.lib)?;
                     let first = videos.select(&ids[0])?;
                     self.video.collection = videos;
@@ -1339,6 +1386,7 @@ impl AppView {
             Action::Filter(kind) => *kind == self.card_filter,
             Action::ReviewMode(due) => *due == self.due,
             Action::Saved(saved) => *saved == self.saved_only,
+            Action::VideoGroupFilter(group) => *group == self.video.group,
             _ => false,
         };
         Button::new(ElementId::Name(key.into()))
@@ -1429,7 +1477,7 @@ impl AppView {
     }
     fn player_menu(
         &self,
-        key: &'static str,
+        key: impl Into<SharedString>,
         label: String,
         options: Vec<(String, Action, bool, bool)>,
         cx: &Context<Self>,
@@ -1438,7 +1486,7 @@ impl AppView {
     }
     fn surface_menu(
         &self,
-        key: &'static str,
+        key: impl Into<SharedString>,
         label: String,
         options: Vec<(String, Action, bool, bool)>,
         cx: &Context<Self>,
@@ -1447,7 +1495,7 @@ impl AppView {
     }
     fn menu_control(
         &self,
-        key: &'static str,
+        key: impl Into<SharedString>,
         label: String,
         options: Vec<(String, Action, bool, bool)>,
         surface: bool,
@@ -1480,7 +1528,7 @@ impl AppView {
             variant
         };
         // The menu is transient; the checked value is rebuilt from current playback state.
-        Button::new(key)
+        Button::new(key.into())
             .label(label)
             .small()
             .when(surface, |button| button.h(px(32.)).px_3())
@@ -1500,6 +1548,43 @@ impl AppView {
                                 // Dismiss restores the menu's action context.
                                 // Run afterward so actions opening an input or
                                 // dialog retain their newly assigned focus.
+                                cx.defer(move |cx| {
+                                    let _ = handle.update(cx, move |_, window, cx| {
+                                        let _ = view
+                                            .update(cx, |this, cx| this.handle(action, window, cx));
+                                    });
+                                });
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+    /// Dropdown button using the same base style as ordinary action buttons.
+    fn button_menu(
+        &self,
+        key: impl Into<SharedString>,
+        label: String,
+        options: Vec<(String, Action, bool, bool)>,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        let focus = self.focus.clone();
+        Button::new(ElementId::Name(key.into()))
+            .label(label)
+            .small()
+            .dropdown_menu_with_anchor(Corner::BottomRight, move |mut menu, _, _| {
+                menu = menu.action_context(focus.clone());
+                for (label, action, checked, disabled) in options.clone() {
+                    let view = view.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(checked)
+                            .disabled(disabled)
+                            .on_click(move |_, window, cx| {
+                                let view = view.clone();
+                                let action = action.clone();
+                                let handle = window.window_handle();
                                 cx.defer(move |cx| {
                                     let _ = handle.update(cx, move |_, window, cx| {
                                         let _ = view

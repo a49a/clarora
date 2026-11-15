@@ -429,6 +429,74 @@ impl Probe {
                         && reopened.setting("daily_limit")? == limit,
                     "selection did not immediately persist only the model and engine"
                 );
+                let command_before = app.lib.setting("command")?;
+                let engine_before = app.value("engine", cx);
+                let model_before = app.value("local_model", cx);
+                app.set("daily_limit", "7", window, cx);
+                app.handle(Action::SaveDailyLimit, window, cx);
+                ensure!(
+                    app.lib.setting("new_cards_per_day")? == "7"
+                        && app.lib.setting("daily_limit")? == "7"
+                        && app.lib.setting("command")? == command_before
+                        && app.value("engine", cx) == engine_before
+                        && app.value("local_model", cx) == model_before,
+                    "saving daily limit changed unrelated settings"
+                );
+                let config_before = serde_json::from_str::<Value>(&app.lib.setting("ai_config")?)?;
+                let can_save_transcription = app.data.saved_ai.is_some();
+                if can_save_transcription {
+                    // An invalid value in the daily-limit area must not block
+                    // saving transcription settings.
+                    app.set("daily_limit", "not-a-number", window, cx);
+                    app.handle(Action::SaveDailyLimit, window, cx);
+                    ensure!(
+                        app.lib.setting("new_cards_per_day")? == "7",
+                        "invalid daily limit changed the stored value"
+                    );
+                    app.set("engine", "local", window, cx);
+                    app.set("local_model", "medium.en", window, cx);
+                    app.handle(Action::SaveTranscription, window, cx);
+                    let saved: Value = serde_json::from_str(&app.lib.setting("ai_config")?)?;
+                    ensure!(
+                        saved["engine"] == json!("local")
+                            && saved["local_model"] == json!("medium.en")
+                            && saved["base_url"] == config_before["base_url"]
+                            && saved["credential_id"] == config_before["credential_id"]
+                            && app.lib.setting("new_cards_per_day")? == "7"
+                            && app.lib.setting("command")? == command_before,
+                        "transcription save changed unrelated settings"
+                    );
+                }
+                let prior_config = ai::load_config(&app.lib)?;
+                let mut legacy_asr = prior_config.clone();
+                legacy_asr.asr_base_url = "https://legacy-asr.example.invalid/v1".into();
+                legacy_asr.asr_model = "legacy-asr".into();
+                legacy_asr.asr_credential_id = legacy_asr.credential_id.clone();
+                app.lib
+                    .set_setting("ai_config", &serde_json::to_string(&legacy_asr)?)?;
+                app.set("engine", "compatible", window, cx);
+                app.handle(Action::SaveTranscription, window, cx);
+                let shared_asr = ai::load_config(&app.lib)?;
+                ensure!(
+                    shared_asr.asr_base_url == shared_asr.base_url
+                        && shared_asr.asr_model == shared_asr.model
+                        && shared_asr.asr_credential_id.is_empty()
+                        && shared_asr.shared_key_source == Some(ai::CredentialSource::Chat),
+                    "切换为共享远端转写仍保留旧独立凭证引用"
+                );
+                self.note(
+                    "remote transcription shares the current chat connection and credential",
+                    app,
+                );
+                app.lib
+                    .set_setting("ai_config", &serde_json::to_string(&prior_config)?)?;
+                app.data.saved_ai = Some(prior_config.clone());
+                app.set("engine", prior_config.engine.clone(), window, cx);
+                app.set("local_model", prior_config.local_model.clone(), window, cx);
+                self.note(
+                    "daily limit and transcription save only their own fields",
+                    app,
+                );
                 self.note(
                     "model choice activates immediately and preserves other settings",
                     app,

@@ -53,15 +53,13 @@ impl Command {
 
             Command::Backup => {
                 ensure!(
-                    !app.tasks.foreground.is_running(),
-                    "已有任务正在执行，请完成或取消后重试"
+                    !app.tasks.cloud.is_running(),
+                    "已有云备份任务正在执行，请完成或取消后重试"
                 );
                 #[cfg(debug_assertions)]
                 let fixture = app.tasks.backup_fixture;
-                app.begin_scoped(
-                    TaskScope::Application,
-                    "正在整理云备份…",
-                    move |lib, cancel, tx| {
+                let started =
+                    app.begin_cloud("正在整理云备份…", move |lib, cancel, tx| {
                         #[cfg(debug_assertions)]
                         let storage = fixture
                             .map(backup::Storage::loopback_fixture)
@@ -81,8 +79,10 @@ impl Command {
                             Ok(key) => Outcome::BackupCreated(key, if incremental { 3 } else { 2 }),
                             Err(error) => Outcome::BackupFailed(format!("{error:#}")),
                         })
-                    },
-                );
+                    });
+                if !started {
+                    return Ok(());
+                }
                 app.tasks.backup_progress = Some(backup::UploadProgress {
                     stage: backup::UploadStage::Preparing,
                     bytes_sent: 0,
@@ -92,20 +92,18 @@ impl Command {
                     files_total: 0,
                     current_name: String::new(),
                 });
-                app.tasks.notice = Some(TaskNotice::new("云备份", "正在整理资料和附件…"));
             }
 
-            Command::Restore(key) => app.begin_scoped(
-                TaskScope::Application,
-                "正在校验并恢复备份…",
-                move |lib, cancel, _| {
+            Command::Restore(key) => {
+                ensure!(!app.tasks.cloud.is_running(), "请先完成或取消当前云任务");
+                app.begin_cloud("正在校验并恢复备份…", move |lib, cancel, _| {
                     let count =
                         backup::Storage::load(&lib)?.restore_checked(&lib, &key, &cancel)?;
                     let videos = video_library::Collection::load(&lib)
                         .context("资料已恢复，但重新载入视频库失败，请刷新")?;
                     Ok(Outcome::LibraryRestored(count, videos))
-                },
-            ),
+                });
+            }
 
             Command::Sync => app.cloud_sync(window, cx)?,
 
@@ -167,8 +165,8 @@ impl Command {
 
             Command::Cleanup => {
                 let plan = app.cloud.plan.clone().context("请先预览可清理内容")?;
-                app.begin_scoped(
-                    TaskScope::Application,
+                ensure!(!app.tasks.cloud.is_running(), "请先完成或取消当前云任务");
+                app.begin_cloud(
                     "正在按预览清理云端对象…",
                     move |lib, cancel, _| {
                         let storage = backup::Storage::load(&lib)?;
@@ -241,6 +239,11 @@ impl Completed {
             Completed::CloudSynced(report, videos) => {
                 context.cancelled = false;
                 app.video.collection = videos;
+                if app.video.group != video_library::UNGROUPED
+                    && !app.video.collection.has_group(&app.video.group)
+                {
+                    app.video.group.clear();
+                }
                 app.cloud.plan = None;
                 app.cloud.status = report.summary.clone();
                 app.refresh_view_data();
@@ -329,14 +332,16 @@ impl Completed {
 
 impl AppView {
     pub(crate) fn update_backup_progress(&mut self, progress: backup::UploadProgress) {
-        if self.tasks.foreground.cancel_token().is_some_and(|t| {
+        if self.tasks.cloud.cancel_token().is_some_and(|t| {
             !t.load(Ordering::SeqCst) || progress.stage == backup::UploadStage::Completed
         }) {
             let label = progress.label();
-            self.report_status(FeedbackKind::Progress, label.clone());
+            if !self.tasks.foreground.is_running() {
+                self.report_status(FeedbackKind::Progress, label.clone());
+            }
             if let Some(notice) = self
                 .tasks
-                .notice
+                .cloud_notice
                 .as_mut()
                 .filter(|n| n.state == TaskState::Running)
             {

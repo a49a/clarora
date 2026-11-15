@@ -214,38 +214,117 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         "首轮误带其他模块材料"
     );
     ensure!(
-        assistant::validate(&vec![picture; 5]).is_err(),
+        assistant::validate(
+            &(0..5)
+                .map(|index| Reference {
+                    text: format!("material {index}"),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        )
+        .is_err(),
         "过多引用未拒绝"
     );
     let selected = Reference {
         text: "selected sentence".into(),
         kind: ReferenceKind::SelectedSubtitle,
+        source: Some("video:A:1".into()),
+        revision: Some("rev-a".into()),
     };
     let old_background = Reference {
-        text: "old background".into(),
+        text: "A full material".into(),
         kind: ReferenceKind::TranscriptBackground,
+        source: Some("video:A:1".into()),
+        revision: Some("rev-a".into()),
     };
     let current = assistant::with_transcript_background(
         vec![selected.clone(), old_background],
-        "new full material".into(),
+        "B full material".into(),
+        Some("video:B:1"),
+        Some("rev-b"),
     )?;
     ensure!(
-        current.len() == 2
+        current.len() == 3
             && current[0] == selected
-            && current[1].text == "new full material"
-            && current[1].kind == ReferenceKind::TranscriptBackground,
-        "current material did not replace only the transcript background"
+            && current[1].text == "A full material"
+            && current[2].text == "B full material"
+            && current[2].source.as_deref() == Some("video:B:1"),
+        "opening B replaced A's background or selection"
+    );
+    let outbound = assistant::messages("compare", &current, &[])?;
+    let outbound = outbound.last().unwrap()["content"].as_str().unwrap();
+    ensure!(
+        outbound.contains("selected sentence")
+            && outbound.contains("A full material")
+            && outbound.contains("B full material")
+            && !outbound.contains("video:A")
+            && !outbound.contains("video:B"),
+        "A/B content was not preserved without local source IDs"
     );
     ensure!(
-        assistant::with_transcript_background(current.clone(), "new full material".into())?
-            == current,
+        assistant::with_transcript_background(
+            current.clone(),
+            "B full material".into(),
+            Some("video:B:1"),
+            Some("rev-b"),
+        )? == current,
         "reopening appended the same full background twice"
     );
+    let cue_a = clarora_gpui::subtitles::Cue {
+        start: 0.,
+        end: 1.,
+        text: "same timing".into(),
+    };
+    let mut cue_b = cue_a.clone();
+    cue_b.text = "regenerated text".into();
     ensure!(
-        assistant::with_transcript_background(current, "x".repeat(120_001)).is_err(),
+        assistant::subtitle_revision(std::slice::from_ref(&cue_a))
+            != assistant::subtitle_revision(std::slice::from_ref(&cue_b)),
+        "字幕文本变化未改变引用修订"
+    );
+    let regenerated = assistant::with_transcript_background(
+        current.clone(),
+        "A regenerated material".into(),
+        Some("video:A:1"),
+        Some("rev-a2"),
+    )?;
+    ensure!(
+        regenerated.len() == 4
+            && regenerated
+                .iter()
+                .any(|reference| reference.text == "A full material")
+            && regenerated
+                .iter()
+                .any(|reference| reference.text == "A regenerated material"),
+        "字幕重新生成后旧快照未保留"
+    );
+    ensure!(
+        assistant::with_transcript_background(current, "x".repeat(120_001), None, None).is_err(),
         "oversized current material was accepted"
     );
-    results.push(json!({"workflow":"打开助手自动替换当前全文背景且保留选区引用","passed":true}));
+    for (viewport, nav, page_min, wide, expected_width, expected_side) in [
+        (900., 224., 760., false, 360., false),
+        (1280., 224., 760., false, 360., false),
+        (1440., 224., 760., false, 400., true),
+        (1920., 224., 760., true, 600., true),
+        (1280., 224., 620., false, 388., true),
+        (1440., 224., 620., false, 400., true),
+    ] {
+        let available = viewport - nav - 32.;
+        let width = assistant::column_width(available, page_min, wide);
+        ensure!(
+            (width - expected_width).abs() < 0.01
+                && assistant::side_by_side(available, page_min, width) == expected_side,
+            "助手布局阈值错误：{viewport}/{page_min}/{wide} -> {width}/{expected_side}"
+        );
+    }
+    ensure!(
+        assistant::column_width(600., 620., false) == assistant::MIN_COLUMN,
+        "过窄窗口的助手列低于最低宽度"
+    );
+    results.push(
+        json!({"workflow":"助手宽窄布局：900/1280/1440/1920与视频/其他模块阈值","passed":true}),
+    );
     std::fs::write(
         lib.root.join("request-evidence.json"),
         serde_json::to_vec_pretty(&requests)?,

@@ -542,14 +542,15 @@ impl Probe {
                 let revision = app.media.session.revision();
                 let request = sentence.request_id;
                 let task = app.tasks.foreground.begin(TaskScope::Material)?;
-                task.complete(Ok(Outcome::PartVideo(
+                task.complete(Ok(Outcome::PartVideo {
                     series,
-                    0,
-                    late,
-                    false,
-                    self.old_revision,
-                    false,
-                )));
+                    index: 0,
+                    path: late,
+                    origin: self.old_revision,
+                    from_end: false,
+                    resume: false,
+                    group: String::new(),
+                }));
                 app.poll_tasks(window, cx);
                 ensure!(
                     app.media.session.revision() == revision

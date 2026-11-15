@@ -304,7 +304,7 @@ impl Probe {
         Ok(())
     }
     fn note(&mut self, name: &str, app: &AppView, cx: &Context<AppView>) -> Result<()> {
-        self.cases.push(json!({"case":name,"passed":true,"page":app.page,"status":app.status,"scope_application":app.tasks.foreground.scope()==TaskScope::Application,"banner_present":app.subtitle_task_banner(cx).is_some(),"progress":app.tasks.backup_progress,"elapsed_ms":self.started.elapsed().as_millis()}));
+        self.cases.push(json!({"case":name,"passed":true,"page":app.page,"status":app.status,"scope_application":app.tasks.cloud.scope()==TaskScope::Application,"banner_present":app.subtitle_task_banner(cx).is_some(),"progress":app.tasks.backup_progress,"elapsed_ms":self.started.elapsed().as_millis()}));
         self.report(None, None)
     }
     fn advance(&mut self) {
@@ -323,7 +323,7 @@ impl Probe {
         json!({"page":app.page,"audio":app.audio.current_id,"video":app.video.path,"chat_context":app.chat.context,"chat_session":app.chat.id,"draft":app.value("question",cx),"data_revision":app.data.revision})
     }
     fn running(&mut self, app: &AppView, cx: &Context<AppView>) -> Result<()> {
-        let cancel = app.tasks.foreground.cancel_token().with_context(|| {
+        let cancel = app.tasks.cloud.cancel_token().with_context(|| {
             format!(
                 "cloud operation stopped during page navigation: {}",
                 app.status
@@ -340,7 +340,7 @@ impl Probe {
             "page navigation replaced backup task"
         );
         ensure!(
-            app.tasks.foreground.scope() == TaskScope::Application,
+            app.tasks.cloud.scope() == TaskScope::Application,
             "cloud backup did not use application scope"
         );
         ensure!(
@@ -349,12 +349,9 @@ impl Probe {
         );
         ensure!(
             app.tasks
-                .notice
+                .cloud_notice
                 .as_ref()
-                .is_some_and(
-                    |notice| ["云备份", "云端同步"].contains(&notice.title.as_str())
-                        && notice.state == TaskState::Running
-                ),
+                .is_some_and(|notice| notice.state == TaskState::Running),
             "cloud backup notice stopped or disappeared"
         );
         if let Some(progress) = &app.tasks.backup_progress {
@@ -388,7 +385,7 @@ impl Probe {
         file.sync_all()?;
         app.tasks.backup_fixture = Some(fixture.address);
         app.handle(Action::CloudBackup, window, cx);
-        self.active_token = app.tasks.foreground.cancel_token().cloned();
+        self.active_token = app.tasks.cloud.cancel_token().cloned();
         ensure!(
             self.active_token.is_some(),
             "real CloudBackup action did not start a task"
@@ -443,11 +440,59 @@ impl Probe {
                 self.first_bytes = progress.bytes_sent;
                 app.handle(Action::Page("video".into()), window, cx);
                 self.running(app, cx)?;
+                app.assistant.enabled = true;
+                if app.chat.is_loading() || app.chat.context != app.chat_context_key(cx) {
+                    return Ok(false);
+                }
                 self.note(
                     "switch to video preserves live task and global progress",
                     app,
                     cx,
                 )?;
+                let active_storage = app.data.active_storage_profile.clone();
+                app.handle(
+                    Action::SelectStorageProfile("blocked-while-backup".into()),
+                    window,
+                    cx,
+                );
+                ensure!(
+                    app.data.active_storage_profile == active_storage
+                        && app.status.contains("云任务正在使用当前存储"),
+                    "storage profile switched while its backup was still running: {}",
+                    app.status
+                );
+                self.note(
+                    "storage profile changes are blocked while backup uses that target",
+                    app,
+                    cx,
+                )?;
+                app.handle(Action::ToggleTasksCollapsed, window, cx);
+                ensure!(
+                    app.tasks.collapsed && app.subtitle_task_banner(cx).is_some(),
+                    "task banner did not collapse"
+                );
+                app.handle(Action::ToggleTasksCollapsed, window, cx);
+                ensure!(!app.tasks.collapsed, "task banner did not expand");
+                self.note(
+                    "task banner collapses and reopens without losing the task",
+                    app,
+                    cx,
+                )?;
+                app.set("question", "备份期间仍可独立提问", window, cx);
+                app.handle(Action::Chat, window, cx);
+                ensure!(
+                    app.tasks.foreground.is_running(),
+                    "AI request did not start while cloud backup was running: {}",
+                    app.status
+                );
+                self.running(app, cx)?;
+                self.note(
+                    "AI request starts on the foreground lane while backup uploads",
+                    app,
+                    cx,
+                )?;
+                app.tasks.foreground.cancel();
+                self.note("AI cancellation does not target the cloud lane", app, cx)?;
                 Self::request_draw(window, cx);
                 self.advance();
             }
@@ -518,12 +563,12 @@ impl Probe {
                 self.advance();
             }
             6 => {
-                if app.tasks.foreground.is_running() {
+                if app.tasks.cloud.is_running() {
                     return Ok(false);
                 }
                 ensure!(
                     app.tasks
-                        .notice
+                        .cloud_notice
                         .as_ref()
                         .is_some_and(|notice| notice.state == TaskState::Succeeded),
                     "successful backup did not retain success notice"
@@ -579,7 +624,7 @@ impl Probe {
                 }
                 app.handle(Action::Page("library".into()), window, cx);
                 self.running(app, cx)?;
-                app.handle(Action::Cancel, window, cx);
+                app.handle(Action::CancelCloud, window, cx);
                 ensure!(
                     self.active_token.as_ref().unwrap().load(Ordering::SeqCst),
                     "cancel action did not reach global backup"
@@ -592,12 +637,12 @@ impl Probe {
                 self.advance();
             }
             8 => {
-                if app.tasks.foreground.is_running() {
+                if app.tasks.cloud.is_running() {
                     return Ok(false);
                 }
                 ensure!(
                     app.tasks
-                        .notice
+                        .cloud_notice
                         .as_ref()
                         .is_some_and(|notice| notice.state == TaskState::Cancelled),
                     "cancelled backup was marked failed or completed"
@@ -640,12 +685,12 @@ impl Probe {
                 self.advance();
             }
             10 => {
-                if app.tasks.foreground.is_running() {
+                if app.tasks.cloud.is_running() {
                     return Ok(false);
                 }
                 ensure!(
                     app.tasks
-                        .notice
+                        .cloud_notice
                         .as_ref()
                         .is_some_and(|notice| notice.state == TaskState::Failed),
                     "HTTP failure was marked cancelled or completed"
@@ -676,7 +721,7 @@ impl Probe {
                 )?;
                 self.fixture.as_ref().unwrap().reset(false);
                 app.handle(Action::CloudSync, window, cx);
-                self.active_token = app.tasks.foreground.cancel_token().cloned();
+                self.active_token = app.tasks.cloud.cancel_token().cloned();
                 ensure!(
                     self.active_token.is_some(),
                     "real CloudSync action did not start"
@@ -730,12 +775,12 @@ impl Probe {
                 self.advance();
             }
             12 => {
-                if app.tasks.foreground.is_running() {
+                if app.tasks.cloud.is_running() {
                     return Ok(false);
                 }
                 ensure!(
                     app.tasks
-                        .notice
+                        .cloud_notice
                         .as_ref()
                         .is_some_and(|n| n.state == TaskState::Succeeded),
                     "CloudSync did not complete successfully: {}",

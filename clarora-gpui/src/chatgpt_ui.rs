@@ -519,14 +519,14 @@ impl AppView {
                     .child(self.field("model", "聊天／远端转写共用模型 ID"))
                     .child(self.field("chat_key", "共用 API Key · 留空保留已保存密钥"))
                     .child(self.field("vision_model", "视觉模型（可选，留空使用共用模型）"))
-                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("「保存为新配置」会另存一套地址、模型与密钥并立即切换；「保存 AI 与学习设置」更新当前配置。"))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("「保存为新配置」会另存一套地址、模型与密钥并立即切换；「保存 AI 服务」更新当前配置。"))
                     .child(
                         div()
                             .flex()
                             .flex_wrap()
                             .gap_2()
                             .child(
-                                self.button("save-ai", "保存 AI 与学习设置", Action::SaveAi, cx)
+                                self.button("save-ai", "保存 AI 服务", Action::SaveAi, cx)
                                     .primary()
                                     .disabled(self.tasks.foreground.is_running()),
                             )

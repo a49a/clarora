@@ -145,14 +145,7 @@ fn library_state(
     cancel: &Cancel,
 ) -> Result<LibraryState> {
     let mut state = LibraryState::default();
-    let value = settings
-        .get("video_favorites_v1")
-        .map(String::as_str)
-        .unwrap_or("");
-    if !value.is_empty() {
-        let videos: crate::video_library::Collection =
-            serde_json::from_str(value).context("视频收藏数据损坏，未备份")?;
-        videos.validate()?;
+    if let Some(videos) = crate::video_library::Collection::from_settings(settings)? {
         state.videos = Some(videos);
     } else if let Some(value) = settings.get("recent_videos").filter(|s| !s.is_empty()) {
         let paths: Vec<PathBuf> = serde_json::from_str(value)?;

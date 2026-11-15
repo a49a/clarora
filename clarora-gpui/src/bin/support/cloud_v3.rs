@@ -621,7 +621,9 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         current: Some(0),
     };
     let mut collection = clarora_gpui::video_library::Collection::default();
-    collection.add(std::slice::from_ref(&path), Some(&series))?;
+    let course = collection.create_group("课程")?;
+    collection.create_group("空分组")?;
+    collection.add_in_group(std::slice::from_ref(&path), Some(&series), &course)?;
     collection.save(&va)?;
     let cues = clarora_gpui::subtitles::parse(
         "1\n00:00:00,000 --> 00:00:01,000\nPortable subtitle.\n跨设备字幕。\n",
@@ -654,6 +656,12 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         !video.path.is_file() && video.series.as_ref().is_some_and(|s| s.parts.len() == 2),
         "Bili sync copied original video or lost parts"
+    );
+    ensure!(
+        video.group == course
+            && restored_videos.has_group("空分组")
+            && restored_videos.group_count("空分组") == 0,
+        "sync lost video membership or an empty group"
     );
     ensure!(
         clarora_gpui::video_subtitles::load(&vb, &video.path)?.len() == 1,
@@ -703,6 +711,28 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         clarora_gpui::video_subtitles::load(&va, &path)?[0].text == "Newer subtitle edit.",
         "subtitle sync used network arrival instead of actual save time"
     );
+    let mut groups = clarora_gpui::video_library::Collection::load(&va)?;
+    groups.rename_group(&course, "新课程")?;
+    groups.remove_group("空分组")?;
+    groups.save(&va)?;
+    vs.synchronize(&va, &cancel, |_| {})?;
+    vs.synchronize(&vb, &cancel, |_| {})?;
+    let renamed = clarora_gpui::video_library::Collection::load(&vb)?;
+    ensure!(
+        renamed.groups == ["新课程"] && renamed.items[0].group == "新课程",
+        "group rename and empty-group deletion did not converge"
+    );
+    let mut groups = renamed;
+    groups.remove_group("新课程")?;
+    groups.save(&vb)?;
+    vs.synchronize(&vb, &cancel, |_| {})?;
+    vs.synchronize(&va, &cancel, |_| {})?;
+    let ungrouped = clarora_gpui::video_library::Collection::load(&va)?;
+    ensure!(
+        ungrouped.groups.is_empty() && ungrouped.items[0].group.is_empty(),
+        "group deletion lost the video or revived the group"
+    );
+    cases.push(json!({"case":"video sync preserves populated and empty groups, and converges after rename and deletion","passed":true}));
     let mut removed = clarora_gpui::video_library::Collection::load(&va)?;
     removed.remove(&removed.items[0].id.clone())?;
     removed.save(&va)?;

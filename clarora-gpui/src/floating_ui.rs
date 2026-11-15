@@ -1,9 +1,9 @@
 //! A separate nonactivating quick-import window observing the main app's state.
 use super::*;
 
-const COMPACT_WIDTH: f32 = 232.;
+const COMPACT_WIDTH: f32 = 286.;
 const COMPACT_HEIGHT: f32 = 60.;
-const EXPANDED_HEIGHT: f32 = 148.;
+const EXPANDED_HEIGHT: f32 = 184.;
 const TARGETS_HEIGHT: f32 = 228.;
 const SPEAKING_TARGET_SETTING: &str = "floating_speaking_group";
 
@@ -207,6 +207,8 @@ struct ImportSnapshot {
     failed: bool,
     caption: String,
     can_name: bool,
+    focus_label: String,
+    focus_action: Action,
 }
 impl ImportSnapshot {
     fn from_app(app: &AppView, target: &ImportTarget) -> Self {
@@ -272,6 +274,7 @@ impl ImportSnapshot {
             "当前组"
         }
         .to_string();
+        let focus_label = app.focus_control_label().to_string();
         Self {
             group,
             audio_group,
@@ -283,6 +286,8 @@ impl ImportSnapshot {
             failed,
             caption,
             can_name: matches!(target, ImportTarget::Audio) && app.command_imported.is_some(),
+            focus_label,
+            focus_action: app.focus_control_primary_action(),
         }
     }
 }
@@ -313,6 +318,8 @@ impl Render for FloatingImport {
             failed,
             caption,
             can_name,
+            focus_label,
+            focus_action,
         } = self.snapshot.clone();
         let has_group = group.is_some();
         let group_name = group.unwrap_or_else(|| "未选分组".into());
@@ -321,9 +328,10 @@ impl Render for FloatingImport {
             self.target.label(),
             group_name
         );
-        let (icon, tip) = if busy {
+        let (icon, label, tip) = if busy {
             (
                 IconName::Close,
+                if cancelling { "取消中" } else { "取消" },
                 if cancelling {
                     "正在取消"
                 } else {
@@ -331,12 +339,13 @@ impl Render for FloatingImport {
                 },
             )
         } else if !command_ready {
-            (IconName::Settings2, "设置导入命令")
+            (IconName::Settings2, "设置", "设置导入命令")
         } else if !has_group {
-            (IconName::FolderClosed, "选择练习组")
+            (IconName::FolderClosed, "选择分组", "选择练习组")
         } else {
             (
                 IconName::ArrowDown,
+                "导入",
                 if matches!(self.target, ImportTarget::Audio) {
                     "命令导入音频"
                 } else {
@@ -400,10 +409,11 @@ impl Render for FloatingImport {
             .child(
                 Button::new("floating-command-import")
                     .icon(icon)
+                    .label(label)
                     .primary()
                     .small()
-                    .w(px(30.))
                     .h(px(30.))
+                    .px_3()
                     .rounded_full()
                     .tooltip(tip)
                     .disabled(cancelling)
@@ -416,10 +426,15 @@ impl Render for FloatingImport {
                     } else {
                         IconName::Ellipsis
                     })
+                    .label(if self.panel == FloatingPanel::Details {
+                        "收起"
+                    } else {
+                        "详情"
+                    })
                     .ghost()
                     .small()
-                    .w(px(22.))
                     .h(px(28.))
+                    .px_2()
                     .tooltip(if self.panel == FloatingPanel::Details {
                         "收起详情"
                     } else {
@@ -439,12 +454,34 @@ impl Render for FloatingImport {
                 .flex()
                 .flex_col()
                 .gap_1()
+                .child(
+                    Button::new("floating-focus")
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child(design::icon("meditation", cx.theme().primary).size(px(14.)))
+                                .child(focus_label.clone()),
+                        )
+                        .small()
+                        .outline()
+                        .h(px(28.))
+                        .w_full()
+                        .justify_start()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.dispatch(focus_action.clone(), false, cx)
+                        })),
+                )
                 .when(can_name, |this| {
                     this.child(
                         Button::new("floating-name-imported")
+                            .icon(IconName::Replace)
                             .label("命名刚导入的音频")
                             .small()
-                            .h(px(24.))
+                            .outline()
+                            .h(px(28.))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.dispatch(Action::NameImportedAudio, false, cx)
                             })),
@@ -473,33 +510,24 @@ impl Render for FloatingImport {
                         .gap_1()
                         .child(
                             Button::new("floating-open-main")
+                                .icon(IconName::ExternalLink)
                                 .label("主窗口")
-                                .ghost()
+                                .outline()
                                 .small()
-                                .h(px(24.))
-                                .px_2()
+                                .h(px(28.))
+                                .px_3()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.dispatch(Action::Page(this.target.page().into()), true, cx)
                                 })),
                         )
                         .child(
-                            Button::new("floating-settings")
-                                .label("设置")
-                                .ghost()
-                                .small()
-                                .h(px(24.))
-                                .px_2()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.dispatch(Action::ConfigureCommandImport, true, cx)
-                                })),
-                        )
-                        .child(
                             Button::new("floating-close")
+                                .icon(IconName::EyeOff)
                                 .label("隐藏")
-                                .ghost()
+                                .outline()
                                 .small()
-                                .h(px(24.))
-                                .px_2()
+                                .h(px(28.))
+                                .px_3()
                                 .on_click(cx.listener(|this, _, window, cx| this.hide(window, cx))),
                         ),
                 )
@@ -530,6 +558,7 @@ impl Render for FloatingImport {
             if speaking_groups.is_empty() {
                 list = list.child(
                     Button::new("floating-open-speaking")
+                        .icon(IconName::Plus)
                         .small()
                         .outline()
                         .label("去口语练习新建组")
@@ -749,7 +778,7 @@ impl AppView {
 const NAME_HEIGHT: f32 = 190.;
 
 /// A small attached form gets its own component Root for input/IME bookkeeping.
-/// The capsule retains its transparent rendering root and 232×60 bounds.
+/// The capsule retains its transparent rendering root and compact floating bounds.
 struct ImportNames {
     lib: Library,
     report: clarora_gpui::command_import::Report,

@@ -337,7 +337,7 @@ impl Command {
             }
 
             Command::SubtitleImport(zh) => {
-                app.pick(if zh { "subtitle-zh" } else { "subtitle-en" }, cx)
+                app.pick(if zh { "subtitle-zh" } else { "subtitle-en" }, window, cx)
             }
 
             Command::CopySelectedSubtitle => {
@@ -383,7 +383,7 @@ impl Command {
                         Ok(if is_audio {
                             Outcome::ClipSaved
                         } else {
-                            Outcome::Message("片段已存为闪卡，字幕已加下划线".into())
+                            Outcome::VideoClipSaved
                         })
                     },
                 );

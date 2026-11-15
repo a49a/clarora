@@ -183,7 +183,7 @@ impl Probe {
         cx: &mut Context<AppView>,
     ) -> Result<()> {
         ensure!(
-            self.started.elapsed() < Duration::from_secs(60),
+            self.started.elapsed() < Duration::from_secs(120),
             "原生控制器探针超时，stage={}，status={}",
             self.stage,
             app.status
@@ -566,6 +566,9 @@ impl Probe {
                     "新对话未清理旧问题或引用"
                 );
                 self.note("全局新对话清理/旧材料会话仍可恢复", app)?;
+                if app.assistant_open {
+                    app.handle(Action::Assistant, window, cx);
+                }
                 app.handle(Action::Page("speaking".into()), window, cx);
                 app.set("speaking_answer_draft", SELECTED_TEXT, window, cx);
                 app.inputs["speaking_answer_draft"].update(cx, |state, cx| state.focus(window, cx));

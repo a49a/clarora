@@ -166,6 +166,10 @@ impl Probe {
         app.poll_data();
         match self.stage {
             0 => {
+                // Keep the review timing deterministic on machines with no
+                // usable CoreAudio output.
+                app.media.player = Player::without_audio_device();
+                app.media.preloader = Player::without_audio_device();
                 app.handle(Action::Page("listening".into()), window, cx);
                 app.handle(Action::AudioPractice(GROUP.into()), window, cx);
             }
@@ -354,9 +358,23 @@ impl Probe {
                     }
                     ensure!(
                         self.stage_started.elapsed() < Duration::from_secs(3),
-                        "audio review did not reach the second clip: index={} saved={}",
+                        "audio review did not reach the second clip: index={} saved={} snap={:?} player={:?} ranges={:?}",
                         review.index,
-                        app.audio_saved.len()
+                        app.audio_saved.len(),
+                        (
+                            app.media.snapshot.position,
+                            app.media.snapshot.eof,
+                            app.media.snapshot.duration,
+                            app.media.snapshot.path.clone(),
+                            app.media.snapshot.paused
+                        ),
+                        (
+                            app.media.player.snapshot().position,
+                            app.media.player.snapshot().eof,
+                            app.media.player.snapshot().duration,
+                            app.media.player.snapshot().paused
+                        ),
+                        review.ranges
                     );
                     return Ok(false);
                 }

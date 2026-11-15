@@ -254,6 +254,7 @@ impl AppView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.video.transcript_scroll)
                     .p_4()
                     .when(self.video.transcript.text.is_empty(), |view| {
                         view.child(

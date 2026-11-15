@@ -53,10 +53,19 @@ impl AppView {
         content = content.child(runtime);
         content = content.child(
             panel(cx)
-                .child("本机资料与外观")
+                .child("本机资料、学习与外观")
                 .child(self.lib.root.to_string_lossy().to_string())
                 .child(self.button("theme", "切换深浅主题", Action::Theme, cx))
-                .child(self.field("daily_limit", "每日新卡上限")),
+                .child(self.field("daily_limit", "每日新卡上限"))
+                .child(
+                    self.button(
+                        "save-daily-limit",
+                        "保存每日上限",
+                        Action::SaveDailyLimit,
+                        cx,
+                    )
+                    .outline(),
+                ),
         );
         let credential_locked = self.tasks.foreground.is_running()
             || self.tasks.video_job.is_some()
@@ -198,11 +207,18 @@ impl AppView {
         models = models
                     .child("运行要求：FFmpeg；Whisper 需 clarora-asr 或 whisper-cli，SenseVoice 需 clarora-asr + sherpa-onnx。下载模型不会安装推理程序。")
                     .child("本机已实测 Whisper tiny.en；其余模型尚未完成真实推理验收。详细来源、文件路径和安装方法见项目说明文档。 ")
-                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("此按钮保存手动填写的 AI 与学习设置。"))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                        "「保存转写设置」只写入本区选择；AI 服务请在上方对应区域保存。",
+                    ))
                     .child(
-                        self.button("save-asr-settings", "保存 AI 与学习设置", Action::SaveAi, cx)
-                            .primary()
-                            .disabled(self.tasks.foreground.is_running()),
+                        self.button(
+                            "save-transcription-settings",
+                            "保存转写设置",
+                            Action::SaveTranscription,
+                            cx,
+                        )
+                        .primary()
+                        .disabled(self.tasks.foreground.is_running()),
                     );
         content = content.child(models);
 
@@ -222,7 +238,7 @@ impl AppView {
                     let active = active_profile
                         .map(|profile| profile.name.as_str())
                         .unwrap_or("未选择");
-                    let busy = self.tasks.foreground.is_running();
+                    let busy = self.tasks.foreground.is_running() || self.tasks.cloud.is_running();
                     let mut options: Vec<_> = self
                         .data
                         .storage_profiles
@@ -273,7 +289,10 @@ impl AppView {
                         .child(
                             self.button("save-storage", "保存当前配置", Action::SaveStorage, cx)
                                 .primary()
-                                .disabled(self.tasks.foreground.is_running()),
+                                .disabled(
+                                    self.tasks.foreground.is_running()
+                                        || self.tasks.cloud.is_running(),
+                                ),
                         )
                         .child(
                             self.button(
@@ -283,7 +302,9 @@ impl AppView {
                                 cx,
                             )
                             .outline()
-                            .disabled(self.tasks.foreground.is_running()),
+                            .disabled(
+                                self.tasks.foreground.is_running() || self.tasks.cloud.is_running(),
+                            ),
                         )
                         .child(
                             self.button(
@@ -295,6 +316,7 @@ impl AppView {
                             .outline()
                             .disabled(
                                 self.tasks.foreground.is_running()
+                                    || self.tasks.cloud.is_running()
                                     || self.data.active_storage_profile.is_empty(),
                             ),
                         )

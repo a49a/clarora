@@ -1063,6 +1063,17 @@ pub fn run(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
             credentials::get(&lib, &format!("chat-{}", selected.credential_id))? == "profile-key-b",
             "second profile key was not stored separately"
         );
+        let mut with_local = ai::load_config(&lib)?;
+        with_local.engine = "local".into();
+        with_local.local_model = "tiny.en".into();
+        lib.set_setting("ai_config", &serde_json::to_string(&with_local)?)?;
+        let selected = ai::select_profile(&lib, &first_profile.id)?;
+        ensure!(
+            selected.engine == "local"
+                && selected.local_model == "tiny.en"
+                && selected.model == "direct",
+            "switching AI profiles changed the selected local transcription model"
+        );
         fixture.configure(&lib, "direct")?;
         record(
             &root,

@@ -175,6 +175,80 @@ fn ensure_fixture_authorization(header: &str) {
         "SQLite fixture credential was not used for the remote request"
     );
 }
+type RoutedRequests = Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
+
+fn mock_transcription_routes() -> Result<(String, RoutedRequests, Arc<AtomicBool>)> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let address = format!("http://{}", listener.local_addr()?);
+    listener.set_nonblocking(true)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (flag, requests) = (stop.clone(), seen.clone());
+    thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !flag.load(Ordering::SeqCst) && Instant::now() < deadline {
+            let (mut stream, _) = match listener.accept() {
+                Ok(value) => value,
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+            };
+            let _ = stream.set_nonblocking(false);
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+            let mut bytes = Vec::new();
+            let mut chunk = [0u8; 8192];
+            let split = loop {
+                let count = stream.read(&mut chunk).unwrap_or(0);
+                if count == 0 {
+                    break None;
+                }
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    break Some(index + 4);
+                }
+            };
+            let Some(split) = split else { continue };
+            let header = String::from_utf8_lossy(&bytes[..split]).to_string();
+            let path = header.lines().next().unwrap_or_default().to_string();
+            let auth = header
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("authorization")
+                        .then(|| value.trim().to_string())
+                })
+                .unwrap_or_default();
+            let length = header
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            while bytes.len() < split + length {
+                let count = stream.read(&mut chunk).unwrap_or(0);
+                if count == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk[..count]);
+            }
+            let body = String::from_utf8_lossy(&bytes[split..]).to_string();
+            requests.lock().unwrap().push((path, auth, body));
+            let payload = json!({"segments":[{"start":0.0,"end":1.0,"text":"routed"}]}).to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                payload.len(),
+                payload
+            );
+        }
+    });
+    Ok((address, seen, stop))
+}
+
 fn mock_ai() -> Result<(String, Arc<AtomicBool>, thread::JoinHandle<Vec<String>>)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let address = format!("http://{}", listener.local_addr()?);
@@ -725,6 +799,161 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         retained.credential_id == metadata.credential_id && retained.local_model == "tiny.en",
         "空密钥保存丢失原凭证或本地模型"
+    );
+    let mut split = metadata.clone();
+    split.model = "chat-only-model".into();
+    split.asr_base_url = "https://transcription.example.invalid/v1".into();
+    split.asr_model = "transcription-only-model".into();
+    split.local_model = "tiny.en".into();
+    split.engine = "local".into();
+    preferences.set_setting("ai_config", &serde_json::to_string(&split)?)?;
+    let mut chat_update = split.clone();
+    chat_update.model = "updated-chat-model".into();
+    ai::save_chat_preferences(&preferences, chat_update, "")?;
+    let split_saved = ai::load_config(&preferences)?;
+    ensure!(
+        split_saved.model == "updated-chat-model"
+            && split_saved.asr_base_url == split.asr_base_url
+            && split_saved.asr_model == split.asr_model
+            && split_saved.local_model == split.local_model
+            && split_saved.engine == split.engine,
+        "AI 服务保存覆盖了独立转写设置"
+    );
+    let routing = Library::open(lib.root.join("ai-routing"))?;
+    let independent = ai::Config {
+        base_url: "https://old-chat.example.invalid/v1".into(),
+        model: "old-chat-model".into(),
+        asr_base_url: "https://old-asr.example.invalid/v1".into(),
+        asr_model: "old-asr-model".into(),
+        ..Default::default()
+    };
+    ai::save(&routing, independent, "old-chat-key", "old-asr-key")?;
+    let old_id = ai::load_config(&routing)?.credential_id;
+    ai::save_chat_preferences(
+        &routing,
+        ai::Config {
+            base_url: "https://new-chat.example.invalid/v1".into(),
+            model: "new-chat-model".into(),
+            ..Default::default()
+        },
+        "new-chat-key",
+    )?;
+    let (routed, chat_key, asr_key) = ai::load(&routing)?;
+    ensure!(
+        routed.asr_base_url == "https://old-asr.example.invalid/v1"
+            && routed.asr_model == "old-asr-model"
+            && routed.asr_credential_id == old_id
+            && chat_key == "new-chat-key"
+            && asr_key == "old-asr-key",
+        "独立转写连接没有保留自己的地址和凭证"
+    );
+    let shared = Library::open(lib.root.join("ai-routing-shared"))?;
+    ai::save(
+        &shared,
+        ai::Config {
+            base_url: "https://old-shared.example.invalid/v1".into(),
+            model: "old-shared-model".into(),
+            asr_base_url: "https://old-shared.example.invalid/v1".into(),
+            asr_model: "old-shared-model".into(),
+            ..Default::default()
+        },
+        "old-shared-key",
+        "old-shared-key",
+    )?;
+    ai::save_chat_preferences(
+        &shared,
+        ai::Config {
+            base_url: "https://new-shared.example.invalid/v1".into(),
+            model: "new-shared-model".into(),
+            ..Default::default()
+        },
+        "new-shared-key",
+    )?;
+    let (shared_config, shared_chat, shared_asr) = ai::load(&shared)?;
+    ensure!(
+        shared_config.asr_base_url == "https://new-shared.example.invalid/v1"
+            && shared_config.asr_model == "new-shared-model"
+            && shared_chat == "new-shared-key"
+            && shared_asr == "new-shared-key",
+        "共享转写没有跟随新的聊天连接和凭证"
+    );
+    let routed_lib = Library::open(lib.root.join("ai-routing-http"))?;
+    let (routed_address, routed_requests, routed_stop) = mock_transcription_routes()?;
+    let routed_wav = routed_lib.root.join("routing.wav");
+    fs::write(&routed_wav, b"fixture audio")?;
+    ai::save(
+        &routed_lib,
+        ai::Config {
+            base_url: format!("{routed_address}/new/v1"),
+            model: "new-chat-model".into(),
+            asr_base_url: format!("{routed_address}/old/v1"),
+            asr_model: "old-asr-model".into(),
+            engine: "compatible".into(),
+            ..Default::default()
+        },
+        "old-chat-key",
+        "old-asr-key",
+    )?;
+    ai::save_chat_preferences(
+        &routed_lib,
+        ai::Config {
+            base_url: format!("{routed_address}/new/v1"),
+            model: "new-chat-model".into(),
+            ..Default::default()
+        },
+        "new-chat-key",
+    )?;
+    ai::transcribe(&routed_lib, &routed_wav, &cancel)?;
+    routed_stop.store(true, Ordering::SeqCst);
+    let routed_requests = routed_requests.lock().unwrap().clone();
+    ensure!(
+        routed_requests.len() == 1
+            && routed_requests[0]
+                .0
+                .starts_with("POST /old/v1/audio/transcriptions")
+            && routed_requests[0].1 == "Bearer old-asr-key"
+            && routed_requests[0].2.contains("old-asr-model")
+            && !routed_requests[0].2.contains("new-chat-key"),
+        "转写请求没有使用独立旧连接：{routed_requests:?}"
+    );
+    let rollback = Library::open(lib.root.join("ai-profile-rollback"))?;
+    let old_profile_config = ai::Config {
+        base_url: "https://old-profile.example.invalid/v1".into(),
+        model: "old-profile-model".into(),
+        ..Default::default()
+    };
+    ai::save_profile(
+        &rollback,
+        "旧方案",
+        old_profile_config.clone(),
+        "old-profile-key",
+    )?;
+    let (old_chat_config, old_chat_key) = ai::load_chat(&rollback)?;
+    rollback.db()?.execute_batch(
+        "CREATE TRIGGER fail_profile_update BEFORE UPDATE ON app_settings
+         WHEN NEW.key='ai_profiles'
+         BEGIN SELECT RAISE(FAIL,'profile write fixture'); END;",
+    )?;
+    let failed = ai::save_profile(
+        &rollback,
+        "新方案",
+        ai::Config {
+            base_url: "https://new-profile.example.invalid/v1".into(),
+            model: "new-profile-model".into(),
+            ..Default::default()
+        },
+        "new-profile-key",
+    );
+    rollback
+        .db()?
+        .execute_batch("DROP TRIGGER fail_profile_update")?;
+    ensure!(failed.is_err(), "profile write failure was not reported");
+    let (restored_config, restored_key) = ai::load_chat(&rollback)?;
+    ensure!(
+        restored_config.base_url == old_chat_config.base_url
+            && restored_config.model == old_chat_config.model
+            && restored_key == old_chat_key,
+        "failed profile save switched the active chat connection"
     );
     let mut legacy_metadata = ai::Config {
         asr_base_url: metadata.base_url.clone(),

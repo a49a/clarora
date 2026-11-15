@@ -103,7 +103,11 @@ impl Probe {
         require_audio_underlay: bool,
     ) -> Result<(Point<Pixels>, Point<Pixels>)> {
         let viewport = window.viewport_size();
-        let left = (f32::from(viewport.width) - 480.).max(0.) as usize;
+        let left = if require_audio_underlay {
+            (f32::from(viewport.width) - 480.).max(0.) as usize
+        } else {
+            0
+        };
         let right = f32::from(viewport.width) as usize;
         let bottom = f32::from(viewport.height) as usize;
         let underlay = app.subtitle_text.borrow().probe_audio_bounds();
@@ -215,10 +219,30 @@ impl Probe {
             }
             3 => {
                 let scenario = SCENARIOS[self.scenario];
-                let (start, end) =
-                    Self::positions(app, window, cx, scenario.start, scenario.end, true)?;
+                let overlay = !app.assistant_embedded && !app.assistant_page_mode;
+                let (start, end, underlay_used) =
+                    match Self::positions(app, window, cx, scenario.start, scenario.end, overlay) {
+                        Ok((start, end)) => (start, end, overlay),
+                        Err(error) if overlay => {
+                            // The assistant may be a narrow overlay that does not
+                            // cover visible subtitle glyphs. Selection behaviour is
+                            // still checked; the overlap case is recorded as absent.
+                            let (start, end) = Self::positions(
+                                app,
+                                window,
+                                cx,
+                                scenario.start,
+                                scenario.end,
+                                false,
+                            )
+                            .map_err(|_| error)?;
+                            (start, end, false)
+                        }
+                        Err(error) => return Err(error),
+                    };
                 observations.push(json!({
                     "scenario":scenario.name,
+                    "underlay_used":underlay_used,
                     "assistant_drag_start":[f32::from(start.x), f32::from(start.y)],
                     "assistant_drag_end":[f32::from(end.x), f32::from(end.y)],
                     "audio_list":[
@@ -611,6 +635,9 @@ impl Probe {
                 }
                 app.set("question", "", window, cx);
                 app.assistant.offer = None;
+                if app.assistant_page_mode {
+                    app.handle(Action::Assistant, window, cx);
+                }
                 app.handle(Action::Page("speaking".into()), window, cx);
                 app.set(
                     "speaking_answer_draft",
@@ -798,6 +825,63 @@ impl Probe {
                 );
                 cases.push(json!({"case":"typing replaces the entire double-click selection","passed":true}));
                 app.handle(Action::Assistant, window, cx);
+            }
+            34 => {
+                window.focus(&app.focus);
+                window.resize(size(px(1600.), px(900.)));
+                app.open_assistant(window, cx);
+                self.started = Instant::now();
+            }
+            35 => {
+                if f32::from(window.viewport_size().width) < 1595.
+                    || self.started.elapsed() < Duration::from_millis(300)
+                    || app.chat.is_loading()
+                {
+                    return Ok(false);
+                }
+                Self::draw(window, cx);
+                ensure!(
+                    app.assistant_open
+                        && app.assistant_embedded
+                        && app.assistant_columns == 2
+                        && app.assistant_width >= clarora_gpui::assistant::MIN_COLUMN,
+                    "wide window did not place assistant in its own column: open={} embedded={} width={}",
+                    app.assistant_open,
+                    app.assistant_embedded,
+                    app.assistant_width
+                );
+                cases.push(json!({"case":"wide window lays assistant and learning area side by side","passed":true,"width":app.assistant_width}));
+                window.resize(size(px(900.), px(700.)));
+                self.started = Instant::now();
+            }
+            36 => {
+                if f32::from(window.viewport_size().width) > 902.
+                    || self.started.elapsed() < Duration::from_millis(300)
+                {
+                    return Ok(false);
+                }
+                Self::draw(window, cx);
+                ensure!(
+                    app.assistant_open
+                        && !app.assistant_embedded
+                        && app.assistant_page_mode
+                        && app.assistant_columns == 1
+                        && app.assistant_width >= clarora_gpui::assistant::MIN_COLUMN,
+                    "narrow window did not switch to the learning/assistant view: open={} embedded={} width={}",
+                    app.assistant_open,
+                    app.assistant_embedded,
+                    app.assistant_width
+                );
+                cases.push(json!({"case":"narrow window keeps assistant as a reversible overlay","passed":true,"width":app.assistant_width}));
+                app.handle(Action::Assistant, window, cx);
+                ensure!(
+                    !app.assistant_open && window.focused(cx) == Some(app.focus.clone()),
+                    "closing assistant did not return keyboard focus to the learning area"
+                );
+                cases.push(
+                    json!({"case":"closing assistant restores the learning focus","passed":true}),
+                );
+                window.resize(self.original_viewport);
                 return Ok(true);
             }
             _ => unreachable!(),

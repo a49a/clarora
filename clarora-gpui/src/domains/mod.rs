@@ -109,13 +109,19 @@ pub(super) enum Action {
     Mute,
     Subtitle(i64, bool),
     SubtitleImport(bool),
-    Download,
+    VideoImport,
+    VideoImportRetry,
+    VideoImportEdit,
+    DismissVideoImport,
     ReadParts,
     SelectPart(usize),
     SelectPartAtEnd(usize),
     AutoNextPart,
     Cancel,
+    CancelCloud,
+    DismissCloudNotice,
     DismissTaskNotice,
+    ToggleTasksCollapsed,
     CancelModel,
     CancelAudioSubtitles,
     DismissAudioSubtitles,
@@ -153,11 +159,16 @@ pub(super) enum Action {
     VideoCopyTranscript,
     VideoAskTranscript,
     VideoSelect(String),
+    VideoSelectFromStart(String),
     VideoEpisodes(String),
     VideoRemove(String),
     VideoConfirmRemove,
     VideoSubtitleExport,
-    ClearYoutubeAuth,
+    VideoGroupFilter(String),
+    VideoGroupNew,
+    VideoGroupRename,
+    VideoGroupDelete,
+    VideoSetGroup(String, String),
     Translate,
     Record,
     StopRecord,
@@ -179,6 +190,8 @@ pub(super) enum Action {
     Shortcuts,
     SaveAi,
     SaveAiProfile,
+    SaveTranscription,
+    SaveDailyLimit,
     SelectAiProfile(String),
     SelectAiProvider(String),
     CredentialMode(bool),
@@ -356,13 +369,19 @@ impl From<Action> for Command {
             Action::Mute => Routed::Media(media::Command::Mute),
             Action::Subtitle(v0, v1) => Routed::Media(media::Command::Subtitle(v0, v1)),
             Action::SubtitleImport(v0) => Routed::Media(media::Command::SubtitleImport(v0)),
-            Action::Download => Routed::Video(video::Command::Download),
+            Action::VideoImport => Routed::Video(video::Command::VideoImport),
+            Action::VideoImportRetry => Routed::Video(video::Command::VideoImportRetry),
+            Action::VideoImportEdit => Routed::Video(video::Command::VideoImportEdit),
+            Action::DismissVideoImport => Routed::Video(video::Command::DismissVideoImport),
             Action::ReadParts => Routed::Video(video::Command::ReadParts),
             Action::SelectPart(v0) => Routed::Video(video::Command::SelectPart(v0)),
             Action::SelectPartAtEnd(v0) => Routed::Video(video::Command::SelectPartAtEnd(v0)),
             Action::AutoNextPart => Routed::Video(video::Command::AutoNextPart),
             Action::Cancel => Routed::Tasks(tasks::Command::Cancel),
+            Action::CancelCloud => Routed::Tasks(tasks::Command::CancelCloud),
+            Action::DismissCloudNotice => Routed::Tasks(tasks::Command::DismissCloudNotice),
             Action::DismissTaskNotice => Routed::Tasks(tasks::Command::DismissTaskNotice),
+            Action::ToggleTasksCollapsed => Routed::Tasks(tasks::Command::ToggleTasksCollapsed),
             Action::CancelModel => Routed::Tasks(tasks::Command::CancelModel),
             Action::CancelAudioSubtitles => Routed::Tasks(tasks::Command::CancelAudioSubtitles),
             Action::DismissAudioSubtitles => Routed::Tasks(tasks::Command::DismissAudioSubtitles),
@@ -411,11 +430,18 @@ impl From<Action> for Command {
             Action::VideoCopyTranscript => Routed::Video(video::Command::VideoCopyTranscript),
             Action::VideoAskTranscript => Routed::Video(video::Command::VideoAskTranscript),
             Action::VideoSelect(v0) => Routed::Video(video::Command::VideoSelect(v0)),
+            Action::VideoSelectFromStart(v0) => {
+                Routed::Video(video::Command::VideoSelectFromStart(v0))
+            }
             Action::VideoEpisodes(v0) => Routed::Video(video::Command::VideoEpisodes(v0)),
             Action::VideoRemove(v0) => Routed::Video(video::Command::VideoRemove(v0)),
             Action::VideoConfirmRemove => Routed::Video(video::Command::VideoConfirmRemove),
             Action::VideoSubtitleExport => Routed::Video(video::Command::VideoSubtitleExport),
-            Action::ClearYoutubeAuth => Routed::Video(video::Command::ClearYoutubeAuth),
+            Action::VideoGroupFilter(v0) => Routed::Video(video::Command::VideoGroupFilter(v0)),
+            Action::VideoGroupNew => Routed::Video(video::Command::VideoGroupNew),
+            Action::VideoGroupRename => Routed::Video(video::Command::VideoGroupRename),
+            Action::VideoGroupDelete => Routed::Video(video::Command::VideoGroupDelete),
+            Action::VideoSetGroup(v0, v1) => Routed::Video(video::Command::VideoSetGroup(v0, v1)),
             Action::Translate => Routed::Audio(audio::Command::Translate),
             Action::Record => Routed::Speech(speech::Command::Record),
             Action::StopRecord => Routed::Speech(speech::Command::StopRecord),
@@ -438,6 +464,8 @@ impl From<Action> for Command {
             Action::FocusNoteDelete(id) => Routed::Focus(focus::Command::FocusNoteDelete(id)),
             Action::Shortcuts => Routed::Shell(shell::Command::Shortcuts),
             Action::SaveAi => Routed::Settings(settings::Command::SaveAi),
+            Action::SaveTranscription => Routed::Settings(settings::Command::SaveTranscription),
+            Action::SaveDailyLimit => Routed::Settings(settings::Command::SaveDailyLimit),
             Action::SaveAiProfile => Routed::Settings(settings::Command::SaveAiProfile),
             Action::SelectAiProfile(v0) => Routed::Settings(settings::Command::SelectAiProfile(v0)),
             Action::SelectAiProvider(v0) => {
@@ -623,20 +651,38 @@ pub(super) fn complete(
         }
         Outcome::Message(v0) => tasks::Completed::Message(v0).apply(app, context, window, cx),
         Outcome::ClipSaved => audio::Completed::ClipSaved.apply(app, context, window, cx),
+        Outcome::VideoClipSaved => video::Completed::ClipSaved.apply(app, context, window, cx),
         Outcome::Issue(v0) => tasks::Completed::Issue(v0).apply(app, context, window, cx),
         Outcome::Parts(v0) => video::Completed::Parts(v0).apply(app, context, window, cx),
-        Outcome::PartVideo(v0, v1, v2, v3, v4, v5) => {
-            video::Completed::PartVideo(v0, v1, v2, v3, v4, v5).apply(app, context, window, cx)
+        Outcome::PartVideo {
+            series,
+            index,
+            path,
+            origin,
+            from_end,
+            resume,
+            group,
+        } => video::Completed::PartVideo {
+            series,
+            index,
+            path,
+            origin,
+            from_end,
+            resume,
+            group,
         }
+        .apply(app, context, window, cx),
         Outcome::Output(v0) => assistant::Completed::Output(v0).apply(app, context, window, cx),
         Outcome::VideoTranslated(v0, v1, v2, v3) => {
             video::Completed::VideoTranslated(v0, v1, v2, v3).apply(app, context, window, cx)
         }
-        Outcome::VideoDownloaded(v0, v1) => {
-            video::Completed::VideoDownloaded(v0, v1).apply(app, context, window, cx)
+        Outcome::VideoDownloaded(path, origin, group, source) => {
+            video::Completed::VideoDownloaded(path, origin, group, source)
+                .apply(app, context, window, cx)
         }
-        Outcome::YoutubeAuthRequired(v0) => {
-            video::Completed::YoutubeAuthRequired(v0).apply(app, context, window, cx)
+        Outcome::VideoAuthRequired(url, origin, group, source) => {
+            video::Completed::VideoAuthRequired(url, origin, group, source)
+                .apply(app, context, window, cx)
         }
         Outcome::Pdf(v0, v1, v2) => {
             reading::Completed::Pdf(v0, v1, v2).apply(app, context, window, cx)

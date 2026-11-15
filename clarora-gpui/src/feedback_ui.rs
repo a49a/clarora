@@ -64,9 +64,16 @@ impl FeedbackState {
             error.retry = retry;
         }
     }
+    pub(super) fn clear_error(&mut self) {
+        self.error = None;
+        self.last_error = None;
+    }
 }
 
 impl AppView {
+    pub(super) fn clear_feedback_error(&mut self) {
+        self.feedback.clear_error();
+    }
     pub(super) fn report_status(&mut self, kind: FeedbackKind, message: String) {
         self.status = message.clone();
         if message.trim().is_empty() {

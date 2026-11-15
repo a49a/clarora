@@ -97,6 +97,15 @@ pub(super) struct PendingVideoStart {
     pub(super) selected_time: Option<f64>,
     pub(super) within_sentence_seek: Option<f64>,
 }
+/// Parameters confirmed by the import dialog. Kept local so a failure or
+/// cancellation can reopen the same link, part and target group.
+#[derive(Clone, Debug)]
+pub(super) struct VideoImportDraft {
+    pub(super) raw: String,
+    pub(super) normalized: Option<String>,
+    pub(super) part: Option<usize>,
+    pub(super) group: String,
+}
 pub(super) struct VideoState {
     pub(super) path: Option<PathBuf>,
     pub(super) series: Option<bilibili::Series>,
@@ -138,16 +147,87 @@ pub(super) struct VideoState {
     pub(super) collection: video_library::Collection,
     pub(super) remove: Option<String>,
     pub(super) youtube_browser: Option<process::YoutubeBrowser>,
+    pub(super) group: String,
+    pub(super) progress_key: Option<String>,
+    pub(super) import_group: Option<String>,
+    pub(super) reading_restore: Option<clarora_gpui::video_progress::Reading>,
+    pub(super) transcript_scroll: ScrollHandle,
+    pub(super) completion_marked: bool,
+    pub(super) import_draft: Option<VideoImportDraft>,
+    pub(super) import_recovery: Option<VideoImportDraft>,
+    pub(super) import_active: bool,
+    pub(super) import_edit: Option<VideoImportDraft>,
+    /// Group renames are name-based in storage; keep the old name resolvable
+    /// for an import task that was confirmed before the rename.
+    pub(super) group_aliases: crate::BTreeMap<String, String>,
 }
 impl VideoState {
     pub(super) fn set_cues(&mut self, cues: Vec<Cue>) {
+        // Async subtitle loading may deliver the same list again after a
+        // progress restore; keep the restored active cue instead of clearing it.
+        if !cues.is_empty()
+            && cues.len() == self.cues.len()
+            && cues
+                .iter()
+                .zip(&self.cues)
+                .all(|(a, b)| a.start == b.start && a.end == b.end && a.text == b.text)
+        {
+            return;
+        }
         self.part_confirmation = None;
         self.transcript = clarora_gpui::video_transcript::Transcript::from_cues(&cues);
         self.transcript_html = self.transcript.html.clone().into();
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         self.scroll.reset(cues.len());
         self.active = None;
+        let empty = cues.is_empty();
         self.cues = cues;
+        // Subtitles are loaded in a second step after the player opens. Keep a
+        // cue-bound snapshot until the real cue list arrives, otherwise the
+        // empty reset consumes it and the sentence position is lost.
+        let defer = self
+            .reading_restore
+            .as_ref()
+            .is_some_and(|reading| empty && reading.cue_start.is_some());
+        if !defer && let Some(reading) = self.reading_restore.take() {
+            self.tab = reading.tab.min(3);
+            self.transcript_open = reading.transcript_open;
+            self.follow = reading.follow;
+            if let Some(start) = reading.active_start.or(reading.cue_start)
+                && let Some(index) = self
+                    .cues
+                    .iter()
+                    .position(|cue| (cue.start - start).abs() < 0.05)
+                    .or_else(|| self.cues.iter().position(|cue| cue.start > start))
+                    .or_else(|| self.cues.len().checked_sub(1))
+            {
+                self.active = Some(index);
+            }
+            if let Some(start) = reading.cue_start
+                && let Some(index) = self
+                    .cues
+                    .iter()
+                    .position(|cue| (cue.start - start).abs() < 0.05)
+                    .or_else(|| self.cues.iter().position(|cue| cue.start > start))
+                    .or_else(|| self.cues.len().checked_sub(1))
+            {
+                self.scroll.scroll_to(ListOffset {
+                    item_ix: index,
+                    offset_in_item: px(reading.cue_offset),
+                });
+            }
+            if reading.transcript_revision.is_empty()
+                || reading.transcript_revision
+                    == clarora_gpui::assistant::subtitle_revision(&self.cues)
+            {
+                self.transcript_scroll
+                    .set_offset(point(px(0.), px(reading.transcript_offset)));
+            } else {
+                // The transcript changed; the old pixel offset no longer
+                // identifies the same text.
+                self.transcript_scroll.set_offset(point(px(0.), px(0.)));
+            }
+        }
     }
 
     pub(super) fn new() -> Self {
@@ -191,6 +271,17 @@ impl VideoState {
             collection: Default::default(),
             remove: None,
             youtube_browser: None,
+            group: String::new(),
+            progress_key: None,
+            import_group: None,
+            reading_restore: None,
+            transcript_scroll: ScrollHandle::new(),
+            completion_marked: false,
+            import_draft: None,
+            import_recovery: None,
+            import_active: false,
+            import_edit: None,
+            group_aliases: Default::default(),
         }
     }
 }
@@ -303,6 +394,7 @@ impl PlaybackState {
 
 pub(super) struct TasksState {
     pub(super) foreground: task_runtime::Lane<TaskUpdate, Outcome>,
+    pub(super) cloud: task_runtime::Lane<TaskUpdate, Outcome>,
     pub(super) chat_request: Option<clarora_gpui::chat_store::Request>,
     pub(super) models: model_controller::State,
     pub(super) audio_subtitles: audio_subtitles_controller::State,
@@ -313,6 +405,8 @@ pub(super) struct TasksState {
     pub(super) progress_elapsed: u64,
     pub(super) retry: Option<feedback_ui::Retry>,
     pub(super) notice: Option<TaskNotice>,
+    pub(super) cloud_notice: Option<TaskNotice>,
+    pub(super) collapsed: bool,
     pub(super) video_notice: Option<TaskNotice>,
     pub(super) video_job: Option<video_jobs::Job>,
     pub(super) video_error: String,
@@ -323,6 +417,7 @@ impl TasksState {
     pub(super) fn new() -> Self {
         Self {
             foreground: Default::default(),
+            cloud: Default::default(),
             chat_request: None,
             models: Default::default(),
             audio_subtitles: Default::default(),
@@ -333,6 +428,8 @@ impl TasksState {
             progress_elapsed: 0,
             retry: None,
             notice: None,
+            cloud_notice: None,
+            collapsed: false,
             video_notice: None,
             video_job: None,
             video_error: String::new(),
@@ -357,6 +454,7 @@ impl SettingsState {
 impl Drop for TasksState {
     fn drop(&mut self) {
         self.foreground.cancel();
+        self.cloud.cancel();
         if let Some(job) = &self.video_job {
             job.cancel.store(true, Ordering::SeqCst);
         }
