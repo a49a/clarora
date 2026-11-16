@@ -426,7 +426,13 @@ impl AppView {
             "right" => 1,
             _ => return false,
         };
-        self.handle(Action::AudioSentence(direction), window, cx);
+        if self.audio.repeat_mode.is_sentence() {
+            self.handle(Action::AudioSentence(direction), window, cx);
+        } else {
+            // Outside single-sentence practice, arrows are ordinary media
+            // navigation. Keep the keyboard in sync with the ±10s buttons.
+            self.handle(Action::Seek(f64::from(direction) * 10.), window, cx);
+        }
         true
     }
 }

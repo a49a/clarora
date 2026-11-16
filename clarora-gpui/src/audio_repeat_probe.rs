@@ -57,6 +57,8 @@ pub(super) struct Probe {
     eof_path: String,
     assistant_selection: assistant_selection_probe::Probe,
     audio_selection: audio_selection_probe::Flow,
+    normal_seek_stage: u8,
+    normal_seek_before: f64,
 }
 impl Probe {
     pub(super) fn new(out: &Path) -> Self {
@@ -83,6 +85,8 @@ impl Probe {
             eof_path: String::new(),
             assistant_selection: assistant_selection_probe::Probe::new(),
             audio_selection: audio_selection_probe::Flow::new(),
+            normal_seek_stage: 0,
+            normal_seek_before: 0.,
         }
     }
     fn note(&mut self, name: &str, app: &AppView) {
@@ -631,6 +635,104 @@ impl Probe {
                                 .to_string_lossy())
                 {
                     return Ok(false);
+                }
+                if self.normal_seek_stage < 6 {
+                    if self.normal_seek_stage == 0 {
+                        ensure!(
+                            app.audio.repeat_mode == PlaybackMode::Normal,
+                            "normal-arrow fixture started in sentence mode"
+                        );
+                        let cues = std::mem::take(&mut app.audio.cues);
+                        ensure!(
+                            app.audio_seek_step_enabled(),
+                            "normal no-subtitle seek button was disabled"
+                        );
+                        app.audio.cues = cues;
+                        self.note("normal no-subtitle seek buttons stay enabled", app);
+                        app.media.player.set("pause", "yes");
+                        app.media.player.command(["seek", "0", "absolute+exact"]);
+                        self.normal_seek_stage = 1;
+                        return Ok(false);
+                    }
+                    if self.normal_seek_stage == 1 {
+                        if app.media.snapshot.position > 0.1 {
+                            return Ok(false);
+                        }
+                        window.focus(&app.focus);
+                        let key = KeyDownEvent {
+                            keystroke: Keystroke::parse("right").expect("right key"),
+                            is_held: false,
+                        };
+                        ensure!(
+                            app.handle_audio_arrow_key(&key, window, cx),
+                            "normal audio right arrow not handled"
+                        );
+                        self.normal_seek_before = app.media.snapshot.position;
+                        self.normal_seek_stage = 2;
+                        return Ok(false);
+                    }
+                    if self.normal_seek_stage == 2 {
+                        let position = app.media.snapshot.position;
+                        if position < 3.0 {
+                            return Ok(false);
+                        }
+                        ensure!(
+                            position > self.normal_seek_before + 2.5,
+                            "normal audio right arrow did not seek ten seconds"
+                        );
+                        ensure!(
+                            app.media.session.audio_sentence().is_none(),
+                            "normal audio right arrow selected a sentence"
+                        );
+                        self.note(
+                            "normal audio right arrow seeks forward instead of next cue",
+                            app,
+                        );
+                        app.media.player.set("pause", "yes");
+                        app.media.player.command(["seek", "3.0", "absolute+exact"]);
+                        self.normal_seek_stage = 3;
+                        return Ok(false);
+                    }
+                    if self.normal_seek_stage == 3 {
+                        if (app.media.snapshot.position - 3.0).abs() > 0.1 {
+                            return Ok(false);
+                        }
+                        window.focus(&app.focus);
+                        let key = KeyDownEvent {
+                            keystroke: Keystroke::parse("left").expect("left key"),
+                            is_held: false,
+                        };
+                        ensure!(
+                            app.handle_audio_arrow_key(&key, window, cx),
+                            "normal audio left arrow not handled"
+                        );
+                        self.normal_seek_stage = 4;
+                        return Ok(false);
+                    }
+                    if self.normal_seek_stage == 4 {
+                        let position = app.media.snapshot.position;
+                        if position > 0.3 {
+                            return Ok(false);
+                        }
+                        ensure!(
+                            app.media.session.audio_sentence().is_none(),
+                            "normal audio left arrow selected a sentence"
+                        );
+                        self.note(
+                            "normal audio left arrow seeks backward instead of previous cue",
+                            app,
+                        );
+                        app.media.player.set("pause", "yes");
+                        app.media.player.command(["seek", "0", "absolute+exact"]);
+                        self.normal_seek_stage = 5;
+                        return Ok(false);
+                    }
+                    if self.normal_seek_stage == 5 {
+                        if app.media.snapshot.position > 0.1 {
+                            return Ok(false);
+                        }
+                        self.normal_seek_stage = 6;
+                    }
                 }
                 if !self.current_card_step(app, window, cx)? {
                     return Ok(false);

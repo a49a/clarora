@@ -1115,22 +1115,46 @@ impl AppView {
                     .child(
                         self.transport_button(
                             "audio-previous-sentence",
-                            "上一句",
-                            Action::AudioSentence(-1),
+                            if self.audio.repeat_mode.is_sentence() {
+                                "上一句"
+                            } else {
+                                "后退 10 秒"
+                            },
+                            if self.audio.repeat_mode.is_sentence() {
+                                Action::AudioSentence(-1)
+                            } else {
+                                Action::Seek(-10.)
+                            },
                             cx,
                         )
-                        .disabled(self.audio.cues.is_empty())
-                        .tooltip("上一句字幕 · ←"),
+                        .disabled(!self.audio_seek_step_enabled())
+                        .tooltip(if self.audio.repeat_mode.is_sentence() {
+                            "上一句字幕 · ←"
+                        } else {
+                            "后退 10 秒 · ←"
+                        }),
                     )
                     .child(
                         self.transport_button(
                             "audio-next-sentence",
-                            "下一句",
-                            Action::AudioSentence(1),
+                            if self.audio.repeat_mode.is_sentence() {
+                                "下一句"
+                            } else {
+                                "前进 10 秒"
+                            },
+                            if self.audio.repeat_mode.is_sentence() {
+                                Action::AudioSentence(1)
+                            } else {
+                                Action::Seek(10.)
+                            },
                             cx,
                         )
-                        .disabled(self.audio.cues.is_empty())
-                        .tooltip("下一句字幕 · →"),
+                        .disabled(!self.audio_seek_step_enabled())
+                        .tooltip(if self.audio.repeat_mode.is_sentence() {
+                            "下一句字幕 · →"
+                        } else {
+                            "前进 10 秒 · →"
+                        }),
                     )
                     .child(self.player_menu(
                         "audio-repeat",
@@ -1308,6 +1332,10 @@ impl AppView {
             .child(footer)
             .into_any_element()
     }
+    pub(super) fn audio_seek_step_enabled(&self) -> bool {
+        !self.audio.repeat_mode.is_sentence() || !self.audio.cues.is_empty()
+    }
+
     pub(super) fn transport(&self, cx: &Context<Self>) -> AnyElement {
         if self.page == "video" {
             return self.video_controls(cx);
