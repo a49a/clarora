@@ -575,24 +575,53 @@ fn subtitle_language_tag(tag: &str) -> bool {
         })
 }
 
-fn subtitle_is_for(video_stem: &str, file_name: &str) -> bool {
+const MEDIA_EXTENSIONS: [&str; 15] = [
+    "mp4", "mkv", "webm", "mov", "m4v", "avi", "flv", "ts", "m2ts", "wmv", "mpg", "mpeg", "3gp",
+    "ogv", "rmvb",
+];
+
+fn sibling_media(directory: &std::path::Path, stem: &str) -> bool {
+    let stem = stem.to_ascii_lowercase();
+    fs::read_dir(directory)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .any(|entry| {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            name.rsplit_once('.')
+                .is_some_and(|(base, ext)| base == stem && MEDIA_EXTENSIONS.contains(&ext))
+        })
+}
+
+fn subtitle_tag(video_stem: &str, file_name: &str) -> Option<String> {
     let lower = file_name.to_ascii_lowercase();
     let stem = video_stem.to_ascii_lowercase();
-    let Some(extension) = lower
-        .rsplit('.')
-        .next()
-        .filter(|ext| matches!(*ext, "srt" | "vtt"))
-    else {
-        return false;
-    };
-    let Some(base) = lower.strip_suffix(&format!(".{extension}")) else {
-        return false;
-    };
-    if base == stem {
-        return true;
+    let extension = lower.rsplit('.').next()?;
+    if !matches!(extension, "srt" | "vtt") {
+        return None;
     }
-    base.strip_prefix(&format!("{stem}."))
-        .is_some_and(|tag| !tag.contains('.') && subtitle_language_tag(tag))
+    let base = lower.strip_suffix(&format!(".{extension}"))?;
+    if base == stem {
+        return Some(String::new());
+    }
+    let tag = base.strip_prefix(&format!("{stem}."))?;
+    (!tag.contains('.') && subtitle_language_tag(tag)).then(|| tag.to_string())
+}
+
+fn language_priority(tag: &str) -> u8 {
+    let tag = tag.strip_prefix("ai-").unwrap_or(tag);
+    let primary = tag.split('-').next().unwrap_or_default();
+    if tag.is_empty() {
+        0
+    } else if primary == "en" {
+        1
+    } else if primary == "zh" {
+        2
+    } else {
+        3
+    }
 }
 
 pub fn downloaded_subtitle(video: &Path) -> Option<PathBuf> {
@@ -604,23 +633,19 @@ pub fn downloaded_subtitle(video: &Path) -> Option<PathBuf> {
         .map(|entry| entry.path())
         .filter_map(|path| {
             let name = path.file_name()?.to_str()?;
-            let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-            let lower = name.to_ascii_lowercase();
-            (matches!(extension.as_str(), "srt" | "vtt") && subtitle_is_for(stem, name))
-                .then_some((path, lower))
+            let tag = subtitle_tag(stem, name)?;
+            // A file like Lesson.en.srt belongs to a sibling media file with
+            // the same stem, whichever supported container it uses.
+            if !tag.is_empty()
+                && let Some(candidate) = path.file_stem()
+                && sibling_media(directory, &candidate.to_string_lossy())
+            {
+                return None;
+            }
+            Some((path, language_priority(&tag)))
         })
         .collect::<Vec<_>>();
-    tracks.sort_by_key(|(_, name)| {
-        if name.contains(".en.") || name.ends_with(".en") {
-            0
-        } else if name.contains(".ai-en.") || name.ends_with(".ai-en") {
-            1
-        } else if name.contains(".zh") {
-            2
-        } else {
-            3
-        }
-    });
+    tracks.sort_by_key(|(_, priority)| *priority);
     tracks.into_iter().map(|(path, _)| path).next()
 }
 

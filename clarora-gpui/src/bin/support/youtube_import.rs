@@ -163,13 +163,38 @@ fn subtitle_track(lib: &Library, results: &mut Vec<Value>) -> Result<()> {
         directory.join("Lesson.extra.en.srt"),
         "1\n00:00:01,000 --> 00:00:02,500\nWrong video.\n",
     )?;
+    std::fs::write(directory.join("Lesson.en.mkv"), b"other video")?;
+    std::fs::write(
+        directory.join("Lesson.en.srt"),
+        "1\n00:00:01,000 --> 00:00:02,500\nSibling video.\n",
+    )?;
     ensure!(
-        process::downloaded_subtitle(&plain).is_none_or(|track| track
-            .extension()
-            .and_then(|ext| ext.to_str())
-            != Some("srt")
-            || track.file_name().and_then(|name| name.to_str()) != Some("Lesson.extra.en.srt")),
-        "同前缀的另一部视频字幕被误选"
+        process::downloaded_subtitle(&plain).is_none(),
+        "同前缀 MKV 的字幕被误选：{:?}",
+        process::downloaded_subtitle(&plain)
+    );
+    std::fs::remove_file(directory.join("Lesson.en.mkv"))?;
+    std::fs::write(directory.join("Lesson.en.mp4"), b"other video")?;
+    ensure!(
+        process::downloaded_subtitle(&plain).is_none(),
+        "同前缀 MP4 的字幕被误选：{:?}",
+        process::downloaded_subtitle(&plain)
+    );
+    let course = directory.join("Course.mp4");
+    std::fs::write(&course, b"video")?;
+    std::fs::write(
+        directory.join("Course.zh-Hans.srt"),
+        "1\n00:00:01,000 --> 00:00:02,500\n中文字幕\n",
+    )?;
+    std::fs::write(
+        directory.join("Course.en-US.srt"),
+        "1\n00:00:01,000 --> 00:00:02,500\nEnglish subtitle.\n",
+    )?;
+    ensure!(
+        process::downloaded_subtitle(&course)
+            .is_some_and(|track| track.file_name().and_then(|name| name.to_str())
+                == Some("Course.en-US.srt")),
+        "en-US 字幕没有按主语言优先于中文"
     );
     let cues = clarora_gpui::subtitles::parse(&std::fs::read_to_string(&track)?);
     ensure!(
