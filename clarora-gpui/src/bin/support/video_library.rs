@@ -291,6 +291,8 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
                 cue_start: Some(4.),
                 active_start: Some(4.),
                 cue_offset: 2.,
+                transcript_item: None,
+                transcript_cue_start: None,
                 transcript_offset: 8.,
                 transcript_revision: String::new(),
             },

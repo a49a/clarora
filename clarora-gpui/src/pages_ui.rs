@@ -1,5 +1,6 @@
 //! Module pages consume view data; they do not refresh the repository.
 use super::*;
+use crate::app_state::PART_ROW_HEIGHT;
 
 impl AppView {
     pub(super) fn handle_card_study_key(
@@ -1091,7 +1092,7 @@ impl AppView {
                                             Some(
                                                 div()
                                                     .id(("bili-part", i))
-                                                    .h(px(64.))
+                                                    .h(px(PART_ROW_HEIGHT))
                                                     .w_full()
                                                     .px_3()
                                                     .py_2()

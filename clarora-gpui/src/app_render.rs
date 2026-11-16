@@ -96,7 +96,19 @@ impl Render for AppView {
                     root = root.child(assistant);
                 }
             } else if self.assistant_open {
-                root = root.key_context("VideoFullscreen").track_focus(&self.focus);
+                root = root
+                    .key_context("VideoFullscreen")
+                    .track_focus(&self.focus)
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "escape" {
+                            if this.assistant_open {
+                                this.handle(Action::Assistant, window, cx);
+                            } else {
+                                this.leave_video_fullscreen(window, cx);
+                            }
+                            cx.stop_propagation();
+                        }
+                    }));
                 if let Some(assistant) = assistant {
                     root = root.child(assistant);
                 }
@@ -363,6 +375,8 @@ impl Render for AppView {
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
                 if event.button == MouseButton::Left {
                     this.assistant.press = Some(event.position);
+                    this.assistant.last_press = Some(event.position);
+                    this.assistant.last_source = assistant_ui::SelectionSource::Other;
                     this.assistant.dragging = false;
                 }
             }))
@@ -568,6 +582,12 @@ impl Render for AppView {
             }))
             .on_action(cx.listener(|this, _: &QuoteSelectedText, window, cx| {
                 this.offer_assistant_selection(point(px(360.), px(180.)), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CopyTranscriptSelection, _, cx| {
+                if let Some(text) = this.transcript_selection_text() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    cx.stop_propagation();
+                }
             }))
             .on_action(cx.listener(|this, _: &PdfZoomIn, window, cx| {
                 if this.page == "pdf" {

@@ -148,6 +148,7 @@ pub(super) enum Action {
     Transcribe,
     VideoTranscribe,
     VideoTranscribeAll,
+    VideoTranscribeStronger,
     VideoTranslateAll,
     CancelVideoSubtitles,
     DismissVideoSubtitles,
@@ -417,6 +418,9 @@ impl From<Action> for Command {
             Action::Transcribe => Routed::Audio(audio::Command::Transcribe),
             Action::VideoTranscribe => Routed::Video(video::Command::VideoTranscribe),
             Action::VideoTranscribeAll => Routed::Video(video::Command::VideoTranscribeAll),
+            Action::VideoTranscribeStronger => {
+                Routed::Video(video::Command::VideoTranscribeStronger)
+            }
             Action::VideoTranslateAll => Routed::Video(video::Command::VideoTranslateAll),
             Action::CancelVideoSubtitles => Routed::Video(video::Command::CancelVideoSubtitles),
             Action::DismissVideoSubtitles => Routed::Video(video::Command::DismissVideoSubtitles),

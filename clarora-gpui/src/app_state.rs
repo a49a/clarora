@@ -1,6 +1,14 @@
 //! Domain state owners. Views render snapshots; resource lifetimes live here.
 use super::*;
 
+/// Fixed height of one part row in the series list.
+pub(super) const PART_ROW_HEIGHT: f32 = 64.;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TranscriptSelection {
+    pub(super) anchor: (usize, usize),
+    pub(super) focus: (usize, usize),
+}
+
 pub(super) struct AudioClipReview {
     pub(super) audio_id: String,
     pub(super) ranges: Vec<clip_marks::Range>,
@@ -114,7 +122,7 @@ pub(super) struct VideoState {
     pub(super) caption_source: VideoCaptionSource,
     pub(super) transcript: clarora_gpui::video_transcript::Transcript,
     pub(super) transcript_open: bool,
-    pub(super) transcript_html: SharedString,
+    pub(super) transcript_paragraphs: std::rc::Rc<Vec<SharedString>>,
     pub(super) transcript_revision: u64,
     pub(super) captions_enabled: bool,
     pub(super) material: Option<video_qa::Material>,
@@ -126,6 +134,9 @@ pub(super) struct VideoState {
     pub(super) panel_width: f32,
     pub(super) resize: Option<(Pixels, f32)>,
     pub(super) parts_scroll: UniformListScrollHandle,
+    /// Series whose manual part-list position is currently installed in
+    /// `parts_scroll`; avoids resetting the list when only the playing P changes.
+    pub(super) parts_series_key: Option<String>,
     pub(super) active: Option<usize>,
     pub(super) sentence_repeat: Option<u32>,
     /// Preserve a sentence-repeat mode while background subtitles replace cues.
@@ -151,7 +162,11 @@ pub(super) struct VideoState {
     pub(super) progress_key: Option<String>,
     pub(super) import_group: Option<String>,
     pub(super) reading_restore: Option<clarora_gpui::video_progress::Reading>,
-    pub(super) transcript_scroll: ScrollHandle,
+    pub(super) transcript_scroll: ListState,
+    /// Cross-paragraph selection in the English transcript.
+    pub(super) transcript_selection: Option<TranscriptSelection>,
+    pub(super) transcript_drag_anchor: Option<(usize, usize)>,
+    pub(super) transcript_focus: FocusHandle,
     pub(super) completion_marked: bool,
     pub(super) import_draft: Option<VideoImportDraft>,
     pub(super) import_recovery: Option<VideoImportDraft>,
@@ -162,6 +177,35 @@ pub(super) struct VideoState {
     pub(super) group_aliases: crate::BTreeMap<String, String>,
 }
 impl VideoState {
+    /// Snapshot the reader before a background subtitle update replaces the
+    /// cue list. These callbacks do not pass through `open_with_item`, so the
+    /// previous position must be carried forward explicitly.
+    fn reading_for_cue_change(&self) -> clarora_gpui::video_progress::Reading {
+        let cue_top = self.scroll.logical_scroll_top();
+        let transcript_top = self.transcript_scroll.logical_scroll_top();
+        let active_start = self
+            .active
+            .and_then(|index| self.cues.get(index))
+            .or_else(|| self.cues.get(cue_top.item_ix))
+            .map(|cue| cue.start);
+        clarora_gpui::video_progress::Reading {
+            tab: self.tab,
+            transcript_open: self.transcript_open,
+            follow: self.follow,
+            cue_start: self.cues.get(cue_top.item_ix).map(|cue| cue.start),
+            active_start,
+            cue_offset: f32::from(cue_top.offset_in_item),
+            transcript_item: Some(transcript_top.item_ix),
+            transcript_cue_start: self
+                .transcript
+                .paragraph_cues
+                .get(transcript_top.item_ix)
+                .copied(),
+            transcript_offset: f32::from(transcript_top.offset_in_item),
+            transcript_revision: self.transcript.revision(),
+        }
+    }
+
     pub(super) fn set_cues(&mut self, cues: Vec<Cue>) {
         // Async subtitle loading may deliver the same list again after a
         // progress restore; keep the restored active cue instead of clearing it.
@@ -174,11 +218,25 @@ impl VideoState {
         {
             return;
         }
+        let preserve =
+            (self.reading_restore.is_none() && !cues.is_empty() && !self.cues.is_empty())
+                .then(|| self.reading_for_cue_change());
         self.part_confirmation = None;
         self.transcript = clarora_gpui::video_transcript::Transcript::from_cues(&cues);
-        self.transcript_html = self.transcript.html.clone().into();
+        self.transcript_paragraphs = std::rc::Rc::new(
+            self.transcript
+                .paragraphs
+                .iter()
+                .cloned()
+                .map(SharedString::from)
+                .collect(),
+        );
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         self.scroll.reset(cues.len());
+        self.transcript_scroll
+            .reset(self.transcript.paragraphs.len());
+        self.transcript_selection = None;
+        self.transcript_drag_anchor = None;
         self.active = None;
         let empty = cues.is_empty();
         self.cues = cues;
@@ -189,7 +247,7 @@ impl VideoState {
             .reading_restore
             .as_ref()
             .is_some_and(|reading| empty && reading.cue_start.is_some());
-        if !defer && let Some(reading) = self.reading_restore.take() {
+        if !defer && let Some(reading) = self.reading_restore.take().or(preserve) {
             self.tab = reading.tab.min(3);
             self.transcript_open = reading.transcript_open;
             self.follow = reading.follow;
@@ -216,21 +274,47 @@ impl VideoState {
                     offset_in_item: px(reading.cue_offset),
                 });
             }
-            if reading.transcript_revision.is_empty()
-                || reading.transcript_revision
-                    == clarora_gpui::assistant::subtitle_revision(&self.cues)
-            {
-                self.transcript_scroll
-                    .set_offset(point(px(0.), px(reading.transcript_offset)));
+            let revision_matches = reading.transcript_revision.is_empty()
+                || reading.transcript_revision == self.transcript.revision();
+            let exact_item = reading
+                .transcript_item
+                .filter(|item| *item < self.transcript.paragraphs.len());
+            let anchored_item = if revision_matches {
+                exact_item
             } else {
-                // The transcript changed; the old pixel offset no longer
-                // identifies the same text.
-                self.transcript_scroll.set_offset(point(px(0.), px(0.)));
+                // The English text changed. Re-locate the same reading content
+                // by its cue time before considering the old paragraph index.
+                reading
+                    .transcript_cue_start
+                    .map(|time| self.transcript.paragraph_for_time(time))
+            };
+            if let Some(item) = anchored_item {
+                self.transcript_scroll.scroll_to(ListOffset {
+                    item_ix: item,
+                    offset_in_item: if revision_matches {
+                        px(reading.transcript_offset)
+                    } else {
+                        px(0.)
+                    },
+                });
+            } else if let Some(item) = exact_item {
+                self.transcript_scroll.scroll_to(ListOffset {
+                    item_ix: item,
+                    offset_in_item: px(0.),
+                });
+            } else if !self.transcript.paragraphs.is_empty() {
+                let item = self
+                    .transcript
+                    .paragraph_for_time(reading.active_start.unwrap_or(0.));
+                self.transcript_scroll.scroll_to(ListOffset {
+                    item_ix: item,
+                    offset_in_item: px(0.),
+                });
             }
         }
     }
 
-    pub(super) fn new() -> Self {
+    pub(super) fn new(cx: &mut Context<AppView>) -> Self {
         Self {
             path: None,
             series: None,
@@ -239,7 +323,7 @@ impl VideoState {
             caption_source: VideoCaptionSource::Transcript,
             transcript: Default::default(),
             transcript_open: false,
-            transcript_html: "".into(),
+            transcript_paragraphs: std::rc::Rc::new(Vec::new()),
             transcript_revision: 0,
             captions_enabled: true,
             material: None,
@@ -251,6 +335,7 @@ impl VideoState {
             panel_width: 360.,
             resize: None,
             parts_scroll: UniformListScrollHandle::new(),
+            parts_series_key: None,
             active: None,
             sentence_repeat: None,
             repeat_resume: None,
@@ -275,7 +360,10 @@ impl VideoState {
             progress_key: None,
             import_group: None,
             reading_restore: None,
-            transcript_scroll: ScrollHandle::new(),
+            transcript_scroll: ListState::new(0, ListAlignment::Top, px(400.)),
+            transcript_selection: None,
+            transcript_drag_anchor: None,
+            transcript_focus: cx.focus_handle(),
             completion_marked: false,
             import_draft: None,
             import_recovery: None,

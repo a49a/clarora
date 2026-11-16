@@ -9,6 +9,12 @@ fn video(lib: &Library) -> PathBuf {
 fn other_video(lib: &Library) -> PathBuf {
     lib.root.join("media").join("resume-other.mp4")
 }
+fn series_b_video(lib: &Library) -> PathBuf {
+    lib.root.join("media").join("resume-series-b.mp4")
+}
+fn transcript_video(lib: &Library) -> PathBuf {
+    lib.root.join("media").join("resume-transcript.mp4")
+}
 
 pub(super) fn prepare(lib: &Library) -> Result<()> {
     let path = video(lib);
@@ -40,6 +46,8 @@ pub(super) fn prepare(lib: &Library) -> Result<()> {
         Duration::from_secs(30),
     )?;
     fs::copy(&path, other_video(lib))?;
+    fs::copy(&path, series_b_video(lib))?;
+    fs::copy(&path, transcript_video(lib))?;
     let mut collection = video_library::Collection::load(lib)?;
     let ids = collection.add(std::slice::from_ref(&path), None)?;
     collection.select(&ids[0])?;
@@ -97,6 +105,8 @@ pub(super) struct Probe {
     timeline_request: u64,
     fullscreen_edit_stage: u8,
     fullscreen_edit_started: Instant,
+    frozen_transcript: Option<String>,
+    reanchor_text: Option<String>,
 }
 impl Probe {
     pub(super) fn new(out: &Path) -> Self {
@@ -110,7 +120,52 @@ impl Probe {
             timeline_request: 0,
             fullscreen_edit_stage: 0,
             fullscreen_edit_started: Instant::now(),
+            frozen_transcript: None,
+            reanchor_text: None,
         }
+    }
+    fn series(
+        title: &str,
+        base: &str,
+        path: &Path,
+        count: usize,
+        prefix: &str,
+    ) -> bilibili::Series {
+        bilibili::Series {
+            title: title.into(),
+            base: base.into(),
+            requested: 0,
+            current: Some(0),
+            parts: (0..count)
+                .map(|index| bilibili::Part {
+                    number: index as u32 + 1,
+                    title: format!("{prefix}{}", index + 1),
+                    duration: 12.,
+                    path: (index == 0).then(|| path.to_path_buf()),
+                })
+                .collect(),
+        }
+    }
+    fn saved_parts_anchor(
+        app: &AppView,
+        series: &bilibili::Series,
+    ) -> Option<video_progress::PartsAnchor> {
+        video_progress::Progress::load(&app.lib).parts_anchor(&video_progress::series_key(series))
+    }
+    fn parts_ready(app: &mut AppView, window: &Window, cx: &mut Context<AppView>) -> bool {
+        if app.video.tab != 1 {
+            // Cue loading resets the panel to the subtitle tab; open the part
+            // panel again before checking its restored offset.
+            app.video.tab = 1;
+            cx.notify();
+            Self::draw(window, cx);
+            return false;
+        }
+        if app.video.parts_scroll.0.borrow().last_item_size.is_none() {
+            Self::draw(window, cx);
+            return false;
+        }
+        true
     }
     fn advance(&mut self) {
         self.stage += 1;
@@ -337,6 +392,20 @@ impl Probe {
                     ],
                 });
                 ensure!(app.open(path.clone()), "无法打开键盘确认夹具");
+                let part_two = other_video(&app.lib);
+                let part_two_key = video_progress::item_key(&app.video.collection, &part_two);
+                app.video_progress.record(
+                    part_two_key,
+                    video_progress::Item {
+                        position: 5.5,
+                        completed: false,
+                        sentence_repeat: None,
+                        repeat_mode: 0,
+                        reading: video_progress::Reading::default(),
+                        updated_ms: 0,
+                    },
+                )?;
+                app.video_progress.save(&app.lib)?;
                 app.media.player.set("pause", "yes");
                 self.advance();
             }
@@ -482,6 +551,7 @@ impl Probe {
                 let state = app.media.player.snapshot();
                 if state.path != other_video(&app.lib).to_string_lossy()
                     || state.duration < 11.9
+                    || state.paused
                     || !app
                         .media
                         .session
@@ -502,8 +572,11 @@ impl Probe {
                     "新P套用了上一P的范围或没有跳过无效首句"
                 );
                 ensure!(
-                    app.video.series.as_ref().and_then(|s| s.current) == Some(1) && !state.paused,
-                    "跨P后仍处于暂停：paused={}",
+                    app.video.series.as_ref().and_then(|s| s.current) == Some(1)
+                        && !state.paused
+                        && state.position < 1.2,
+                    "右键跨P沿用了旧进度或仍暂停：position={} paused={}",
+                    state.position,
                     state.paused
                 );
                 self.record(app, "末句播完三遍/再次独立右键实际打开并播放缓存下一P")?;
@@ -711,6 +784,7 @@ impl Probe {
                 let state = app.media.player.snapshot();
                 if app.tasks.foreground.is_running()
                     || state.path != other_video(&app.lib).to_string_lossy()
+                    || app.video.cues.len() != 2
                     || !self.stable()
                 {
                     return Ok(false);
@@ -727,7 +801,11 @@ impl Probe {
                 ensure!(
                     app.video.part_confirmation.is_some()
                         && app.video.path.as_ref() == Some(&other_video(&app.lib)),
-                    "首句第一次左键未只提示上一P"
+                    "首句第一次左键未只提示上一P：repeat={:?} session={:?} path={:?} status={}",
+                    app.video.sentence_repeat,
+                    app.media.session.video_sentence(),
+                    app.video.path,
+                    app.status
                 );
                 for _ in 0..4 {
                     app.handle_video_arrow_key(&Self::key("left", true), window, cx);
@@ -833,6 +911,7 @@ impl Probe {
             27 => {
                 let state = app.media.player.snapshot();
                 if state.path != path.to_string_lossy()
+                    || state.paused
                     || !app.media.session.video_sentence().is_some_and(|s| {
                         s.total.is_some() && s.index == 2 && padded_range(s, 8., 12.)
                     })
@@ -900,6 +979,7 @@ impl Probe {
                 let state = app.media.player.snapshot();
                 if app.tasks.foreground.is_running()
                     || state.path != path.to_string_lossy()
+                    || state.position < 7.95
                     || !self.stable()
                 {
                     return Ok(false);
@@ -907,8 +987,10 @@ impl Probe {
                 ensure!(
                     app.video.sentence_repeat.is_none()
                         && state.position >= 7.95
-                        && state.position < 10.,
-                    "普通异步末句定位错误"
+                        && state.position < 11.8,
+                    "普通异步末句定位错误：position={} paused={}",
+                    state.position,
+                    state.paused
                 );
                 self.record(app, "普通模式异步切P也从末句开头播放")?;
                 let srt = video_subtitles::save(
@@ -2549,9 +2631,854 @@ impl Probe {
                     app.assistant_columns
                 );
                 self.record(app, "全屏窄窗实际挂载单列助手")?;
-                app.leave_video_fullscreen(window, cx);
-                ensure!(!app.video.fullscreen, "Esc 返回路径未退出全屏");
-                app.handle(Action::Assistant, window, cx);
+                app.inputs["question"].update(cx, |input, cx| input.focus(window, cx));
+                Self::dispatch_keys(window, cx, &["escape"]);
+                self.advance();
+            }
+            119 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                ensure!(
+                    app.video.fullscreen && !app.assistant_open,
+                    "第一次 Esc 没有返回全屏播放器：fullscreen={} open={}",
+                    app.video.fullscreen,
+                    app.assistant_open
+                );
+                self.record(app, "全屏助手输入框第一次 Esc 返回播放器")?;
+                Self::dispatch_keys(window, cx, &["escape"]);
+                self.advance();
+            }
+            120 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                ensure!(!app.video.fullscreen, "第二次 Esc 没有退出全屏");
+                self.record(app, "全屏播放器第二次 Esc 退出全屏")?;
+                app.assistant.enabled = false;
+                app.assistant.legacy = false;
+                app.handle(Action::Page("video".into()), window, cx);
+                self.advance();
+            }
+            121 => {
+                if !self.stable() || app.page != "video" {
+                    return Ok(false);
+                }
+                let a = Self::series(
+                    "Series A",
+                    "https://www.bilibili.com/video/BV1xx411c7mD",
+                    &path,
+                    40,
+                    "A-P",
+                );
+                let b = Self::series(
+                    "Series B",
+                    "https://www.bilibili.com/video/BV1xx411c7mE",
+                    &series_b_video(&app.lib),
+                    30,
+                    "B-P",
+                );
+                let mut videos = video_library::Collection::load(&app.lib)?;
+                videos.add(std::slice::from_ref(&series_b_video(&app.lib)), Some(&b))?;
+                videos.save(&app.lib)?;
+                app.video.collection = videos;
+                app.video.series = Some(a);
+                app.video.tab = 1;
+                ensure!(app.open(path.clone()), "无法打开选集夹具 A");
+                self.advance();
+            }
+            122 => {
+                if !Self::parts_ready(app, window, cx) || !self.stable() {
+                    return Ok(false);
+                }
+                let a = app.video.series.clone().context("选集 A 丢失")?;
+                ensure!(
+                    a.parts.len() == 40 && a.current == Some(0),
+                    "选集 A 夹具错误：parts={} current={:?}",
+                    a.parts.len(),
+                    a.current
+                );
+                app.scroll_parts_to(12, 0.25);
+                app.save_video_progress();
+                let saved = Self::saved_parts_anchor(app, &a).context("A 选集锚点未保存")?;
+                ensure!(
+                    saved.index == 12 && (saved.offset - 0.25).abs() < 0.02,
+                    "A 选集锚点保存错误：{saved:?}"
+                );
+                self.record(app, "A 选集手动滚到 P13 并保存 0.25 行偏移")?;
+                ensure!(app.open(series_b_video(&app.lib)), "无法打开选集夹具 B");
+                self.advance();
+            }
+            123 => {
+                if !Self::parts_ready(app, window, cx) {
+                    if self.entered.elapsed() > Duration::from_secs(2) {
+                        anyhow::bail!(
+                            "B 选集列表不可用：tab={} laid_out={} page={} fullscreen={} assistant={} series={:?} key={:?}",
+                            app.video.tab,
+                            app.video.parts_scroll.0.borrow().last_item_size.is_some(),
+                            app.page,
+                            app.video.fullscreen,
+                            app.assistant_open,
+                            app.video.series.as_ref().map(|s| s.base.as_str()),
+                            app.video.parts_series_key
+                        );
+                    }
+                    return Ok(false);
+                }
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let b = app.video.series.clone().context("选集 B 丢失")?;
+                ensure!(
+                    b.base.ends_with("BV1xx411c7mE")
+                        && app.video.parts_series_key.as_deref()
+                            == Some(video_progress::series_key(&b).as_str())
+                        && app.parts_top() == Some((0, 0.)),
+                    "切换到 B 选集后没有从顶部开始：key={:?} top={:?}",
+                    app.video.parts_series_key,
+                    app.parts_top()
+                );
+                app.scroll_parts_to(3, 0.5);
+                app.save_video_progress();
+                let saved = Self::saved_parts_anchor(app, &b).with_context(|| {
+                    format!(
+                        "B 选集锚点未保存：tab={} key={:?} laid_out={} top={:?} base={}",
+                        app.video.tab,
+                        app.video.parts_series_key,
+                        app.video.parts_scroll.0.borrow().last_item_size.is_some(),
+                        app.parts_top(),
+                        b.base
+                    )
+                })?;
+                ensure!(
+                    saved.index == 3 && (saved.offset - 0.5).abs() < 0.02,
+                    "B 选集锚点保存错误：{saved:?}"
+                );
+                self.record(app, "B 选集独立保存 P4 半行偏移")?;
+                ensure!(app.open(path.clone()), "无法重新打开选集夹具 A");
+                self.advance();
+            }
+            124 => {
+                if !Self::parts_ready(app, window, cx) || !self.stable() {
+                    return Ok(false);
+                }
+                let a = app.video.series.clone().context("重新打开 A 后选集丢失")?;
+                let top = app.parts_top().context("A 选集未布局")?;
+                ensure!(
+                    top.0 == 12 && (top.1 - 0.25).abs() < 0.02,
+                    "A 选集没有恢复手动锚点：{top:?}"
+                );
+                self.record(app, "重新打开 A 恢复 P13 半行偏移")?;
+                // Simulate a process restart: parse only the persisted state and
+                // drop the in-memory list layout before opening B again.
+                app.video_progress = video_progress::Progress::load(&app.lib);
+                app.video.parts_series_key = None;
+                app.reset_parts_scroll();
+                app.restore_parts_anchor(Some(&video_progress::series_key(&a)));
+                ensure!(app.open(series_b_video(&app.lib)), "重启后无法打开 B");
+                self.advance();
+            }
+            125 => {
+                if !Self::parts_ready(app, window, cx) || !self.stable() {
+                    return Ok(false);
+                }
+                let b = app.video.series.clone().context("重启后选集 B 丢失")?;
+                let top = app.parts_top().context("重启后 B 选集未布局")?;
+                ensure!(
+                    top.0 == 3 && (top.1 - 0.5).abs() < 0.02,
+                    "重启后 B 选集没有恢复：{top:?} key={:?}",
+                    app.video.parts_series_key
+                );
+                self.record(app, "重启后独立恢复 B 的 P4 半行偏移")?;
+                let a = Self::series(
+                    "Series A",
+                    "https://www.bilibili.com/video/BV1xx411c7mD",
+                    &path,
+                    40,
+                    "A-P",
+                );
+                let key = video_progress::series_key(&a);
+                let mut saved: Value =
+                    serde_json::from_str(&app.lib.setting(video_progress::KEY)?)?;
+                saved["parts"][&key] = json!({"index":999,"offset":0.5});
+                app.lib
+                    .set_setting(video_progress::KEY, &saved.to_string())?;
+                app.video_progress = video_progress::Progress::load(&app.lib);
+                app.video.parts_series_key = None;
+                app.reset_parts_scroll();
+                ensure!(app.open(path.clone()), "无效锚点后无法打开 A");
+                let _ = b;
+                self.advance();
+            }
+            126 => {
+                if !Self::parts_ready(app, window, cx) || !self.stable() {
+                    return Ok(false);
+                }
+                let a = app.video.series.clone().context("无效锚点后选集 A 丢失")?;
+                let top = app.parts_top().context("无效锚点后选集未布局")?;
+                ensure!(
+                    a.parts.len() == 40 && top == (0, 0.),
+                    "无效选集锚点没有回退到播放 P：parts={} top={top:?}",
+                    a.parts.len()
+                );
+                self.record(app, "越界选集锚点回退到当前播放 P")?;
+                let cues: Vec<Cue> = (0..200)
+                    .map(|index| Cue {
+                        start: index as f64 * 3.,
+                        end: index as f64 * 3. + 2.8,
+                        text: format!(
+                            "Revision cue {} {}",
+                            index + 1,
+                            "extra ".repeat(index % 7 + 1)
+                        ),
+                    })
+                    .collect();
+                let transcript_path = transcript_video(&app.lib);
+                video_subtitles::save(&app.lib, &transcript_path, &cues, &process::cancel_token())?;
+                let key = video_progress::item_key(&app.video.collection, &transcript_path);
+                app.video_progress.record(
+                    key,
+                    video_progress::Item {
+                        position: 300.5,
+                        completed: false,
+                        sentence_repeat: None,
+                        repeat_mode: 0,
+                        reading: video_progress::Reading {
+                            tab: 0,
+                            transcript_open: true,
+                            follow: false,
+                            cue_start: Some(300.),
+                            active_start: Some(300.),
+                            cue_offset: 0.,
+                            transcript_item: None,
+                            transcript_cue_start: None,
+                            transcript_offset: 0.,
+                            transcript_revision: "stale-revision".into(),
+                        },
+                        updated_ms: 0,
+                    },
+                )?;
+                app.video_progress.save(&app.lib)?;
+                app.media.player.set("pause", "yes");
+                ensure!(
+                    app.open_continue(transcript_path, false),
+                    "字幕换版夹具无法打开"
+                );
+                self.advance();
+            }
+            127 => {
+                if !self.stable() || app.video.pending_start.is_some() {
+                    return Ok(false);
+                }
+                if app.video.transcript.paragraphs.len() != 200 {
+                    if self.entered.elapsed() > Duration::from_secs(5) {
+                        anyhow::bail!(
+                            "字幕换版夹具没有载入 200 段：cues={} paragraphs={} tab={} open={}",
+                            app.video.cues.len(),
+                            app.video.transcript.paragraphs.len(),
+                            app.video.tab,
+                            app.video.transcript_open
+                        );
+                    }
+                    Self::draw(window, cx);
+                    return Ok(false);
+                }
+                ensure!(
+                    app.video.tab == 0 && app.video.transcript_open,
+                    "字幕换版夹具没有打开全文：tab={} open={}",
+                    app.video.tab,
+                    app.video.transcript_open
+                );
+                Self::draw(window, cx);
+                self.advance();
+            }
+            128 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let top = app.video.transcript_scroll.logical_scroll_top();
+                ensure!(
+                    top.item_ix == 100 && f32::from(top.offset_in_item).abs() < 0.5,
+                    "字幕换版没有把播放句段落放到顶部：{:?}",
+                    top
+                );
+                self.record(app, "字幕换版后按播放句段落恢复全文")?;
+                app.save_video_progress();
+                let key =
+                    video_progress::item_key(&app.video.collection, &transcript_video(&app.lib));
+                let saved = video_progress::Progress::load(&app.lib)
+                    .get(&key)
+                    .cloned()
+                    .context("全文段落位置未保存")?;
+                ensure!(
+                    saved.reading.transcript_item == Some(100),
+                    "全文段落位置保存错误：{:?}",
+                    saved.reading
+                );
+                self.record(app, "全文顶部第 101 段被写入阅读快照")?;
+                let mut reading = saved.reading.clone();
+                reading.transcript_item = Some(150);
+                app.video.reading_restore = Some(reading);
+                app.video.set_cues(vec![]);
+                let cues: Vec<Cue> = (0..200)
+                    .map(|index| Cue {
+                        start: index as f64 * 3.,
+                        end: index as f64 * 3. + 2.8,
+                        text: format!(
+                            "Revision cue {} {}",
+                            index + 1,
+                            "extra ".repeat(index % 7 + 1)
+                        ),
+                    })
+                    .collect();
+                app.video.set_cues(cues);
+                Self::draw(window, cx);
+                self.advance();
+            }
+            129 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let top = app.video.transcript_scroll.logical_scroll_top();
+                ensure!(top.item_ix == 150, "全文段落位置没有精确恢复：{:?}", top);
+                self.record(app, "同修订重开恢复第 151 段")?;
+                // Translation-only changes keep the same English paragraphs and
+                // timeline; the manual paragraph must win over the playback cue.
+                app.video.active = Some(100);
+                let translated = (0..200)
+                    .map(|index| Cue {
+                        start: index as f64 * 3.,
+                        end: index as f64 * 3. + 2.8,
+                        text: format!(
+                            "Revision cue {} {}\n中文译文 {}",
+                            index + 1,
+                            "extra ".repeat(index % 7 + 1),
+                            index + 1
+                        ),
+                    })
+                    .collect::<Vec<_>>();
+                app.video.set_cues(translated);
+                Self::draw(window, cx);
+                self.advance();
+            }
+            130 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let top = app.video.transcript_scroll.logical_scroll_top();
+                ensure!(
+                    top.item_ix == 150,
+                    "翻译完成回调没有保留手动阅读段落：{:?}",
+                    top
+                );
+                self.record(app, "阅读中完成翻译后保留第 151 段手动位置")?;
+                let first = app
+                    .video
+                    .transcript_scroll
+                    .bounds_for_item(150)
+                    .context("第 151 段没有行边界")?;
+                let second = app
+                    .video
+                    .transcript_scroll
+                    .bounds_for_item(151)
+                    .context("第 152 段没有行边界")?;
+                let start = point(first.left() + px(20.), first.top() + first.size.height / 2.);
+                let end = point(
+                    second.left() + px(140.),
+                    second.top() + second.size.height / 2.,
+                );
+                native_probe_input::send(
+                    window,
+                    cx,
+                    vec![
+                        native_probe_input::MouseEvent::Down(start),
+                        native_probe_input::MouseEvent::Drag(end),
+                        native_probe_input::MouseEvent::Up(end),
+                    ],
+                )?;
+                self.advance();
+            }
+            131 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let selection = app
+                    .video
+                    .transcript_selection
+                    .context("跨段拖选没有产生选区")?;
+                ensure!(
+                    selection.anchor.0 == 150 && selection.focus.0 == 151,
+                    "跨段拖选没有覆盖第 151-152 段：{selection:?}"
+                );
+                let selected = app
+                    .transcript_selection_text()
+                    .context("跨段选区没有文本")?;
+                let full = format!(
+                    "{}\n\n{}",
+                    app.video.transcript.paragraphs[150], app.video.transcript.paragraphs[151]
+                );
+                let (before, after) = selected
+                    .split_once("\n\n")
+                    .context("跨段选区缺少段落换行")?;
+                ensure!(
+                    selected.len() < full.len()
+                        && selected != full
+                        && app.video.transcript.paragraphs[150].ends_with(before)
+                        && app.video.transcript.paragraphs[151].starts_with(after),
+                    "跨段选区没有精确截取首尾段：{selected:?}"
+                );
+                app.handle(Action::VideoCopyTranscript, window, cx);
+                let copied = cx
+                    .read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .unwrap_or_default();
+                ensure!(copied == selected, "跨段复制内容不一致：{copied:?}");
+                cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
+                Self::dispatch_keys(window, cx, &["cmd-c"]);
+                self.advance();
+            }
+            132 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let selected = app
+                    .transcript_selection_text()
+                    .context("跨段选区没有文本")?;
+                let shortcut = cx
+                    .read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .unwrap_or_default();
+                ensure!(
+                    shortcut == selected,
+                    "Cmd+C 没有复制跨段选区：{shortcut:?} focused={}",
+                    app.video.transcript_focus.is_focused(window)
+                );
+                self.record(app, "跨段拖选复制和 Cmd+C 保留段落换行")?;
+                self.frozen_transcript = Some(app.video.transcript.text.clone());
+                Self::dispatch_keys(
+                    window,
+                    cx,
+                    &[if cfg!(target_os = "macos") {
+                        "cmd-shift-l"
+                    } else {
+                        "ctrl-shift-l"
+                    }],
+                );
+                self.advance();
+            }
+            133 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let (reference, _) = app
+                    .assistant
+                    .offer
+                    .clone()
+                    .context("浮层没有生成选文引用")?;
+                let frozen = self.frozen_transcript.clone().context("没有冻结全文")?;
+                ensure!(
+                    app.assistant.offer_transcript.as_deref() == Some(frozen.as_str()),
+                    "浮层没有冻结选文时的全文"
+                );
+                let changed = (0..200)
+                    .map(|index| Cue {
+                        start: index as f64 * 3.,
+                        end: index as f64 * 3. + 2.8,
+                        text: format!("Changed transcript line {}", index + 1),
+                    })
+                    .collect::<Vec<_>>();
+                app.video.set_cues(changed);
+                app.assistant.references.clear();
+                app.handle(Action::AssistantQuote(reference.clone()), window, cx);
+                ensure!(
+                    app.assistant
+                        .references
+                        .first()
+                        .is_some_and(|item| item.text == reference.text)
+                        && app.assistant.references.iter().any(|item| {
+                            item.kind
+                                == clarora_gpui::assistant::ReferenceKind::TranscriptBackground
+                                && item.text == frozen
+                                && item.source == reference.source
+                                && item.revision == reference.revision
+                        }),
+                    "字幕换版后浮层没有沿用冻结全文：{:?}",
+                    app.assistant.references
+                );
+                let payload =
+                    clarora_gpui::assistant::messages("question", &app.assistant.references, &[])?;
+                let content = payload
+                    .last()
+                    .and_then(|message| message["content"].as_str())
+                    .unwrap_or_default();
+                let title = app
+                    .video
+                    .collection
+                    .active()
+                    .map(|video| video.title.clone())
+                    .unwrap_or_default();
+                let path = app
+                    .video
+                    .path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                ensure!(
+                    !content.contains(&path) && !content.contains(&title),
+                    "发送载荷包含视频路径或标题"
+                );
+                self.record(app, "字幕换版后浮层沿用冻结的同一修订全文")?;
+                app.assistant.references.clear();
+                app.assistant.offer = None;
+                app.assistant.offer_transcript = None;
+                app.set("question", "", window, cx);
+                if app.assistant_open {
+                    app.handle(Action::Assistant, window, cx);
+                }
+                Self::draw(window, cx);
+                self.advance();
+            }
+            134 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let Some(first) = app.video.transcript_scroll.bounds_for_item(150) else {
+                    Self::draw(window, cx);
+                    return Ok(false);
+                };
+                let Some(second) = app.video.transcript_scroll.bounds_for_item(151) else {
+                    Self::draw(window, cx);
+                    return Ok(false);
+                };
+                let start = point(
+                    second.left() + px(40.),
+                    second.top() + second.size.height / 2.,
+                );
+                let end = point(
+                    first.left() + first.size.width * 0.2,
+                    first.top() + first.size.height / 2.,
+                );
+                native_probe_input::send(
+                    window,
+                    cx,
+                    vec![
+                        native_probe_input::MouseEvent::Down(start),
+                        native_probe_input::MouseEvent::Drag(end),
+                        native_probe_input::MouseEvent::Up(end),
+                    ],
+                )?;
+                self.advance();
+            }
+            135 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let selected = app
+                    .transcript_selection_text()
+                    .context("反向拖选没有文本")?;
+                let (before, after) = selected.split_once("\n\n").with_context(|| {
+                    format!(
+                        "反向拖选缺少段落换行：selection={:?} text={selected:?}",
+                        app.video.transcript_selection
+                    )
+                })?;
+                ensure!(
+                    app.video.transcript.paragraphs[150].ends_with(before)
+                        && app.video.transcript.paragraphs[151].starts_with(after),
+                    "反向拖选没有精确截取首尾段：{selected:?}"
+                );
+                self.record(app, "反向跨段拖选得到同一段文字")?;
+                app.assistant.offer = None;
+                app.assistant.offer_transcript = None;
+                cx.notify();
+                Self::draw(window, cx);
+                self.advance();
+            }
+            136 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let Some(first) = app.video.transcript_scroll.bounds_for_item(150) else {
+                    Self::draw(window, cx);
+                    return Ok(false);
+                };
+                let Some(second) = app.video.transcript_scroll.bounds_for_item(151) else {
+                    Self::draw(window, cx);
+                    return Ok(false);
+                };
+                let start = point(
+                    first.left() + px(100.),
+                    first.top() + first.size.height / 2.,
+                );
+                let cross = point(
+                    second.left() + px(100.),
+                    second.top() + second.size.height / 2.,
+                );
+                let back = point(
+                    first.right() - px(80.),
+                    first.top() + first.size.height / 2.,
+                );
+                native_probe_input::send(
+                    window,
+                    cx,
+                    vec![
+                        native_probe_input::MouseEvent::Down(start),
+                        native_probe_input::MouseEvent::Drag(cross),
+                        native_probe_input::MouseEvent::Drag(back),
+                        native_probe_input::MouseEvent::Up(back),
+                    ],
+                )?;
+                self.advance();
+            }
+            137 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let selection = app
+                    .video
+                    .transcript_selection
+                    .context("缩回起始段后没有选区")?;
+                let selected = app
+                    .transcript_selection_text()
+                    .context("缩回起始段后没有文本")?;
+                ensure!(
+                    selection.anchor.0 == 150
+                        && selection.focus.0 == 150
+                        && !selected.contains("\n\n")
+                        && app.video.transcript.paragraphs[150].contains(&selected),
+                    "拖回起始段后选区没有缩回本段：{selection:?} {selected:?}"
+                );
+                self.record(app, "跨段后拖回起始段选区收缩到本段")?;
+                app.video.transcript_selection = None;
+                self.reanchor_text = Some(app.video.transcript.paragraphs[150].clone());
+                let reading = video_progress::Reading {
+                    tab: 0,
+                    transcript_open: true,
+                    follow: false,
+                    transcript_item: Some(150),
+                    transcript_cue_start: Some(451.),
+                    transcript_revision: app.video.transcript.revision(),
+                    ..Default::default()
+                };
+                let mut inserted = Vec::with_capacity(201);
+                inserted.push(Cue {
+                    start: 0.,
+                    end: 0.8,
+                    text: "Inserted English paragraph".into(),
+                });
+                for cue in &app.video.cues {
+                    inserted.push(Cue {
+                        start: cue.start + 1.,
+                        end: cue.end + 1.,
+                        text: cue.text.clone(),
+                    });
+                }
+                app.video.reading_restore = Some(reading);
+                app.video.set_cues(inserted);
+                Self::draw(window, cx);
+                self.advance();
+            }
+            138 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let expected = self.reanchor_text.clone().context("缺少换版前段落")?;
+                let top = app.video.transcript_scroll.logical_scroll_top();
+                ensure!(
+                    top.item_ix == 151 && app.video.transcript.paragraphs[151] == expected,
+                    "前方插入段落后没有按 cue 时间回到原内容：{:?} {:?}",
+                    top,
+                    app.video.transcript.paragraphs.get(151)
+                );
+                self.record(app, "前方插入英文字幕段落后仍读原内容")?;
+                let reading = video_progress::Reading {
+                    tab: 0,
+                    transcript_open: true,
+                    follow: false,
+                    transcript_item: Some(151),
+                    transcript_cue_start: Some(451.),
+                    transcript_revision: app.video.transcript.revision(),
+                    ..Default::default()
+                };
+                let removed = app
+                    .video
+                    .cues
+                    .iter()
+                    .skip(1)
+                    .enumerate()
+                    .map(|(index, cue)| Cue {
+                        start: index as f64 * 3.,
+                        end: index as f64 * 3. + 2.8,
+                        text: cue.text.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                app.video.reading_restore = Some(reading);
+                app.video.set_cues(removed);
+                Self::draw(window, cx);
+                self.advance();
+            }
+            139 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let expected = self.reanchor_text.clone().context("缺少换版前段落")?;
+                let top = app.video.transcript_scroll.logical_scroll_top();
+                ensure!(
+                    top.item_ix == 150 && app.video.transcript.paragraphs[150] == expected,
+                    "删除前方段落后没有按 cue 时间回到原内容：{:?} {:?}",
+                    top,
+                    app.video.transcript.paragraphs.get(150)
+                );
+                self.record(app, "删除前方英文字幕段落后仍读原内容")?;
+                let reading = video_progress::Reading {
+                    tab: 0,
+                    transcript_open: true,
+                    follow: false,
+                    transcript_item: Some(0),
+                    transcript_cue_start: Some(9.9),
+                    transcript_revision: app.video.transcript.revision(),
+                    ..Default::default()
+                };
+                app.video.reading_restore = Some(reading);
+                app.video.set_cues(vec![
+                    Cue {
+                        start: 0.,
+                        end: 10.,
+                        text: "Merged paragraph".into(),
+                    },
+                    Cue {
+                        start: 10.1,
+                        end: 12.,
+                        text: "Next paragraph".into(),
+                    },
+                ]);
+                Self::draw(window, cx);
+                self.advance();
+            }
+            140 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let top = app.video.transcript_scroll.logical_scroll_top();
+                ensure!(
+                    top.item_ix == 0 && app.video.transcript.paragraphs[0] == "Merged paragraph",
+                    "合并字幕没有按覆盖时间回到首段：{:?} {:?}",
+                    top,
+                    app.video.transcript.paragraphs
+                );
+                self.record(app, "合并字幕时锚点 9.9 秒仍落到覆盖段")?;
+                let reading = video_progress::Reading {
+                    tab: 0,
+                    transcript_open: true,
+                    follow: false,
+                    transcript_item: Some(0),
+                    transcript_cue_start: Some(9.9),
+                    transcript_revision: app.video.transcript.revision(),
+                    ..Default::default()
+                };
+                app.video.reading_restore = Some(reading);
+                let mut overlapping = vec![
+                    Cue {
+                        start: 9.0,
+                        end: 10.0,
+                        text: "Overlapping previous".into(),
+                    },
+                    Cue {
+                        start: 9.9,
+                        end: 11.0,
+                        text: "Exact start target".into(),
+                    },
+                ];
+                for index in 0..20 {
+                    overlapping.push(Cue {
+                        start: 11.5 + index as f64 * 0.5,
+                        end: 11.9 + index as f64 * 0.5,
+                        text: format!("Overlap filler {index}"),
+                    });
+                }
+                app.video.set_cues(overlapping);
+                Self::draw(window, cx);
+                self.advance();
+            }
+            141 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let top = app.video.transcript_scroll.logical_scroll_top();
+                ensure!(
+                    top.item_ix == 1 && app.video.transcript.paragraphs[1] == "Exact start target",
+                    "重叠字幕没有优先匹配精确起点：{:?} {:?}",
+                    top,
+                    app.video.transcript.paragraphs
+                );
+                self.record(app, "重叠字幕优先匹配精确起点而非覆盖段")?;
+                app.video.transcript_selection = Some(crate::app_state::TranscriptSelection {
+                    anchor: (0, 0),
+                    focus: (0, 5),
+                });
+                let old_press = point(px(400.), px(400.));
+                app.subtitle_text.borrow_mut().set_probe_selection(
+                    subtitle_text_ui::Surface::Video,
+                    "Old subtitle sentence",
+                    0,
+                    16,
+                    old_press,
+                );
+                app.assistant.last_press = Some(old_press);
+                app.assistant.last_source = crate::assistant_ui::SelectionSource::Transcript;
+                app.assistant.press = None;
+                app.assistant.offer = None;
+                app.assistant.offer_transcript = None;
+                app.set("question", "Input quote fixture", window, cx);
+                app.open_assistant(window, cx);
+                app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
+                Self::dispatch_keys(
+                    window,
+                    cx,
+                    &[
+                        if cfg!(target_os = "macos") {
+                            "cmd-a"
+                        } else {
+                            "ctrl-a"
+                        },
+                        if cfg!(target_os = "macos") {
+                            "cmd-shift-l"
+                        } else {
+                            "ctrl-shift-l"
+                        },
+                    ],
+                );
+                self.advance();
+            }
+            142 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                let (reference, _) = app
+                    .assistant
+                    .offer
+                    .clone()
+                    .context("输入框选区没有生成引用浮层")?;
+                ensure!(
+                    reference.kind == clarora_gpui::assistant::ReferenceKind::Plain
+                        && reference.text == "Input quote fixture"
+                        && app.assistant.offer_transcript.is_none(),
+                    "键盘焦点在助手输入框时没有引用当前输入选区：{:?} {:?}",
+                    reference,
+                    app.assistant.offer_transcript
+                );
+                app.assistant.references.clear();
+                app.handle(Action::AssistantQuote(reference.clone()), window, cx);
+                ensure!(
+                    app.assistant.references.len() == 1 && app.assistant.references[0] == reference,
+                    "输入框选区引用后没有生成对应普通引用：{:?}",
+                    app.assistant.references
+                );
+                self.record(app, "键盘焦点在助手输入框时引用当前输入文字")?;
+                app.assistant.offer = None;
+                app.assistant.offer_transcript = None;
+                app.assistant.references.clear();
+                app.video.transcript_selection = None;
                 app.assistant.enabled = false;
                 app.assistant.legacy = false;
                 app.handle(Action::Page("settings".into()), window, cx);

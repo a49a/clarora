@@ -157,7 +157,7 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
     ensure!(
         content
             == format!(
-                "fresh 在这里是什么意思？\n\n<reference kind=\"selected_subtitle\">\n{}\n</reference>\n\n<reference kind=\"transcript_background\">\nThe bread is baked fresh every morning.\nWe open at eight.\n</reference>",
+                "fresh 在这里是什么意思？\n\n<reference group=\"1\" kind=\"selected_subtitle\">\n{}\n</reference>\n\n<reference group=\"2\" kind=\"transcript_background\">\nThe bread is baked fresh every morning.\nWe open at eight.\n</reference>",
                 first.text
             ),
         "发送内容没有区分所选字幕与完整背景"
@@ -322,6 +322,73 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         assistant::column_width(600., 620., false) == assistant::MIN_COLUMN,
         "过窄窗口的助手列低于最低宽度"
     );
+    let same_a = Reference {
+        text: "same sentence".into(),
+        kind: ReferenceKind::SelectedSubtitle,
+        source: Some("video:A:1".into()),
+        revision: Some("rev-a".into()),
+    };
+    let same_b = Reference {
+        text: "same sentence".into(),
+        kind: ReferenceKind::SelectedSubtitle,
+        source: Some("video:B:1".into()),
+        revision: Some("rev-b".into()),
+    };
+    let grouped = vec![
+        same_a,
+        Reference {
+            text: "A background".into(),
+            kind: ReferenceKind::TranscriptBackground,
+            source: Some("video:A:1".into()),
+            revision: Some("rev-a".into()),
+        },
+        same_b,
+        Reference {
+            text: "B background".into(),
+            kind: ReferenceKind::TranscriptBackground,
+            source: Some("video:B:1".into()),
+            revision: Some("rev-b".into()),
+        },
+    ];
+    let grouped_content = assistant::messages("compare", &grouped, &[])?;
+    let grouped_content = grouped_content.last().unwrap()["content"].as_str().unwrap();
+    ensure!(
+        grouped_content.contains("<reference group=\"1\" kind=\"selected_subtitle\">")
+            && grouped_content.contains("<reference group=\"1\" kind=\"transcript_background\">")
+            && grouped_content.contains("<reference group=\"2\" kind=\"selected_subtitle\">")
+            && grouped_content.contains("<reference group=\"2\" kind=\"transcript_background\">"),
+        "同一句来自不同材料时没有按匿名组配对"
+    );
+    ensure!(
+        assistant::group_indices(&grouped) == vec![0, 0, 1, 1],
+        "预览分组与出站引用分组不一致"
+    );
+    let revisions = (0..5)
+        .map(|index| Reference {
+            text: format!("revision {index}"),
+            kind: ReferenceKind::TranscriptBackground,
+            source: Some("video:A:1".into()),
+            revision: Some(format!("rev-{index}")),
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        assistant::validate(&revisions).is_err()
+            && assistant::messages("compare revisions", &revisions, &[]).is_err(),
+        "同一来源的五个修订没有按五组拒绝"
+    );
+    let four = revisions[..4].to_vec();
+    ensure!(assistant::validate(&four).is_ok(), "四个来源修订被误拒绝");
+    let old_turn = json!({
+        "role": "user",
+        "content": "旧会话",
+        "references": revisions.clone(),
+    });
+    ensure!(
+        assistant::messages("继续旧会话", &[], &[old_turn]).is_ok(),
+        "旧会话被新的引用上限阻断"
+    );
+    results.push(json!({"workflow":"同一来源五个修订仅限制新草稿、旧会话仍可发送","passed":true}));
+    results.push(json!({"workflow":"同一句 A/B 选句与全文按匿名组配对","passed":true}));
     results.push(
         json!({"workflow":"助手宽窄布局：900/1280/1440/1920与视频/其他模块阈值","passed":true}),
     );

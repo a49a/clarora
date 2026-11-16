@@ -176,11 +176,52 @@ enum AnswerBlock {
 }
 
 fn table_cells(line: &str) -> Vec<String> {
-    line.trim()
-        .trim_matches('|')
-        .split('|')
+    let mut cells = vec![String::new()];
+    let mut pending_escape = false;
+    for ch in line.trim().trim_matches('|').chars() {
+        if pending_escape {
+            // Only a pipe or a backslash is escaped in a table cell. Keep
+            // Windows-style paths and other literal backslashes intact.
+            if ch != '|' && ch != '\\' {
+                cells.last_mut().unwrap().push('\\');
+            }
+            cells.last_mut().unwrap().push(ch);
+            pending_escape = false;
+        } else if ch == '\\' {
+            pending_escape = true;
+        } else if ch == '|' {
+            cells.push(String::new());
+        } else {
+            cells.last_mut().unwrap().push(ch);
+        }
+    }
+    if pending_escape {
+        cells.last_mut().unwrap().push('\\');
+    }
+    cells
+        .into_iter()
         .map(|cell| cell.trim().to_string())
         .collect()
+}
+
+fn fence_marker(line: &str) -> Option<(char, usize, bool)> {
+    let trimmed = line.trim_start();
+    let marker = trimmed.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let length = trimmed.chars().take_while(|ch| *ch == marker).count();
+    if length < 3 {
+        return None;
+    }
+    // Only spaces may follow a closing fence. An opening fence may carry an
+    // info string, so its marker is also valid when followed by text.
+    let closing = trimmed[length..].trim().is_empty();
+    Some((marker, length, closing))
+}
+
+fn indented_code(line: &str) -> bool {
+    line.starts_with("    ") || line.starts_with('\t')
 }
 
 fn table_separator(line: &str) -> bool {
@@ -197,8 +238,24 @@ fn answer_blocks(source: &str) -> Vec<AnswerBlock> {
     let mut blocks = Vec::new();
     let mut markdown = Vec::new();
     let mut index = 0;
+    let mut fence: Option<(char, usize)> = None;
     while index < lines.len() {
-        let table = index + 1 < lines.len()
+        if let Some((marker, length, closing)) = fence_marker(lines[index]) {
+            match fence {
+                Some((open, open_length)) if marker == open && length >= open_length && closing => {
+                    fence = None;
+                }
+                None => fence = Some((marker, length)),
+                _ => {}
+            }
+            markdown.push(lines[index]);
+            index += 1;
+            continue;
+        }
+        let table = fence.is_none()
+            && !indented_code(lines[index])
+            && index + 1 < lines.len()
+            && !indented_code(lines[index + 1])
             && lines[index].contains('|')
             && table_separator(lines[index + 1]);
         if !table {
@@ -208,7 +265,7 @@ fn answer_blocks(source: &str) -> Vec<AnswerBlock> {
         }
         if !markdown.is_empty() {
             blocks.push(AnswerBlock::Markdown(
-                markdown.join("\n").trim().to_string(),
+                markdown.join("\n").trim_end().to_string(),
             ));
             markdown.clear();
         }
@@ -225,10 +282,56 @@ fn answer_blocks(source: &str) -> Vec<AnswerBlock> {
     }
     if !markdown.is_empty() {
         blocks.push(AnswerBlock::Markdown(
-            markdown.join("\n").trim().to_string(),
+            markdown.join("\n").trim_end().to_string(),
         ));
     }
     blocks
+}
+
+#[cfg(debug_assertions)]
+pub(super) fn check_table_parser() -> Result<()> {
+    let fenced =
+        "~~~\n| a | b |\n|---|---|\n| 1 | 2 |\n~~~\n\n```\n| c | d |\n|---|---|\n| 3 | 4 |\n```";
+    let blocks = answer_blocks(fenced);
+    ensure!(
+        !blocks
+            .iter()
+            .any(|block| matches!(block, AnswerBlock::Table { .. })),
+        "围栏代码块被识别成表格"
+    );
+    let long = "~~~~\n~~~~still code\n| a | b |\n|---|---|\n| 1 | 2 |\n~~~~   ";
+    let blocks = answer_blocks(long);
+    ensure!(
+        !blocks
+            .iter()
+            .any(|block| matches!(block, AnswerBlock::Table { .. })),
+        "带文字的同行围栏被误判为结束围栏"
+    );
+    let indented = "    | a | b |\n    |---|---|\n    | 1 | 2 |";
+    let indented_blocks = answer_blocks(indented);
+    ensure!(
+        !indented_blocks
+            .iter()
+            .any(|block| matches!(block, AnswerBlock::Table { .. })),
+        "缩进代码块中的表格被单独渲染"
+    );
+    ensure!(
+        indented_blocks.iter().any(|block| matches!(
+            block,
+            AnswerBlock::Markdown(text) if text.starts_with("    | a | b |")
+        )),
+        "缩进代码块交给 Markdown 时丢失了行首空格"
+    );
+    let table = answer_blocks("| path | note |\n|---|---|\n| C:\\Temp\\tool | a\\|b |");
+    let row = table.iter().find_map(|block| match block {
+        AnswerBlock::Table { rows, .. } => rows.first(),
+        AnswerBlock::Markdown(_) => None,
+    });
+    ensure!(
+        row.is_some_and(|row| row[0] == "C:\\Temp\\tool" && row[1] == "a|b"),
+        "表格转义或反斜杠字面量被改写：{row:?}"
+    );
+    Ok(())
 }
 
 struct Turn<'a> {

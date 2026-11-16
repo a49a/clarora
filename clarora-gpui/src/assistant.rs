@@ -145,18 +145,43 @@ pub fn with_transcript_background(
     Ok(references)
 }
 
-pub fn validate(references: &[Reference]) -> Result<()> {
-    let groups = references
+fn group_key(reference: &Reference) -> (Option<String>, Option<String>) {
+    if reference.source.is_some() {
+        (reference.source.clone(), reference.revision.clone())
+    } else {
+        // Plain references have no material identity; keep each distinct text
+        // in its own anonymous group.
+        (Some(format!("plain:{}", reference.text)), None)
+    }
+}
+
+/// Group numbers used by both the draft preview and the outbound message.
+/// A material revision is one group; the same source's older revisions are not
+/// silently paired with the current one.
+pub fn group_indices(references: &[Reference]) -> Vec<usize> {
+    let mut groups: Vec<(Option<String>, Option<String>)> = Vec::new();
+    references
         .iter()
         .map(|reference| {
-            reference
-                .source
-                .clone()
-                .unwrap_or_else(|| format!("plain:{}", reference.text))
+            let key = group_key(reference);
+            groups
+                .iter()
+                .position(|existing| *existing == key)
+                .unwrap_or_else(|| {
+                    groups.push(key);
+                    groups.len() - 1
+                })
         })
-        .collect::<std::collections::BTreeSet<_>>();
-    ensure!(groups.len() <= 4, "一次最多引用 4 份材料，请移除后再添加");
-    ensure!(references.len() <= 8, "引用条目过多，请移除后再添加");
+        .collect()
+}
+
+fn validate_references(references: &[Reference], current_limits: bool) -> Result<()> {
+    if current_limits {
+        let groups = group_indices(references);
+        let group_count = groups.iter().copied().max().map_or(0, |group| group + 1);
+        ensure!(group_count <= 4, "一次最多引用 4 份材料，请移除后再添加");
+        ensure!(references.len() <= 8, "引用条目过多，请移除后再添加");
+    }
     ensure!(
         references
             .iter()
@@ -167,6 +192,10 @@ pub fn validate(references: &[Reference]) -> Result<()> {
     );
     Ok(())
 }
+
+pub fn validate(references: &[Reference]) -> Result<()> {
+    validate_references(references, true)
+}
 pub fn user_turn(question: &str, references: &[Reference]) -> Value {
     json!({"role":"user","content":question,"references":references})
 }
@@ -175,8 +204,13 @@ pub fn references(turn: &Value) -> Vec<Reference> {
         .and_then(|r| serde_json::from_value(r.clone()).ok())
         .unwrap_or_default()
 }
-fn content(question: &str, refs: &[Reference], legacy: Option<&str>) -> Result<Value> {
-    validate(refs)?;
+fn content(
+    question: &str,
+    refs: &[Reference],
+    legacy: Option<&str>,
+    current_limits: bool,
+) -> Result<Value> {
+    validate_references(refs, current_limits)?;
     let mut text = question.to_string();
     if let Some(legacy) = legacy.filter(|s| !s.is_empty()) {
         text.push_str(&format!(
@@ -184,14 +218,16 @@ fn content(question: &str, refs: &[Reference], legacy: Option<&str>) -> Result<V
             plain_reference(legacy)
         ));
     }
-    for reference in refs {
-        let opening_tag = match reference.kind {
-            ReferenceKind::Plain => "<reference>",
-            ReferenceKind::SelectedSubtitle => "<reference kind=\"selected_subtitle\">",
-            ReferenceKind::TranscriptBackground => "<reference kind=\"transcript_background\">",
+    let groups = group_indices(refs);
+    for (reference, group) in refs.iter().zip(groups) {
+        let kind = match reference.kind {
+            ReferenceKind::Plain => String::new(),
+            ReferenceKind::SelectedSubtitle => " kind=\"selected_subtitle\"".to_string(),
+            ReferenceKind::TranscriptBackground => " kind=\"transcript_background\"".to_string(),
         };
         text.push_str(&format!(
-            "\n\n{opening_tag}\n{}\n</reference>",
+            "\n\n<reference group=\"{}\"{kind}>\n{}\n</reference>",
+            group + 1,
             reference.text
         ));
     }
@@ -205,14 +241,16 @@ pub fn messages(question: &str, refs: &[Reference], history: &[Value]) -> Result
     ];
     for turn in history {
         if turn["role"] == "user" {
-            messages.push(json!({"role":"user","content":content(turn["content"].as_str().unwrap_or_default(),&references(turn),turn["reference"].as_str())?}));
+            // Historical turns keep their original material set; the stricter
+            // per-send limits apply only to the current draft.
+            messages.push(json!({"role":"user","content":content(turn["content"].as_str().unwrap_or_default(),&references(turn),turn["reference"].as_str(),false)?}));
         } else if turn["role"] == "assistant" {
             messages.push(
                 json!({"role":"assistant","content":turn["content"].as_str().unwrap_or_default()}),
             );
         }
     }
-    messages.push(json!({"role":"user","content":content(question,refs,None)?}));
+    messages.push(json!({"role":"user","content":content(question,refs,None,true)?}));
     ensure!(
         serde_json::to_vec(&messages)?.len() <= 4 * 1024 * 1024,
         "会话材料过多，请新建会话后重试"

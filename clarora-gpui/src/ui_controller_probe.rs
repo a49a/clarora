@@ -17,6 +17,7 @@ fn context(audio: &str) -> String {
 }
 
 pub(super) fn prepare(out: &Path) -> Result<Library> {
+    assistant_history_ui::check_table_parser()?;
     fs::create_dir_all(out)?;
     let lib = Library::open(out.join("library"))?;
     video_resume_probe::prepare(&lib)?;

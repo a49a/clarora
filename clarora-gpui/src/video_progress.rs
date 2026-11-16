@@ -50,10 +50,28 @@ pub struct Reading {
     pub active_start: Option<f64>,
     #[serde(default)]
     pub cue_offset: f32,
+    /// Top visible transcript paragraph. Older snapshots only have a pixel
+    /// offset and fall back to the playback cue.
+    #[serde(default)]
+    pub transcript_item: Option<usize>,
+    /// Cue start of the manually read paragraph, used to re-anchor after the
+    /// English transcript inserts or removes paragraphs.
+    #[serde(default)]
+    pub transcript_cue_start: Option<f64>,
     #[serde(default)]
     pub transcript_offset: f32,
     #[serde(default)]
     pub transcript_revision: String,
+}
+
+/// Manual scroll anchor of the part list for one series.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PartsAnchor {
+    #[serde(default)]
+    pub index: usize,
+    /// Fraction of the row above the viewport top, `0.0..1.0`.
+    #[serde(default)]
+    pub offset: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -77,6 +95,10 @@ struct State {
     version: u8,
     recent: Option<String>,
     items: BTreeMap<String, Item>,
+    /// Manual part-list positions, keyed by source URL. Local-only like the
+    /// rest of this file.
+    #[serde(default)]
+    parts: BTreeMap<String, PartsAnchor>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -84,6 +106,7 @@ impl Default for State {
             version: VERSION,
             recent: None,
             items: BTreeMap::new(),
+            parts: BTreeMap::new(),
         }
     }
 }
@@ -145,6 +168,12 @@ pub fn series_item_key(
     Some(format!("v:{}:{part}", video.id))
 }
 
+/// Stable identity of a series independent of the favorite that currently
+/// owns it, so a manual part-list position survives collection changes.
+pub fn series_key(series: &crate::bilibili::Series) -> String {
+    format!("s:{}", series.base)
+}
+
 impl Progress {
     pub fn load(lib: &Library) -> Self {
         let saved = lib.setting(KEY).unwrap_or_default();
@@ -164,8 +193,12 @@ impl Progress {
                 && item.reading.tab < 4
                 && item.reading.cue_start.is_none_or(f64::is_finite)
                 && item.reading.active_start.is_none_or(f64::is_finite)
+                && item.reading.transcript_cue_start.is_none_or(f64::is_finite)
                 && item.reading.cue_offset.is_finite()
                 && item.reading.transcript_offset.is_finite()
+        });
+        state.parts.retain(|key, anchor| {
+            !key.is_empty() && anchor.offset.is_finite() && (0. ..1.).contains(&anchor.offset)
         });
         Self { state }
     }
@@ -176,6 +209,19 @@ impl Progress {
 
     pub fn get(&self, key: &str) -> Option<&Item> {
         self.state.items.get(key)
+    }
+
+    pub fn parts_anchor(&self, key: &str) -> Option<PartsAnchor> {
+        self.state.parts.get(key).copied()
+    }
+
+    pub fn record_parts_anchor(&mut self, key: String, anchor: PartsAnchor) -> Result<()> {
+        ensure!(
+            !key.is_empty() && anchor.offset.is_finite() && (0. ..1.).contains(&anchor.offset),
+            "选集阅读位置无效"
+        );
+        self.state.parts.insert(key, anchor);
+        Ok(())
     }
 
     pub fn record(&mut self, key: String, mut item: Item) -> Result<()> {
@@ -229,6 +275,8 @@ impl Default for Reading {
             cue_start: None,
             active_start: None,
             cue_offset: 0.,
+            transcript_item: None,
+            transcript_cue_start: None,
             transcript_offset: 0.,
             transcript_revision: String::new(),
         }
@@ -258,6 +306,8 @@ impl Reading {
             cue_start,
             active_start: cue_start,
             cue_offset: 0.,
+            transcript_item: None,
+            transcript_cue_start: None,
             transcript_offset,
             transcript_revision: String::new(),
         }

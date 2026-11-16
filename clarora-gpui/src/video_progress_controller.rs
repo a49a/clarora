@@ -1,11 +1,116 @@
 //! App integration for local-only per-video/per-part progress.
 use super::*;
+use crate::app_state::PART_ROW_HEIGHT;
 use clarora_gpui::{
     playback_session::Mode as PlaybackMode,
-    video_progress::{self, Item, Reading, Resume},
+    video_progress::{self, Item, PartsAnchor, Reading, Resume},
 };
 
 impl AppView {
+    fn parts_anchor_snapshot(&self) -> Option<(String, PartsAnchor)> {
+        let series = self.video.series.as_ref()?;
+        if series.parts.is_empty() {
+            return None;
+        }
+        let state = self.video.parts_scroll.0.borrow();
+        // `None` means this handle has not laid out a part list yet. Do not
+        // overwrite a restored anchor with a synthetic zero before then.
+        state.last_item_size?;
+        let offset = f32::from(state.base_handle.offset().y);
+        if !offset.is_finite() {
+            return None;
+        }
+        let top = (-offset / PART_ROW_HEIGHT).max(0.);
+        let index = (top.floor() as usize).min(series.parts.len() - 1);
+        Some((
+            video_progress::series_key(series),
+            PartsAnchor {
+                index,
+                offset: (top - index as f32).clamp(0., 0.999_9),
+            },
+        ))
+    }
+
+    pub(super) fn save_parts_anchor(&mut self) -> bool {
+        let Some((key, anchor)) = self.parts_anchor_snapshot() else {
+            return false;
+        };
+        self.video_progress.record_parts_anchor(key, anchor).is_ok()
+    }
+
+    pub(super) fn reset_parts_scroll(&self) {
+        let mut state = self.video.parts_scroll.0.borrow_mut();
+        state.deferred_scroll_to_item = None;
+        state.last_item_size = None;
+        state.base_handle.set_offset(point(px(0.), px(0.)));
+    }
+
+    /// Install the saved top row for the current series, or fall back to the
+    /// playing P. The scroll handle is shared by all series, so this must run
+    /// whenever the series identity changes.
+    pub(super) fn restore_parts_anchor(&self, key: Option<&str>) {
+        let Some(series) = &self.video.series else {
+            self.reset_parts_scroll();
+            return;
+        };
+        if series.parts.is_empty() {
+            self.reset_parts_scroll();
+            return;
+        }
+        let fallback = series
+            .current
+            .unwrap_or(series.requested)
+            .min(series.parts.len() - 1);
+        let anchor = key
+            .and_then(|key| self.video_progress.parts_anchor(key))
+            .filter(|anchor| anchor.index < series.parts.len());
+        self.reset_parts_scroll();
+        if let Some(anchor) = anchor {
+            let y = -((anchor.index as f32 + anchor.offset) * PART_ROW_HEIGHT);
+            self.video
+                .parts_scroll
+                .0
+                .borrow_mut()
+                .base_handle
+                .set_offset(point(px(0.), px(y)));
+        } else {
+            self.video
+                .parts_scroll
+                .scroll_to_item_strict(fallback, ScrollStrategy::Top);
+        }
+    }
+
+    /// Probe/self-check helper: place the part list at a manual position.
+    #[cfg(debug_assertions)]
+    pub(super) fn scroll_parts_to(&self, index: usize, offset: f32) {
+        let Some(series) = &self.video.series else {
+            return;
+        };
+        if series.parts.is_empty() {
+            return;
+        }
+        let index = index.min(series.parts.len() - 1);
+        let offset = offset.clamp(0., 0.999);
+        let mut state = self.video.parts_scroll.0.borrow_mut();
+        state.deferred_scroll_to_item = None;
+        state.base_handle.set_offset(point(
+            px(0.),
+            px(-((index as f32 + offset) * PART_ROW_HEIGHT)),
+        ));
+    }
+
+    #[cfg(debug_assertions)]
+    pub(super) fn parts_top(&self) -> Option<(usize, f32)> {
+        let series = self.video.series.as_ref()?;
+        if series.parts.is_empty() {
+            return None;
+        }
+        let state = self.video.parts_scroll.0.borrow();
+        let top = (-f32::from(state.base_handle.offset().y) / PART_ROW_HEIGHT).max(0.);
+        let index = (top.floor() as usize).min(series.parts.len() - 1);
+        Some((index, top - index as f32))
+    }
+
     fn valid_video_position(&self) -> Option<(PathBuf, f64, Playback)> {
         if self.page != "video" {
             return None;
@@ -40,6 +145,7 @@ impl AppView {
                 .map(|cue| cue.start)
                 .or(active_start)
         };
+        let transcript = self.video.transcript_scroll.logical_scroll_top();
         Reading {
             tab: self.video.tab,
             transcript_open: self.video.transcript_open,
@@ -47,8 +153,15 @@ impl AppView {
             cue_start,
             active_start,
             cue_offset: f32::from(visible.offset_in_item),
-            transcript_offset: f32::from(self.video.transcript_scroll.offset().y),
-            transcript_revision: clarora_gpui::assistant::subtitle_revision(&self.video.cues),
+            transcript_item: Some(transcript.item_ix),
+            transcript_cue_start: self
+                .video
+                .transcript
+                .paragraph_cues
+                .get(transcript.item_ix)
+                .copied(),
+            transcript_offset: f32::from(transcript.offset_in_item),
+            transcript_revision: self.video.transcript.revision(),
         }
     }
 
@@ -64,7 +177,11 @@ impl AppView {
     }
 
     pub(super) fn save_video_progress(&mut self) {
+        let parts_saved = self.save_parts_anchor();
         let Some((path, raw_position, playback)) = self.valid_video_position() else {
+            if parts_saved {
+                let _ = self.video_progress.save(&self.lib);
+            }
             return;
         };
         let position = raw_position;
@@ -75,6 +192,9 @@ impl AppView {
         let key = video_progress::item_key(&self.video.collection, &path);
         let item = self.progress_item(position, completed);
         if self.video_progress.record(key.clone(), item).is_err() {
+            if parts_saved {
+                let _ = self.video_progress.save(&self.lib);
+            }
             return;
         }
         let _ = self.video_progress.save(&self.lib);

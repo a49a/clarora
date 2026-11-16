@@ -28,6 +28,7 @@ pub(super) enum Command {
     AutoNextPart,
     VideoTranscribe,
     VideoTranscribeAll,
+    VideoTranscribeStronger,
     VideoTranslateAll,
     CancelVideoSubtitles,
     DismissVideoSubtitles,
@@ -69,7 +70,7 @@ impl Command {
                         | Command::VideoPlayCue(..)
                 )),
             leave_video_sentence: match self {
-                Command::VideoTranscribe => false,
+                Command::VideoTranscribe | Command::VideoTranscribeStronger => false,
                 Command::VideoClearLoop | Command::VideoRemove(..) => true,
                 _ => false,
             },
@@ -509,6 +510,13 @@ impl Command {
 
             Command::VideoTranscribeAll => app.begin_background_subtitles(true)?,
 
+            Command::VideoTranscribeStronger => {
+                let (model, _) = app
+                    .stronger_local_model()
+                    .context("没有比当前更强且已下载的本机转写模型")?;
+                app.begin_background_subtitles_stronger(model.id)?;
+            }
+
             Command::VideoTranslateAll => app.begin_background_translation_all()?,
 
             Command::CancelVideoSubtitles => {
@@ -728,17 +736,26 @@ impl Command {
 
             Command::VideoCopyTranscript => {
                 ensure!(app.page == "video", "请先进入视频学习");
+                let selected = app.transcript_selection_text();
                 ensure!(
-                    !app.video.transcript.text.is_empty(),
+                    selected.is_some() || !app.video.transcript.text.is_empty(),
                     "没有可复制的英文文稿"
                 );
-                cx.write_to_clipboard(ClipboardItem::new_string(app.video.transcript.text.clone()));
+                let text = selected
+                    .clone()
+                    .unwrap_or_else(|| app.video.transcript.text.clone());
+                let count = text.chars().count();
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
                 app.report_status(
                     FeedbackKind::Info,
-                    format!(
-                        "已复制英文全文 · {} 句，约 {} 词",
-                        app.video.transcript.cue_count, app.video.transcript.word_count
-                    ),
+                    if selected.is_some() {
+                        format!("已复制选中文字 · {count} 字符")
+                    } else {
+                        format!(
+                            "已复制英文全文 · {} 句，约 {} 词",
+                            app.video.transcript.cue_count, app.video.transcript.word_count
+                        )
+                    },
                 );
                 app.focus.focus(window);
             }
@@ -749,13 +766,22 @@ impl Command {
                     !app.video.transcript.text.is_empty(),
                     "暂无英文全文，请先生成或导入英文字幕"
                 );
-                // Use the exact cached English copy text. VideoAsk(All)
-                // includes bilingual cues, timestamps and legacy wrappers.
-                app.add_material_background(app.video.transcript.text.clone(), window, cx)?;
-                app.report_status(
-                    FeedbackKind::Info,
-                    "已添加英文全文引用；请在助手中检查引用并输入问题后发送".into(),
-                );
+                if let Some(selected) = app.transcript_selection_text() {
+                    app.add_transcript_question(selected, window, cx)?;
+                    app.video.transcript_selection = None;
+                    app.report_status(
+                        FeedbackKind::Info,
+                        "已添加选中文字和同一视频的英文全文背景".into(),
+                    );
+                } else {
+                    // Use the exact cached English copy text. VideoAsk(All)
+                    // includes bilingual cues, timestamps and legacy wrappers.
+                    app.add_material_background(app.video.transcript.text.clone(), window, cx)?;
+                    app.report_status(
+                        FeedbackKind::Info,
+                        "已添加英文全文引用；请在助手中检查引用并输入问题后发送".into(),
+                    );
+                }
             }
 
             Command::VideoCopySubtitle(index) => {
@@ -1245,11 +1271,12 @@ impl Completed {
                 if let Err(e) = series.save(&app.lib) {
                     app.report_status(FeedbackKind::Error, format!("保存分P列表失败：{e}"));
                 }
-                app.video.parts_scroll.scroll_to_item(
-                    series.current.unwrap_or(series.requested),
-                    ScrollStrategy::Center,
-                );
+                let key = video_progress::series_key(&series);
                 app.video.series = Some(series);
+                if app.video.parts_series_key.as_deref() != Some(&key) {
+                    app.video.parts_series_key = Some(key);
+                    app.restore_parts_anchor(app.video.parts_series_key.as_deref());
+                }
                 if app.page == "video" {
                     app.video.tab = 1;
                 }

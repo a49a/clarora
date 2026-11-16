@@ -34,6 +34,16 @@ impl AppView {
         self.video.material_error.clear();
         self.video.series = Some(series);
         self.video.collection = videos;
+        let key = self
+            .video
+            .series
+            .as_ref()
+            .map(video_progress::series_key)
+            .unwrap_or_default();
+        if self.video.parts_series_key.as_deref() != Some(&key) {
+            self.video.parts_series_key = Some(key.clone());
+            self.restore_parts_anchor(Some(&key));
+        }
         self.video.tab = 1;
         self.video.tools_open = false;
         if play {

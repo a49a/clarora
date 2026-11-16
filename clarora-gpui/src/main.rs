@@ -129,6 +129,7 @@ actions!(
     [
         Quit,
         CopySubtitleSelection,
+        CopyTranscriptSelection,
         ClearSubtitleSelection,
         OpenFile,
         ToggleAssistant,
@@ -412,7 +413,7 @@ impl AppView {
             chat_closing: None,
             tasks: app_state::TasksState::new(),
             media: app_state::PlaybackState::new(),
-            video: app_state::VideoState::new(),
+            video: app_state::VideoState::new(cx),
             video_progress,
             audio: app_state::AudioState::new(&lib),
             sentences: Default::default(),
@@ -573,10 +574,9 @@ impl AppView {
         ));
         this.video.series = bilibili::Series::load(&this.lib).unwrap_or(None);
         if let Some(series) = &this.video.series {
-            this.video.parts_scroll.scroll_to_item(
-                series.current.unwrap_or(series.requested),
-                ScrollStrategy::Center,
-            );
+            let key = video_progress::series_key(series);
+            this.video.parts_series_key = Some(key.clone());
+            this.restore_parts_anchor(Some(&key));
         }
         this.video.captions_enabled =
             this.lib.setting("video_captions_enabled").ok().as_deref() != Some("false");
@@ -1782,6 +1782,8 @@ fn main() -> Result<()> {
                 KeyBinding::new("ctrl-shift-t", TranscribeVideo, None),
                 KeyBinding::new("cmd-c", CopySubtitleSelection, Some("SubtitleText")),
                 KeyBinding::new("ctrl-c", CopySubtitleSelection, Some("SubtitleText")),
+                KeyBinding::new("cmd-c", CopyTranscriptSelection, Some("Clarora")),
+                KeyBinding::new("ctrl-c", CopyTranscriptSelection, Some("Clarora")),
                 KeyBinding::new("escape", ClearSubtitleSelection, Some("SubtitleText")),
                 KeyBinding::new("cmd-o", OpenFile, None),
                 KeyBinding::new("ctrl-o", OpenFile, None),

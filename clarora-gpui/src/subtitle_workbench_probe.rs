@@ -902,7 +902,7 @@ impl Probe {
                     .and_then(|value| value["content"].as_str())
                     .context("missing user content")?;
                 let expected = format!(
-                    "{QUESTION}\n\n<reference kind=\"transcript_background\">\n{ENGLISH}\n</reference>"
+                    "{QUESTION}\n\n<reference group=\"1\" kind=\"transcript_background\">\n{ENGLISH}\n</reference>"
                 );
                 ensure!(
                     content == expected,

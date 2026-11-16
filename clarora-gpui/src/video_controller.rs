@@ -162,6 +162,7 @@ impl AppView {
         from_end: bool,
         download_group: Option<&str>,
     ) -> bool {
+        self.save_parts_anchor();
         self.video.picture_click = None;
         self.video.seek_dragging = false;
         // A restore snapshot belongs to the file being opened; callers that
@@ -204,6 +205,11 @@ impl AppView {
                 .iter()
                 .position(|p| p.path.as_ref() == Some(&path));
             let _ = series.save(&self.lib);
+        }
+        let parts_key = self.video.series.as_ref().map(video_progress::series_key);
+        if parts_key != self.video.parts_series_key {
+            self.video.parts_series_key = parts_key;
+            self.restore_parts_anchor(self.video.parts_series_key.as_deref());
         }
         // Only this video's track-loop policy survives another video load.
         let mode = if self.video.sentence_repeat.is_none()
@@ -499,9 +505,9 @@ impl AppView {
         })();
         match started {
             Ok(()) => {
-                if paused {
-                    self.media.player.set("pause", "yes");
-                }
+                self.media
+                    .player
+                    .set("pause", if paused { "yes" } else { "no" });
             }
             Err(error) => {
                 self.clear_video_sentence_repeat();
@@ -836,15 +842,11 @@ impl AppView {
         }
         if self.video.part_confirmation.as_ref() == Some(&target) {
             self.video.part_confirmation = None;
-            self.handle(
-                if next {
-                    Action::SelectPart(target.target)
-                } else {
-                    Action::SelectPartAtEnd(target.target)
-                },
-                window,
-                cx,
-            );
+            if next {
+                self.start_part_next(target.target);
+            } else {
+                self.handle(Action::SelectPartAtEnd(target.target), window, cx);
+            }
         } else {
             self.media.player.set("pause", "yes");
             self.video.part_confirmation = Some(target);

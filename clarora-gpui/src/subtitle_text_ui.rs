@@ -80,6 +80,30 @@ impl State {
     pub fn selection_from_press(&self, press: Option<Point<Pixels>>) -> bool {
         self.selection.has_selection() && press.is_some_and(|p| p == self.press)
     }
+    #[cfg(debug_assertions)]
+    pub(super) fn set_probe_selection(
+        &mut self,
+        surface: Surface,
+        text: &str,
+        start: usize,
+        end: usize,
+        press: Point<Pixels>,
+    ) {
+        let document = Arc::new(Document::new(
+            "probe-video".into(),
+            &[Cue {
+                start: 0.,
+                end: 1.,
+                text: text.into(),
+            }],
+        ));
+        self.selection.begin(document, start);
+        self.selection.extend(end, true);
+        self.selection.finish();
+        self.surface = surface;
+        self.press = press;
+    }
+
     pub fn begin_frame(&mut self) {
         self.layouts.clear();
         #[cfg(debug_assertions)]

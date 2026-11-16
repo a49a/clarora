@@ -70,6 +70,20 @@ impl Command {
 
             Command::AssistantQuote(reference) => {
                 if reference.kind == ReferenceKind::SelectedSubtitle {
+                    // A selection made in the English transcript is not backed
+                    // by the subtitle-list selection state.
+                    if app.page == "video" && app.video.transcript_open {
+                        let transcript = app.assistant.offer_transcript.take();
+                        app.add_transcript_question_frozen(
+                            reference.text,
+                            transcript,
+                            reference.source,
+                            reference.revision,
+                            window,
+                            cx,
+                        )?;
+                        return Ok(());
+                    }
                     let key = match app.page.as_str() {
                         "video" => app
                             .video

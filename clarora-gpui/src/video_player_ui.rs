@@ -385,6 +385,8 @@ impl AppView {
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
                 if event.button == MouseButton::Left {
                     this.assistant.press = Some(event.position);
+                    this.assistant.last_press = Some(event.position);
+                    this.assistant.last_source = assistant_ui::SelectionSource::Other;
                     this.assistant.dragging = false;
                 }
             }))

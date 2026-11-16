@@ -2,6 +2,14 @@
 use super::*;
 use clarora_gpui::assistant::{self, Reference, ReferenceKind};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum SelectionSource {
+    #[default]
+    Other,
+    Transcript,
+    Assistant,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Mount {
     Column,
@@ -26,8 +34,14 @@ pub(super) struct State {
     pub scroll: ScrollHandle,
     pub(super) history_view: Option<Entity<super::assistant_history_ui::HistoryView>>,
     pub press: Option<Point<Pixels>>,
+    /// Last mouse-down position, used when a keyboard shortcut quotes the
+    /// currently focused selection after the press has been released.
+    pub last_press: Option<Point<Pixels>>,
+    pub last_source: SelectionSource,
     pub dragging: bool,
     pub offer: Option<(Reference, Point<Pixels>)>,
+    /// English transcript frozen when the quote overlay was created.
+    pub offer_transcript: Option<String>,
     pub return_focus: Option<FocusHandle>,
 }
 impl AppView {
@@ -304,6 +318,60 @@ impl AppView {
             .map(|cue| cue.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
+        self.add_subtitle_question_with(text, Some(transcript), window, cx)
+    }
+
+    /// Quote a selection from the English transcript view. The full background
+    /// is the deduplicated English paragraphs, not the bilingual cue text.
+    pub(super) fn add_transcript_question(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        ensure!(
+            !self.video.transcript.text.trim().is_empty(),
+            "当前没有可引用的全文"
+        );
+        self.add_subtitle_question_with(text, Some(self.video.transcript.text.clone()), window, cx)
+    }
+
+    pub(super) fn add_transcript_question_frozen(
+        &mut self,
+        text: String,
+        transcript: Option<String>,
+        source: Option<String>,
+        revision: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        let transcript = transcript
+            .or_else(|| {
+                (!self.video.transcript.text.is_empty()).then(|| self.video.transcript.text.clone())
+            })
+            .context("没有可引用的英文全文")?;
+        self.add_assistant_references(
+            Reference {
+                text,
+                kind: ReferenceKind::SelectedSubtitle,
+                source: source.clone(),
+                revision: revision.clone(),
+            },
+            Some(transcript),
+            source,
+            revision,
+            window,
+            cx,
+        )
+    }
+
+    fn add_subtitle_question_with(
+        &mut self,
+        text: String,
+        transcript: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
         let (source, revision) = self
             .subtitle_source()
             .map(|(source, revision)| (Some(source), Some(revision)))
@@ -315,7 +383,7 @@ impl AppView {
                 source: source.clone(),
                 revision: revision.clone(),
             },
-            Some(transcript),
+            transcript,
             source,
             revision,
             window,
@@ -386,18 +454,51 @@ impl AppView {
         {
             return;
         }
-        let selected = if self
-            .subtitle_text
-            .borrow()
-            .selection_from_press(self.assistant.press)
-            || (self.assistant.press.is_none()
-                && self.subtitle_text.borrow().focus.is_focused(window))
+        let press = self.assistant.press.or(self.assistant.last_press);
+        let assistant_input_focused = self
+            .inputs
+            .get("question")
+            .is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window));
+        let source = if self.assistant.press.is_none() && assistant_input_focused {
+            // Keyboard focus moved to the composer; stale video selections must
+            // not be used for a shortcut quote.
+            SelectionSource::Other
+        } else {
+            self.assistant.last_source
+        };
+        let in_assistant = source == SelectionSource::Assistant;
+        let from_transcript = self.page == "video"
+            && self.video.transcript_open
+            && source == SelectionSource::Transcript;
+        if from_transcript && let Some(text) = self.transcript_selection_text() {
+            let (source, revision) = self
+                .subtitle_source()
+                .map(|(source, revision)| (Some(source), Some(revision)))
+                .unwrap_or((None, None));
+            self.assistant.offer_transcript = Some(self.video.transcript.text.clone());
+            self.assistant.offer = Some((
+                Reference {
+                    text,
+                    kind: ReferenceKind::SelectedSubtitle,
+                    source,
+                    revision,
+                },
+                position,
+            ));
+            cx.notify();
+            return;
+        }
+        let selected = if !in_assistant
+            && !assistant_input_focused
+            && (self.subtitle_text.borrow().selection_from_press(press)
+                || (press.is_none() && self.subtitle_text.borrow().focus.is_focused(window)))
         {
             self.subtitle_text.borrow().selection_text()
         } else {
             String::new()
         };
         if matches!(self.page.as_str(), "video" | "listening") && !selected.is_empty() {
+            self.assistant.offer_transcript = None;
             self.assistant.offer = Some((
                 Reference {
                     text: selected,
@@ -440,10 +541,22 @@ impl AppView {
                     {
                         let _ = view.update(cx, |this, cx| {
                             if this.page == page {
+                                let (kind, source, revision) = if from_transcript {
+                                    let (source, revision) = this
+                                        .subtitle_source()
+                                        .map(|(source, revision)| (Some(source), Some(revision)))
+                                        .unwrap_or((None, None));
+                                    (ReferenceKind::SelectedSubtitle, source, revision)
+                                } else {
+                                    (ReferenceKind::Plain, None, None)
+                                };
+                                this.assistant.offer_transcript = None;
                                 this.assistant.offer = Some((
                                     Reference {
                                         text: selected,
-                                        ..Default::default()
+                                        kind,
+                                        source,
+                                        revision,
                                     },
                                     position,
                                 ));
@@ -570,6 +683,7 @@ impl AppView {
             .gap_3();
         if !self.assistant.references.is_empty() {
             let refs = self.assistant.references.clone();
+            let groups = assistant::group_indices(&refs);
             let mut attachments = div()
                 .id("assistant-draft-references")
                 .max_h(px(if self.assistant.expanded { 200. } else { 94. }))
@@ -583,9 +697,9 @@ impl AppView {
                     .items_center()
                     .gap_2()
                     .child(div().flex_1().min_w_0().text_xs().child(format!(
-                        "{} {} · {} 字符",
+                        "材料 {} · {} · {} 字符",
+                        groups.get(i).copied().unwrap_or(0) + 1,
                         reference.kind.label(),
-                        i + 1,
                         reference.text.chars().count()
                     )))
                     .child(self.assistant_button(
@@ -932,6 +1046,9 @@ impl AppView {
             .shadow_lg()
             .overflow_hidden()
             // The sidebar overlays selectable content with independent mouse hitboxes.
+            .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, _, _| {
+                this.assistant.last_source = SelectionSource::Assistant;
+            }))
             .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
