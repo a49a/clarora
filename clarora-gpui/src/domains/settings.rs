@@ -154,7 +154,6 @@ impl Command {
                 );
                 app.begin("正在保存 AI 服务…", move |lib, _, _| {
                     ai::save_chat_preferences(&lib, config, &key)?;
-                    ai::sync_active_profile(&lib)?;
                     let location = if credentials::secure_mode(&lib)? {
                         "系统凭证库"
                     } else {

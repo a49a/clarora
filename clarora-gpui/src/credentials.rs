@@ -71,6 +71,31 @@ pub fn delete(lib: &Library, name: &str) -> Result<()> {
         .execute("DELETE FROM local_credentials WHERE name=?", [name])?;
     Ok(())
 }
+/// Prepare secrets in the OS keychain before a settings transaction.
+pub fn store_secure_keys(entries: &[(String, String)]) -> Result<()> {
+    let mut cache = cache().lock().unwrap();
+    for (name, value) in entries {
+        keyring::Entry::new("Clarora-GPUI", name)?.set_password(value)?;
+        cache.insert(name.clone(), value.clone());
+    }
+    Ok(())
+}
+
+/// Store keys in an existing ordinary-mode transaction so the config reference
+/// and scheme list become visible together.
+pub fn store_sqlite_keys(
+    tx: &rusqlite::Transaction<'_>,
+    entries: &[(String, String)],
+) -> Result<()> {
+    for (name, value) in entries {
+        tx.execute(
+            "INSERT INTO local_credentials(name,value)VALUES(?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value",
+            params![name, value],
+        )?;
+    }
+    Ok(())
+}
+
 /// Store new credential names and their config reference atomically in ordinary mode.
 pub fn store_config(
     lib: &Library,

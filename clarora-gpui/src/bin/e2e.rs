@@ -955,6 +955,43 @@ fn run(output: &Path, results: &mut Vec<Value>) -> Result<()> {
             && restored_key == old_chat_key,
         "failed profile save switched the active chat connection"
     );
+    let normal = Library::open(lib.root.join("ai-normal-rollback"))?;
+    ai::save_profile(
+        &normal,
+        "普通保存旧方案",
+        ai::Config {
+            base_url: "https://old-normal.example.invalid/v1".into(),
+            model: "old-normal-model".into(),
+            ..Default::default()
+        },
+        "old-normal-key",
+    )?;
+    let (old_normal, old_normal_key) = ai::load_chat(&normal)?;
+    normal.db()?.execute_batch(
+        "CREATE TRIGGER fail_normal_profile BEFORE UPDATE ON app_settings
+         WHEN NEW.key='ai_profiles'
+         BEGIN SELECT RAISE(FAIL,'normal profile write fixture'); END;",
+    )?;
+    let normal_failure = ai::save_chat_preferences(
+        &normal,
+        ai::Config {
+            base_url: "https://new-normal.example.invalid/v1".into(),
+            model: "new-normal-model".into(),
+            ..Default::default()
+        },
+        "new-normal-key",
+    );
+    normal
+        .db()?
+        .execute_batch("DROP TRIGGER fail_normal_profile")?;
+    ensure!(normal_failure.is_err(), "普通保存的方案同步失败没有被报告");
+    let (new_normal, new_normal_key) = ai::load_chat(&normal)?;
+    ensure!(
+        new_normal.base_url == old_normal.base_url
+            && new_normal.model == old_normal.model
+            && new_normal_key == old_normal_key,
+        "普通保存失败后聊天连接已切到新配置"
+    );
     let mut legacy_metadata = ai::Config {
         asr_base_url: metadata.base_url.clone(),
         asr_model: "asr-only".into(),

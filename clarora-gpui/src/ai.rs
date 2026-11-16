@@ -22,7 +22,7 @@ pub struct LocalModel {
     pub language: &'static str,
 }
 impl LocalModel {
-    pub(crate) fn installed(&self, lib: &Library) -> bool {
+    pub fn installed(&self, lib: &Library) -> bool {
         let models = lib.root.join("models");
         if self.id == "sense-voice" {
             models.join("sense-voice/model.int8.onnx").is_file()
@@ -247,24 +247,6 @@ pub fn select_profile(lib: &Library, profile_id: &str) -> Result<Config> {
     Ok(config)
 }
 
-/// Keep the active profile in sync after editing the shared settings form.
-pub fn sync_active_profile(lib: &Library) -> Result<()> {
-    let _guard = config_lock().lock().unwrap();
-    let (mut profiles, active) = profiles(lib)?;
-    if active.is_empty() {
-        return Ok(());
-    }
-    let config = load_config(lib)?;
-    let Some(profile) = profiles.iter_mut().find(|profile| profile.id == active) else {
-        return Ok(());
-    };
-    if profile.config == config {
-        return Ok(());
-    }
-    profile.config = config;
-    lib.set_setting(PROFILES_KEY, &serde_json::to_string(&profiles)?)
-}
-
 /// Save the current form as a new named profile and make it active.
 pub fn save_profile(lib: &Library, name: &str, config: Config, key: &str) -> Result<Profile> {
     let name = validate_profile_name(name)?;
@@ -275,32 +257,65 @@ pub fn save_profile(lib: &Library, name: &str, config: Config, key: &str) -> Res
             .any(|profile| profile.name.eq_ignore_ascii_case(name)),
         "已有同名配置，请换一个名称"
     );
-    let old_config = lib.setting("ai_config")?;
-    let old_profiles = lib.setting(PROFILES_KEY)?;
-    let old_active = lib.setting(ACTIVE_PROFILE_KEY)?;
-    let result = (|| -> Result<Profile> {
-        save_chat_preferences(lib, config, key)?;
-        let profile = Profile {
-            id: id(),
-            name: name.to_owned(),
-            config: load_config(lib)?,
-        };
-        let mut saved = profiles;
-        saved.push(profile.clone());
-        // The profile list and active pointer are published only after the
-        // connection is ready; roll the connection back if that publication
-        // fails, so the next request still uses the old service.
-        lib.set_setting(PROFILES_KEY, &serde_json::to_string(&saved)?)?;
-        lib.set_setting(ACTIVE_PROFILE_KEY, &profile.id)?;
-        Ok(profile)
-    })();
-    if result.is_err() {
-        let _ = lib.set_setting("ai_config", &old_config);
-        let _ = lib.set_setting(PROFILES_KEY, &old_profiles);
-        let _ = lib.set_setting(ACTIVE_PROFILE_KEY, &old_active);
-    }
-    result
+    let _guard = config_lock().lock().unwrap();
+    let (config, entries) = prepare_chat_config(lib, config, key)?;
+    let profile = Profile {
+        id: id(),
+        name: name.to_owned(),
+        config,
+    };
+    let mut saved = profiles;
+    saved.push(profile.clone());
+    let profiles_json = serde_json::to_string(&saved)?;
+    commit_chat(
+        lib,
+        &profile.config,
+        &entries,
+        Some(&profiles_json),
+        Some(&profile.id),
+    )?;
+    Ok(profile)
 }
+
+/// Publish the chat connection, its secret references and any profile
+/// documents in one SQLite transaction. OS keychain writes run first because
+/// they cannot participate in the database transaction.
+fn commit_chat(
+    lib: &Library,
+    config: &Config,
+    entries: &[(String, String)],
+    profiles_json: Option<&str>,
+    active_profile: Option<&str>,
+) -> Result<()> {
+    let secure = crate::credentials::secure_mode(lib)?;
+    if secure {
+        crate::credentials::store_secure_keys(entries)?;
+    }
+    let mut db = lib.db()?;
+    let tx = db.transaction()?;
+    if !secure {
+        crate::credentials::store_sqlite_keys(&tx, entries)?;
+    }
+    tx.execute(
+        "INSERT INTO app_settings(key,value)VALUES('ai_config',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![serde_json::to_string(config)?],
+    )?;
+    if let Some(profiles) = profiles_json {
+        tx.execute(
+            "INSERT INTO app_settings(key,value)VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![PROFILES_KEY, profiles],
+        )?;
+    }
+    if let Some(active) = active_profile {
+        tx.execute(
+            "INSERT INTO app_settings(key,value)VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![ACTIVE_PROFILE_KEY, active],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 impl Config {
     pub fn is_opencode_go(&self) -> bool {
         self.provider == PROVIDER_OPENCODE_GO
@@ -475,12 +490,11 @@ fn same_chat_service(old: &Config, config: &Config) -> bool {
     old_provider == provider && old.base_url == config.base_url
 }
 
-/// Save the chat service while keeping transcription consistent with the new
-/// credential. Shared transcription follows the new chat connection; an
-/// independently configured legacy transcription keeps its own address, model
-/// and credential reference.
-pub fn save_chat_preferences(lib: &Library, config: Config, key: &str) -> Result<()> {
-    let _guard = config_lock().lock().unwrap();
+fn prepare_chat_config(
+    lib: &Library,
+    config: Config,
+    key: &str,
+) -> Result<(Config, Vec<(String, String)>)> {
     let old = load_config(lib)?;
     let shared = transcription_shares_chat(&old);
     let mut config = config.shared_api();
@@ -511,20 +525,37 @@ pub fn save_chat_preferences(lib: &Library, config: Config, key: &str) -> Result
             "更换服务类型或地址后请重新输入 API Key"
         );
         config.credential_id = old.credential_id;
-        return lib.set_setting("ai_config", &serde_json::to_string(&config)?);
+        return Ok((config, Vec::new()));
     }
     config.credential_id = id();
-    let config_json = serde_json::to_string(&config)?;
-    crate::credentials::store_config(
-        lib,
-        "ai_config",
-        &config_json,
-        &[
-            (format!("chat-{}", config.credential_id), key.into()),
-            (format!("asr-{}", config.credential_id), key.into()),
-        ],
-    )?;
-    Ok(())
+    let entries = vec![
+        (format!("chat-{}", config.credential_id), key.into()),
+        (format!("asr-{}", config.credential_id), key.into()),
+    ];
+    Ok((config, entries))
+}
+
+/// Save the chat service while keeping transcription consistent with the new
+/// credential. Shared transcription follows the new chat connection; an
+/// independently configured legacy transcription keeps its own address, model
+/// and credential reference.
+pub fn save_chat_preferences(lib: &Library, config: Config, key: &str) -> Result<()> {
+    let _guard = config_lock().lock().unwrap();
+    let (config, entries) = prepare_chat_config(lib, config, key)?;
+    // The active named profile mirrors the shared settings form. Publish both
+    // together so a failed profile write cannot leave chat on a new service.
+    let (mut profiles, active) = profiles(lib)?;
+    let profiles_json = if let Some(profile) = profiles.iter_mut().find(|p| p.id == active) {
+        if profile.config != config {
+            profile.config = config.clone();
+            Some(serde_json::to_string(&profiles)?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    commit_chat(lib, &config, &entries, profiles_json.as_deref(), None)
 }
 
 pub fn save(lib: &Library, mut config: Config, chat: &str, asr: &str) -> Result<()> {
@@ -632,8 +663,23 @@ pub fn ocr(lib: &Library, path: &Path, cancel: &Cancel) -> Result<String> {
     Ok(text)
 }
 pub fn transcribe(lib: &Library, path: &Path, cancel: &Cancel) -> Result<Vec<Cue>> {
+    transcribe_with_model(lib, path, cancel, None)
+}
+
+/// Transcribe with a one-off local model override without changing saved settings.
+pub fn transcribe_with_model(
+    lib: &Library,
+    path: &Path,
+    cancel: &Cancel,
+    model: Option<&str>,
+) -> Result<Vec<Cue>> {
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
-    let c = load_config(lib)?;
+    let mut c = load_config(lib)?;
+    if let Some(model) = model {
+        c.engine = "local".into();
+        c.local_model = model.into();
+        c.asr_model = model.into();
+    }
     if c.engine == "compatible" {
         ensure!(
             !c.is_chat_preset(),
