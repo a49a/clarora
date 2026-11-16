@@ -1,5 +1,83 @@
 use super::*;
+fn model_language_compatible(current: &str, candidate: &str) -> bool {
+    if current == "auto" {
+        candidate == "auto"
+    } else {
+        candidate == "auto" || candidate == current
+    }
+}
+
+fn local_model_rank(id: &str) -> u8 {
+    match id {
+        "tiny.en" => 1,
+        "base" | "base.en" => 2,
+        "small" | "small.en" => 3,
+        "medium.en" | "sense-voice" => 4,
+        "large-v3-turbo" => 5,
+        _ => 0,
+    }
+}
+
 impl AppView {
+    pub(super) fn stronger_local_model(
+        &self,
+    ) -> Option<(&'static clarora_gpui::ai::LocalModel, String)> {
+        // Render from the last loaded snapshot; starting the job rechecks the
+        // model file. Never change an auto-language transcript to English-only.
+        let config = self.data.saved_ai.as_ref()?;
+        if config.engine != "local" {
+            // A local model override would silently replace a remote ASR service.
+            return None;
+        }
+        let current = config.local_model.clone();
+        let current_language = clarora_gpui::ai::local_model(&current)
+            .map(|model| model.language)
+            .unwrap_or("auto");
+        let current_rank = local_model_rank(&current);
+        clarora_gpui::ai::LOCAL_MODELS
+            .iter()
+            .filter(|model| {
+                self.data.asr_models.contains(model.id)
+                    && model_language_compatible(current_language, model.language)
+                    && local_model_rank(model.id) > current_rank
+            })
+            .max_by_key(|model| local_model_rank(model.id))
+            .map(|model| (model, current))
+    }
+
+    pub(super) fn begin_background_subtitles_stronger(&mut self, model: &str) -> Result<()> {
+        ensure!(
+            self.tasks.video_job.is_none(),
+            "已有后台视频字幕任务，可先取消或等待完成"
+        );
+        ensure!(!self.tasks.foreground.is_running(), "请先完成当前前台任务");
+        ensure!(self.page == "video", "请先进入视频学习");
+        let path = self.video.path.clone().context("请先选择视频")?;
+        let source = self
+            .video
+            .collection
+            .items
+            .iter()
+            .find(|v| v.contains(&path))
+            .context("请先导入视频")?;
+        let title = format!("用 {model} 重新生成字幕 · {}", source.title);
+        let mut plan = video_jobs::Plan::current(source.id.clone(), path);
+        plan.skip_existing = false;
+        plan.model = Some(model.into());
+        self.video.repeat_resume = self.video.sentence_repeat.map(Some);
+        self.tasks.video_error.clear();
+        self.tasks.video_notice = Some(TaskNotice::new(
+            &title,
+            "会覆盖当前英文字幕和已有中文译文；可继续切换页面，任务在后台进行。",
+        ));
+        self.tasks.video_job = Some(video_jobs::Job::start(
+            self.lib.clone(),
+            plan,
+            self.tasks.downloads.clone(),
+        ));
+        Ok(())
+    }
+
     pub(super) fn begin_background_subtitles(&mut self, all: bool) -> Result<()> {
         ensure!(
             self.tasks.video_job.is_none(),

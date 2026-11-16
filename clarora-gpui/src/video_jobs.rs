@@ -122,6 +122,7 @@ pub struct Plan {
     pub paths: Vec<(usize, String, Option<PathBuf>)>,
     pub skip_existing: bool,
     pub mode: Mode,
+    pub model: Option<String>,
 }
 impl Plan {
     pub fn all(source_id: String, series: Series) -> Self {
@@ -137,6 +138,7 @@ impl Plan {
             paths,
             skip_existing: true,
             mode: Mode::English,
+            model: None,
         }
     }
     pub fn translate_all(source_id: String, series: Series) -> Self {
@@ -156,6 +158,7 @@ impl Plan {
             paths: vec![(0, label, Some(path))],
             skip_existing: false,
             mode: Mode::English,
+            model: None,
         }
     }
 }
@@ -285,8 +288,13 @@ impl Job {
                             return Ok(false);
                         }
                     }
-                    let (subtitle, cues) =
-                        video_subtitles::generate_with_progress(&lib, &path, &token, progress)?;
+                    let (subtitle, cues) = video_subtitles::generate_with_progress_model(
+                        &lib,
+                        &path,
+                        &token,
+                        plan.model.as_deref(),
+                        progress,
+                    )?;
                     let _ = tx.send(Event::Ready {
                         source_id: plan.source_id.clone(),
                         path,

@@ -707,6 +707,55 @@ impl Probe {
                     "originals remain manageable while learning queue stays deduplicated",
                     app,
                 );
+                app.data.saved_ai = Some(clarora_gpui::ai::Config {
+                    engine: "local".into(),
+                    local_model: "small".into(),
+                    ..Default::default()
+                });
+                app.data.asr_models.clear();
+                app.data.asr_models.insert("medium.en".into());
+                app.data.asr_models.insert("large-v3-turbo".into());
+                let (stronger, current) = app
+                    .stronger_local_model()
+                    .context("stronger model missing")?;
+                ensure!(
+                    stronger.id == "large-v3-turbo"
+                        && stronger.language == "auto"
+                        && current == "small",
+                    "stronger model routing chose {} from {current}",
+                    stronger.id
+                );
+                app.data.asr_models.remove("large-v3-turbo");
+                ensure!(
+                    app.stronger_local_model().is_none(),
+                    "auto-language transcript was offered English-only medium.en"
+                );
+                app.data.saved_ai = Some(clarora_gpui::ai::Config {
+                    engine: "local".into(),
+                    local_model: "small.en".into(),
+                    ..Default::default()
+                });
+                app.data.asr_models.clear();
+                app.data.asr_models.insert("large-v3-turbo".into());
+                ensure!(
+                    app.stronger_local_model()
+                        .is_some_and(|(model, _)| model.id == "large-v3-turbo"),
+                    "English-only transcript did not accept multilingual large-v3-turbo"
+                );
+                app.data.saved_ai = Some(clarora_gpui::ai::Config {
+                    engine: "compatible".into(),
+                    local_model: "small.en".into(),
+                    ..Default::default()
+                });
+                app.data.asr_models.insert("medium.en".into());
+                ensure!(
+                    app.stronger_local_model().is_none(),
+                    "remote transcription was offered a local model override"
+                );
+                self.note(
+                    "stronger subtitle action keeps model language and avoids SQLite in render",
+                    app,
+                );
                 self.audio_flow = Some(audio_subtitles_probe::Flow::new());
             }
             14 => {

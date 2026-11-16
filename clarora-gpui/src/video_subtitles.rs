@@ -108,6 +108,16 @@ pub fn generate_with_progress(
     lib: &Library,
     video: &Path,
     cancel: &Cancel,
+    progress: impl FnMut(&str),
+) -> Result<(String, Vec<Cue>)> {
+    generate_with_progress_model(lib, video, cancel, None, progress)
+}
+
+pub fn generate_with_progress_model(
+    lib: &Library,
+    video: &Path,
+    cancel: &Cancel,
+    model: Option<&str>,
     mut progress: impl FnMut(&str),
 ) -> Result<(String, Vec<Cue>)> {
     ensure!(!cancel.load(Ordering::SeqCst), "已取消");
@@ -140,7 +150,7 @@ pub fn generate_with_progress(
         )
         .context("视频音轨提取失败")?;
         progress("2/3 · 正在识别语音，长视频可能需要几分钟");
-        let mut cues = ai::transcribe(lib, &audio, cancel)?;
+        let mut cues = ai::transcribe_with_model(lib, &audio, cancel, model)?;
         cues.sort_by(|a, b| a.start.total_cmp(&b.start));
         ensure!(
             identity_key(video)? == identity,
