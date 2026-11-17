@@ -1,5 +1,6 @@
 //! Audio workspace renders the current playback and library snapshots.
 use super::*;
+use clarora_gpui::media::SEEK_STEP;
 
 pub(super) fn paint_waveform_peaks(
     window: &mut Window,
@@ -278,8 +279,13 @@ impl AppView {
                         ),
                     )
                     .child(
-                        self.button("blind-back-five", "回退 5 秒", Action::Seek(-5.), cx)
-                            .disabled(!ready),
+                        self.button(
+                            "blind-back-five",
+                            format!("回退 {SEEK_STEP} 秒"),
+                            Action::Seek(-SEEK_STEP),
+                            cx,
+                        )
+                        .disabled(!ready),
                     )
                     .child(
                         self.button(
@@ -1046,10 +1052,10 @@ impl AppView {
                     .flex_wrap()
                     .child(
                         self.player_icon(
-                            "audio-back10",
+                            "audio-back5",
                             "rewind",
-                            "后退 10 秒",
-                            Action::Seek(-10.),
+                            format!("后退 {SEEK_STEP} 秒"),
+                            Action::Seek(-SEEK_STEP),
                             cx,
                         )
                         .disabled(!available),
@@ -1083,10 +1089,10 @@ impl AppView {
                     )
                     .child(
                         self.player_icon(
-                            "audio-forward10",
+                            "audio-forward5",
                             "forward",
-                            "前进 10 秒",
-                            Action::Seek(10.),
+                            format!("前进 {SEEK_STEP} 秒"),
+                            Action::Seek(SEEK_STEP),
                             cx,
                         )
                         .disabled(!available),
@@ -1111,44 +1117,44 @@ impl AppView {
                         self.transport_button(
                             "audio-previous-sentence",
                             if self.audio.repeat_mode.is_sentence() {
-                                "上一句"
+                                "上一句".to_string()
                             } else {
-                                "后退 10 秒"
+                                format!("后退 {SEEK_STEP} 秒")
                             },
                             if self.audio.repeat_mode.is_sentence() {
                                 Action::AudioSentence(-1)
                             } else {
-                                Action::Seek(-10.)
+                                Action::Seek(-SEEK_STEP)
                             },
                             cx,
                         )
                         .disabled(!self.audio_seek_step_enabled())
                         .tooltip(if self.audio.repeat_mode.is_sentence() {
-                            "上一句字幕 · ←"
+                            "上一句字幕 · ←".to_string()
                         } else {
-                            "后退 10 秒 · ←"
+                            format!("后退 {SEEK_STEP} 秒 · ←")
                         }),
                     )
                     .child(
                         self.transport_button(
                             "audio-next-sentence",
                             if self.audio.repeat_mode.is_sentence() {
-                                "下一句"
+                                "下一句".to_string()
                             } else {
-                                "前进 10 秒"
+                                format!("前进 {SEEK_STEP} 秒")
                             },
                             if self.audio.repeat_mode.is_sentence() {
                                 Action::AudioSentence(1)
                             } else {
-                                Action::Seek(10.)
+                                Action::Seek(SEEK_STEP)
                             },
                             cx,
                         )
                         .disabled(!self.audio_seek_step_enabled())
                         .tooltip(if self.audio.repeat_mode.is_sentence() {
-                            "下一句字幕 · →"
+                            "下一句字幕 · →".to_string()
                         } else {
-                            "前进 10 秒 · →"
+                            format!("前进 {SEEK_STEP} 秒 · →")
                         }),
                     )
                     .child(self.player_menu(
@@ -1354,7 +1360,12 @@ impl AppView {
                     .gap_2()
                     .flex_wrap()
                     .items_center()
-                    .child(self.transport_button("back10", "−10秒", Action::Seek(-10.), cx))
+                    .child(self.transport_button(
+                        "back5",
+                        format!("−{SEEK_STEP}秒"),
+                        Action::Seek(-SEEK_STEP),
+                        cx,
+                    ))
                     .child(
                         self.transport_button(
                             "play",
@@ -1368,7 +1379,12 @@ impl AppView {
                         )
                         .primary(),
                     )
-                    .child(self.transport_button("forward10", "+10秒", Action::Seek(10.), cx))
+                    .child(self.transport_button(
+                        "forward5",
+                        format!("+{SEEK_STEP}秒"),
+                        Action::Seek(SEEK_STEP),
+                        cx,
+                    ))
                     .child(format!(
                         "{} / {}",
                         clock(self.media.snapshot.position),

@@ -1,5 +1,6 @@
 //! Video workspace renders cached player and subtitle state.
 use super::*;
+use clarora_gpui::media::SEEK_STEP;
 
 impl AppView {
     pub(super) fn video_timeline(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -641,8 +642,8 @@ impl AppView {
                     .child(self.player_icon(
                         "video-back",
                         "rewind",
-                        "后退 10 秒",
-                        Action::Seek(-10.),
+                        format!("后退 {SEEK_STEP} 秒"),
+                        Action::Seek(-SEEK_STEP),
                         cx,
                     ))
                     .child(
@@ -668,8 +669,8 @@ impl AppView {
                     .child(self.player_icon(
                         "video-forward",
                         "forward",
-                        "前进 10 秒",
-                        Action::Seek(10.),
+                        format!("前进 {SEEK_STEP} 秒"),
+                        Action::Seek(SEEK_STEP),
                         cx,
                     ))
                     .child(div().text_xs().text_color(rgb(0xb9c9c1)).child(format!(
@@ -729,7 +730,7 @@ impl AppView {
                                 } else {
                                     "volume"
                                 },
-                                &format!("音量 {:.0}% · 点击静音 / 恢复", self.media.volume),
+                                format!("音量 {:.0}% · 点击静音 / 恢复", self.media.volume),
                                 Action::Mute,
                                 cx,
                             ))

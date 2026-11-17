@@ -673,13 +673,14 @@ impl Probe {
                     }
                     if self.normal_seek_stage == 2 {
                         let position = app.media.snapshot.position;
-                        if position < 3.0 {
+                        let expected = self.normal_seek_before + clarora_gpui::media::SEEK_STEP;
+                        if (position - expected).abs() > 0.2 {
+                            ensure!(
+                                self.started.elapsed() < Duration::from_secs(60),
+                                "normal audio right arrow did not seek by the configured step: {position} != {expected}"
+                            );
                             return Ok(false);
                         }
-                        ensure!(
-                            position > self.normal_seek_before + 2.5,
-                            "normal audio right arrow did not seek ten seconds"
-                        );
                         ensure!(
                             app.media.session.audio_sentence().is_none(),
                             "normal audio right arrow selected a sentence"
@@ -711,7 +712,12 @@ impl Probe {
                     }
                     if self.normal_seek_stage == 4 {
                         let position = app.media.snapshot.position;
-                        if position > 0.3 {
+                        let expected = 3.0 - clarora_gpui::media::SEEK_STEP;
+                        if (position - expected).abs() > 0.2 {
+                            ensure!(
+                                self.started.elapsed() < Duration::from_secs(60),
+                                "normal audio left arrow did not seek by the configured step: {position} != {expected}"
+                            );
                             return Ok(false);
                         }
                         ensure!(

@@ -1,5 +1,6 @@
 //! Audio sentence requests share the native, precisely counted player primitive.
 use super::*;
+use clarora_gpui::media::SEEK_STEP;
 use clarora_gpui::video_repeat::{self, Session, Transition};
 
 pub(super) const MODES: [&str; 8] = [
@@ -430,8 +431,8 @@ impl AppView {
             self.handle(Action::AudioSentence(direction), window, cx);
         } else {
             // Outside single-sentence practice, arrows are ordinary media
-            // navigation. Keep the keyboard in sync with the ±10s buttons.
-            self.handle(Action::Seek(f64::from(direction) * 10.), window, cx);
+            // navigation. Keep the keyboard in sync with the second-step buttons.
+            self.handle(Action::Seek(f64::from(direction) * SEEK_STEP), window, cx);
         }
         true
     }

@@ -1443,13 +1443,13 @@ impl AppView {
         &self,
         key: &'static str,
         icon: &str,
-        tip: &str,
+        tip: impl Into<SharedString>,
         action: Action,
         cx: &Context<Self>,
     ) -> Button {
         Button::new(key)
             .icon(Icon::new(IconName::ChevronDown).path(format!("ui/{icon}.svg")))
-            .tooltip(tip.to_string())
+            .tooltip(tip)
             .small()
             .w(px(32.))
             .h(px(32.))

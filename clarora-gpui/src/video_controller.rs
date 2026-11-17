@@ -1,5 +1,6 @@
 //! Video playback and sentence-repeat coordination.
 use super::*;
+use clarora_gpui::media::SEEK_STEP;
 
 #[derive(PartialEq, Eq)]
 pub(super) struct PartConfirmation {
@@ -706,7 +707,7 @@ impl AppView {
         if self.page == "video" {
             Action::VideoSentence(next)
         } else {
-            Action::Seek(if next { 10. } else { -10. })
+            Action::Seek(if next { SEEK_STEP } else { -SEEK_STEP })
         }
     }
     /// Use raw key events in normal and fullscreen views so OS key repeat cannot

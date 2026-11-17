@@ -16,6 +16,9 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+/// Shared media seek step for keyboard and transport controls.
+pub const SEEK_STEP: f64 = 2.;
+
 #[repr(C)]
 struct Param {
     kind: c_int,
