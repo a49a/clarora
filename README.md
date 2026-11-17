@@ -23,20 +23,23 @@
 
 更完整的操作说明见[桌面客户端说明](clarora-gpui/README.md#学习模块功能)。
 
-## 下载安装
+## 平台与使用
 
-项目官网（功能介绍、使用指南与下载入口）：<https://a49a.github.io/clarora-web/>
+Clarora 分为两条产品线：macOS / Windows 使用 GPUI 原生桌面版，Android / iOS 使用 React Native 移动版。桌面端的闪卡、音频和学习进度可通过「同步与备份」在移动端合并使用。
 
-当前桌面主版本从 [GitHub Releases](https://github.com/a49a/clarora/releases/latest) 下载：
+| 平台 | 版本 | 下载 / 安装 | 说明 |
+| --- | --- | --- | --- |
+| macOS 14+ Apple Silicon | GPUI 桌面版 | 从 [GitHub Releases](https://github.com/a49a/clarora/releases/latest) 下载 `Clarora-macos-arm64.dmg` | 拖入「应用程序」。首次被 Gatekeeper 拦截时右键 App 选「打开」，或执行 `xattr -dr com.apple.quarantine /Applications/Clarora.app` |
+| Windows 10 1809+ / 11 x64 | GPUI 桌面版 | 优先 `Clarora-windows-x64-setup-unsigned.exe`；便携版 `Clarora-windows-x64.zip` | SmartScreen 提示时点「更多信息」→「仍要运行」；无需开发者模式或侧载脚本 |
+| Android | RN 移动版 | 官网下载页或对应 GitHub Release 的 `Clarora-android.apk` | 需要该版本已发布正式签名 APK；桌面导入的音频、闪卡经同步与备份下发 |
+| iOS 15.1+ | RN 移动版 | 官网提供的 TestFlight / App Store 入口；未开放时 Release 仅提供 `Clarora-ios-unsigned.ipa` | 未签名 IPA 必须自行签名后安装，不能直接安装；有 IPA 不等于 TestFlight / App Store 已开放 |
 
-- macOS：`Clarora-macos-arm64.dmg`，要求 macOS 14+、Apple Silicon；运行库已内置，无需 Homebrew。
-- Windows：优先使用 `Clarora-windows-x64-setup-unsigned.exe` 按用户安装，或解压 `Clarora-windows-x64.zip` 运行便携版；无需开发者模式或侧载脚本。
+- 官网（功能介绍、使用指南和下载入口）：<https://a49a.github.io/clarora-web/>
+- 桌面安装包未做代码签名；语音模型不随安装包提供，在应用内下载；个人学习资料只保存在本机或你配置的存储。
+- 移动端不提供桌面视频下载、Anki 卡组导入、目录/命令导入等桌面能力；具体差异见[移动端发布](docs/mobile-releases.md)和[平台说明](docs/platform-builds.md)。
+- RN 的 macOS / Windows 桌面构建已弃用，桌面请使用上面的 GPUI 版本；移动端 Android / iOS 继续维护。
 
-安装包未做代码签名：macOS 首次打开如被 Gatekeeper 拦截，右键 App 选「打开」，或执行 `xattr -dr com.apple.quarantine /Applications/Clarora.app`；Windows 安装器未签名，SmartScreen 提示属正常现象。应用内下载语音模型，安装包不包含模型或个人学习资料。
-
-RN 的 macOS / Windows 桌面构建已弃用，请使用上面的 GPUI 桌面主版本；Android / iOS RN 继续维护。
-
-移动端继续使用独立标注的 RN 版本；Android APK 与 iOS 渠道以下载页和对应 Release 资产为准。iOS 未签名包需要自行签名后安装，不能下载后直接安装。构建与分发配置见[移动端发布](docs/mobile-releases.md)。
+首次使用桌面版：安装后进入「音频学习」导入本地音频，或进入「视频学习」导入本地视频；没有字幕时可在字幕工具栏生成。移动端安装后可在「设置 → 同步与备份」读取桌面备份；文本词卡、OCR 和文件导入以各平台支持范围为准。
 
 ## 开发
 

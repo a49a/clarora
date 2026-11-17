@@ -9,20 +9,23 @@
 - **On-Device Subtitles (macOS / Windows)**: whisper.cpp and SenseVoice local models generate subtitles offline — audio never leaves your machine; English-to-Chinese translation uses the chat API. Models are one-click downloads in Settings.
 - **Document Reader (macOS / Windows)**: Built-in PDF reader with sidebar TOC, full-page rendering, and zoom, for offline study materials.
 
-## Download
+## Platforms
 
-Project website (features, guides, and download links): <https://a49a.github.io/clarora-web/>
+Clarora has two products: the GPUI native desktop app for macOS / Windows, and the React Native mobile app for Android / iOS. Desktop flashcards, audio, and progress can be merged on mobile through Sync & Backup.
 
-Current desktop releases are available from [GitHub Releases](https://github.com/a49a/clarora/releases/latest):
+| Platform | Build | Download / install | Notes |
+| --- | --- | --- | --- |
+| macOS 14+ Apple Silicon | GPUI desktop | Download `Clarora-macos-arm64.dmg` from [GitHub Releases](https://github.com/a49a/clarora/releases/latest) | Drag it into Applications. If Gatekeeper blocks the first launch, right-click the app and choose "Open", or run `xattr -dr com.apple.quarantine /Applications/Clarora.app` |
+| Windows 10 1809+ / 11 x64 | GPUI desktop | Prefer `Clarora-windows-x64-setup-unsigned.exe`; portable: `Clarora-windows-x64.zip` | If SmartScreen appears, choose "More info" → "Run anyway"; no Developer Mode or sideloading script is required |
+| Android | React Native mobile | Download `Clarora-android.apk` from the website or the matching GitHub Release | Requires a release that actually published the signed APK; desktop audio and flashcards arrive through Sync & Backup |
+| iOS 15.1+ | React Native mobile | Use the TestFlight / App Store link on the website; if unavailable, the Release only contains `Clarora-ios-unsigned.ipa` | The unsigned IPA must be signed before installation and cannot be installed as-is; an IPA does not mean TestFlight / App Store is available |
 
-- macOS: `Clarora-macos-arm64.dmg`, macOS 14+ on Apple Silicon; runtime dependencies are bundled, no Homebrew needed.
-- Windows: prefer `Clarora-windows-x64-setup-unsigned.exe` for a per-user install, or extract `Clarora-windows-x64.zip` for the portable build; no Developer Mode or sideloading scripts are required.
+- Website (features, guides, and downloads): <https://a49a.github.io/clarora-web/>
+- Desktop installers are unsigned. Speech models are downloaded in the app, not bundled; personal study data stays on this device or in storage you configure.
+- The mobile app does not include desktop-only video download, Anki deck import, or directory/command import. See [Mobile Releases](docs/mobile-releases.md) and [Platform Notes](docs/platform-builds.md).
+- The RN macOS / Windows desktop builds are deprecated; use the GPUI desktop app above. Android / iOS remain maintained.
 
-Installers are not code-signed: on macOS, right-click the app and choose "Open" if Gatekeeper blocks the first launch; on Windows, click "More info" → "Run anyway" if SmartScreen appears.
-
-The RN macOS and Windows desktop builds are deprecated; use the GPUI desktop release above. RN Android and iOS builds remain maintained.
-
-For signed mobile builds and distribution, see [Mobile Releases](docs/mobile-releases.md). The Android APK is based on actual Release assets; the iOS Release provides `Clarora-ios-unsigned.ipa` (subject to actual assets), which requires user-side signing before installation — it cannot be installed as-is. Building the unsigned package does not require a paid Apple account.
+First desktop use: open Audio Learning to import local audio, or Video Learning to import a local video; generate subtitles from the subtitle toolbar when none exist. On mobile, open Settings → Sync & Backup to merge a desktop backup; text-card, OCR, and file import depend on the platform's supported scope.
 
 ## Development
 

@@ -1,6 +1,6 @@
 # Clarora 桌面客户端
 
-Clarora 的主桌面客户端，使用 GPUI 原生窗口和 Rust 业务代码，面向 macOS、Windows。React Native 版本保留在 `clarora-app/`，对应发行标注 RN。主版本应用与安装包统一显示 Clarora；当前验证范围和发行状态以对应构建记录为准。
+Clarora 的主桌面客户端，使用 GPUI 原生窗口和 Rust 业务代码，面向 macOS、Windows。React Native 版本保留在 `clarora-app/`，对应发行标注 RN；Android / iOS 的安装方式、下载入口和平台差异见仓库根 README 的「平台与使用」。主版本应用与安装包统一显示 Clarora；当前验证范围和发行状态以对应构建记录为准。
 
 ## 学习模块功能
 
