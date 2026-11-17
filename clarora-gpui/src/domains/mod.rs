@@ -690,6 +690,18 @@ pub(super) fn complete(
             video::Completed::VideoAuthRequired(url, origin, group, source)
                 .apply(app, context, window, cx)
         }
+        Outcome::VideoBatch {
+            videos,
+            failed,
+            group,
+            origin,
+        } => video::Completed::VideoBatch {
+            videos,
+            failed,
+            group,
+            origin,
+        }
+        .apply(app, context, window, cx),
         Outcome::Pdf(v0, v1, v2) => {
             reading::Completed::Pdf(v0, v1, v2).apply(app, context, window, cx)
         }

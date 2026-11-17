@@ -21,6 +21,12 @@ pub(super) enum Outcome {
     VideoTranslated(PathBuf, String, Vec<Cue>, Vec<Cue>),
     VideoDownloaded(PathBuf, u64, String, process::VideoSource),
     VideoAuthRequired(String, u64, String, process::VideoSource),
+    VideoBatch {
+        videos: Vec<video_jobs::DownloadedVideo>,
+        failed: Vec<(String, String)>,
+        group: String,
+        origin: u64,
+    },
     Pdf(PathBuf, i32, documents::PdfPage),
     Ebook(ebook::Reading),
     Ocr(String),
@@ -192,9 +198,14 @@ impl AppView {
                     let result = done.result;
                     let task_retry = self.tasks.retry.take();
                     let import_task = self.video.import_active;
+                    let batch_partial = matches!(
+                        &result,
+                        Ok(Outcome::VideoBatch { failed, .. }) if !failed.is_empty()
+                    );
                     if import_task {
                         let unfinished = done.cancelled
                             || result.is_err()
+                            || batch_partial
                             || matches!(&result, Ok(Outcome::Issue(_)));
                         if unfinished {
                             self.video.import_recovery = self.video.import_draft.clone();
@@ -203,6 +214,7 @@ impl AppView {
                         }
                     }
                     let failed = result.is_err()
+                        || batch_partial
                         || matches!(&result, Ok(Outcome::Issue(_)))
                         || matches!(&result, Ok(Outcome::BackupFailed(_)));
                     let completed_backup = matches!(

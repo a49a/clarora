@@ -91,7 +91,9 @@ impl VideoImport {
             .and_then(|draft| draft.normalized.as_deref())
             .and_then(bilibili_base);
         let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("粘贴视频链接或输入 B 站 BV / av 编号")
+            InputState::new(window, cx)
+                .placeholder("粘贴视频链接；多个视频可每行一个，也支持 B 站 BV / av 编号")
+                .auto_grow(3, 8)
         });
         if !link.is_empty() {
             input.update(cx, |state, cx| state.set_value(&link, window, cx));
@@ -131,6 +133,17 @@ impl VideoImport {
         } else {
             self.group.clone()
         }
+    }
+
+    fn links(&self, cx: &Context<Self>) -> Vec<String> {
+        self.input
+            .read(cx)
+            .value()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
     }
 
     fn invalidate_parts(&mut self) {
@@ -204,6 +217,14 @@ impl VideoImport {
     fn read_parts(&mut self, cx: &mut Context<Self>) {
         if let Some(cancel) = self.cancel.take() {
             cancel.store(true, Ordering::SeqCst);
+        }
+        if self.links(cx).len() > 1 {
+            self.parts = None;
+            self.parts_loading = false;
+            self.parts_error =
+                Some("多个链接请在每个 B 站链接里用 ?p= 指定分P；此处只读取单条链接的选集".into());
+            cx.notify();
+            return;
         }
         let link = self.input.read(cx).value();
         let url = match process::normalize_video_link(&link) {
@@ -304,7 +325,40 @@ impl VideoImport {
         }) {
             return false;
         }
-        let link = self.input.read(cx).value();
+        let links = self.links(cx);
+        if links.is_empty() {
+            self.error = Some("请先粘贴视频链接或输入 BV / av 编号".into());
+            self.input.update(cx, |input, cx| input.focus(window, cx));
+            cx.notify();
+            return false;
+        }
+        if links.len() > 1 {
+            let group = self.target_group();
+            return match self.owner.update(cx, |app, cx| {
+                app.feedback.retry_candidate = None;
+                let result = app.begin_video_links_import(&links, group);
+                if result.is_ok() {
+                    app.video.import_recovery = None;
+                    app.video.import_edit = None;
+                }
+                cx.notify();
+                result
+            }) {
+                Ok(Err(error)) => {
+                    self.error = Some(error.to_string());
+                    self.input.update(cx, |input, cx| input.focus(window, cx));
+                    cx.notify();
+                    false
+                }
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    cx.notify();
+                    false
+                }
+                Ok(Ok(())) => true,
+            };
+        }
+        let link = links[0].clone();
         let current_base = process::normalize_video_link(&link)
             .ok()
             .and_then(|link| match link {
@@ -566,15 +620,19 @@ impl Render for VideoImport {
                     })),
             );
         }
-        let primary_label = self
-            .selected
-            .and_then(|index| {
-                self.parts
-                    .as_ref()
-                    .and_then(|series| series.parts.get(index))
-            })
-            .map(|part| format!("下载 P{} 并导入", part.number))
-            .unwrap_or_else(|| "下载并导入".into());
+        let links = self.links(cx);
+        let primary_label = if links.len() > 1 {
+            format!("依次下载并导入 {} 个视频", links.len())
+        } else {
+            self.selected
+                .and_then(|index| {
+                    self.parts
+                        .as_ref()
+                        .and_then(|series| series.parts.get(index))
+                })
+                .map(|part| format!("下载 P{} 并导入", part.number))
+                .unwrap_or_else(|| "下载并导入".into())
+        };
         div()
             .flex()
             .flex_col()
@@ -595,7 +653,7 @@ impl Render for VideoImport {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child("支持 B 站、YouTube、抖音、微博和 X（Twitter）。"),
+                            .child("支持 B 站、YouTube、抖音、微博和 X（Twitter）。多个链接请每行一个，会依次下载导入。"),
                     )
                     .when_some(self.error.clone(), |form, error| {
                         form.child(div().text_sm().text_color(cx.theme().danger).child(error))
@@ -617,7 +675,7 @@ impl Render for VideoImport {
                                 "读取 B 站选集"
                             })
                             .outline()
-                            .disabled(self.parts_loading)
+                            .disabled(self.parts_loading || links.len() > 1)
                             .on_click(cx.listener(|this, _, _, cx| this.read_parts(cx))),
                     )
                     .child(

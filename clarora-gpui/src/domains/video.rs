@@ -969,6 +969,107 @@ impl AppView {
         Ok(())
     }
 
+    /// Import several pasted links in one task. Each link uses its own
+    /// bilibili `?p=` part; the single-link dialog keeps the explicit part
+    /// picker. Successful downloads are kept even if another link fails.
+    pub(crate) fn begin_video_links_import(
+        &mut self,
+        links: &[String],
+        group: String,
+    ) -> Result<()> {
+        ensure!(self.page == "video", "请先进入视频学习");
+        ensure!(
+            !self.tasks.foreground.is_running(),
+            "请完成或取消当前任务后再导入视频"
+        );
+        ensure!(!links.is_empty(), "请先粘贴至少一个视频链接");
+        ensure!(links.len() <= 50, "一次最多导入 50 个视频链接");
+        let mut seen = std::collections::BTreeSet::new();
+        let mut raw = Vec::new();
+        let mut normalized = Vec::new();
+        for link in links {
+            let parsed = process::normalize_video_link(link)
+                .with_context(|| format!("视频链接无效：{}", link.trim()))?;
+            let url = match parsed {
+                process::VideoLink::External(_, url) | process::VideoLink::Bilibili(url) => url,
+            };
+            if seen.insert(url.clone()) {
+                raw.push(link.trim().to_owned());
+                normalized.push(url);
+            }
+        }
+        ensure!(!raw.is_empty(), "没有可导入的视频链接");
+        self.video.import_draft = Some(app_state::VideoImportDraft {
+            raw: raw.join("\n"),
+            normalized: normalized.first().cloned(),
+            part: None,
+            group: group.clone(),
+        });
+        self.video.import_recovery = None;
+        self.video.import_active = true;
+        let downloads = self.tasks.downloads.clone();
+        let browser = self.video.youtube_browser;
+        let origin = self.media.session.revision();
+        let count = raw.len();
+        self.begin_scoped(
+            TaskScope::Application,
+            &format!("正在导入 {count} 个视频…"),
+            move |lib, cancel, _| {
+                let mut videos = Vec::new();
+                let mut failed = Vec::new();
+                for link in &raw {
+                    if cancel.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let result = (|| -> Result<video_jobs::DownloadedVideo> {
+                        match process::normalize_video_link(link)? {
+                            process::VideoLink::External(source, url) => {
+                                let path = process::download_external_with(
+                                    source,
+                                    &lib.root,
+                                    &url,
+                                    if source == process::VideoSource::YouTube {
+                                        browser
+                                    } else {
+                                        None
+                                    },
+                                    &cancel,
+                                )?;
+                                Ok(video_jobs::DownloadedVideo { path, series: None })
+                            }
+                            process::VideoLink::Bilibili(url) => {
+                                let mut series = bilibili::fetch(&url, &cancel)?;
+                                let index = series.requested;
+                                let path = downloads.obtain(&lib, &series, index, &cancel)?;
+                                series.parts[index].path = Some(path.clone());
+                                Ok(video_jobs::DownloadedVideo {
+                                    path,
+                                    series: Some(series),
+                                })
+                            }
+                        }
+                    })();
+                    match result {
+                        Ok(video) => videos.push(video),
+                        Err(_) if cancel.load(Ordering::SeqCst) => break,
+                        Err(error) => failed.push((link.clone(), format!("{error:#}"))),
+                    }
+                }
+                Ok(Outcome::VideoBatch {
+                    videos,
+                    failed,
+                    group,
+                    origin,
+                })
+            },
+        );
+        if !self.tasks.foreground.is_running() {
+            self.video.import_active = false;
+            anyhow::bail!("{}", self.status);
+        }
+        Ok(())
+    }
+
     fn begin_external_download(
         &mut self,
         source: process::VideoSource,
@@ -1252,6 +1353,12 @@ pub(super) enum Completed {
     VideoTranslated(PathBuf, String, Vec<Cue>, Vec<Cue>),
     VideoDownloaded(PathBuf, u64, String, process::VideoSource),
     VideoAuthRequired(String, u64, String, process::VideoSource),
+    VideoBatch {
+        videos: Vec<video_jobs::DownloadedVideo>,
+        failed: Vec<(String, String)>,
+        group: String,
+        origin: u64,
+    },
     ClipSaved,
 }
 impl Completed {
@@ -1344,6 +1451,97 @@ impl Completed {
                             FeedbackKind::Error,
                             format!("{} 视频导入失败：{error:#}", source.label()),
                         ),
+                    }
+                }
+            }
+
+            Completed::VideoBatch {
+                videos,
+                failed,
+                group,
+                origin,
+            } => {
+                if context.cancelled {
+                    app.report_status(FeedbackKind::Info, "已取消批量视频导入".into());
+                } else {
+                    let group = app.resolve_import_group(&group);
+                    let result = (|| -> Result<(usize, Option<PathBuf>)> {
+                        if videos.is_empty() {
+                            return Ok((0, None));
+                        }
+                        let mut collection = video_library::Collection::load(&app.lib)?;
+                        let mut ids = std::collections::BTreeSet::new();
+                        let mut first = None;
+                        for video in &videos {
+                            let added = collection.add_in_group(
+                                std::slice::from_ref(&video.path),
+                                video.series.as_ref(),
+                                &group,
+                            )?;
+                            ids.extend(added);
+                            if first.is_none() {
+                                first = Some(video.path.clone());
+                            }
+                        }
+                        collection.save(&app.lib)?;
+                        app.video.collection = collection;
+                        Ok((ids.len(), first))
+                    })();
+                    match result {
+                        Ok((count, first)) => {
+                            let activate = app.page == "video"
+                                && app.media.session.revision() == origin
+                                && first.is_some();
+                            if activate {
+                                app.save_media_position();
+                                app.save_video_progress();
+                                if let Some(path) = first {
+                                    app.open_downloaded_video(path, &group);
+                                    app.video.tab = 3;
+                                    app.video.tools_open = false;
+                                }
+                            }
+                            if failed.is_empty() {
+                                app.report_status(
+                                    FeedbackKind::Info,
+                                    if activate {
+                                        format!("已导入 {count} 个视频，可在“我的视频”切换")
+                                    } else {
+                                        format!("已导入 {count} 个视频，返回视频页可播放")
+                                    },
+                                );
+                            } else {
+                                let raw = failed
+                                    .iter()
+                                    .map(|(link, _)| link.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                app.video.import_recovery = Some(app_state::VideoImportDraft {
+                                    raw,
+                                    normalized: None,
+                                    part: None,
+                                    group,
+                                });
+                                let detail = failed
+                                    .first()
+                                    .map(|(_, error)| error.as_str())
+                                    .unwrap_or("未知错误");
+                                app.report_status(
+                                    FeedbackKind::Error,
+                                    format!(
+                                        "已导入 {count} 个视频，{} 个失败：{detail}",
+                                        failed.len()
+                                    ),
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            app.video.import_recovery = app.video.import_draft.clone();
+                            app.report_status(
+                                FeedbackKind::Error,
+                                format!("批量视频导入失败：{error:#}"),
+                            );
+                        }
                     }
                 }
             }

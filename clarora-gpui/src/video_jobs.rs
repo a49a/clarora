@@ -17,6 +17,12 @@ use std::{
 };
 
 type Cell = Arc<Mutex<Option<PathBuf>>>;
+/// One completed item in a multi-link video import.
+#[derive(Clone, Debug)]
+pub struct DownloadedVideo {
+    pub path: PathBuf,
+    pub series: Option<Series>,
+}
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub enum Mode {
     English,
