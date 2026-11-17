@@ -15,6 +15,9 @@ fn series_b_video(lib: &Library) -> PathBuf {
 fn transcript_video(lib: &Library) -> PathBuf {
     lib.root.join("media").join("resume-transcript.mp4")
 }
+fn fresh_download_video(lib: &Library) -> PathBuf {
+    lib.root.join("media").join("fresh-no-subtitle.mp4")
+}
 
 pub(super) fn prepare(lib: &Library) -> Result<()> {
     let path = video(lib);
@@ -107,6 +110,7 @@ pub(super) struct Probe {
     fullscreen_edit_started: Instant,
     frozen_transcript: Option<String>,
     reanchor_text: Option<String>,
+    blind_repeat_started: bool,
 }
 impl Probe {
     pub(super) fn new(out: &Path) -> Self {
@@ -122,6 +126,7 @@ impl Probe {
             fullscreen_edit_started: Instant::now(),
             frozen_transcript: None,
             reanchor_text: None,
+            blind_repeat_started: false,
         }
     }
     fn series(
@@ -219,8 +224,9 @@ impl Probe {
         window: &mut Window,
         cx: &mut Context<AppView>,
     ) -> Result<bool> {
+        let stage_timeout = if self.stage == 98 { 25 } else { 8 };
         ensure!(
-            self.stage == 0 || self.entered.elapsed() < Duration::from_secs(8),
+            self.stage == 0 || self.entered.elapsed() < Duration::from_secs(stage_timeout),
             "视频恢复阶段{}超时，实际位置={}，错误={}",
             self.stage,
             app.media.player.snapshot().position,
@@ -2285,30 +2291,68 @@ impl Probe {
                 self.advance();
             }
             98 => {
+                if !self.blind_repeat_started {
+                    let state = app.media.player.snapshot();
+                    if state.paused || state.position < 7.95 || state.position > 9. {
+                        return Ok(false);
+                    }
+                    ensure!(
+                        app.video.sentence_repeat.is_none()
+                            && app.media.session.video_sentence().is_none()
+                            && state.sentence_repeat.is_none(),
+                        "普通模式点击字幕错误启用了句子重复"
+                    );
+                    self.record(app, "普通模式点击字幕仍从目标句正常播放")?;
+                    app.handle(Action::VideoSentenceRepeat(Some(1), Some(4)), window, cx);
+                    ensure!(
+                        app.video.sentence_repeat == Some(4)
+                            && app.media.session.video_sentence().is_some_and(|session| {
+                                session.total == Some(4) && session.index == 1
+                            })
+                            && clarora_gpui::video_repeat::blind_plays(4) == 2,
+                        "4 遍盲听没有建立单句请求或前半隐藏范围"
+                    );
+                    ensure!(app.video_repeat_blind(), "四遍盲听首遍没有隐藏字幕");
+                    self.record(app, "每句四遍前两遍无字幕的请求已建立")?;
+                    self.blind_repeat_started = true;
+                    return Ok(false);
+                }
                 let state = app.media.player.snapshot();
-                if state.paused || state.position < 7.95 || state.position > 9. {
+                let repeat = state
+                    .sentence_repeat
+                    .as_ref()
+                    .context("四遍盲听请求在字幕半程前结束")?;
+                let ui_play = app
+                    .media
+                    .snapshot
+                    .sentence_repeat
+                    .as_ref()
+                    .map(|repeat| repeat.current_play);
+                if repeat.current_play < 3 || ui_play.is_none_or(|play| play < 3) {
+                    ensure!(
+                        self.entered.elapsed() < Duration::from_secs(15),
+                        "四遍盲听没有进入后两遍字幕阶段：player={repeat:?}, ui={ui_play:?}",
+                    );
                     return Ok(false);
                 }
                 ensure!(
-                    app.video.sentence_repeat.is_none()
-                        && app.media.session.video_sentence().is_none()
-                        && state.sentence_repeat.is_none(),
-                    "普通模式点击字幕错误启用了句子重复"
+                    !app.video_repeat_blind(),
+                    "四遍盲听第三遍仍被标记为无字幕：player={repeat:?}, ui={ui_play:?}"
                 );
-                self.record(app, "普通模式点击字幕仍从目标句正常播放")?;
-                app.handle(Action::VideoSentenceRepeat(Some(2), Some(4)), window, cx);
+                let expected = app
+                    .video
+                    .cues
+                    .get(1)
+                    .context("缺少四遍盲听字幕夹具")?
+                    .text
+                    .clone();
+                let caption = app.video_active_caption(app.video_is_active());
                 ensure!(
-                    app.video.sentence_repeat == Some(4)
-                        && app
-                            .media
-                            .session
-                            .video_sentence()
-                            .is_some_and(|session| session.total == Some(4) && session.index == 2)
-                        && clarora_gpui::video_repeat::blind_plays(4) == 2,
-                    "4 遍盲听没有建立单句请求或前半隐藏范围"
+                    caption == expected,
+                    "四遍盲听后两遍没有显示当前句字幕：caption={caption:?}, expected={expected:?}, repeat={repeat:?}, position={}",
+                    state.position
                 );
-                ensure!(app.video_repeat_blind(), "四遍盲听首遍没有隐藏字幕");
-                self.record(app, "每句四遍前两遍无字幕的请求已建立")?;
+                self.record(app, "四遍盲听后两遍恢复显示当前句字幕")?;
                 app.handle(Action::VideoStopSentenceRepeat, window, cx);
                 ensure!(
                     app.video.sentence_repeat.is_none()
@@ -3481,9 +3525,36 @@ impl Probe {
                 app.video.transcript_selection = None;
                 app.assistant.enabled = false;
                 app.assistant.legacy = false;
-                app.handle(Action::Page("settings".into()), window, cx);
-                self.report(Some(true), None)?;
+                app.handle(Action::Page("video".into()), window, cx);
+                let fresh = fresh_download_video(&app.lib);
+                std::fs::copy(video(&app.lib), &fresh)?;
+                app.video.sentence_repeat = Some(3);
+                ensure!(
+                    app.open_downloaded_video(fresh, &app.video.group.clone()),
+                    "无字幕下载夹具无法打开：{}",
+                    app.status
+                );
                 self.advance();
+            }
+            143 => {
+                let state = app.media.player.snapshot();
+                let fresh = fresh_download_video(&app.lib);
+                if state.path != fresh.to_string_lossy() || state.duration <= 0. {
+                    return Ok(false);
+                }
+                ensure!(
+                    app.video.sentence_repeat.is_none()
+                        && app.video.pending_start.is_none()
+                        && app.media.session.video_sentence().is_none()
+                        && !state.paused,
+                    "下载的无字幕视频没有切回正常播放：repeat={:?}, pending={}, sentence={}, paused={}",
+                    app.video.sentence_repeat,
+                    app.video.pending_start.is_some(),
+                    app.media.session.video_sentence().is_some(),
+                    state.paused
+                );
+                self.record(app, "下载的无字幕视频在逐句模式下自动切换正常播放")?;
+                self.report(Some(true), None)?;
                 return Ok(true);
             }
             _ => return Ok(true),

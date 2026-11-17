@@ -202,17 +202,14 @@ impl AppView {
         .left_0()
         .size_full()
     }
-    pub(super) fn video_picture(
-        &self,
-        height: Option<Pixels>,
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
-        let active = self.media.session.owner() == Some(&PlaybackOwner::Video)
+    pub(super) fn video_is_active(&self) -> bool {
+        self.media.session.owner() == Some(&PlaybackOwner::Video)
             && self.video.path.as_ref().is_some_and(|p| {
                 self.media.session.path.as_ref() == Some(p)
                     && self.media.snapshot.path == p.to_string_lossy()
-            });
-        let frame = self.media.snapshot.frame.clone().filter(|_| active);
+            })
+    }
+    pub(super) fn video_active_caption(&self, active: bool) -> String {
         let blind_caption = if !active
             || !self.video.captions_enabled
             || self.video.caption_source == VideoCaptionSource::Hidden
@@ -239,7 +236,7 @@ impl AppView {
         } else {
             None
         };
-        let active_caption = if let Some(caption) = blind_caption {
+        if let Some(caption) = blind_caption {
             caption
         } else if !active
             || !self.video.captions_enabled
@@ -254,7 +251,16 @@ impl AppView {
                 .map(|i| self.video.cues[i].text.clone())
                 .filter(|text| !text.is_empty())
                 .unwrap_or_else(|| self.media.snapshot.subtitle.clone())
-        };
+        }
+    }
+    pub(super) fn video_picture(
+        &self,
+        height: Option<Pixels>,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let active = self.video_is_active();
+        let frame = self.media.snapshot.frame.clone().filter(|_| active);
+        let active_caption = self.video_active_caption(active);
         div()
             .relative()
             .w_full()

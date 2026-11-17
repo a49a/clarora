@@ -239,7 +239,7 @@ impl AppView {
         } else {
             item.as_ref().map_or(0., |item| item.position)
         };
-        if !self.open_at_start(path, position, !autoplay, false, None) {
+        if !self.open_at_start(path, position, !autoplay, false, None, false) {
             return false;
         }
         self.video.progress_key = Some(key);

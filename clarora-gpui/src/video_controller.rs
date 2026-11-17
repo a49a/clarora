@@ -129,13 +129,13 @@ impl AppView {
         self.open_at(path, 0., false)
     }
     pub(super) fn open_downloaded_video(&mut self, path: PathBuf, group: &str) -> bool {
-        self.open_at_start(path, 0., false, false, Some(group))
+        self.open_at_start(path, 0., false, false, Some(group), true)
     }
     pub(super) fn open_at(&mut self, path: PathBuf, position: f64, paused: bool) -> bool {
-        self.open_at_start(path, position, paused, false, None)
+        self.open_at_start(path, position, paused, false, None, false)
     }
     pub(super) fn open_part_video(&mut self, path: PathBuf, from_end: bool) -> bool {
-        self.open_at_start(path, 0., false, from_end, None)
+        self.open_at_start(path, 0., false, from_end, None, false)
     }
     pub(super) fn open_part_video_at(
         &mut self,
@@ -145,7 +145,7 @@ impl AppView {
         reading: Option<clarora_gpui::video_progress::Reading>,
         autoplay: bool,
     ) -> bool {
-        if !self.open_at_start(path, position, !autoplay, from_end, None) {
+        if !self.open_at_start(path, position, !autoplay, from_end, None, true) {
             return false;
         }
         if let Some(reading) = reading {
@@ -160,8 +160,9 @@ impl AppView {
         path: PathBuf,
         position: f64,
         paused: bool,
-        from_end: bool,
+        mut from_end: bool,
         download_group: Option<&str>,
+        fresh_download: bool,
     ) -> bool {
         self.save_parts_anchor();
         self.video.picture_click = None;
@@ -222,6 +223,17 @@ impl AppView {
         };
         self.video.path = Some(path.clone());
         self.attach_downloaded_subtitles(&path);
+        if fresh_download
+            && self.video.sentence_repeat.is_some()
+            && video_subtitles::load(&self.lib, &path).is_ok_and(|cues| cues.is_empty())
+        {
+            self.clear_video_sentence_repeat();
+            from_end = false;
+            self.report_status(
+                FeedbackKind::Info,
+                "下载的视频没有字幕，已切换为正常播放".into(),
+            );
+        }
         self.video.completion_marked = false;
         self.media.open(
             PlaybackOwner::Video,
