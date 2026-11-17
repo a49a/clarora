@@ -39,13 +39,17 @@ impl Command {
                     }
                     app.lib.set_setting("assistant_open", "false")?;
                 } else {
-                    // Reopening must restore the existing draft. Only a truly
-                    // blank first conversation initializes the current material;
-                    // otherwise moving from A to B would silently add B.
-                    let blank = !app.assistant.draft_initialized
-                        && app.assistant.references.is_empty()
+                    // Audio learning has no always-visible transcript in the
+                    // assistant, so an empty reference list starts from the
+                    // full audio text even if the assistant was used before.
+                    // Other pages only initialize a truly blank first
+                    // conversation so moving between modules cannot silently
+                    // attach unrelated material.
+                    let audio = app.page == "listening";
+                    let blank = app.assistant.references.is_empty()
                         && app.value("question", cx).trim().is_empty()
-                        && app.chat.history.is_empty();
+                        && (audio
+                            || (!app.assistant.draft_initialized && app.chat.history.is_empty()));
                     if blank {
                         if let Err(error) = app.attach_current_background(cx) {
                             app.report_status(

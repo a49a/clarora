@@ -1000,12 +1000,7 @@ impl AppView {
                 .when(self.audio.blind.enabled, |v| v.child(self.blind_panel(cx)))
                 .into_any_element()
         };
-        let valid = self
-            .media
-            .session
-            .loop_a
-            .zip(self.media.session.loop_b)
-            .is_some_and(|(a, b)| b > a);
+        let valid = self.clip_range().is_some();
         let rates = [0.6, 0.7, 0.8, 0.9, 1., 1.2, 1.25, 1.5, 2.]
             .into_iter()
             .map(|r| {

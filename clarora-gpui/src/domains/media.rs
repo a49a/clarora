@@ -361,14 +361,27 @@ impl Command {
                     "请先切回字幕模式再保存片段"
                 );
                 let path = app.media.session.path.clone().context("请先打开媒体")?;
-                let a = app.media.session.loop_a.context("请先设置 A 点")?;
-                let b = app.media.session.loop_b.context("请先设置 B 点")?;
+                let (a, b) = app.clip_range().context("请先设置 A 点")?;
                 let is_audio = app.page == "listening";
-                let (front, back) = if is_audio {
+                if is_audio {
+                    app.media.session.loop_a = Some(a);
+                    app.media.session.loop_b = Some(b);
+                    app.media.session.mode = PlaybackMode::Ab;
+                }
+                let (mut front, mut back) = if is_audio {
                     (app.value("front", cx), app.value("back", cx))
                 } else {
                     subtitles::excerpt(&app.video.cues, a, b)
                 };
+                if is_audio && front.trim().is_empty() {
+                    let (excerpt, translation) = subtitles::excerpt(&app.audio.cues, a, b);
+                    if !excerpt.trim().is_empty() {
+                        front = excerpt;
+                        back = translation;
+                        app.set("front", front.clone(), window, cx);
+                        app.set("back", back.clone(), window, cx);
+                    }
+                }
                 ensure!(!front.trim().is_empty(), "所选范围没有可保存的字幕原文");
                 let source = if is_audio {
                     clip_marks::Source::audio(&app.audio.current_id)

@@ -33,6 +33,8 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
                 [
                     "audio subtitle A/B vertical markers drag both boundaries without selecting text",
                     "audio learning plays saved A/B clips in order and returns to the full track",
+                    "audio clip saves the default active-sentence range without dragging A/B",
+                    "opening the assistant in audio learning attaches the full transcript without a previous blank draft",
                 ]
                 .iter()
                 .all(|name| cases.iter().any(|case| case["case"] == *name))

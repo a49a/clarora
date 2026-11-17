@@ -2,6 +2,38 @@
 use super::*;
 
 impl AppView {
+    /// Current A–B range, falling back to the active/next subtitle cue or a
+    /// ten-second window so clip mode can save without dragging a marker first.
+    pub(super) fn clip_range(&self) -> Option<(f64, f64)> {
+        if let Some((a, b)) = self
+            .media
+            .session
+            .loop_a
+            .zip(self.media.session.loop_b)
+            .filter(|(a, b)| b > a)
+        {
+            return Some((a, b));
+        }
+        if !self.media.session.is_audio(&self.audio.current_id) {
+            return None;
+        }
+        let duration = self.media.snapshot.duration;
+        if !duration.is_finite() || duration <= 0. {
+            return None;
+        }
+        let position = self.media.snapshot.position.clamp(0., duration);
+        let index =
+            clarora_gpui::video_subtitles::active(&self.audio.cues, position).or_else(|| {
+                clarora_gpui::video_repeat::at_or_next(&self.audio.cues, position, duration)
+            });
+        if let Some(cue) = index.and_then(|index| self.audio.cues.get(index))
+            && cue.end.min(duration) > cue.start
+        {
+            return Some((cue.start, cue.end.min(duration)));
+        }
+        let end = (position + 10.).min(duration);
+        (end > position).then_some((position, end))
+    }
     pub(super) fn open_audio(&mut self, row: &Row) {
         self.loads.restore_pending = false;
         self.reset_audio_sentence_request();

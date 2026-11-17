@@ -379,43 +379,33 @@ impl Command {
                 }
                 app.audio.clip_mode = !app.audio.clip_mode;
                 if app.audio.clip_mode {
-                    let has_range = app
-                        .media
-                        .session
-                        .loop_a
-                        .zip(app.media.session.loop_b)
-                        .is_some_and(|(a, b)| b > a);
-                    if !has_range && app.media.session.is_audio(&app.audio.current_id) {
-                        let position = app.media.snapshot.position;
-                        let duration = app.media.snapshot.duration;
-                        let index =
-                            video_subtitles::active(&app.audio.cues, position).or_else(|| {
-                                clarora_gpui::video_repeat::at_or_next(
-                                    &app.audio.cues,
-                                    position,
-                                    duration,
-                                )
-                            });
-                        if let Some(cue) = index.and_then(|i| app.audio.cues.get(i)).cloned() {
-                            let end = cue.end.min(duration);
-                            if duration > 0. && end > cue.start {
-                                let paused = app.media.snapshot.paused;
-                                app.media.session.loop_a = Some(cue.start);
-                                app.media.session.loop_b = Some(end);
-                                app.media.session.mode = PlaybackMode::Ab;
-                                app.media.player.command([
-                                    "seek".into(),
-                                    cue.start.to_string(),
-                                    "absolute+exact".into(),
-                                ]);
-                                if paused {
-                                    app.media.player.set("pause", "yes");
-                                }
-                                app.report_status(
-                                    FeedbackKind::Info,
-                                    "已按当前句设置 A–B，可拖动波形边界调整".into(),
-                                );
+                    if let Some((a, b)) = app.clip_range() {
+                        let has_range = app
+                            .media
+                            .session
+                            .loop_a
+                            .zip(app.media.session.loop_b)
+                            .is_some_and(|(a, b)| b > a);
+                        if !has_range {
+                            let paused = app.media.snapshot.paused;
+                            app.media.session.loop_a = Some(a);
+                            app.media.session.loop_b = Some(b);
+                            app.media.session.mode = PlaybackMode::Ab;
+                            let (front, back) = subtitles::excerpt(&app.audio.cues, a, b);
+                            app.set("front", front, window, cx);
+                            app.set("back", back, window, cx);
+                            app.media.player.command([
+                                "seek".into(),
+                                a.to_string(),
+                                "absolute+exact".into(),
+                            ]);
+                            if paused {
+                                app.media.player.set("pause", "yes");
                             }
+                            app.report_status(
+                                FeedbackKind::Info,
+                                "已按当前句设置 A–B，可拖动波形边界调整".into(),
+                            );
                         }
                     }
                 } else {

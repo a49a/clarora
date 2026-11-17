@@ -57,6 +57,7 @@ pub(super) struct Probe {
     observations: Vec<Value>,
     drawn: bool,
     saw_second_review_clip: bool,
+    saved_before: usize,
     surface: Surface,
 }
 
@@ -71,6 +72,7 @@ impl Probe {
             observations: vec![],
             drawn: false,
             saw_second_review_clip: false,
+            saved_before: 0,
             surface: Surface::Focus,
         }
     }
@@ -158,7 +160,7 @@ impl Probe {
         cx: &mut Context<AppView>,
     ) -> Result<bool> {
         ensure!(
-            self.started.elapsed() < Duration::from_secs(30),
+            self.started.elapsed() < Duration::from_secs(45),
             "audio A/B marker drag timeout at stage {}: {}",
             self.stage,
             app.status
@@ -389,6 +391,131 @@ impl Probe {
                     "paused": app.media.snapshot.paused,
                 }));
                 self.cases.push(json!({"case":"audio learning plays saved A/B clips in order and returns to the full track","passed":true}));
+                self.saved_before = app.lib.list("clip_cards")?.len();
+                app.media.session.loop_a = None;
+                app.media.session.loop_b = None;
+                if app.audio.clip_mode {
+                    app.handle(Action::AudioClipMode, window, cx);
+                }
+                app.media.player.set("pause", "yes");
+                app.handle(Action::SeekTo(1.4), window, cx);
+            }
+            7 => {
+                if clarora_gpui::video_subtitles::active(
+                    &app.audio.cues,
+                    app.media.snapshot.position,
+                ) != Some(1)
+                    || app.media.session.loop_a.is_some()
+                    || app.media.session.loop_b.is_some()
+                {
+                    ensure!(
+                        self.stage_started.elapsed() < Duration::from_secs(3),
+                        "audio did not settle on the active sentence for the no-drag save: position={} range={:?}..{:?}",
+                        app.media.snapshot.position,
+                        app.media.session.loop_a,
+                        app.media.session.loop_b
+                    );
+                    return Ok(false);
+                }
+                if !app.audio.clip_mode {
+                    app.handle(Action::AudioClipMode, window, cx);
+                }
+                let cue = app.audio.cues[1].clone();
+                ensure!(
+                    app.audio.clip_mode
+                        && app.media.session.loop_a == Some(cue.start)
+                        && app.media.session.loop_b == Some(cue.end),
+                    "clip mode without an existing range did not default to the active sentence: a={:?} b={:?} cue={:?}..{:?}",
+                    app.media.session.loop_a,
+                    app.media.session.loop_b,
+                    cue.start,
+                    cue.end
+                );
+                let front = app.value("front", cx);
+                self.observations.push(json!({
+                    "event": "clip mode default range",
+                    "a": app.media.session.loop_a,
+                    "b": app.media.session.loop_b,
+                    "front": front,
+                }));
+                ensure!(
+                    front.contains("Delta epsilon zeta."),
+                    "clip mode did not prefill the selected sentence text: {front:?}"
+                );
+                // Exercise the save-time fallback as well: clearing the editor
+                // must still derive the excerpt from the default range.
+                app.set("front", String::new(), window, cx);
+                app.set("back", String::new(), window, cx);
+                app.handle(Action::Clip, window, cx);
+            }
+            8 => {
+                if app.tasks.foreground.is_running() {
+                    ensure!(
+                        self.stage_started.elapsed() < Duration::from_secs(20),
+                        "saving the default clip did not finish"
+                    );
+                    return Ok(false);
+                }
+                let cards = app.lib.list("clip_cards")?;
+                ensure!(
+                    cards.len() == self.saved_before + 1,
+                    "saving without dragging A/B did not create exactly one card: before={} now={} status={}",
+                    self.saved_before,
+                    cards.len(),
+                    app.status
+                );
+                let saved = cards
+                    .iter()
+                    .find(|row| text(row, "en_text").contains("Delta epsilon zeta."))
+                    .context("default clip card text was not saved")?;
+                ensure!(
+                    saved.get("end_ms").and_then(Value::as_u64) == Some(500),
+                    "default clip saved the wrong duration: {saved:?}"
+                );
+                self.observations.push(json!({
+                    "event": "save default clip without dragging",
+                    "card": saved,
+                }));
+                self.cases.push(json!({"case":"audio clip saves the default active-sentence range without dragging A/B","passed":true}));
+            }
+            9 => {
+                if app.assistant_open {
+                    app.handle(Action::Assistant, window, cx);
+                }
+                app.assistant.draft_initialized = true;
+                app.assistant.references.clear();
+                app.chat.history.clear();
+                app.set("question", "", window, cx);
+                ensure!(
+                    app.page == "listening" && !app.audio.cues.is_empty(),
+                    "audio learning material is not loaded for the assistant reference check"
+                );
+                app.handle(Action::Assistant, window, cx);
+                ensure!(
+                    app.assistant_open,
+                    "opening the assistant in audio learning failed"
+                );
+                let expected = app
+                    .audio
+                    .cues
+                    .iter()
+                    .map(|cue| cue.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ensure!(
+                    app.assistant
+                        .references
+                        .iter()
+                        .any(|reference| reference.text == expected),
+                    "opening the assistant in audio learning did not attach the full transcript: references={:?} expected={expected:?}",
+                    app.assistant.references
+                );
+                self.observations.push(json!({
+                    "event": "assistant full transcript on open",
+                    "references": app.assistant.references.len(),
+                    "draft_initialized": app.assistant.draft_initialized,
+                }));
+                self.cases.push(json!({"case":"opening the assistant in audio learning attaches the full transcript without a previous blank draft","passed":true}));
                 self.report(true, None)?;
                 return Ok(true);
             }
