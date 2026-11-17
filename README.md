@@ -40,7 +40,7 @@ RN 的 macOS / Windows 桌面构建已弃用，请使用上面的 GPUI 桌面主
 
 ## 开发
 
-桌面 GPUI 原生客户端位于 `clarora-gpui/`，使用 Rust；React Native 客户端位于 `clarora-app/`，两者启动方式独立。GPUI 日常启动用 `make gpui`（Windows 用 `powershell -File clarora-gpui/scripts/dev.ps1`），完整打包步骤见下方[从源码打包桌面应用](#从源码打包桌面应用)。
+桌面 GPUI 原生客户端位于 `clarora-gpui/`，使用 Rust；React Native 客户端位于 `clarora-app/`，两者启动方式独立。GPUI 日常启动统一用 `npm run gpui`（macOS / Windows 相同，需要 Node；内部自动调用对应平台的 `dev.sh` / `dev.ps1`）。macOS 仍可用 `make gpui`，Windows 仍可直接运行 `powershell -File clarora-gpui/scripts/dev.ps1`。完整打包步骤见下方[从源码打包桌面应用](#从源码打包桌面应用)。
 
 RN 的 macOS / Windows 桌面构建已弃用，不再提供使用或构建入口；桌面请使用 GPUI。Android / iOS 仍维护。
 
@@ -60,7 +60,7 @@ GPUI 的 macOS 开发环境还需要 FFmpeg、yt-dlp 和 CMake：
 brew install mpv ffmpeg yt-dlp cmake whisper.cpp
 ```
 
-直接 `cargo run` 打开 PDF 时如果提示缺少 `libpdfium.dylib`，执行 `python3 clarora-gpui/scripts/install-pdfium.py clarora-gpui/target/debug`，或改用会自动准备 PDFium 的 `make gpui`。
+直接 `cargo run` 打开 PDF 时如果提示缺少 `libpdfium.dylib`，执行 `python3 clarora-gpui/scripts/install-pdfium.py clarora-gpui/target/debug`，或改用会自动准备 PDFium 的 `npm run gpui`。
 
 Android / iOS 的 RN 构建步骤和平台限制见[平台说明](docs/platform-builds.md)。桌面 GPUI 需要 Rust 1.93.1；Windows 还需要 Visual Studio 2022 的 C++ 桌面工作负载与 Windows SDK。`.github/workflows/` 中的 CI 在推送与 PR 时运行共享代码的类型检查和测试，并编译验证 Android / iOS。共享代码和自动化测试不等同于移动端真机验收。
 
@@ -80,17 +80,18 @@ git pull --ff-only
 grep '^version' clarora-gpui/Cargo.toml
 ```
 
-只想在本机运行、不生成安装包时，macOS 执行 `make gpui`，Windows 执行 `powershell -File clarora-gpui/scripts/dev.ps1`；`npm run gpui` 保留为兼容别名。真正的可分发包按下面平台分别构建。
+只想在本机运行、不生成安装包时，两个平台统一执行 `npm run gpui`；`make gpui` 是 macOS 的无 Node 快捷别名，Windows 也可直接运行 `powershell -File clarora-gpui/scripts/dev.ps1`。真正的可分发包按下面平台分别构建。
 
 | 目标 | 入口 | 产物 |
 | --- | --- | --- |
-| macOS 本机调试 | `make gpui` | `clarora-gpui/target/Clarora.app` |
+| macOS 本机调试 | `npm run gpui`（或 `make gpui`） | `clarora-gpui/target/Clarora.app` |
+| Windows 本机调试 | `npm run gpui` | `clarora-gpui/target/debug/clarora-gpui.exe` |
 | macOS 分发包 | `release-macos.py` + runtime 配置 | `artifacts/clarora/gpui/macos/release-*` 下的 `.app`、ZIP、DMG |
 | Windows 分发包 | `prepare-windows-runtime.ps1` + `build-windows.ps1 -Distribution` | `artifacts/clarora/gpui/windows/` 下的 ZIP、安装器、校验和 |
 
 ### macOS
 
-要求 macOS 14+ Apple Silicon、Xcode Command Line Tools、Rust 1.93.1、Python 3、Homebrew 和 CMake：
+要求 macOS 14+ Apple Silicon、Xcode Command Line Tools、Rust 1.93.1、Node.js、Python 3、Homebrew 和 CMake：
 
 ```sh
 brew install mpv ffmpeg yt-dlp cmake whisper.cpp
@@ -99,8 +100,9 @@ brew install mpv ffmpeg yt-dlp cmake whisper.cpp
 **本机调试应用**（不用于分发）：
 
 ```sh
-make gpui
+npm run gpui
 # 产物：clarora-gpui/target/Clarora.app
+# 无 Node 时可改用：make gpui
 ```
 
 **可分发的 release 包：**
@@ -163,7 +165,7 @@ python3 scripts/verify-macos-package.py \
 
 ### Windows
 
-要求 Windows 10 1809+ / 11 x64、Rust 1.93.1 MSVC、Visual Studio 2022 的 C++ 桌面开发工作负载、Windows SDK、CMake、Python 3、7-Zip 和 Inno Setup 6。使用 x64 开发者 PowerShell 或 Native Tools 命令提示符：
+要求 Windows 10 1809+ / 11 x64、Rust 1.93.1 MSVC、Visual Studio 2022 的 C++ 桌面开发工作负载、Windows SDK、Node.js、CMake、Python 3、7-Zip 和 Inno Setup 6。使用 x64 开发者 PowerShell 或 Native Tools 命令提示符：
 
 ```powershell
 git clone https://github.com/a49a/clarora.git

@@ -44,9 +44,9 @@ Clarora 的主桌面客户端，使用 GPUI 原生窗口和 Rust 业务代码，
 cargo run --manifest-path clarora-gpui/Cargo.toml --locked
 ```
 
-需要 Rust 1.93.1。macOS 需要 Xcode Command Line Tools；Windows 使用 Rust MSVC 工具链、Visual Studio 2022 的 C++ 桌面开发工作负载与 Windows SDK。
+需要 Rust 1.93.1。macOS 需要 Xcode Command Line Tools；Windows 使用 Rust MSVC 工具链、Visual Studio 2022 的 C++ 桌面开发工作负载与 Windows SDK。统一入口 `npm run gpui` 还需要 Node.js。
 
-也可以在仓库根目录执行 `make gpui`，或直接运行 `sh clarora-gpui/scripts/dev.sh`；Windows 使用 `powershell -File clarora-gpui/scripts/dev.ps1`。脚本会在缺少 PDFium 时安装固定版本，macOS 还会打包带 Dock 图标的调试 `.app` 再启动；首次运行需要联网下载 PDFium，之后的启动直接复用本机文件。`npm run gpui` 仅作为兼容别名，转调同一套原生脚本。
+也可以在仓库根目录统一执行 `npm run gpui`（macOS / Windows 相同，需要 Node；脚本会自动调用 `dev.sh` 或 `dev.ps1`）。macOS 仍可直接运行 `sh clarora-gpui/scripts/dev.sh` 或 `make gpui`，Windows 仍可直接运行 `powershell -File clarora-gpui/scripts/dev.ps1`。脚本会在缺少 PDFium 时安装固定版本，macOS 还会打包带 Dock 图标的调试 `.app` 再启动；首次运行需要联网下载 PDFium，之后的启动直接复用本机文件。
 
 macOS 媒体工具：
 
@@ -87,7 +87,8 @@ grep '^version' clarora-gpui/Cargo.toml
 
 ```sh
 # 本机调试应用，不用于分发
-make gpui
+npm run gpui
+# 无 Node 时可改用：make gpui
 
 # 可分发 release 包：先按 PACKAGING.md 准备 runtime.json
 cargo fetch --manifest-path clarora-gpui/Cargo.toml --locked

@@ -28,6 +28,14 @@ For signed mobile builds and distribution, see [Mobile Releases](docs/mobile-rel
 
 The RN macOS and Windows desktop builds are deprecated; there is no supported use or build entry for them. Use the GPUI desktop client instead. Android and iOS remain maintained.
 
+GPUI desktop development has one cross-platform launcher:
+
+```sh
+npm run gpui
+```
+
+It requires Node.js plus Rust 1.93.1. On Windows use the MSVC toolchain, Visual Studio 2022's Desktop development with C++ workload, and the Windows SDK. The launcher automatically calls `clarora-gpui/scripts/dev.sh` on macOS or `dev.ps1` on Windows. macOS can still use `make gpui` without Node; Windows can run `powershell -File clarora-gpui/scripts/dev.ps1` directly.
+
 Requires Node.js 24 plus Android Studio or Xcode:
 
 ```sh

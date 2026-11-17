@@ -1,6 +1,6 @@
 .PHONY: gpui gpui-check
 
-# Native desktop development entry point; npm run gpui remains an alias.
+# macOS no-Node alias. Cross-platform entry: npm run gpui.
 gpui:
 	sh clarora-gpui/scripts/dev.sh $(ARGS)
 
