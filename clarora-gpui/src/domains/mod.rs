@@ -146,6 +146,7 @@ pub(super) enum Action {
     PdfOpen(PathBuf),
     Favorite,
     Transcribe,
+    TranscribeStronger,
     VideoTranscribe,
     VideoTranscribeAll,
     VideoTranscribeStronger,
@@ -416,6 +417,7 @@ impl From<Action> for Command {
             Action::PdfOpen(v0) => Routed::Reading(reading::Command::PdfOpen(v0)),
             Action::Favorite => Routed::Cards(cards::Command::Favorite),
             Action::Transcribe => Routed::Audio(audio::Command::Transcribe),
+            Action::TranscribeStronger => Routed::Audio(audio::Command::TranscribeStronger),
             Action::VideoTranscribe => Routed::Video(video::Command::VideoTranscribe),
             Action::VideoTranscribeAll => Routed::Video(video::Command::VideoTranscribeAll),
             Action::VideoTranscribeStronger => {

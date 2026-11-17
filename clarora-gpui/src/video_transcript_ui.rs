@@ -258,7 +258,7 @@ impl AppView {
                     .child(
                         self.button(
                             "video-transcribe-stronger",
-                            "更强",
+                            "更强模型",
                             Action::VideoTranscribeStronger,
                             cx,
                         )
@@ -271,7 +271,10 @@ impl AppView {
                             stronger
                                 .as_ref()
                                 .map(|(model, _)| {
-                                    format!("用 {} 覆盖当前视频英文字幕和已有中文译文", model.name)
+                                    format!(
+                                        "用 {} 重新生成当前视频字幕，覆盖英文字幕和已有中文译文",
+                                        model.name
+                                    )
                                 })
                                 .unwrap_or_else(|| "请先在设置中下载更强的同语言本机模型".into()),
                         ),

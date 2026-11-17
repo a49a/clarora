@@ -25,6 +25,7 @@ pub(super) enum Command {
     AudioRepeat(usize),
     AudioSentence(i8),
     Transcribe,
+    TranscribeStronger,
     Translate,
     AudioGroupSubtitles(clarora_gpui::audio_batch::Mode),
 }
@@ -48,7 +49,7 @@ impl Command {
                         | Command::AudioBlindRow(..)
                         | Command::AudioClipMode
                 ),
-            leave_video_sentence: matches!(self, Command::Transcribe),
+            leave_video_sentence: matches!(self, Command::Transcribe | Command::TranscribeStronger),
             ..Effects::default()
         }
     }
@@ -508,6 +509,22 @@ impl Command {
                     clarora_gpui::audio_batch::Plan::single(row, mode)?,
                     target,
                 )?;
+            }
+
+            Command::TranscribeStronger => {
+                let mode = clarora_gpui::audio_batch::Mode::English;
+                let row = app.selected().context("请先选择音频")?;
+                let (model, _) = app
+                    .stronger_local_model()
+                    .context("没有比当前更强且已下载的本机转写模型")?;
+                let target = audio_subtitles_controller::Target {
+                    audio: Some(text(&row, "id")),
+                    name: text(&row, "name"),
+                    mode,
+                };
+                let mut plan = clarora_gpui::audio_batch::Plan::single(row, mode)?;
+                plan.model = Some(model.id.into());
+                app.begin_audio_subtitles(plan, target)?;
             }
 
             Command::Translate => {

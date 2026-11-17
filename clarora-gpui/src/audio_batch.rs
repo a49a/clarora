@@ -35,6 +35,7 @@ pub struct Plan {
     rows: Vec<Row>,
     single: bool,
     retranslate: bool,
+    pub model: Option<String>,
 }
 #[derive(Default, Serialize)]
 pub struct Report {
@@ -187,6 +188,7 @@ impl Plan {
             rows: vec![row],
             single: true,
             retranslate: false,
+            model: None,
         })
     }
     /// Explicit re-translation replaces existing Chinese instead of skipping it.
@@ -222,6 +224,7 @@ impl Plan {
             rows,
             single: false,
             retranslate: false,
+            model: None,
         })
     }
     pub fn run(&self, lib: &Library, cancel: &Cancel, mut progress: impl FnMut(&str)) -> Report {
@@ -301,7 +304,7 @@ impl Plan {
             let path = PathBuf::from(text(&input.row, "audio_uri"));
             let meta = fs::metadata(&path).context("音频文件不存在或不可读")?;
             let stamp = (meta.len(), meta.modified()?);
-            let mut cues = ai::transcribe(lib, &path, cancel)?;
+            let mut cues = ai::transcribe_with_model(lib, &path, cancel, self.model.as_deref())?;
             check(cancel)?;
             let original_language = self.single && self.mode == Mode::English;
             if !original_language {

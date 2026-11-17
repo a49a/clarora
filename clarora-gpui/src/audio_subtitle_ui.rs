@@ -140,6 +140,22 @@ impl AppView {
                     "翻译已有字幕，保留原文与时间轴"
                 }),
             )
+            .child(
+                self.button(
+                    "audio-transcribe-stronger",
+                    "更强模型",
+                    Action::TranscribeStronger,
+                    cx,
+                )
+                .outline()
+                .h(px(32.))
+                .disabled(!available || busy || self.stronger_local_model().is_none())
+                .tooltip(
+                    self.stronger_local_model()
+                        .map(|(model, _)| format!("用 {} 重新生成当前音频字幕", model.name))
+                        .unwrap_or_else(|| "请先在设置中下载更强的同语言本机模型".into()),
+                ),
+            )
             .child(self.audio_subtitle_more(available, busy, cx))
             .child(self.audio_copy_full_button(cx))
             .child(
