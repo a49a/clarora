@@ -65,6 +65,7 @@ impl AppView {
                     let notice = TaskNotice {
                         title: "处理任务".into(),
                         detail: self.tasks.progress_label.clone(),
+                        model: None,
                         state: if self
                             .tasks
                             .foreground
@@ -217,6 +218,10 @@ impl AppView {
         };
         if self.tasks.collapsed {
             let detail = notice.detail.lines().next().unwrap_or_default().to_string();
+            let detail = notice
+                .model
+                .as_ref()
+                .map_or(detail.clone(), |model| format!("{model} · {detail}"));
             let action = if notice.active() {
                 (
                     cancel,
@@ -352,6 +357,14 @@ impl AppView {
                             .overflow_y_scroll()
                             .child(notice.detail.clone()),
                     )
+                    .when_some(notice.model.as_ref(), |v, model| {
+                        v.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("使用模型：{model}")),
+                        )
+                    })
                     .child(
                         div()
                             .text_xs()

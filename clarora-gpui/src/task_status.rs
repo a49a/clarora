@@ -11,6 +11,7 @@ pub(super) enum TaskState {
 pub(super) struct TaskNotice {
     pub title: String,
     pub detail: String,
+    pub model: Option<String>,
     pub state: TaskState,
     pub started: Instant,
     pub elapsed: u64,
@@ -20,10 +21,18 @@ impl TaskNotice {
         Self {
             title: title.into(),
             detail: detail.into(),
+            model: None,
             state: TaskState::Running,
             started: Instant::now(),
             elapsed: 0,
         }
+    }
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        let model = model.into();
+        if !model.trim().is_empty() {
+            self.model = Some(model);
+        }
+        self
     }
     pub fn tick(&mut self) -> bool {
         let elapsed = self.started.elapsed().as_secs();

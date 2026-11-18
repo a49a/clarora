@@ -19,6 +19,42 @@ fn local_model_rank(id: &str) -> u8 {
 }
 
 impl AppView {
+    /// Human-readable model used by the next subtitle transcription task.
+    pub(super) fn transcription_model_label(&self, model: Option<&str>) -> String {
+        if let Some(id) = model {
+            return clarora_gpui::ai::local_model(id)
+                .map(|model| format!("本机 · {}", model.name))
+                .unwrap_or_else(|| format!("本机 · {id}"));
+        }
+        let config = self
+            .data
+            .saved_ai
+            .clone()
+            .or_else(|| clarora_gpui::ai::load_config(&self.lib).ok())
+            .unwrap_or_default();
+        if config.engine.is_empty() || config.engine == "local" {
+            let id = if config.local_model.trim().is_empty() {
+                "base.en"
+            } else {
+                config.local_model.trim()
+            };
+            clarora_gpui::ai::local_model(id)
+                .map(|model| format!("本机 · {}", model.name))
+                .unwrap_or_else(|| format!("本机 · {id}"))
+        } else {
+            let id = if !config.asr_model.trim().is_empty() {
+                config.asr_model.trim()
+            } else {
+                config.model.trim()
+            };
+            if id.is_empty() {
+                "远端转写 API".into()
+            } else {
+                format!("远端 · {id}")
+            }
+        }
+    }
+
     pub(super) fn stronger_local_model(
         &self,
     ) -> Option<(&'static clarora_gpui::ai::LocalModel, String)> {
@@ -60,16 +96,20 @@ impl AppView {
             .iter()
             .find(|v| v.contains(&path))
             .context("请先导入视频")?;
-        let title = format!("用 {model} 重新生成字幕 · {}", source.title);
+        let model_label = self.transcription_model_label(Some(model));
+        let title = format!("用 {model_label} 重新生成字幕 · {}", source.title);
         let mut plan = video_jobs::Plan::current(source.id.clone(), path);
         plan.skip_existing = false;
         plan.model = Some(model.into());
         self.video.repeat_resume = self.video.sentence_repeat.map(Some);
         self.tasks.video_error.clear();
-        self.tasks.video_notice = Some(TaskNotice::new(
-            &title,
-            "会覆盖当前英文字幕和已有中文译文；可继续切换页面，任务在后台进行。",
-        ));
+        self.tasks.video_notice = Some(
+            TaskNotice::new(
+                &title,
+                "会覆盖当前英文字幕和已有中文译文；可继续切换页面，任务在后台进行。",
+            )
+            .with_model(model_label),
+        );
         self.tasks.video_job = Some(video_jobs::Job::start(
             self.lib.clone(),
             plan,
@@ -111,10 +151,10 @@ impl AppView {
         };
         self.video.repeat_resume = self.video.sentence_repeat.map(Some);
         self.tasks.video_error.clear();
-        self.tasks.video_notice = Some(TaskNotice::new(
-            &title,
-            "后台队列已开始，可继续切换分P和播放",
-        ));
+        self.tasks.video_notice = Some(
+            TaskNotice::new(&title, "后台队列已开始，可继续切换分P和播放")
+                .with_model(self.transcription_model_label(None)),
+        );
         self.tasks.video_job = Some(video_jobs::Job::start(
             self.lib.clone(),
             plan,

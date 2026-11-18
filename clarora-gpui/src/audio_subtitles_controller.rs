@@ -46,6 +46,8 @@ impl AppView {
             target.mode.label()
         };
         let title = format!("{title} · {}", target.name);
+        let model = (target.mode == Mode::English)
+            .then(|| self.transcription_model_label(plan.model.as_deref()));
         let lib = self.lib.clone();
         self.tasks
             .audio_subtitles
@@ -56,10 +58,14 @@ impl AppView {
                 }))
             })?;
         self.tasks.audio_subtitles.target = Some(target);
-        self.tasks.audio_subtitles.notice = Some(TaskNotice::new(
+        let mut notice = TaskNotice::new(
             &title,
             "正在准备字幕处理，可继续学习其它音频；完成后自动保存。",
-        ));
+        );
+        if let Some(model) = model {
+            notice = notice.with_model(model);
+        }
+        self.tasks.audio_subtitles.notice = Some(notice);
         Ok(())
     }
     pub(super) fn poll_audio_subtitles(&mut self) -> bool {
