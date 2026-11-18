@@ -221,6 +221,10 @@ pub fn merge(lib: &Library, rows: &[Row], practice: &str, cancel: &Cancel) -> Re
         .collect::<Result<Vec<_>>>()?;
     validate(&lib.db()?, &sources, practice)?;
     let key = id();
+    let starred = lib
+        .audio_star_ids()?
+        .iter()
+        .any(|id| rows.iter().any(|row| text(row, "id") == *id));
     let media = lib.root.join("media");
     let work = Work(media.join(format!(".merge-{key}")));
     fs::create_dir(&work.0)?;
@@ -328,6 +332,16 @@ pub fn merge(lib: &Library, rows: &[Row], practice: &str, cancel: &Cancel) -> Re
         validate(&tx, &sources, practice)?;
         check(cancel)?;
         insert(&tx, "listening_audios", &row, false)?;
+        if starred {
+            insert(
+                &tx,
+                "audio_stars",
+                json!({"audio_id":key,"created_at":now()})
+                    .as_object()
+                    .context("合并音频星标无效")?,
+                false,
+            )?;
+        }
         let relationship = Relationship {
             target: key.clone(),
             sources: rows.iter().map(|r| text(r, "id")).collect(),

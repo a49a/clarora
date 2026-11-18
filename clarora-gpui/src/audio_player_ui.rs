@@ -431,11 +431,19 @@ impl AppView {
             .find(|r| text(r, "id") == self.audio.practice_id)
             .map(|r| text(r, "name"))
             .unwrap_or_else(|| "选择练习组".into());
-        let audios = self
+        let mut audios = self
             .audio
             .library
             .merges
             .learning(&self.audio.audios, &self.audio.practice_id);
+        if self.audio.starred_review {
+            audios.retain(|r| self.audio.library.starred.contains(&text(r, "id")));
+        }
+        let group_starred = self.audio.audios.iter().any(|r| {
+            text(r, "practice_id") == self.audio.practice_id
+                && self.audio.library.starred.contains(&text(r, "id"))
+        });
+        let current_starred = self.audio.library.starred.contains(&self.audio.current_id);
         let index = audios
             .iter()
             .position(|r| text(r, "id") == self.audio.current_id);
@@ -505,6 +513,40 @@ impl AppView {
                 audio_options,
                 cx,
             ))
+            .child(
+                self.button(
+                    "audio-star",
+                    if current_starred { "★" } else { "☆" },
+                    Action::AudioStar(self.audio.current_id.clone()),
+                    cx,
+                )
+                .small()
+                .ghost()
+                .selected(current_starred)
+                .tooltip(if current_starred {
+                    "取消当前音频的星标"
+                } else {
+                    "给当前音频加星标，之后重点复习"
+                })
+                .disabled(!available),
+            )
+            .child(
+                self.button(
+                    "audio-starred-review",
+                    if self.audio.starred_review {
+                        "★ 星标复习 ✓"
+                    } else {
+                        "★ 星标复习"
+                    },
+                    Action::AudioStarredReview,
+                    cx,
+                )
+                .small()
+                .outline()
+                .selected(self.audio.starred_review)
+                .tooltip("只在本练习组的星标音频之间切换")
+                .disabled(!self.audio.starred_review && !group_starred),
+            )
             .child(
                 div()
                     .text_xs()

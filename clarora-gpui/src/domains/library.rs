@@ -12,6 +12,8 @@ pub(super) enum Command {
     LibrarySort(u8),
     LibraryBatch,
     LibraryShowSources,
+    LibraryStar(String),
+    LibraryStudyStarred,
     LibrarySelectAll,
     LibraryReset,
     LibraryMove(String),
@@ -241,6 +243,44 @@ impl Command {
                 app.refresh();
             }
 
+            Command::LibraryStar(key) => {
+                ensure!(
+                    app.audio
+                        .audios
+                        .iter()
+                        .any(|r| text(r, "id") == key
+                            && text(r, "practice_id") == app.audio.practice_id),
+                    "音频不属于当前练习组"
+                );
+                let starred = app.lib.toggle_audio_star(&key)?;
+                app.refresh();
+                app.report_status(
+                    FeedbackKind::Info,
+                    if starred {
+                        "已加星标，可用“星标”筛选或“复习星标”".into()
+                    } else {
+                        "已取消星标".into()
+                    },
+                );
+            }
+
+            Command::LibraryStudyStarred => {
+                app.audio.library.filter = 3;
+                app.set("library_search", "", window, cx);
+                let first = app
+                    .audio
+                    .library
+                    .visible(&app.audio.audios, &app.audio.practice_id, "")
+                    .first()
+                    .map(|r| text(r, "id"));
+                ensure!(
+                    first.is_some(),
+                    "当前练习组还没有星标音频；先点音频左侧的 ☆"
+                );
+                app.audio.starred_review = true;
+                app.handle(Action::Audio(first.unwrap()), window, cx);
+            }
+
             Command::LibraryReset => {
                 app.audio.library.filter = 0;
                 app.set("library_search", "", window, cx);
@@ -307,6 +347,7 @@ impl Command {
             }
 
             Command::LibraryStudy(paused) => {
+                app.audio.starred_review = false;
                 let key = app.audio.library.selected.clone();
                 ensure!(
                     app.audio

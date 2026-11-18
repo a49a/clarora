@@ -149,6 +149,17 @@ let lib = Library::open(output.join(format!("http-{}", data::id())))?;
             results,
         )
     },
+    "--audio-library-only",1,1 => {
+let lib = Library::open(output.join(format!("audio-library-{}", data::id())))?;
+        audio_library::run(
+            &lib,
+            &PathBuf::from(
+                args.get(3)
+                    .context("缺少媒体夹具：--audio-library-only <video.mp4>")?,
+            ),
+            results,
+        )
+    },
     "--backup-library-only",1,1 => {
 let lib = Library::open(output.join(format!("backup-library-{}", data::id())))?;
         backup_library::run(

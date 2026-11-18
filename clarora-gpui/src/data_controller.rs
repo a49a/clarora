@@ -121,6 +121,7 @@ impl AppView {
         }
         self.audio.library.selected = snapshot.audio_library.selected;
         self.audio.library.subtitle_ids = snapshot.audio_library.subtitle_ids;
+        self.audio.library.starred = snapshot.audio_library.starred;
         self.audio.library.preview = snapshot.audio_library.preview;
         self.audio.library.subtitle_count = snapshot.audio_library.subtitle_count;
         self.audio.library.merges = snapshot.audio_library.merges;

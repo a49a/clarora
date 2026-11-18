@@ -38,6 +38,10 @@ impl AppView {
             .iter()
             .filter(|r| text(r, "practice_id") == self.audio.practice_id)
             .count();
+        let group_starred = self.audio.audios.iter().any(|r| {
+            text(r, "practice_id") == self.audio.practice_id
+                && self.audio.library.starred.contains(&text(r, "id"))
+        });
         let attached = self
             .audio
             .audios
@@ -117,6 +121,21 @@ impl AppView {
                 )
                 .primary()
                 .disabled(busy || self.audio.practice_id.is_empty()),
+            )
+            .child(
+                self.button(
+                    "library-study-starred",
+                    "★ 复习星标",
+                    Action::LibraryStudyStarred,
+                    cx,
+                )
+                .outline()
+                .tooltip(if group_starred {
+                    "只在本练习组的星标音频之间切换复习"
+                } else {
+                    "先给音频点 ☆，再加入星标复习"
+                })
+                .disabled(busy || !group_starred),
             )
             .child(
                 self.button(
@@ -249,7 +268,8 @@ impl AppView {
             .when(hidden_sources > 0, |v| v.child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("学习时使用合并版本；已隐藏 {hidden_sources} 条原音频，原文件和字幕均保留。"))))
             .child(Input::new(&self.inputs["library_search"]));
         let mut filters = div().flex().gap_1().items_center().flex_wrap();
-        for (i, label) in [(0, "全部"), (1, "附字幕"), (2, "待配字幕")] {
+        for (i, label) in [(0, "全部"), (1, "附字幕"), (2, "待配字幕"), (3, "★ 星标")]
+        {
             filters = filters.child(
                 self.button(
                     SharedString::from(format!("library-filter-{i}")),
@@ -384,6 +404,7 @@ impl AppView {
             let key = text(row, "id");
             let selected = key == self.audio.library.selected;
             let subtitle = self.audio.library.subtitle_ids.contains(&key);
+            let starred = self.audio.library.starred.contains(&key);
             let missing = !self.data.available_audio.contains(&text(row, "audio_uri"));
             let click_key = key.clone();
             let rename_key = key.clone();
@@ -414,6 +435,23 @@ impl AppView {
                         cx,
                     )
                 }));
+            item = item.child(
+                self.button(
+                    SharedString::from(format!("library-star-{key}")),
+                    if starred { "★" } else { "☆" },
+                    Action::LibraryStar(key.clone()),
+                    cx,
+                )
+                .small()
+                .ghost()
+                .selected(starred)
+                .disabled(busy)
+                .tooltip(if starred {
+                    "取消星标"
+                } else {
+                    "加星标，之后可按星标重点复习"
+                }),
+            );
             if self.audio.library.batch {
                 item = item.child(
                     self.button(
@@ -746,6 +784,7 @@ impl AppView {
             );
         };
         let key = text(row, "id");
+        let starred = self.audio.library.starred.contains(&key);
         let missing = !self.data.available_audio.contains(&text(row, "audio_uri"));
         let mut card = panel(cx)
             .child(
@@ -761,14 +800,35 @@ impl AppView {
                     .child(text(row, "name")),
             )
             .child(
-                self.button(
-                    "library-start",
-                    "▶ 开始学习",
-                    Action::LibraryStudy(false),
-                    cx,
-                )
-                .primary()
-                .disabled(busy || missing),
+                div()
+                    .flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        self.button(
+                            "library-start",
+                            "▶ 开始学习",
+                            Action::LibraryStudy(false),
+                            cx,
+                        )
+                        .primary()
+                        .disabled(busy || missing),
+                    )
+                    .child(
+                        self.button(
+                            "library-star-audio",
+                            if starred {
+                                "★ 已星标"
+                            } else {
+                                "☆ 加星标"
+                            },
+                            Action::LibraryStar(key.clone()),
+                            cx,
+                        )
+                        .outline()
+                        .selected(starred)
+                        .disabled(busy),
+                    ),
             )
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
                 if self.audio.library.subtitle_count > 0 {

@@ -1,8 +1,11 @@
 //! Full-library backup E2E planned before implementation: real files, SQLite, ZIP and HTTP.
 use anyhow::{Context, Result, ensure};
 use clarora_gpui::{
-    backup, bilibili, chat_store, data::Library, documents, ebook, media::Player, process,
-    subtitles, video_library, video_qa,
+    backup, bilibili, chat_store,
+    data::{Library, text as row_text},
+    documents, ebook,
+    media::Player,
+    process, subtitles, video_library, video_qa,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -178,6 +181,10 @@ fn assert_restored(
 ) -> Result<Value> {
     let collection = video_library::Collection::load(lib)?;
     ensure!(collection.items.len() == 1, "video collection missing");
+    ensure!(
+        lib.list("audio_stars")?.len() == 1 && lib.audio_star_ids()?.len() == 1,
+        "audio star was not restored"
+    );
     let video = collection.active().context("selected video missing")?;
     ensure!(
         collection.groups == vec!["课程".to_string()] && video.group == "课程",
@@ -419,6 +426,19 @@ pub fn run(parent: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result
         ],
     )?;
     source.set_setting("video_subtitle_size", "28")?;
+    let star_group = source.practice("Starred audio")?;
+    let star_source = root.join("starred-audio.wav");
+    fs::write(&star_source, b"RIFF starred audio fixture")?;
+    source.import_audio(&star_group, &star_source)?;
+    let star_audio = source
+        .list("listening_audios")?
+        .into_iter()
+        .find(|row| row_text(row, "practice_id") == star_group)
+        .context("starred audio fixture missing")?;
+    ensure!(
+        source.toggle_audio_star(&row_text(&star_audio, "id"))?,
+        "audio star fixture failed"
+    );
     let archive = root.join("full-library.zip");
     backup::export_local_cancellable(&source, &archive, &cancel)?;
     let mut zip = zip::ZipArchive::new(fs::File::open(&archive)?)?;
@@ -445,8 +465,11 @@ pub fn run(parent: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result
             .is_some_and(|rows| rows.len() == 1)
             && cloud_manifest["data"]["focus_notes"]
                 .as_array()
+                .is_some_and(|rows| rows.len() == 1)
+            && cloud_manifest["data"]["audio_stars"]
+                .as_array()
                 .is_some_and(|rows| rows.len() == 1),
-        "云备份没有包含专注记录或想法"
+        "云备份没有包含专注记录、想法或音频星标"
     );
     let video_bytes = fs::read(fixture)?;
     ensure!(

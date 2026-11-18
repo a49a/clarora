@@ -18,6 +18,8 @@ pub(super) enum Command {
     AudioTools,
     AudioFont(u8),
     AudioCurrent,
+    AudioStar(String),
+    AudioStarredReview,
     Highlight,
     ClearHighlights,
     AudioFollow,
@@ -94,6 +96,9 @@ impl Command {
                     .find(|r| text(r, "id") == key)
                     .cloned()
                     .context("音频不存在")?;
+                if app.audio.starred_review && !app.audio.library.starred.contains(&key) {
+                    app.audio.starred_review = false;
+                }
                 if app.page == "video" {
                     app.save_media_position();
                 }
@@ -106,6 +111,7 @@ impl Command {
             Command::AudioPractice(key) => {
                 app.reset_audio_sentence_request();
                 app.invalidate_blind();
+                app.audio.starred_review = false;
                 ensure!(
                     app.audio.practices.iter().any(|r| text(r, "id") == key),
                     "练习组不存在"
@@ -141,6 +147,52 @@ impl Command {
                     app.media.session.loop_a = None;
                     app.media.session.loop_b = None;
                 }
+            }
+
+            Command::AudioStar(key) => {
+                ensure!(
+                    app.audio
+                        .audios
+                        .iter()
+                        .any(|r| text(r, "id") == key
+                            && text(r, "practice_id") == app.audio.practice_id),
+                    "音频不属于当前练习组"
+                );
+                let starred = app.lib.toggle_audio_star(&key)?;
+                if app.audio.starred_review && !starred {
+                    app.audio.starred_review = false;
+                }
+                app.refresh();
+                app.report_status(
+                    FeedbackKind::Info,
+                    if starred {
+                        "已加星标，可在“星标”筛选中重点复习".into()
+                    } else {
+                        "已取消星标".into()
+                    },
+                );
+            }
+
+            Command::AudioStarredReview => {
+                if app.audio.starred_review {
+                    app.audio.starred_review = false;
+                    app.report_status(FeedbackKind::Info, "已退出星标复习".into());
+                    return Ok(());
+                }
+                let first = app
+                    .audio
+                    .library
+                    .merges
+                    .learning(&app.audio.audios, &app.audio.practice_id)
+                    .into_iter()
+                    .find(|r| app.audio.library.starred.contains(&text(r, "id")))
+                    .map(|r| text(r, "id"));
+                ensure!(
+                    first.is_some(),
+                    "当前练习组还没有星标音频；先在音频管理里加星标"
+                );
+                app.audio.starred_review = true;
+                app.handle(Action::Audio(first.unwrap()), window, cx);
             }
 
             Command::AudioBlind(enabled) => {
@@ -686,6 +738,7 @@ pub(super) fn prepare_leave(app: &mut AppView) {
 }
 pub(super) fn leave(app: &mut AppView, next: &str) {
     if app.page == "listening" && next != "listening" {
+        app.audio.starred_review = false;
         app.reset_audio_sentence_request();
         if app.media.session.mode.is_sentence() {
             app.media.session.mode = PlaybackMode::Normal;

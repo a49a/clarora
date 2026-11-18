@@ -207,6 +207,19 @@ fn merge_snapshot(
         if ["review_schedule", "study_stats", "discover_favorites"].contains(&table) {
             continue;
         }
+        if table == "audio_stars" {
+            for original in data.get(table).context("缺少音频星标表")? {
+                check_cancel(cancel)?;
+                let old = text(original, "audio_id");
+                let Some(mapped) = mapping.get(&("audio".into(), old)) else {
+                    continue;
+                };
+                let mut row = original.clone();
+                row.insert("audio_id".into(), json!(mapped));
+                insert(&tx, table, &row, true)?;
+            }
+            continue;
+        }
         let kind = spec.card.map_or_else(
             || match table {
                 "listening_practices" => "practice",

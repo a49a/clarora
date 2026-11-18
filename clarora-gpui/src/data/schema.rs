@@ -97,6 +97,13 @@ pub(crate) const TABLES: &[TableSpec] = &[
         media: &["audio_uri", "subtitle_uri"],
     },
     TableSpec {
+        name: "audio_stars",
+        columns: &["audio_id", "created_at"],
+        sync_key: &["audio_id"],
+        card: None,
+        media: &[],
+    },
+    TableSpec {
         name: "clip_cards",
         columns: &[
             "id",
@@ -205,7 +212,7 @@ pub(crate) const SETTINGS: TableSpec = TableSpec {
 
 /// Tables added after the original portable backup format. Older ZIP/RN
 /// snapshots do not contain them, so import treats a missing table as empty.
-pub(crate) const OPTIONAL_TABLES: &[&str] = &["focus_sessions", "focus_notes"];
+pub(crate) const OPTIONAL_TABLES: &[&str] = &["focus_sessions", "focus_notes", "audio_stars"];
 
 pub(crate) fn table_spec(name: &str) -> Option<&'static TableSpec> {
     TABLES.iter().find(|spec| spec.name == name)

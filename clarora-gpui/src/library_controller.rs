@@ -100,11 +100,13 @@ pub fn load(lib: &Library, key: &Key, include_runtime: bool) -> Result<Snapshot>
         practices.first().map(|r| text(r, "id")).unwrap_or_default()
     };
     let audios: Vec<Row> = audios.into_iter().map(|audio| audio.into_row()).collect();
+    let starred = lib.audio_star_ids()?;
     let mut audio_library = audio_library::State {
         selected: key.library_selected.clone(),
         filter: key.library_filter,
         sort: key.library_sort,
         show_sources: key.library_show_sources,
+        starred,
         merges: crate::audio_tools::Catalog::load(lib, &audios)?,
         ..Default::default()
     };

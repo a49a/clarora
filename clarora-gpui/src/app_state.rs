@@ -31,6 +31,8 @@ pub(super) struct AudioState {
     pub(super) waveform_drag: Option<bool>,
     pub(super) text_edge_drag: Option<bool>,
     pub(super) review: Option<AudioClipReview>,
+    /// Review queue restricted to starred audio in the current practice group.
+    pub(super) starred_review: bool,
     pub(super) cues: Vec<Cue>,
     pub(super) scroll: ListState,
     pub(super) center: subtitle_follow_ui::Follow,
@@ -68,6 +70,7 @@ impl AudioState {
             waveform_drag: None,
             text_edge_drag: None,
             review: None,
+            starred_review: false,
             cues: vec![],
             scroll: ListState::new(0, ListAlignment::Top, px(120.)),
             center: Default::default(),

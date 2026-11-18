@@ -85,6 +85,42 @@ impl Library {
         Ok((practices, audios))
     }
 
+    pub fn audio_star_ids(&self) -> Result<BTreeSet<String>> {
+        let db = self.db()?;
+        Ok(db
+            .prepare("SELECT audio_id FROM audio_stars")?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Toggle a star on one audio record and return its new state.
+    pub fn toggle_audio_star(&self, key: &str) -> Result<bool> {
+        let mut db = self.db()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists: i64 = tx.query_row(
+            "SELECT count(*) FROM listening_audios WHERE id=?",
+            [key],
+            |row| row.get(0),
+        )?;
+        ensure!(exists == 1, "音频不存在");
+        let starred: i64 = tx.query_row(
+            "SELECT count(*) FROM audio_stars WHERE audio_id=?",
+            [key],
+            |row| row.get(0),
+        )?;
+        let next = starred == 0;
+        if next {
+            tx.execute(
+                "INSERT INTO audio_stars(audio_id,created_at) VALUES (?,?)",
+                params![key, now()],
+            )?;
+        } else {
+            tx.execute("DELETE FROM audio_stars WHERE audio_id=?", [key])?;
+        }
+        tx.commit()?;
+        Ok(next)
+    }
+
     pub(crate) fn audio_practice(&self, key: &str) -> Result<Option<Practice>> {
         Ok(self
             .db()?

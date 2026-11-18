@@ -297,6 +297,10 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         names(&ordered) == vec!["a", "b"],
         "merge selection does not follow current sort"
     );
+    ensure!(
+        lib.toggle_audio_star(&text(&a, "id"))?,
+        "merge source star fixture failed"
+    );
     let merged = audio_tools::merge(
         &lib,
         &[b.clone(), a.clone()],
@@ -304,6 +308,10 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
         &process::cancel_token(),
     )?;
     let merged_id = text(&merged.row, "id");
+    ensure!(
+        lib.audio_star_ids()?.contains(&merged_id),
+        "merged audio lost its source star"
+    );
     ensure!(
         merged.sources == 2 && merged.subtitles_complete,
         "merge report incorrect"

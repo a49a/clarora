@@ -27,7 +27,7 @@ pub fn default_practice_name(practices: &[Row], date: NaiveDate) -> String {
 pub struct State {
     pub selected: String,
     pub renaming: Option<RenameTarget>,
-    /// all / attached subtitle / missing subtitle
+    /// all / attached subtitle / missing subtitle / starred
     pub filter: u8,
     /// newest / name / oldest
     pub sort: u8,
@@ -37,6 +37,7 @@ pub struct State {
     pub preview: Vec<Cue>,
     pub subtitle_count: usize,
     pub subtitle_ids: BTreeSet<String>,
+    pub starred: BTreeSet<String>,
     pub merges: crate::audio_tools::Catalog,
     pub show_sources: bool,
 }
@@ -117,6 +118,7 @@ impl State {
                     && match self.filter {
                         1 => self.subtitle_ids.contains(&text(r, "id")),
                         2 => !self.subtitle_ids.contains(&text(r, "id")),
+                        3 => self.starred.contains(&text(r, "id")),
                         _ => true,
                     }
             })

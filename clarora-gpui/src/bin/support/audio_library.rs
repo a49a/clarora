@@ -58,6 +58,17 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
             .is_empty(),
         "字幕附件筛选失败"
     );
+    ensure!(lib.toggle_audio_star(&key)?, "加星标失败");
+    state.starred = lib.audio_star_ids()?;
+    state.filter = 3;
+    ensure!(
+        state
+            .visible(&lib.list("listening_audios")?, &a, "")
+            .iter()
+            .any(|r| text(r, "id") == key),
+        "星标筛选未包含已加星标音频"
+    );
+    state.filter = 0;
     ensure!(!state.preview.is_empty(), "所选音频字幕预览丢失");
     audio_library::move_records(&lib, &a, &b, std::slice::from_ref(&key))?;
     ensure!(
@@ -138,12 +149,24 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
         state.visible(&lib.list("listening_audios")?, &b, "alpha")[0]["id"] == key,
         "排序后音频身份错位"
     );
+    ensure!(lib.audio_star_ids()?.contains(&key), "移动组后星标丢失");
+    ensure!(
+        Library::open(lib.root.clone())?
+            .audio_star_ids()?
+            .contains(&key),
+        "重开后星标丢失"
+    );
     audio_library::delete_records(&lib, &b, std::slice::from_ref(&key))?;
     ensure!(
         Path::new(&audio).is_file() && Path::new(&subtitle).is_file(),
         "移除记录误删附件"
     );
+    ensure!(lib.audio_star_ids()?.is_empty(), "删除音频后星标未级联清理");
     let reopened = Library::open(lib.root.clone())?;
+    ensure!(
+        reopened.audio_star_ids()?.is_empty(),
+        "重开后星标级联清理丢失"
+    );
     let groups = reopened.list("listening_practices")?;
     ensure!(
         [
@@ -167,7 +190,7 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
     fs::write(
         lib.root.join("management-evidence.json"),
         serde_json::to_vec_pretty(
-            &json!({"default_practice_names":{"first":first_name,"second":second_name,"next_available":third,"next_day":next_day,"custom_name_persisted":true,"suggestion_does_not_create":true},"rename":true,"search_filter":true,"group_scope":true,"move_with_subtitles":true,"duplicate_rollback":true,"delete_snapshot_scope":true,"attachments_retained":true,"reopen":true}),
+            &json!({"default_practice_names":{"first":first_name,"second":second_name,"next_available":third,"next_day":next_day,"custom_name_persisted":true,"suggestion_does_not_create":true},"rename":true,"search_filter":true,"audio_star":true,"group_scope":true,"move_with_subtitles":true,"duplicate_rollback":true,"delete_snapshot_scope":true,"attachments_retained":true,"reopen":true}),
         )?,
     )?;
     results.push(json!({"workflow":"音频管理：真实SQLite/文件 → 搜索筛选/分组选择 → 重命名/移动冲突回滚 → 删除作用域及附件保留 → 重开", "passed":true,"evidence":"audio-manager/management-evidence.json"}));
