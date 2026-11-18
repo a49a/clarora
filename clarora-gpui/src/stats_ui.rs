@@ -11,7 +11,7 @@ pub(super) fn content(app: &AppView, cx: &mut Context<AppView>) -> Div {
         2 => 14,
         _ => 0,
     };
-    let today = chrono::Local::now().date_naive();
+    let today = clarora_gpui::data::current_study_date();
     let in_range = |day: &str| {
         range == 3
             || chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
@@ -110,7 +110,7 @@ pub(super) fn content(app: &AppView, cx: &mut Context<AppView>) -> Div {
     );
     let mut heatmap = div().flex().gap_1().flex_wrap().max_w(px(650.));
     for day in (0..119).rev() {
-        let date = (chrono::Local::now() - chrono::Duration::days(day))
+        let date = (today - chrono::Duration::days(day))
             .format("%Y-%m-%d")
             .to_string();
         let count = rows
@@ -132,7 +132,7 @@ pub(super) fn content(app: &AppView, cx: &mut Context<AppView>) -> Div {
     let days = (0..14)
         .rev()
         .map(|day| {
-            (chrono::Local::now() - chrono::Duration::days(day))
+            (today - chrono::Duration::days(day))
                 .format("%Y-%m-%d")
                 .to_string()
         })
@@ -166,7 +166,7 @@ pub(super) fn content(app: &AppView, cx: &mut Context<AppView>) -> Div {
             div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child("专注时长按每轮「结束本轮」的实际时长统计；媒体播放只累计未暂停的音频或视频。阅读、写作、口语、暂停和冥想不计入媒体播放。平均分心间隔 = 所选范围内已结束专注轮次的实际总时长 ÷ 分心总次数；上方卡片随范围切换。"),
+                .child("学习日按凌晨 4 点切换，0–4 点的记录归前一天。专注时长按每轮「结束本轮」的实际时长统计；媒体播放只累计未暂停的音频或视频。阅读、写作、口语、暂停和冥想不计入媒体播放。平均分心间隔 = 所选范围内已结束专注轮次的实际总时长 ÷ 分心总次数；上方卡片随范围切换。"),
         );
     let attempts = &app.data.speaking;
     let mut trend = div().flex().gap_2().items_end().h(px(140.));

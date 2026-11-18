@@ -38,7 +38,7 @@ fn keys(cards: &[Card]) -> Vec<String> {
 
 fn introduced(lib: &Library) -> Result<usize> {
     Ok(lib.db()?.query_row(
-        "SELECT COUNT(*) FROM review_schedule WHERE reps>0 AND date(created_at,'localtime')=date('now','localtime')",
+        "SELECT COUNT(*) FROM review_schedule WHERE reps>0 AND date(created_at,'localtime','-4 hours')=date('now','localtime','-4 hours')",
         [],
         |row| row.get(0),
     )?)

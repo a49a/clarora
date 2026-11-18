@@ -1,5 +1,6 @@
 //! Real persisted records/files → explicit snapshot reload → last-known-good failure.
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
+use chrono::TimeZone;
 use clarora_gpui::{
     data::{Library, Row},
     tts, view_data,
@@ -30,6 +31,19 @@ fn audio(id: &str, uri: String) -> Row {
 }
 
 pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
+    let early = chrono::Local
+        .with_ymd_and_hms(2026, 11, 17, 3, 30, 0)
+        .single()
+        .context("学习日边界夹具无效")?;
+    let boundary = chrono::Local
+        .with_ymd_and_hms(2026, 11, 17, 4, 0, 0)
+        .single()
+        .context("学习日边界夹具无效")?;
+    ensure!(
+        clarora_gpui::data::study_day(early) == "2026-11-16"
+            && clarora_gpui::data::study_day(boundary) == "2026-11-17",
+        "学习日未按凌晨 4 点切换"
+    );
     let root = parent.root.join("view-data");
     let lib = Library::open(root.join("source"))?;
     let mut evidence = vec![];
@@ -144,7 +158,7 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         "ocr-delete-by-page-id",
         json!({"passed":true,"remaining":remaining}),
     )?;
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = clarora_gpui::data::current_study_day();
     ensure!(
         state.focus_by_day.get(&today).copied().unwrap_or_default() == 40.
             && state.focus_minutes == 40.

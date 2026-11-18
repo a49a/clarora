@@ -204,9 +204,12 @@ export function formatDueLabel(intervalDays: number): string {
 
 // ── 每日学习统计（设备本地）────────────────────────────────────────────────
 
+// Learning days roll over at 04:00 local time, not midnight. Keep this
+// consistent with the GPUI stats boundary.
 function localDayKey(date = new Date()): string {
+  const adjusted = new Date(date.getTime() - 4 * 60 * 60 * 1000);
   const day = (value: number) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${day(date.getMonth() + 1)}-${day(date.getDate())}`;
+  return `${adjusted.getFullYear()}-${day(adjusted.getMonth() + 1)}-${day(adjusted.getDate())}`;
 }
 
 async function bumpStudyStat(column: "listen_seconds" | "review_count" | "pomodoro_count", amount: number): Promise<void> {
@@ -335,15 +338,8 @@ export async function getDueReviewCards(
     const [rows] = await database.executeSql(
       "SELECT created_at FROM review_schedule WHERE reps >= 1"
     );
-    const today = new Date();
-    const sameLocalDay = (iso: string) => {
-      const date = new Date(iso);
-      return (
-        date.getFullYear() === today.getFullYear() &&
-        date.getMonth() === today.getMonth() &&
-        date.getDate() === today.getDate()
-      );
-    };
+    const todayKey = localDayKey();
+    const sameLocalDay = (iso: string) => localDayKey(new Date(iso)) === todayKey;
     return (rows.rows.raw() as Array<{ created_at: string }>).filter(
       (row) => row.created_at && sameLocalDay(row.created_at)
     ).length;

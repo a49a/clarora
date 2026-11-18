@@ -94,10 +94,7 @@ impl State {
                 let Some(date) = chrono::DateTime::from_timestamp_millis(ended as i64) else {
                     continue;
                 };
-                let day = date
-                    .with_timezone(&chrono::Local)
-                    .format("%Y-%m-%d")
-                    .to_string();
+                let day = crate::data::study_day(date.with_timezone(&chrono::Local));
                 let minutes = actual as f64 / 60_000.;
                 let distractions = row
                     .get("distractions")

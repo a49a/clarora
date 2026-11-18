@@ -1,4 +1,4 @@
-use super::{Card, CardKind, Library, column_text, now, text};
+use super::{Card, CardKind, Library, column_text, now, study_day, text};
 use anyhow::{Context, Result, ensure};
 use chrono::{Local, Utc};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
@@ -75,7 +75,7 @@ impl Library {
             .parse::<usize>()
             .unwrap_or(20);
         let introduced: usize = self.db()?.query_row(
-            "SELECT COUNT(*) FROM review_schedule WHERE reps>0 AND date(created_at,'localtime')=date('now','localtime')",
+            "SELECT COUNT(*) FROM review_schedule WHERE reps>0 AND date(created_at,'localtime','-4 hours')=date('now','localtime','-4 hours')",
             [],
             |row| row.get(0),
         )?;
@@ -182,7 +182,7 @@ impl Library {
             .to_string();
         let timestamp = graded_at.format("%Y-%m-%d %H:%M:%S").to_string();
         tx.execute("INSERT INTO review_schedule(card_kind,card_id,ease,interval_days,due_at,reps,lapses,last_graded_at,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(card_kind,card_id) DO UPDATE SET ease=excluded.ease,interval_days=excluded.interval_days,due_at=excluded.due_at,reps=excluded.reps,lapses=excluded.lapses,last_graded_at=excluded.last_graded_at,created_at=CASE WHEN review_schedule.reps=0 THEN excluded.created_at ELSE review_schedule.created_at END",params![card.kind,card.id,next_ease,days,due,reps+1.,lapses,timestamp,timestamp])?;
-        tx.execute("INSERT INTO study_stats(day,review_count) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET review_count=review_count+1",[graded_at.with_timezone(&Local).format("%Y-%m-%d").to_string()])?;
+        tx.execute("INSERT INTO study_stats(day,review_count) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET review_count=review_count+1",[study_day(graded_at.with_timezone(&Local))])?;
         if reps == 0.
             && let Some(index) = CardKind::ALL
                 .iter()

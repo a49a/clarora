@@ -95,7 +95,7 @@ export default function StatsScreen() {
         <View style={styles.header}>
           <Text style={styles.eyebrow}>STATS</Text>
           <Text style={styles.title}>学习统计</Text>
-          <Text style={styles.subtitle}>复习量、听力时长、跟读分数与番茄钟，坚持看得见。</Text>
+          <Text style={styles.subtitle}>复习量、听力时长、跟读分数与番茄钟，坚持看得见。学习日按凌晨 4 点切换。</Text>
         </View>
 
         {error ? (

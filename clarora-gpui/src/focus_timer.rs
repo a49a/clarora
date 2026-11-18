@@ -578,11 +578,11 @@ impl Timer {
                 params![round.id, round.ended_ms, round.goal_ms, round.actual_ms, round.distractions],
             )?;
             if round.actual_ms >= round.goal_ms {
-                let day = DateTime::from_timestamp_millis(i64::try_from(round.ended_ms)?)
-                    .context("计时日期无效")?
-                    .with_timezone(&Local)
-                    .format("%Y-%m-%d")
-                    .to_string();
+                let day = crate::data::study_day(
+                    DateTime::from_timestamp_millis(i64::try_from(round.ended_ms)?)
+                        .context("计时日期无效")?
+                        .with_timezone(&Local),
+                );
                 tx.execute("INSERT INTO study_stats(day,pomodoro_count) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET pomodoro_count=pomodoro_count+1",[day])?;
             }
         }

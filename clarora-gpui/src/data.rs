@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use chrono::{Local, Utc};
+use chrono::{DateTime, Local, Utc};
 use rusqlite::{Connection, params, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -51,6 +51,19 @@ pub fn id() -> String {
 }
 pub fn now() -> String {
     Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+/// Learning days roll over at 04:00 local time, not midnight. Activity from
+/// 00:00–03:59 belongs to the previous day's statistics.
+pub fn study_day(time: DateTime<Local>) -> String {
+    (time - chrono::Duration::hours(4))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+pub fn current_study_day() -> String {
+    study_day(Local::now())
+}
+pub fn current_study_date() -> chrono::NaiveDate {
+    (Local::now() - chrono::Duration::hours(4)).date_naive()
 }
 fn sql(v: &Value) -> SqlValue {
     match v {
@@ -247,7 +260,7 @@ impl Library {
                 && amount >= 0.,
             "统计无效"
         );
-        self.db()?.execute(&format!("INSERT INTO study_stats(day,{field}) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET {field}={field}+excluded.{field}"),params![Local::now().format("%Y-%m-%d").to_string(),amount])?;
+        self.db()?.execute(&format!("INSERT INTO study_stats(day,{field}) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET {field}={field}+excluded.{field}"),params![current_study_day(),amount])?;
         Ok(())
     }
     pub fn vault(&self) -> Result<BTreeMap<String, Vec<Row>>> {
