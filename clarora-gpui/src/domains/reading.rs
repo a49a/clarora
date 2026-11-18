@@ -124,6 +124,8 @@ impl Completed {
                     }
                     let _ = app.lib.set_setting("pdf_current", &json!({"path":reading.book.path,"page":reading.page,"width":app.pdf_width}).to_string());
                     app.ebook_reading = Some(reading);
+                    app.reading_toc_open = false;
+                    app.reading_library_open = false;
                     app.page_scroll.set_offset(point(px(0.), px(0.)));
                 }
             }
@@ -137,6 +139,8 @@ impl Completed {
                 app.pdf_page = page.page;
                 app.pdf_pages = page.count;
                 app.pdf_bookmarks = page.bookmarks;
+                app.reading_toc_open = false;
+                app.reading_library_open = false;
                 let _ = app.lib.set_setting(
                     "pdf_current",
                     &json!({"path":app.pdf_path,"page":app.pdf_page,"width":app.pdf_width})

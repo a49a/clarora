@@ -419,18 +419,48 @@ impl AppView {
             .into_any_element()
     }
 
+    pub(super) fn audio_group_header_menu(&self, cx: &Context<Self>) -> AnyElement {
+        let group = self
+            .audio
+            .practices
+            .iter()
+            .find(|row| text(row, "id") == self.audio.practice_id)
+            .map(|row| text(row, "name"))
+            .unwrap_or_else(|| "选择练习组".into());
+        let options = self
+            .audio
+            .practices
+            .iter()
+            .map(|row| {
+                let key = text(row, "id");
+                (
+                    text(row, "name"),
+                    Action::AudioPractice(key.clone()),
+                    key == self.audio.practice_id,
+                    false,
+                )
+            })
+            .collect();
+        let label = if self.audio.practice_id.is_empty() {
+            "选择练习组 ▾".to_string()
+        } else {
+            format!("练习组：{} ▾", group.chars().take(24).collect::<String>())
+        };
+        self.group_menu(
+            "audio-header-group",
+            label,
+            options,
+            "切换当前音频练习组",
+            cx,
+        )
+        .into_any_element()
+    }
+
     pub(super) fn audio_study(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let group = self
-            .audio
-            .practices
-            .iter()
-            .find(|r| text(r, "id") == self.audio.practice_id)
-            .map(|r| text(r, "name"))
-            .unwrap_or_else(|| "选择练习组".into());
         let mut audios = self
             .audio
             .library
@@ -450,20 +480,6 @@ impl AppView {
         let title = index
             .map(|i| text(audios[i], "name"))
             .unwrap_or_else(|| "选择音频".into());
-        let group_options = self
-            .audio
-            .practices
-            .iter()
-            .map(|r| {
-                let key = text(r, "id");
-                (
-                    text(r, "name"),
-                    Action::AudioPractice(key.clone()),
-                    key == self.audio.practice_id,
-                    false,
-                )
-            })
-            .collect();
         let audio_options = audios
             .iter()
             .enumerate()
@@ -501,12 +517,6 @@ impl AppView {
                 self.button("audio-blind-mode", "盲听", Action::AudioBlind(true), cx)
                     .selected(self.audio.blind.enabled),
             )
-            .child(self.player_menu(
-                "audio-practice-picker",
-                format!("{} ▾", group.chars().take(20).collect::<String>()),
-                group_options,
-                cx,
-            ))
             .child(self.player_menu(
                 "audio-picker",
                 format!("{} ▾", title.chars().take(24).collect::<String>()),

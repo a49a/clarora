@@ -55,63 +55,73 @@ impl AppView {
         }
         Ok(true)
     }
+    pub(super) fn video_group_header_menu(&self, cx: &Context<Self>) -> AnyElement {
+        let busy = self.tasks.foreground.is_running();
+        let filter = self.video.group.clone();
+        let label = if filter.is_empty() {
+            "全部视频".to_string()
+        } else if filter == video_library::UNGROUPED {
+            "未分组".to_string()
+        } else {
+            filter.chars().take(16).collect::<String>()
+        };
+        let mut options = vec![(
+            format!("全部视频 · {}", self.video.collection.items.len()),
+            Action::VideoGroupFilter(String::new()),
+            filter.is_empty(),
+            false,
+        )];
+        for group in &self.video.collection.groups {
+            options.push((
+                format!("{} · {}", group, self.video.collection.group_count(group)),
+                Action::VideoGroupFilter(group.clone()),
+                filter == *group,
+                false,
+            ));
+        }
+        options.push((
+            format!(
+                "未分组 · {}",
+                self.video.collection.group_count(video_library::UNGROUPED)
+            ),
+            Action::VideoGroupFilter(video_library::UNGROUPED.into()),
+            filter == video_library::UNGROUPED,
+            false,
+        ));
+        options.push((
+            "＋ 新建分组".to_string(),
+            Action::VideoGroupNew,
+            false,
+            busy,
+        ));
+        if !filter.is_empty() && filter != video_library::UNGROUPED {
+            options.push((
+                "重命名当前分组…".to_string(),
+                Action::VideoGroupRename,
+                false,
+                busy,
+            ));
+            options.push((
+                "删除当前分组…".to_string(),
+                Action::VideoGroupDelete,
+                false,
+                busy,
+            ));
+        }
+        self.group_menu(
+            "video-header-group",
+            format!("视频分组：{label} ▾"),
+            options,
+            "切换视频分组，管理当前分组",
+            cx,
+        )
+        .into_any_element()
+    }
+
     pub(super) fn video_collection_panel(&self, cx: &Context<Self>) -> AnyElement {
         let busy = self.tasks.foreground.is_running();
         let filter = self.video.group.clone();
         let groups = self.video.collection.groups.clone();
-        let mut group_chips = div().flex().gap_2().flex_wrap().child(self.button(
-            "video-group-all",
-            format!("全部 · {}", self.video.collection.items.len()),
-            Action::VideoGroupFilter(String::new()),
-            cx,
-        ));
-        for group in &groups {
-            group_chips = group_chips.child(self.button(
-                SharedString::from(format!("video-group-{group}")),
-                format!(
-                    "{} · {}",
-                    group.chars().take(12).collect::<String>(),
-                    self.video.collection.group_count(group)
-                ),
-                Action::VideoGroupFilter(group.clone()),
-                cx,
-            ));
-        }
-        group_chips = group_chips
-            .child(self.button(
-                "video-group-ungrouped",
-                format!(
-                    "未分组 · {}",
-                    self.video.collection.group_count(video_library::UNGROUPED)
-                ),
-                Action::VideoGroupFilter(video_library::UNGROUPED.into()),
-                cx,
-            ))
-            .child(
-                self.button("video-group-new", "＋ 新建分组", Action::VideoGroupNew, cx)
-                    .disabled(busy),
-            );
-        if !filter.is_empty() && filter != video_library::UNGROUPED {
-            group_chips = group_chips.child(self.button_menu(
-                "video-group-manage",
-                "分组管理".into(),
-                vec![
-                    (
-                        "重命名当前分组…".into(),
-                        Action::VideoGroupRename,
-                        false,
-                        busy,
-                    ),
-                    (
-                        "删除当前分组…".into(),
-                        Action::VideoGroupDelete,
-                        false,
-                        busy,
-                    ),
-                ],
-                cx,
-            ));
-        }
         let mut body = div()
             .id("video-collection")
             .flex_1()
@@ -121,31 +131,6 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_2()
-            .child(
-                div().flex().gap_2().flex_wrap().child(
-                    self.button(
-                        "video-collection-add",
-                        "＋ 导入视频",
-                        Action::VideoImport,
-                        cx,
-                    )
-                    .primary()
-                    .disabled(busy),
-                ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("视频分组"),
-                    )
-                    .child(group_chips),
-            )
             .child(
                 div()
                     .text_xs()
@@ -389,7 +374,7 @@ impl AppView {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child("点击「导入视频」添加本地文件或粘贴视频链接。"),
+                            .child("点击标题栏「＋导入视频」添加本地文件或粘贴视频链接。"),
                     ),
             );
         } else if shown == 0 {

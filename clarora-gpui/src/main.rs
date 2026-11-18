@@ -280,7 +280,8 @@ struct AppView {
     pdf_width: i32,
     pdf_bookmarks: Vec<(String, u16)>,
     ebook_reading: Option<ebook::Reading>,
-    reading_sidebar_open: bool,
+    reading_toc_open: bool,
+    reading_library_open: bool,
     document_text: String,
     ocr_text: String,
     ocr_path: Option<PathBuf>,
@@ -481,7 +482,8 @@ impl AppView {
             pdf_width: 1000,
             pdf_bookmarks: vec![],
             ebook_reading: None,
-            reading_sidebar_open: true,
+            reading_toc_open: false,
+            reading_library_open: false,
             document_text: String::new(),
             ocr_text: String::new(),
             ocr_path: None,
@@ -1597,6 +1599,57 @@ impl AppView {
                 menu
             })
     }
+    fn group_menu(
+        &self,
+        key: impl Into<SharedString>,
+        label: String,
+        options: Vec<(String, Action, bool, bool)>,
+        tooltip: &'static str,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        let focus = self.focus.clone();
+        Button::new(ElementId::Name(key.into()))
+            .label(label)
+            .h(px(36.))
+            .px_3()
+            .min_w(px(150.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .cursor_pointer()
+            .tooltip(tooltip)
+            .custom(
+                ButtonCustomVariant::new(cx)
+                    .color(cx.theme().accent)
+                    .foreground(cx.theme().primary)
+                    .border(cx.theme().primary.opacity(0.5))
+                    .hover(cx.theme().primary.opacity(0.14))
+                    .active(cx.theme().primary.opacity(0.22)),
+            )
+            .dropdown_menu_with_anchor(Corner::BottomRight, move |mut menu, _, _| {
+                menu = menu.action_context(focus.clone());
+                for (label, action, checked, disabled) in options.clone() {
+                    let view = view.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(checked)
+                            .disabled(disabled)
+                            .on_click(move |_, window, cx| {
+                                let view = view.clone();
+                                let action = action.clone();
+                                let handle = window.window_handle();
+                                cx.defer(move |cx| {
+                                    let _ = handle.update(cx, move |_, window, cx| {
+                                        let _ = view
+                                            .update(cx, |this, cx| this.handle(action, window, cx));
+                                    });
+                                });
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+
     fn player_volume(&self, cx: &Context<Self>) -> impl IntoElement {
         let bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::<Pixels>::default()));
         let paint_bounds = bounds.clone();

@@ -795,7 +795,7 @@ impl Render for AppView {
                                             .flex()
                                             .items_center()
                                             .gap_3()
-                                            .when(compact_video_header, |row| row.flex_wrap())
+                                            .flex_wrap()
                                             .child(
                                                 self.button(
                                                     "navigation-toggle",
@@ -869,6 +869,21 @@ impl Render for AppView {
                                                     .disabled(self.tasks.foreground.is_running()),
                                                 )
                                             })
+                                            .when(self.page == "listening", |row| {
+                                                row.child(self.audio_group_header_menu(cx))
+                                            })
+                                            .when(self.page == "video", |row| {
+                                                row.child(self.video_group_header_menu(cx))
+                                            })
+                                            .when(
+                                                self.page == "pdf"
+                                                    && (self.ebook_reading.is_some()
+                                                        || self.pdf_path.is_some()),
+                                                |row| row.child(self.reading_header_actions(cx)),
+                                            )
+                                            .when(self.page == "speaking", |row| {
+                                                row.child(self.speaking_header_controls(cx))
+                                            })
                                             .when(beta, |v| {
                                                 v.child(
                                                     div()
@@ -890,9 +905,6 @@ impl Render for AppView {
                                             .child(subtitle),
                                     ),
                             )
-                            .when(self.page == "speaking", |header| {
-                                header.child(self.speaking_header_controls(cx))
-                            })
                             .child(
                                 div()
                                     .flex()
