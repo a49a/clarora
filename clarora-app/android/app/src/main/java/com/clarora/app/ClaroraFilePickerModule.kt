@@ -115,24 +115,63 @@ class ClaroraFilePickerModule(private val context: ReactApplicationContext) :
       return
     }
     try {
-      val name = displayName(source) ?: "imported-file"
+      val name = safeName(displayName(source) ?: "imported-file")
       val targetDirectory = File(context.filesDir, "Clarora/Imports")
       targetDirectory.mkdirs()
       val target = File(targetDirectory, "${System.currentTimeMillis()}_$name")
-      context.contentResolver.openInputStream(source).use { input ->
-        if (input == null) throw IllegalStateException("无法读取所选文件")
-        FileOutputStream(target).use { output -> input.copyTo(output) }
+      val knownSize = runCatching {
+        context.contentResolver.openAssetFileDescriptor(source, "r")?.use { it.length }
+      }.getOrNull() ?: -1L
+      if (knownSize > MAX_IMPORT_BYTES) {
+        promise.reject("file_too_large", "文件超过 512 MiB，无法导入")
+        return
       }
-      promise.resolve(Arguments.createMap().apply {
-        putString("uri", "file://${target.absolutePath}")
-        putString("name", name)
-      })
+      if (knownSize > 0 && targetDirectory.usableSpace < knownSize + 16L * 1024 * 1024) {
+        promise.reject("file_no_space", "存储空间不足，无法导入该文件")
+        return
+      }
+      Thread {
+        try {
+          var total = 0L
+          context.contentResolver.openInputStream(source).use { input ->
+            if (input == null) throw IllegalStateException("无法读取所选文件")
+            FileOutputStream(target).use { output ->
+              val buffer = ByteArray(64 * 1024)
+              while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                total += count
+                if (total > MAX_IMPORT_BYTES) {
+                  throw IllegalStateException("文件超过 512 MiB，无法导入")
+                }
+                output.write(buffer, 0, count)
+              }
+            }
+          }
+          promise.resolve(Arguments.createMap().apply {
+            putString("uri", "file://${target.absolutePath}")
+            putString("name", name)
+          })
+        } catch (error: Exception) {
+          target.delete()
+          promise.reject("file_copy_error", error.message, error)
+        }
+      }.start()
     } catch (error: Exception) {
       promise.reject("file_copy_error", error.message, error)
     }
   }
 
   override fun onNewIntent(intent: Intent) = Unit
+
+  private fun safeName(raw: String): String {
+    val cleaned = raw
+      .replace(Regex("[\\\\/:*?\"<>|\u0000-\u001F]"), "_")
+      .trim()
+      .trim('.')
+      .take(120)
+    return if (cleaned.isEmpty() || cleaned == "." || cleaned == "..") "imported-file" else cleaned
+  }
 
   private fun displayName(uri: android.net.Uri): String? {
     var cursor: Cursor? = null
@@ -147,5 +186,6 @@ class ClaroraFilePickerModule(private val context: ReactApplicationContext) :
   private companion object {
     const val REQUEST_PICK_FILE = 7301
     const val REQUEST_CAPTURE_IMAGE = 7302
+    const val MAX_IMPORT_BYTES = 512L * 1024 * 1024
   }
 }

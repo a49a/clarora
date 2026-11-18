@@ -1,18 +1,27 @@
 package com.clarora.app
 
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.media.PlaybackParams
 import android.os.Build
 import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import java.io.File
 
-class ClaroraAudioModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
+class ClaroraAudioModule(private val context: ReactApplicationContext) :
+  ReactContextBaseJavaModule(context), LifecycleEventListener {
   private var player: MediaPlayer? = null
+  private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+  private var focusRequest: Any? = null
+  private var hasAudioFocus = false
   private var playbackRate = 1f
   // OnCompletionListener 落位后置 true，status() 用它上报 didJustFinish，
   // JS 侧的单篇循环/组循环推进都依赖这个信号。
@@ -25,6 +34,109 @@ class ClaroraAudioModule(private val context: ReactApplicationContext) : ReactCo
   override fun getName(): String = "RNAndroidAudio"
 
   private val feedPlayers = mutableMapOf<Int, MediaPlayer>()
+
+  private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+    when (change) {
+      AudioManager.AUDIOFOCUS_LOSS -> {
+        hasAudioFocus = false
+        pauseForFocusLoss()
+      }
+      AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pauseForFocusLoss()
+      AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> setPlaybackVolume(0.3f)
+      AudioManager.AUDIOFOCUS_GAIN -> setPlaybackVolume(1f)
+    }
+  }
+
+  init {
+    context.addLifecycleEventListener(this)
+  }
+
+  private fun requestAudioFocus(): Boolean {
+    if (hasAudioFocus) return true
+    val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      val request = (focusRequest as? AudioFocusRequest) ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+        .setAudioAttributes(
+          AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build(),
+        )
+        .setOnAudioFocusChangeListener(focusListener)
+        .build()
+        .also { focusRequest = it }
+      audioManager.requestAudioFocus(request)
+    } else {
+      @Suppress("DEPRECATION")
+      audioManager.requestAudioFocus(
+        focusListener,
+        AudioManager.STREAM_MUSIC,
+        AudioManager.AUDIOFOCUS_GAIN,
+      )
+    }
+    hasAudioFocus = granted == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    return hasAudioFocus
+  }
+
+  private fun abandonAudioFocusIfIdle() {
+    if (feedPlayers.values.any { it.isPlaying } ||
+      player?.isPlaying == true ||
+      breakPlayer?.isPlaying == true) return
+    if (!hasAudioFocus && focusRequest == null) return
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      (focusRequest as? AudioFocusRequest)?.let { audioManager.abandonAudioFocusRequest(it) }
+    } else {
+      @Suppress("DEPRECATION")
+      audioManager.abandonAudioFocus(focusListener)
+    }
+    hasAudioFocus = false
+  }
+
+  private fun pauseForFocusLoss() {
+    runCatching { player?.takeIf { it.isPlaying }?.pause() }
+    runCatching { breakPlayer?.takeIf { it.isPlaying }?.pause() }
+    feedPlayers.values.forEach { runCatching { if (it.isPlaying) it.pause() } }
+  }
+
+  private fun setPlaybackVolume(volume: Float) {
+    runCatching { player?.setVolume(volume, volume) }
+    runCatching { breakPlayer?.setVolume(volume, volume) }
+  }
+
+  override fun onHostResume() = Unit
+
+  override fun onHostPause() {
+    pauseForFocusLoss()
+    discardRecording()
+    abandonAudioFocusIfIdle()
+  }
+
+  override fun onHostDestroy() {
+    releaseAll()
+  }
+
+  override fun invalidate() {
+    context.removeLifecycleEventListener(this)
+    releaseAll()
+    super.invalidate()
+  }
+
+  private fun releaseAll() {
+    feedPlayers.values.forEach { runCatching { it.release() } }
+    feedPlayers.clear()
+    unloadPlayer()
+    stopBreakPlayer()
+    discardRecording()
+  }
+
+  private fun discardRecording() {
+    recorder?.let {
+      runCatching { it.stop() }
+      runCatching { it.release() }
+    }
+    recordingPath?.let { path -> runCatching { File(path).delete() } }
+    recorder = null
+    recordingPath = null
+  }
 
   @ReactMethod
   fun feedPrepare(slot: Int, path: String, start: Double, promise: Promise) {
@@ -56,6 +168,10 @@ class ClaroraAudioModule(private val context: ReactApplicationContext) : ReactCo
   @ReactMethod
   fun feedPlay(slot: Int, promise: Promise) {
     try {
+      if (!requestAudioFocus()) {
+        promise.reject("feed_audio", "其他应用正在占用音频")
+        return
+      }
       feedPlayers.filterKeys { it != slot }.values.forEach { if (it.isPlaying) it.pause() }
       val p = feedPlayers[slot] ?: error("音频尚未就绪")
       p.start()
@@ -67,6 +183,7 @@ class ClaroraAudioModule(private val context: ReactApplicationContext) : ReactCo
   fun feedPause(slot: Int, promise: Promise) {
     try {
       feedPlayers[slot]?.let { if (it.isPlaying) it.pause() }
+      abandonAudioFocusIfIdle()
       promise.resolve(null)
     } catch (error: Exception) { promise.reject("feed_audio", error.message, error) }
   }
@@ -121,34 +238,59 @@ class ClaroraAudioModule(private val context: ReactApplicationContext) : ReactCo
       promise.reject("audio_play_error", "没有可播放的音频")
       return
     }
-    mediaPlayer.start()
-    promise.resolve(status())
+    try {
+      if (!requestAudioFocus()) {
+        promise.reject("audio_focus", "其他应用正在占用音频")
+        return
+      }
+      mediaPlayer.start()
+      promise.resolve(status())
+    } catch (error: Exception) {
+      promise.reject("audio_play_error", error.message, error)
+    }
   }
 
   @ReactMethod
   fun pause(promise: Promise) {
-    player?.takeIf { it.isPlaying }?.pause()
-    promise.resolve(status())
+    try {
+      player?.takeIf { it.isPlaying }?.pause()
+      abandonAudioFocusIfIdle()
+      promise.resolve(status())
+    } catch (error: Exception) {
+      promise.reject("audio_pause_error", error.message, error)
+    }
   }
 
   @ReactMethod
   fun setPosition(milliseconds: Double, promise: Promise) {
-    player?.seekTo(milliseconds.toInt().coerceAtLeast(0))
-    playbackCompleted = false
-    promise.resolve(status())
+    try {
+      player?.seekTo(milliseconds.toInt().coerceAtLeast(0))
+      playbackCompleted = false
+      promise.resolve(status())
+    } catch (error: Exception) {
+      promise.reject("audio_seek_error", error.message, error)
+    }
   }
 
   @ReactMethod
   fun setRate(rate: Double, promise: Promise) {
-    playbackRate = rate.toFloat()
-    player?.let { applyRate(it) }
-    promise.resolve(status())
+    try {
+      playbackRate = rate.toFloat()
+      player?.let { applyRate(it) }
+      promise.resolve(status())
+    } catch (error: Exception) {
+      promise.reject("audio_rate_error", error.message, error)
+    }
   }
 
   @ReactMethod
   fun setLoop(loop: Boolean, promise: Promise) {
-    player?.isLooping = loop
-    promise.resolve(status())
+    try {
+      player?.isLooping = loop
+      promise.resolve(status())
+    } catch (error: Exception) {
+      promise.reject("audio_loop_error", error.message, error)
+    }
   }
 
   @ReactMethod
@@ -171,18 +313,19 @@ class ClaroraAudioModule(private val context: ReactApplicationContext) : ReactCo
   private fun status() = Arguments.createMap().apply {
     val mediaPlayer = player
     putBoolean("isLoaded", mediaPlayer != null)
-    putDouble("positionMillis", (mediaPlayer?.currentPosition ?: 0).toDouble())
-    if (mediaPlayer != null) putDouble("durationMillis", mediaPlayer.duration.toDouble())
-    putBoolean("isPlaying", mediaPlayer?.isPlaying == true)
-    putBoolean("didJustFinish", playbackCompleted && mediaPlayer?.isPlaying != true)
+    putDouble("positionMillis", runCatching { mediaPlayer?.currentPosition }.getOrNull()?.toDouble() ?: 0.0)
+    runCatching { mediaPlayer?.duration }.getOrNull()?.let { putDouble("durationMillis", it.toDouble()) }
+    putBoolean("isPlaying", runCatching { mediaPlayer?.isPlaying == true }.getOrDefault(false))
+    putBoolean("didJustFinish", playbackCompleted && runCatching { mediaPlayer?.isPlaying == true }.getOrDefault(false).not())
   }
 
   private fun unloadPlayer() {
-    player?.run {
-      reset()
-      release()
+    player?.let {
+      runCatching { it.reset() }
+      runCatching { it.release() }
     }
     player = null
+    abandonAudioFocusIfIdle()
   }
 
   // ── 口语跟读录音（AAC m4a，ASR 友好）──
@@ -274,6 +417,7 @@ class ClaroraAudioModule(private val context: ReactApplicationContext) : ReactCo
   fun playBreak(path: String) {
     stopBreakPlayer()
     try {
+      if (!requestAudioFocus()) return
       val mediaPlayer = MediaPlayer()
       breakPlayer = mediaPlayer
       mediaPlayer.setDataSource(File(path.removePrefix("file://")).absolutePath)
@@ -281,26 +425,30 @@ class ClaroraAudioModule(private val context: ReactApplicationContext) : ReactCo
       mediaPlayer.prepare()
       mediaPlayer.start()
     } catch (error: Exception) {
+      breakPlayer?.let { runCatching { it.release() } }
       breakPlayer = null
     }
   }
 
   @ReactMethod
   fun pauseBreak() {
-    breakPlayer?.takeIf { it.isPlaying }?.pause()
+    runCatching { breakPlayer?.takeIf { it.isPlaying }?.pause() }
+    abandonAudioFocusIfIdle()
   }
 
   @ReactMethod
   fun resumeBreak() {
-    breakPlayer?.start()
+    if (!requestAudioFocus()) return
+    runCatching { breakPlayer?.start() }
   }
 
   @ReactMethod
   fun stopBreakPlayer() {
     breakPlayer?.let {
-      it.stop()
-      it.release()
+      runCatching { it.stop() }
+      runCatching { it.release() }
     }
     breakPlayer = null
+    abandonAudioFocusIfIdle()
   }
 }
