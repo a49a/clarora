@@ -1,6 +1,7 @@
 import { AIChatProvider } from "./shared/ui/AIChatProvider";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
-import { Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { SafeAreaProvider, SafeAreaView as SafeAreaContextView } from "react-native-safe-area-context";
 import HomeScreen from "./shared/screens/index";
 import DiscoverScreen from "./shared/screens/discover";
 import ListeningScreen from "./shared/screens/listening";
@@ -57,7 +58,7 @@ function Shell() {
   const { theme } = useAppTheme();
   const pomodoro = usePomodoro();
   const isMobile = Platform.OS === "android" || Platform.OS === "ios";
-  const RootView = Platform.OS === "ios" ? SafeAreaView : View;
+  const RootView = isMobile ? SafeAreaContextView : View;
   const [activeKey, setActiveKey] = useState<ScreenKey>("flashcard");
   const [navigationRestored, setNavigationRestored] = useState(false);
   const [listeningSelection, setListeningSelection] = useState<ListeningSelection>({
@@ -85,7 +86,7 @@ function Shell() {
       .then((saved) => {
         if (cancelled || !saved) return;
         // Never restore a screen the current platform does not show.
-        if (isMobile && (saved === "audio-manager" || saved === "video")) return;
+        if (isMobile && desktopOnlyScreens.has(saved)) return;
         if (screens.some((screen) => screen.key === saved)) {
           setActiveKey(saved as ScreenKey);
         }
@@ -145,7 +146,7 @@ function Shell() {
   let activeContent: ReactNode;
   switch (activeKey) {
     case "discover":
-      activeContent = <DiscoverScreen onManageAudio={(practiceId, audioId) => {
+      activeContent = <DiscoverScreen onManageAudio={isMobile ? undefined : (practiceId, audioId) => {
         setListeningSelection({ practiceId, audioId });
         setActiveKey("audio-manager");
       }} />;
@@ -392,13 +393,20 @@ function Shell() {
   );
 }
 
+function MobileSafeArea({ children }: { children: ReactNode }) {
+  if (Platform.OS !== "android" && Platform.OS !== "ios") return <>{children}</>;
+  return <SafeAreaProvider>{children}</SafeAreaProvider>;
+}
+
 export default function App() {
   return (
-    <ThemeProvider>
-      <PomodoroProvider>
-        <AIChatProvider><Shell /></AIChatProvider>
-      </PomodoroProvider>
-    </ThemeProvider>
+    <MobileSafeArea>
+      <ThemeProvider>
+        <PomodoroProvider>
+          <AIChatProvider><Shell /></AIChatProvider>
+        </PomodoroProvider>
+      </ThemeProvider>
+    </MobileSafeArea>
   );
 }
 
