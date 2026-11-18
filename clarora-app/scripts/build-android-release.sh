@@ -13,6 +13,7 @@ test -n "$sdk"
 tools="$sdk/build-tools/36.0.0"
 test -x "$tools/apksigner"
 version="$(node -p "require('./package.json').version")"
+bash scripts/ensure-android-hermes.sh
 cd android
 ./gradlew --no-daemon :app:assembleRelease
 cd ..

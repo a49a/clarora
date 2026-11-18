@@ -34,9 +34,9 @@ jobs:
       - run: npm test
         working-directory: clarora-app
   android:
-    name: Android debug build
+    name: Android smoke build and emulator
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -52,6 +52,29 @@ jobs:
         working-directory: clarora-app
       - run: npm run android:apk
         working-directory: clarora-app
+      - name: Build debug-signed release APK for emulator smoke
+        working-directory: clarora-app
+        run: npm run android:smoke:build
+      - name: Run Android emulator smoke
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: >-
+            -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            cd clarora-app
+            CLARORA_ANDROID_SMOKE_OUT="$GITHUB_WORKSPACE/clarora-app/android-smoke" \
+              bash scripts/android-smoke.sh android/app/build/outputs/apk/release/app-release.apk
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: Clarora-android-smoke
+          path: clarora-app/android-smoke/
+          if-no-files-found: ignore
   macos:
     name: macOS debug build
     runs-on: macos-15
