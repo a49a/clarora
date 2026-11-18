@@ -458,9 +458,11 @@ impl Probe {
                 self.stage = 11;
             }
             11 => {
+                let max = app.assistant.scroll.max_offset().height;
                 ensure!(
-                    app.assistant.scroll.bounds_for_item(1).is_some(),
-                    "conversation did not show both turns"
+                    app.assistant.scroll.bounds_for_item(1).is_some()
+                        && (max <= px(1.) || -app.assistant.scroll.offset().y >= max - px(4.)),
+                    "conversation did not open at the latest turn"
                 );
                 self.click_answer_view(app, false, window, cx)?;
                 self.stage = 12;

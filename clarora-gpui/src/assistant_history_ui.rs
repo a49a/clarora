@@ -80,15 +80,31 @@ impl HistoryView {
             return;
         }
         let next = Model::capture(app);
-        if self.model.chat_id != next.chat_id
+        let reset = self.model.chat_id != next.chat_id
             || self.model.context != next.context
-            || (next.request.is_some() && self.model.request != next.request)
-        {
+            || (next.request.is_some() && self.model.request != next.request);
+        let follow = !reset
+            && self.show_conversation
+            && self.near_bottom()
+            && (self.model.history != next.history
+                || self.model.pending != next.pending
+                || self.model.output != next.output
+                || self.model.error != next.error);
+        if reset {
             self.show_conversation = false;
             self.scroll.set_offset(Point::default());
         }
         self.model = next;
+        if follow {
+            self.scroll.scroll_to_bottom();
+        }
         cx.notify();
+    }
+    /// A conversation view should follow new output only while the reader is
+    /// already at the bottom. Scrolling up to inspect older turns must pause it.
+    fn near_bottom(&self) -> bool {
+        let max = self.scroll.max_offset().height;
+        max <= px(1.) || -self.scroll.offset().y >= max - px(24.)
     }
     #[cfg(debug_assertions)]
     pub(super) fn mode_bounds(&self) -> Option<[Bounds<Pixels>; 2]> {
@@ -597,8 +613,12 @@ impl HistoryView {
                 }
                 let _ = history.update(cx, |this, cx| {
                     this.show_conversation = conversation;
-                    this.scroll.set_offset(Point::default());
                     this.sync(app, cx);
+                    if this.show_conversation {
+                        this.scroll.scroll_to_bottom();
+                    } else {
+                        this.scroll.set_offset(Point::default());
+                    }
                     cx.notify();
                 });
             });
