@@ -4,7 +4,7 @@ use super::*;
 impl AppView {
     pub(super) fn show_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.open_dialog(cx, move |dialog, window, cx| {
-            let rows = [
+            let mut rows = vec![
                 ("学习助手", "Cmd / Ctrl + J"),
                 ("展开或收起导航", "Cmd / Ctrl + B"),
                 ("选区问 AI", "Cmd / Ctrl + Shift + L"),
@@ -15,9 +15,11 @@ impl AppView {
                 ("视频上一句 / 下一句", "← / →"),
                 ("播放 / 暂停", "Space"),
                 ("闪卡评分：忘了 / 模糊 / 认识", "1 / 2 / 3"),
-                ("退出电脑专注", "Ctrl + Shift + Esc"),
-                ("打开本页", "F1"),
             ];
+            if cfg!(target_os = "macos") {
+                rows.push(("退出电脑专注", "Ctrl + Shift + Esc"));
+            }
+            rows.push(("打开本页", "F1"));
             let mut list = div().flex().flex_col().gap_2().text_sm();
             for (action, keys) in rows {
                 list = list.child(
