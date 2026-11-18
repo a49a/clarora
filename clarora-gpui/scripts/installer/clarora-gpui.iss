@@ -17,6 +17,7 @@ AppId={{17F3D01D-07B1-45AC-8A65-4304FDCE9158}
 AppName=Clarora
 AppVersion={#AppVersion}
 AppPublisher=Clarora
+SetupIconFile={#SourceDir}\clarora.ico
 DefaultDirName={localappdata}\Programs\Clarora
 UsePreviousAppDir=yes
 DefaultGroupName=Clarora
@@ -30,7 +31,7 @@ OutputBaseFilename={#OutputName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\clarora-gpui.exe
+UninstallDisplayIcon={app}\clarora.ico
 CloseApplications=yes
 RestartApplications=no
 LicenseFile={#SourceDir}\LICENSE
@@ -52,8 +53,8 @@ Type: filesandordirs; Name: "{app}\licenses"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Icons]
-Name: "{group}\Clarora"; Filename: "{app}\clarora-gpui.exe"
-Name: "{autodesktop}\Clarora"; Filename: "{app}\clarora-gpui.exe"; Tasks: desktopicon
+Name: "{group}\Clarora"; Filename: "{app}\clarora-gpui.exe"; IconFilename: "{app}\clarora.ico"
+Name: "{autodesktop}\Clarora"; Filename: "{app}\clarora-gpui.exe"; IconFilename: "{app}\clarora.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\clarora-gpui.exe"; Description: "Launch Clarora"; Flags: nowait postinstall skipifsilent

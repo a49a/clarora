@@ -35,6 +35,7 @@ Copy-Item -LiteralPath "$PSScriptRoot/../README.md" -Destination "$stage/README.
 New-Item -ItemType Directory -Force "$stage/scripts" | Out-Null
 Copy-Item -LiteralPath "$PSScriptRoot/PACKAGING.md" -Destination "$stage/scripts/PACKAGING.md"
 Copy-Item -LiteralPath "$PSScriptRoot/../../LICENSE" -Destination "$stage/LICENSE"
+Copy-Item -LiteralPath "$PSScriptRoot/../assets/clarora.ico" -Destination "$stage/clarora.ico"
 $signing = 'unsigned'
 if ($CertificateThumbprint) {
     $signTool = (Get-Command signtool.exe -ErrorAction Stop).Source

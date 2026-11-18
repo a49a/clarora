@@ -21,5 +21,6 @@ New-Item -ItemType Directory -Force $Output | Out-Null
 Copy-Item "$PSScriptRoot/../target/release/clarora-gpui.exe" $Output
 Copy-Item "$PSScriptRoot/../README.md" "$Output/README.md"
 Copy-Item "$PSScriptRoot/../../LICENSE" "$Output/LICENSE"
+Copy-Item "$PSScriptRoot/../assets/clarora.ico" "$Output/clarora.ico"
 Write-Host "GPUI developer executable: $Output"
 Write-Warning 'This developer output is incomplete and must not be distributed. Use -Distribution -RuntimeDir <verified-runtime> for a portable ZIP and optionally -Installer.'
