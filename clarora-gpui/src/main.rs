@@ -73,6 +73,8 @@ mod task_status;
 mod task_ui;
 #[cfg(debug_assertions)]
 mod ui_controller_probe;
+#[cfg(debug_assertions)]
+mod ui_smoke_probe;
 mod video_controller;
 mod video_import_ui;
 mod video_job_ui;

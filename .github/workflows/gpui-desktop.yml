@@ -83,6 +83,19 @@ jobs:
           }
       - run: cargo fmt --check
       - run: cargo check --locked --all-targets
+      - name: Build debug binaries and run hidden-window UI smoke
+        timeout-minutes: 15
+        run: |
+          cargo build --locked --bins
+          cargo run --locked --bin e2e -- e2e-artifacts --ui-smoke-only
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: Clarora-GPUI-Windows-UI-smoke
+          path: |
+            clarora-gpui/e2e-artifacts/**/*.json
+            clarora-gpui/e2e-artifacts/**/*.log
+          if-no-files-found: ignore
       - name: Build all Windows ASR/TTS and stage checksum-pinned media runtimes
         timeout-minutes: 45
         run: ./scripts/prepare-windows-runtime.ps1

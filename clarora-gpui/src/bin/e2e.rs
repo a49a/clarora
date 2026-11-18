@@ -98,6 +98,8 @@ mod timer_chimes;
 mod transcript;
 #[path = "support/ui_controller.rs"]
 mod ui_controller;
+#[path = "support/ui_smoke.rs"]
+mod ui_smoke;
 #[path = "support/video_batch_translation.rs"]
 mod video_batch_translation;
 #[path = "support/video_jobs.rs"]

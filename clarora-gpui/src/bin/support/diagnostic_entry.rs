@@ -88,6 +88,7 @@ pub fn run(root: &Path, results: &mut Vec<Value>) -> Result<()> {
             "--focus-mode-check",
             "--ui-controller-check",
             "--ui-controller-quit-check",
+            "--ui-smoke-check",
         ];
         ensure!(
             registered.len() == flags.len()

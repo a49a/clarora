@@ -18,6 +18,7 @@ enum Kind {
     SpeakingGroups,
     Focus,
     Controller,
+    UiSmoke,
     Quit,
 }
 struct Entry {
@@ -101,6 +102,11 @@ const ENTRIES: &[Entry] = &[
         flag: "--ui-controller-quit-check",
         name: "ui-controller-quit",
         kind: Kind::Quit,
+    },
+    Entry {
+        flag: "--ui-smoke-check",
+        name: "ui-smoke",
+        kind: Kind::UiSmoke,
     },
 ];
 
@@ -260,6 +266,7 @@ mod running {
                 Kind::SpeakingGroups => speaking_ui::probe::prepare(&self.out),
                 Kind::Focus => Library::open(self.out.join("library")),
                 Kind::Controller | Kind::Quit => ui_controller_probe::prepare(&self.out),
+                Kind::UiSmoke => ui_smoke_probe::prepare(&self.out),
             }
         }
         pub(crate) fn start(&self) -> Active {
@@ -282,6 +289,7 @@ mod running {
                     ui_controller_probe::Probe::new(&self.out)
                         .with_global_quit(matches!(self.entry.kind, Kind::Quit)),
                 ),
+                Kind::UiSmoke => Box::new(ui_smoke_probe::Probe::new(&self.out)),
             };
             Active {
                 entry: self.entry,

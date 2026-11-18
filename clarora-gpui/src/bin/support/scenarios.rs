@@ -41,6 +41,9 @@ Library::open(output.join("assistant-source"))
     "--ui-controller-only",0,0 => {
 ui_controller::run(output, results)
     },
+    "--ui-smoke-only",0,0 => {
+ui_smoke::run(output, results)
+    },
     "--flashcard-keys-only",0,0 => {
 ui_controller::flashcard(output, results)
     },
