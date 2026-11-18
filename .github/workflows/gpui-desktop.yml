@@ -4,14 +4,12 @@ on:
     branches: [master]
     paths:
       - 'clarora-gpui/**'
-      - 'clarora-app/windows/clarora-asr/**'
       - 'clarora-app/macos/Clarora-macOS/Assets.xcassets/AppIcon.appiconset/**'
       - 'LICENSE'
       - '.github/workflows/gpui-desktop.yml'
   pull_request:
     paths:
       - 'clarora-gpui/**'
-      - 'clarora-app/windows/clarora-asr/**'
       - 'clarora-app/macos/Clarora-macOS/Assets.xcassets/AppIcon.appiconset/**'
       - 'LICENSE'
       - '.github/workflows/gpui-desktop.yml'

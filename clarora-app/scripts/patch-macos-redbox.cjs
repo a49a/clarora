@@ -126,96 +126,6 @@ function flattenJsinspectorCdp(packageDir) {
   return true;
 }
 
-// react-native-windows 0.81:UWP 源码构建已不被上游维护，留了几处坏死：
-// ① HermesSamplingProfiler.cpp 使用 std::coroutine_handle 但全链路无人
-//    包含 <coroutine>；② Microsoft.ReactNative.Managed.csproj 强制
-//    VisualStudioVersion=18.0 并导入 v18 的 XAML targets，VS2022 没有；
-// ③ React.Cpp.props 在 v143 工具集下追加旧版协程开关 /await，与 C++20
-//    协程互斥（WinRTWebSocketResource.h 又按 _MSC_VER 分支，两者矛盾）。
-// 统一改走 /await:strict 的 std 命名空间，并补齐头文件与分支。
-const windowsPatches = [
-  {
-    file: 'Shared/Hermes/HermesSamplingProfiler.cpp',
-    original: '#include <future>',
-    replacement: '#include <coroutine>\n#include <future>',
-  },
-  {
-    file: 'Microsoft.ReactNative.Managed/Microsoft.ReactNative.Managed.csproj',
-    original: "'$(VisualStudioVersion)' == '' or '$(VisualStudioVersion)' &lt; '18.0' ",
-    replacement: "'$(VisualStudioVersion)' == '' or '$(VisualStudioVersion)' &lt; '17.0' ",
-  },
-  {
-    file: 'Microsoft.ReactNative.Managed/Microsoft.ReactNative.Managed.csproj',
-    original: '<VisualStudioVersion>18.0</VisualStudioVersion>',
-    replacement: '<VisualStudioVersion>17.0</VisualStudioVersion>',
-  },
-  {
-    // C# 应用经 ProjectReference 触发 Managed 工程时全局 Platform 不会传到,
-    // 它回退默认 x86,与 x64 编译出的 Microsoft.ReactNative.winmd 冲突
-    // (MSB3271)。默认值改为 x64,与发布脚本的 x64-only 一致。
-    file: 'Microsoft.ReactNative.Managed/Microsoft.ReactNative.Managed.csproj',
-    original: "<Platform Condition=\" '$(Platform)' == '' \">x86</Platform>",
-    replacement: "<Platform Condition=\" '$(Platform)' == '' \">x64</Platform>",
-  },
-  {
-    // UWP 打包链路会对引用工程调用 Pack target(新 SDK 工程才有),旧式
-    // Managed.csproj 没有,补一个空目标让打包继续;产出的 DLL 已通过
-    // packaging outputs 收集。
-    file: 'Microsoft.ReactNative.Managed/Microsoft.ReactNative.Managed.csproj',
-    original: '<Target Name="Deploy" />',
-    replacement: '<Target Name="Deploy" />\n  <Target Name="Pack" />',
-  },
-  {
-    // Managed 会被若干路径触发(应用引用、CodeGen 的裸 MSBuild 调用),
-    // 后者拿不到全局 Platform/Configuration,OutDir 里平台段为空,生成的
-    // PRI 与应用打包期期望的 target\\x64\\Release 路径对不上(PRI252)。
-    // 固定到发布脚本唯一的 x64/Release 组合。
-    file: 'Microsoft.ReactNative.Managed/Microsoft.ReactNative.Managed.csproj',
-    original: '<OutputType>Library</OutputType>',
-    replacement: '<OutputType>Library</OutputType>\n    <OutDir>$(ReactNativeWindowsDir)target\\x64\\Release\\$(MSBuildProjectName)\\</OutDir>',
-  },
-  {
-    file: 'PropertySheets/React.Cpp.props',
-    original: '%(AdditionalOptions) /await</AdditionalOptions>',
-    replacement: '%(AdditionalOptions) /await:strict</AdditionalOptions>',
-  },
-  {
-    file: 'Microsoft.ReactNative/Microsoft.ReactNative.vcxproj',
-    original: '%(AdditionalOptions) /await</AdditionalOptions>',
-    replacement: '%(AdditionalOptions) /await:strict</AdditionalOptions>',
-  },
-  {
-    file: 'Shared/Networking/WinRTWebSocketResource.h',
-    original: '#include <queue>',
-    replacement: '#include <coroutine>\n#include <queue>',
-  },
-  {
-    file: 'Shared/Networking/WinRTWebSocketResource.h',
-    original: '#if _MSC_VER >= 1951',
-    replacement: '#if 1 // Clarora: strict C++20 coroutines',
-  },
-  {
-    file: 'Shared/Networking/WinRTWebSocketResource.h',
-    original: 'using CoroHandle = std::experimental::coroutine_handle<>;',
-    replacement: 'using CoroHandle = std::coroutine_handle<>; // Clarora strict',
-  },
-];
-
-function applyWindowsPatches(packageDir) {
-  let applied = 0;
-  for (const patch of windowsPatches) {
-    const file = path.join(packageDir, patch.file);
-    let source = fs.readFileSync(file, 'utf8');
-    if (source.includes(patch.replacement)) continue;
-    if (!source.includes(patch.original)) {
-      throw new Error(`${patch.file} changed; review the windows patch before upgrading.`);
-    }
-    fs.writeFileSync(file, source.replace(patch.original, patch.replacement));
-    applied++;
-  }
-  return applied > 0;
-}
-
 if (require.main === module) {
   // The workspace installs macOS under its own name and the react-native alias.
   for (const name of ['react-native-macos', 'react-native']) {
@@ -261,15 +171,6 @@ if (require.main === module) {
       console.error(`clarora android version pin (${name}):`, error.message);
       process.exitCode = 1;
     }
-  }
-
-  try {
-    if (applyWindowsPatches(path.join(__dirname, '..', 'node_modules', 'react-native-windows'))) {
-      console.log('clarora patch: applied react-native-windows UWP fixes');
-    }
-  } catch (error) {
-    console.error('clarora windows patch:', error.message);
-    process.exitCode = 1;
   }
 }
 

@@ -7,8 +7,6 @@
     "postinstall": "node scripts/patch-macos-redbox.cjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.cjs",
-    "windows": "react-native run-windows --arch x64 --no-telemetry",
-    "windows:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1",
     "start": "react-native start",
     "android": "react-native run-android",
     "android:apk": "cd android && ./gradlew assembleDebug",
@@ -37,8 +35,7 @@
     "react-native-fs": "^2.20.0",
     "react-native-macos": "0.81.9",
     "react-native-sound": "^0.11.2",
-    "react-native-sqlite-storage": "^6.0.1",
-    "react-native-windows": "0.81.35"
+    "react-native-sqlite-storage": "^6.0.1"
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",
@@ -53,12 +50,5 @@
     "prettier": "^3.9.9",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.70.1"
-  },
-  "react-native-windows": {
-    "init-windows": {
-      "name": "Clarora",
-      "namespace": "Clarora",
-      "template": "old/uwp-cs-app"
-    }
   }
 }

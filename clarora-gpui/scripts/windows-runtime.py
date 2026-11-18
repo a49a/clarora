@@ -186,7 +186,7 @@ def stage(work, output, msvc_redist, msvc_licenses):
     native_license = output / "licenses/clarora-native/LICENSE"
     copy(SCRIPTS.parent.parent / "LICENSE", native_license)
     miniaudio = output / "licenses/clarora-native/miniaudio.h"
-    copy(SCRIPTS.parent.parent / "clarora-app/windows/clarora-asr/miniaudio.h", miniaudio)
+    copy(SCRIPTS.parent / "native/asr/miniaudio.h", miniaudio)
     revision = subprocess.check_output(["git", "-C", str(SCRIPTS.parent.parent), "rev-parse", "HEAD"], text=True).strip()
     component("clarora-native", native, [native_license, miniaudio], version=revision,
               source="https://github.com/a49a/clarora/tree/" + revision)

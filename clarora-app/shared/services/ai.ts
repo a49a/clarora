@@ -60,12 +60,11 @@ type NativeWindowsAsr = {
   transcribeWhisper: (audioPath: string, modelPath: string, language: string) => Promise<string>;
   transcribeSenseVoice: (audioPath: string, modelPath: string, tokensPath: string) => Promise<string>;
 };
-export const LOCAL_ASR_PLATFORMS = ['macos', 'windows'];
-const UNSUPPORTED_ASR = '端侧转写目前支持 macOS 和 Windows，其他平台请在下方选择「自定义转写 API」';
+const UNSUPPORTED_ASR = 'RN 端侧转写目前支持 macOS；Windows 桌面请使用 GPUI，其他平台请在下方选择「自定义转写 API」';
 function nativeWhisper(): NativeWhisper {
   if (currentPlatform === 'windows') {
     const windows = getNativeModules().RNWindowsAsr as NativeWindowsAsr | undefined;
-    if (!windows?.transcribeWhisper) throw new Error('Windows 端侧转写库尚未安装，请按平台文档运行 scripts/build-windows-asr.ps1');
+    if (!windows?.transcribeWhisper) throw new Error('Windows 端侧转写仅随 GPUI 桌面版提供，RN 移动版不支持');
     return {
       transcribe: async (audioPath, modelPath, language) =>
         JSON.parse(await windows.transcribeWhisper(audioPath, modelPath, language)),
@@ -78,7 +77,7 @@ function nativeWhisper(): NativeWhisper {
 function nativeSenseVoice(): NativeSenseVoice {
   if (currentPlatform === 'windows') {
     const windows = getNativeModules().RNWindowsAsr as NativeWindowsAsr | undefined;
-    if (!windows?.transcribeSenseVoice) throw new Error('Windows 端侧转写库尚未安装，请按平台文档运行 scripts/build-windows-asr.ps1');
+    if (!windows?.transcribeSenseVoice) throw new Error('Windows 端侧转写仅随 GPUI 桌面版提供，RN 移动版不支持');
     return {
       transcribe: async (audioPath, modelPath, tokensPath) =>
         JSON.parse(await windows.transcribeSenseVoice(audioPath, modelPath, tokensPath)),

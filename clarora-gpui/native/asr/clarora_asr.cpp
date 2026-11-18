@@ -1,13 +1,13 @@
-// clarora_asr — Windows 端侧转写包装（P/Invoke 目标 DLL）。
+// clarora_asr — GPUI 桌面端本地转写适配器。
 //
-// 职责与 macOS 的 RNMacWhisper / RNMacSenseVoice 一致：
+// 职责：
 //   1. miniaudio 将任意受支持音频（MP3/WAV/FLAC 等）解码重采样为 16 kHz 单声道 Float32；
 //   2. whisper.cpp（英文/多语种）与 sherpa-onnx SenseVoice（中英日韩粤）离线转写；
 //   3. 返回 {"duration":秒,"segments":[{"start":秒,"end":秒,"text":"…"}]} JSON，
-//      由 C# 模块原样传回 JS 解析。
+//      由 clarora-asr 命令行工具输出给 GPUI 解析。
 //
-// 构建见 scripts/build-windows-asr.ps1；依赖 whisper.cpp（vcpkg）与
-// sherpa-onnx 发行包，运行时 DLL 需与应用同目录。
+// 构建见 clarora-gpui/scripts/prepare-windows-runtime.ps1（Windows）及
+// clarora-gpui/native/CMakeLists.txt；依赖 whisper.cpp 与 sherpa-onnx 发行包。
 
 #include "miniaudio.h"
 

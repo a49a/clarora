@@ -121,56 +121,6 @@ jobs:
           name: Clarora-macos-arm64
           path: clarora-app/Clarora-macos-arm64.dmg
           if-no-files-found: error
-  windows:
-    name: Windows release build
-    needs: resolve
-    runs-on: windows-2022
-    timeout-minutes: 150
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.resolve.outputs.source_sha }}
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: clarora-app/package-lock.json
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-      - name: Use corrected dependency extractor for the already-tagged v0.2.0 source
-        if: github.event_name == 'workflow_dispatch' && needs.resolve.outputs.release_tag == 'v0.2.0'
-        shell: pwsh
-        run: |
-          git fetch --no-tags --depth=1 origin "${{ github.sha }}"
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch release tooling commit.' }
-          git show "${{ github.sha }}:clarora-app/scripts/build-windows-asr.ps1" | Set-Content -Encoding utf8 clarora-app/scripts/build-windows-asr.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot read corrected Windows build script.' }
-          git show "${{ github.sha }}:clarora-app/scripts/extract-windows-dependency.py" | Set-Content -Encoding utf8 clarora-app/scripts/extract-windows-dependency.py
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot read corrected archive extractor.' }
-      - run: npm ci
-        working-directory: clarora-app
-      - name: Build on-device ASR library (clarora_asr.dll)
-        timeout-minutes: 35
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-asr.ps1
-        working-directory: clarora-app
-      - run: npm run windows:build
-        working-directory: clarora-app
-      - name: Package zip
-        shell: pwsh
-        working-directory: clarora-app
-        run: |
-          Compress-Archive -Path "windows/AppPackages/*" -DestinationPath "Clarora-windows-x64.zip" -Force
-      # 能力门槛作用在最终安装包上:不再检查工作目录,而是验证 zip 内确实
-      # 包含声明的主程序、端侧转写与 PDF 运行时,缺失即拒绝发布。
-      - name: Verify final package capabilities
-        working-directory: clarora-app
-        run: bash scripts/verify-release.sh Clarora-windows-x64.zip
-      - uses: actions/upload-artifact@v7
-        with:
-          name: Clarora-windows-x64
-          path: clarora-app/Clarora-windows-x64.zip
-          if-no-files-found: error
   android:
     name: Android release build
     if: vars.CLARORA_ANDROID_RELEASE_ENABLED == 'true'
@@ -191,12 +141,11 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [resolve, macos, windows, android, ios]
+    needs: [resolve, macos, android, ios]
     if: >-
       always() &&
       needs.resolve.result == 'success' &&
       needs.macos.result == 'success' &&
-      needs.windows.result == 'success' &&
       needs.ios.result == 'success' &&
       (needs.android.result == 'success' || needs.android.result == 'skipped')
     steps:
@@ -210,7 +159,6 @@ jobs:
         run: |
           mkdir -p release
           cp dist/Clarora-macos-arm64/Clarora-macos-arm64.dmg release/
-          cp dist/Clarora-windows-x64/Clarora-windows-x64.zip release/
           if [ -f dist/Clarora-android/Clarora-android.apk ]; then
             cp dist/Clarora-android/Clarora-android.apk release/
             cp dist/Clarora-android/android-build.json release/
@@ -241,7 +189,7 @@ jobs:
             "latest_url": "https://github.com/a49a/clarora/releases/tag/$RELEASE_TAG",
             "platforms": {
               "macos": { "status": "released", "arch": "arm64", "asset_name": "Clarora-macos-arm64.dmg", "url": "https://github.com/a49a/clarora/releases/download/$RELEASE_TAG/Clarora-macos-arm64.dmg" },
-              "windows": { "status": "released", "arch": "x64", "asset_name": "Clarora-windows-x64.zip", "url": "https://github.com/a49a/clarora/releases/download/$RELEASE_TAG/Clarora-windows-x64.zip" },
+              "windows": { "status": "planned" },
               "android": $android_metadata,
               "ios": { "status": "planned" }
             }
@@ -278,9 +226,6 @@ jobs:
           else
             printf '\n### Android\n本次未发布 Android APK；签名发布尚未启用。\n' >> release-notes.md
           fi
-          if [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ] && [ "$RELEASE_TAG" = 'v0.2.0' ]; then
-            printf '\nWindows 构建使用发布工具修复提交 `%s`；客户端源码仍为 tag 对应的 `%s`。\n' "$GITHUB_SHA" "$SOURCE_SHA" >> release-notes.md
-          fi
           if [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ] && [ "$GITHUB_SHA" != "$SOURCE_SHA" ]; then
             printf '\n发布流水线来自提交 `%s`；客户端源码来自 tag 对应的 `%s`。\n' "$GITHUB_SHA" "$SOURCE_SHA" >> release-notes.md
           fi
@@ -316,7 +261,7 @@ jobs:
           require(android_result in ('success', 'skipped'), f'Unexpected Android job result: {android_result}')
           android_released = android_result == 'success'
           common = {
-              'Clarora-macos-arm64.dmg', 'Clarora-windows-x64.zip',
+              'Clarora-macos-arm64.dmg',
               'Clarora-ios-unsigned.ipa', 'ios-unsigned-build.json',
               'release-metadata.json', 'SHA256SUMS.txt',
           }
@@ -329,6 +274,7 @@ jobs:
           require(metadata['tag'] == tag and metadata['version'] == tag.removeprefix('rn-v'), 'Release metadata version/tag mismatch')
           require(metadata['source_sha'] == source_sha, 'Release metadata source SHA mismatch')
           android = metadata['platforms']['android']
+          windows = metadata['platforms']['windows']
           notes = Path('release-notes.md').read_text()
           require(notes.count('### Android\n') == 1, 'Release notes need exactly one Android section')
           if android_released:
@@ -343,6 +289,7 @@ jobs:
           else:
               require(android.get('status') == 'planned' and not android.get('asset_name') and not android.get('url'), 'Android is marked released without an APK')
               require('本次未发布 Android APK' in notes and '已签名的 Android' not in notes, 'Release notes contradict skipped Android build')
+          require(windows.get('status') == 'planned' and not windows.get('asset_name') and not windows.get('url'), 'Windows is marked released without GPUI assets')
 
           checksums = {}
           for line in (root / 'SHA256SUMS.txt').read_text().splitlines():

@@ -5,8 +5,8 @@ if(WIN32)
   # Both helpers include Windows headers through their native dependencies.
   add_compile_definitions(NOMINMAX)
 endif()
-# Reuse the project's public native ASR adapter, without any React Native bridge.
-set(ASR_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../../clarora-app/windows/clarora-asr")
+# Shared ASR adapter for the GPUI desktop helper.
+set(ASR_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/asr")
 add_executable(clarora-asr asr_main.cpp "${ASR_SOURCE}/clarora_asr.cpp")
 target_compile_definitions(clarora-asr PRIVATE MINIAUDIO_IMPLEMENTATION MA_NO_DEVICE_IO)
 find_path(WHISPER_INCLUDE whisper.h REQUIRED)
