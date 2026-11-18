@@ -37,7 +37,7 @@ Clarora 分为两条产品线：macOS / Windows 使用 GPUI 原生桌面版，An
 - 官网（功能介绍、使用指南和下载入口）：<https://a49a.github.io/clarora-web/>
 - 桌面安装包未做代码签名；语音模型不随安装包提供，在应用内下载；个人学习资料只保存在本机或你配置的存储。
 - 移动端不提供桌面视频下载、Anki 卡组导入、目录/命令导入等桌面能力；具体差异见[移动端发布](docs/mobile-releases.md)和[平台说明](docs/platform-builds.md)。
-- RN 的 macOS / Windows 桌面构建已弃用，桌面请使用上面的 GPUI 版本；移动端 Android / iOS 继续维护。
+- RN Windows 桌面工程与构建链已移除；RN macOS 仅保留历史维护代码。桌面请使用上面的 GPUI 版本，移动端 Android / iOS 继续维护。
 
 首次使用桌面版：安装后进入「音频学习」导入本地音频，或进入「视频学习」导入本地视频；没有字幕时可在字幕工具栏生成。移动端安装后可在「设置 → 同步与备份」读取桌面备份；文本词卡、OCR 和文件导入以各平台支持范围为准。
 
@@ -45,7 +45,7 @@ Clarora 分为两条产品线：macOS / Windows 使用 GPUI 原生桌面版，An
 
 桌面 GPUI 原生客户端位于 `clarora-gpui/`，使用 Rust；React Native 客户端位于 `clarora-app/`，两者启动方式独立。GPUI 日常启动统一用 `npm run gpui`（macOS / Windows 相同，需要 Node；内部自动调用对应平台的 `dev.sh` / `dev.ps1`）。macOS 仍可用 `make gpui`，Windows 仍可直接运行 `powershell -File clarora-gpui/scripts/dev.ps1`。完整打包步骤见下方[从源码打包桌面应用](#从源码打包桌面应用)。
 
-RN 的 macOS / Windows 桌面构建已弃用，不再提供使用或构建入口；桌面请使用 GPUI。Android / iOS 仍维护。
+RN Windows 桌面工程与构建链已移除，RN macOS 仅保留历史维护代码；桌面请使用 GPUI。Android / iOS 仍维护。
 
 RN 移动端开发需要 Node.js 24、Android Studio 或 Xcode：
 
@@ -65,7 +65,7 @@ brew install mpv ffmpeg yt-dlp cmake whisper.cpp
 
 直接 `cargo run` 打开 PDF 时如果提示缺少 `libpdfium.dylib`，执行 `python3 clarora-gpui/scripts/install-pdfium.py clarora-gpui/target/debug`，或改用会自动准备 PDFium 的 `npm run gpui`。
 
-Android / iOS 的 RN 构建步骤和平台限制见[平台说明](docs/platform-builds.md)。桌面 GPUI 需要 Rust 1.93.1；Windows 还需要 Visual Studio 2022 的 C++ 桌面工作负载与 Windows SDK。`.github/workflows/` 中的 CI 在推送与 PR 时运行共享代码的类型检查和测试，并编译验证 Android / iOS。共享代码和自动化测试不等同于移动端真机验收。
+Android / iOS 的 RN 构建步骤和平台限制见[平台说明](docs/platform-builds.md)。桌面 GPUI 需要 Rust 1.93.1；Windows 还需要 Visual Studio 2022 的 C++ 桌面工作负载与 Windows SDK。`.github/workflows/` 中的 CI 在推送与 PR 时运行共享代码的类型检查和测试，编译验证 Android / iOS，并在 Android emulator 上启动带 JS bundle 的 APK、在 Windows GPUI 上运行隐藏窗口导航 smoke。共享代码、模拟器和隐藏窗口检查不等同于真机或完整桌面验收。
 
 ```sh
 npm run typecheck

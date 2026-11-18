@@ -43,6 +43,16 @@
 
 - 视频下载改为应用级任务：切换到其他模块不会取消正在进行的 bilibili 或 YouTube 下载；完成后仍写入视频收藏。
 - 根目录 `npm run macos` / `npm run windows` 不再启动 React Native 桌面端，改为提示使用 `npm run gpui`；README 和文档移除 RN 桌面构建入口。
+- 移除 React Native Windows 桌面工程、构建脚本、CI 工作流、发布 job 和 `react-native-windows` 依赖；Windows 桌面只保留 GPUI 打包与发布链路。
+- `npm run ios:pods` 内置 UTF-8 locale，CI 和本机安装 Pods 不再依赖调用终端的 locale 设置。
+- 音频支持星标：音频管理可按“★ 星标”筛选，学习页提供“★ 复习星标”队列，只在本组星标音频之间切换；星标进入 ZIP/云备份并在移动端备份表中保留。
+- 字幕生成任务卡显示当前使用的转写模型；本机显示模型名称，远端显示 API 模型 ID。音频和视频生成字幕时均可见。
+- 文档阅读的书库、目录和导入入口移到页面标题栏；音频练习组和视频分组选择也统一放到标题栏，并使用更大的强调色分组控件，减少正文顶部空白和重复控件。
+- 学习统计改为按本地时间凌晨 4 点切换学习日，0–4 点归前一天；GPUI 与移动端一致，历史统计不重算。
+- 学习助手“整段对话”改为从最新消息打开；停在底部时自动跟随新输出，向上翻阅旧回答时不会被拉回。
+- 移动端「随便学学」不再跳转到桌面专属的音频管理页，避免 Android/iOS 打开未在移动导航中开放的页面。
+- CI 增加 Android API 35 emulator smoke：构建带 JS bundle 的 debug 签名 release APK，检查 MainActivity 前台、进程存活、应用崩溃和 JS bundle 加载失败，并上传截图、logcat 与 JSON 证据。
+- GPUI Windows CI 增加隐藏窗口 UI smoke：真实创建窗口、切换核心页面并开关助手；不替代 Windows 实机或鼠标键盘验收。
 - 音频「截取片段」和视频「A–B 精听工具」打开时默认使用当前句起止作为 A/B，仍可继续拖动边界调整。
 - 「图转文字」和「闪卡列表」页面在导航与页头显示 Beta 标记。
 - RN 的 macOS / Windows 桌面构建标记为弃用；桌面主版本使用 GPUI，Android / iOS RN 继续维护。

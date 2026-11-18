@@ -1,6 +1,6 @@
 # Clarora
 
-> ⚠️ **平台状态（2026-11-13）：** React Native 的 **macOS / Windows 桌面构建已弃用**，不再作为桌面主版本推荐或发布目标。桌面请使用 [`clarora-gpui/`](../clarora-gpui/)；Android / iOS 的 RN 构建继续维护。历史 macOS / Windows 工程源码保留在仓库中，但不再提供构建或使用说明。
+> ⚠️ **平台状态（2026-11-17）：** React Native 的 **Windows 桌面工程与构建链已移除**，macOS 桌面构建仅保留历史维护代码。桌面请使用 [`clarora-gpui/`](../clarora-gpui/)；Android / iOS 的 RN 构建继续维护。
 
 React Native 移动客户端：Android、iOS 共用 `App.tsx`、学习页面、自有存储备份和 SQLite 数据模型。
 
@@ -104,6 +104,15 @@ npm run android
 也可以只生成 APK：`npm run android:apk`，产物位于
 `android/app/build/outputs/apk/debug/app-debug.apk`。
 
+安装/启动验收使用带 JS bundle 的 debug 签名 Release APK：
+
+```sh
+npm run android:smoke:build
+npm run android:smoke
+```
+
+`android:smoke` 会卸载旧包再安装，清除所选设备上的 Clarora 本地数据；请使用专用模拟器或测试机。详细检查项和 CI emulator 说明见[平台说明](../docs/platform-builds.md)。
+
 Android 使用系统文件选择器导入音频/字幕、支持音频播放和变速；字幕长按可复制。
 
 ### iOS
@@ -113,7 +122,7 @@ Android 使用系统文件选择器导入音频/字幕、支持音频播放和�
 ```bash
 cd clarora-app
 npm ci
-LC_ALL=en_US.UTF-8 npm run ios:pods
+npm run ios:pods
 npm start
 # 另一个终端，在 clarora-app 目录：
 npm run ios
@@ -144,7 +153,7 @@ clarora-app/
 └── package.json
 ```
 
-历史 macOS / Windows 工程目录保留在仓库中，仅用于旧版本维护，不再提供构建或使用说明。桌面主版本见 [`clarora-gpui/`](../clarora-gpui/)。
+历史 macOS 工程目录保留在仓库中，仅用于旧版本维护，不再提供构建或使用说明；Windows 工程目录及 `react-native-windows` 构建链已移除。桌面主版本见 [`clarora-gpui/`](../clarora-gpui/)。
 
 ## 导入格式
 

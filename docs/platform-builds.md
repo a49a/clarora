@@ -1,6 +1,6 @@
 # React Native 移动端工程
 
-> **弃用说明（2026-11-13）：** React Native 的 **macOS / Windows 桌面构建已弃用**，不再作为桌面主版本推荐或发布目标。桌面请使用 [`clarora-gpui/`](../clarora-gpui/)；Android / iOS 的 RN 构建继续维护。历史桌面工程源码保留在仓库中，但不再提供构建或使用说明。
+> **平台状态（2026-11-17）：** React Native 的 **Windows 桌面工程与构建链已移除**，macOS 桌面构建仅保留历史维护代码。桌面请使用 [`clarora-gpui/`](../clarora-gpui/)；Android / iOS 的 RN 构建继续维护。
 
 | 平台 | 实现 | 当前范围 |
 | --- | --- | --- |
@@ -11,7 +11,7 @@
 
 ## Android
 
-需要 Android Studio、Android SDK（API 35 或以上）、JDK 17，以及已启动的模拟器或连接的真机。
+需要 Android Studio、Android SDK platform 36、Build Tools 36.0.0、JDK 17，以及 Android 7.0（API 24）以上的模拟器或连接的真机。
 
 ```sh
 cd clarora-app
@@ -23,6 +23,12 @@ npm run android
 
 只生成 APK 时执行 `npm run android:apk`，产物位于 `android/app/build/outputs/apk/debug/app-debug.apk`。
 
+emulator/真机 smoke 需要一份带 JS bundle 的 Release APK。先执行 `npm run android:smoke:build`，它会用仓库内的 debug keystore 构建**仅用于 smoke** 的 debug 签名 Release APK；再连接已授权设备或模拟器运行 `npm run android:smoke`。脚本会安装并冷启动 APK，确认 MainActivity 在前台、进程存活，且应用日志没有 `FATAL EXCEPTION` 或 JS bundle 加载失败。设置 `CLARORA_ANDROID_SMOKE_OUT=/absolute/path` 可保存截图、logcat 和 `android-smoke.json`。debug APK 默认依赖 Metro，不能单独用于这项检查。
+
+CI 的 Android job 使用 debug keystore 构建一份仅用于 smoke 的 release APK，在 API 35 emulator 上运行上述检查，并上传 `android-smoke/` 证据；这不是生产签名验证。`android:smoke` 会先卸载旧包再安装，会清除所选设备上的 Clarora 本地数据，请使用专用模拟器或测试机。
+
+发布版默认只允许 HTTPS；本机/模拟器地址 `localhost`、`127.0.0.1`、`10.0.2.2` 例外。自定义 AI 或对象存储 Endpoint 请使用 HTTPS，否则请求会被 Android 网络安全策略拦截。
+
 使用范围与限制：
 
 - 随便学学上滑下一条、下滑返回；展开长原文/答案后上下滑动用于阅读，收起后恢复切换。
@@ -31,12 +37,12 @@ npm run android
 
 ## iOS
 
-需要 macOS、Xcode（含 iOS SDK / Simulator）、Node.js 和 CocoaPods。工程使用 iOS 15.1+，支持 iPhone / iPad；复用仓库现有 React Native 0.76 macOS fork 的 iOS 实现，保持旧架构，与当前原生模块匹配。
+需要 macOS、Xcode（含 iOS SDK / Simulator）、Node.js 和 CocoaPods。工程使用 iOS 15.1+，支持 iPhone / iPad；复用仓库现有 React Native 0.81 macOS fork（`react-native-macos@0.81.9`）的 iOS 实现，Pod 保持旧架构，与当前原生模块匹配。
 
 ```sh
 cd clarora-app
 npm ci
-LC_ALL=en_US.UTF-8 npm run ios:pods
+npm run ios:pods
 npm start
 # 另一个终端，在 clarora-app 目录：
 npm run ios
