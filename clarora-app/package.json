@@ -13,7 +13,7 @@
     "android:smoke:build": "bash scripts/build-android-smoke.sh",
     "android:smoke": "bash scripts/android-smoke.sh",
     "ios": "react-native run-ios --scheme Clarora-iOS",
-    "ios:pods": "cd ios && pod install",
+    "ios:pods": "cd ios && LC_ALL=en_US.UTF-8 pod install",
     "macos:pods": "cd macos && LC_ALL=en_US.UTF-8 pod install",
     "premacos": "node scripts/check-react-renderer.cjs && node scripts/ensure-macos-pods.cjs",
     "check:react-renderer": "node scripts/check-react-renderer.cjs",
