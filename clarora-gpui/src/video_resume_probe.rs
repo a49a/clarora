@@ -895,6 +895,14 @@ impl Probe {
                 ensure!(app.video.part_confirmation.is_none(), "任务忙仍弹上一P确认");
                 app.tasks.foreground.abort();
                 drop(busy_task);
+                // The previous-part scenario below starts from normal mode; leaving
+                // the sentence repeat active makes the next stage depend on whether
+                // the completed repeat was already cleared.
+                app.handle(Action::VideoStopSentenceRepeat, window, cx);
+                ensure!(
+                    app.video.sentence_repeat.is_none(),
+                    "停止三次后仍保留逐句重复"
+                );
                 app.handle(Action::SeekTo(0.), window, cx);
                 app.media.player.set("pause", "yes");
                 self.advance();
