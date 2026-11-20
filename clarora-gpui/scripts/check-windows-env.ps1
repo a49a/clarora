@@ -75,9 +75,9 @@ function Resolve-ProgramFile {
 
 # Operating system and shell -------------------------------------------------
 
-$isWindows = ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)
+$isWindowsHost = ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)
 $architecture = if ($env:PROCESSOR_ARCHITECTURE) { $env:PROCESSOR_ARCHITECTURE } else { 'unknown' }
-Add-Check 'Windows x64' ($isWindows -and $architecture -eq 'AMD64') `
+Add-Check 'Windows x64' ($isWindowsHost -and $architecture -eq 'AMD64') `
     "$([Environment]::OSVersion.VersionString) / $architecture" `
     'Run this script on Windows 10/11 x64.'
 
@@ -211,7 +211,7 @@ if ($Installer) {
 # Report ---------------------------------------------------------------------
 
 $passed = $missing.Count -eq 0
-$platform = if ($isWindows) { 'windows' } else { 'other' }
+$platform = if ($isWindowsHost) { 'windows' } else { 'other' }
 $scope = if ($Installer) { 'installer' } elseif ($Runtime) { 'runtime' } else { 'core' }
 $report = [ordered]@{
     schema_version = 1
