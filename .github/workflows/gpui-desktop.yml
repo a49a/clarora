@@ -58,6 +58,9 @@ jobs:
   windows:
     runs-on: windows-2022
     timeout-minutes: 100
+    env:
+      # GPUI's first Windows frame exceeds the 1 MiB MSVC default stack.
+      RUSTFLAGS: "-C link-arg=/STACK:16777216"
     defaults:
       run:
         shell: pwsh
