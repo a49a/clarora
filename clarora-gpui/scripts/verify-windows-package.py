@@ -26,7 +26,7 @@ crypt32 cryptbase cryptnet cryptsp d2d1 d3d9 d3d11 d3d12 dcomp dbghelp dhcpcsvc
 dnsapi dsound dwmapi dwrite dxgi dxva2 gdi32 gdi32full hid imagehlp imm32
 iphlpapi kernel32 kernelbase ksuser mf mfcore mfplat mfreadwrite mfuuid mmdevapi
 mpr msacm32 msctf msimg32 msvcrt mswsock ncrypt netapi32 normaliz ntdll ole32
-oleacc oleaut32 opengl32 powrprof profapi propsys psapi rasapi32 rpcrt4 secur32
+oleacc oleaut32 opengl32 powrprof profapi propsys psapi rasapi32 rpcrt4 rstrtmgr secur32
 setupapi shcore shell32 shlwapi user32 userenv usp10 uxtheme version win32u
 winhttp wininet winmm winscard winspool wintrust wlanapi wldap32 ws2_32
 wtsapi32 ucrtbase urlmon winusb authz clbcatq fwpuclnt iertutil msasn1 ntasn1
