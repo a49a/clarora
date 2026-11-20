@@ -94,6 +94,20 @@ impl Recorder {
                         error.clone(),
                         flag.clone(),
                     )?,
+                    SampleFormat::I32 => stream::<i32>(
+                        &device,
+                        &config.into(),
+                        writer.clone(),
+                        error.clone(),
+                        flag.clone(),
+                    )?,
+                    SampleFormat::F64 => stream::<f64>(
+                        &device,
+                        &config.into(),
+                        writer.clone(),
+                        error.clone(),
+                        flag.clone(),
+                    )?,
                     _ => bail!("暂不支持此麦克风采样格式"),
                 };
                 output.play()?;

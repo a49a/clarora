@@ -1,5 +1,5 @@
 //! GPUI exposes plain text; this field also reads the platform HTML clipboard flavor.
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", windows, test))]
 use clarora_gpui::writing_format::MAX_HTML_BYTES;
 
 #[cfg(target_os = "macos")]
@@ -48,14 +48,41 @@ pub(super) fn read_html() -> Option<String> {
     }
     // The clipboard owns the handle. Copy the validated range before unlocking it.
     let bytes = unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), size) };
-    let text = std::str::from_utf8(bytes.split(|byte| *byte == 0).next().unwrap_or_default())
-        .ok()
-        .and_then(|s| s.find('<').map(|start| s[start..].to_string()));
+    let text = html_from_bytes(bytes);
     unsafe { GlobalUnlock(handle) };
     text
+}
+
+#[cfg(any(windows, test))]
+fn html_from_bytes(bytes: &[u8]) -> Option<String> {
+    if bytes.len() > MAX_HTML_BYTES {
+        return None;
+    }
+    std::str::from_utf8(bytes.split(|byte| *byte == 0).next().unwrap_or_default())
+        .ok()
+        .and_then(|s| s.find('<').map(|start| s[start..].to_string()))
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
 pub(super) fn read_html() -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::html_from_bytes;
+
+    #[test]
+    fn cf_html_payload_keeps_the_fragment_markup() {
+        let payload = b"Version:0.9\r\nStartHTML:0000000105\r\n<html><body><!--StartFragment--><b>Hi</b><!--EndFragment--></body></html>\0";
+        assert_eq!(
+            html_from_bytes(payload).as_deref(),
+            Some("<html><body><!--StartFragment--><b>Hi</b><!--EndFragment--></body></html>")
+        );
+    }
+
+    #[test]
+    fn plain_text_has_no_html_payload() {
+        assert_eq!(html_from_bytes(b"plain text\0"), None);
+    }
 }
