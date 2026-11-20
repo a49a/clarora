@@ -105,6 +105,7 @@ pub(super) struct Probe {
     cases: Vec<Value>,
     assistant_before_keyboard: Option<(bool, bool, bool, String)>,
     keyboard_position: f64,
+    seek_before: f64,
     timeline_request: u64,
     fullscreen_edit_stage: u8,
     fullscreen_edit_started: Instant,
@@ -121,6 +122,7 @@ impl Probe {
             cases: vec![],
             assistant_before_keyboard: None,
             keyboard_position: 0.,
+            seek_before: 0.,
             timeline_request: 0,
             fullscreen_edit_stage: 0,
             fullscreen_edit_started: Instant::now(),
@@ -256,6 +258,47 @@ impl Probe {
                     return Ok(false);
                 }
                 self.record(app, "视频停在6.4秒")?;
+                window.focus(&app.focus);
+                self.seek_before = app.media.player.snapshot().position;
+                ensure!(
+                    app.handle_video_arrow_key(&Self::plain_key("right", false), window, cx),
+                    "视频普通方向键未路由"
+                );
+                self.stage = 200;
+                self.entered = Instant::now();
+                return Ok(false);
+            }
+            200 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                ensure!(
+                    (app.media.player.snapshot().position - (self.seek_before + 2.)).abs() < 0.25,
+                    "视频右方向键未前进2秒，实际位置={}",
+                    app.media.player.snapshot().position
+                );
+                ensure!(
+                    app.media.player.snapshot().paused,
+                    "视频2秒跳转改变了暂停状态"
+                );
+                ensure!(
+                    app.handle_video_arrow_key(&Self::plain_key("left", false), window, cx),
+                    "视频普通左方向键未路由"
+                );
+                self.stage = 201;
+                self.entered = Instant::now();
+                return Ok(false);
+            }
+            201 => {
+                if !self.stable() {
+                    return Ok(false);
+                }
+                ensure!(
+                    (app.media.player.snapshot().position - self.seek_before).abs() < 0.25,
+                    "视频左方向键未后退2秒，实际位置={}",
+                    app.media.player.snapshot().position
+                );
+                self.record(app, "普通左右键按2秒前后跳转")?;
                 app.handle(Action::Page("settings".into()), window, cx);
                 let saved: Value = serde_json::from_str(&app.lib.setting("last_video_position")?)?;
                 ensure!(
@@ -263,7 +306,9 @@ impl Probe {
                     "切页保存的进度不正确"
                 );
                 app.handle(Action::Page("video".into()), window, cx);
-                self.advance();
+                self.stage = 3;
+                self.entered = Instant::now();
+                return Ok(false);
             }
             3 => {
                 if !self.stable() || !Self::at(app, &path, POSITION) || app.video.active != Some(1)
@@ -3611,6 +3656,19 @@ impl Probe {
             })
     }
     fn key(key: &str, is_held: bool) -> KeyDownEvent {
+        // Sentence navigation now lives on Shift+arrows; plain arrows seek by
+        // two seconds. Existing sentence scenarios use this helper.
+        let chord = if matches!(key, "left" | "right") {
+            format!("shift-{key}")
+        } else {
+            key.to_owned()
+        };
+        KeyDownEvent {
+            keystroke: Keystroke::parse(&chord).expect("probe key"),
+            is_held,
+        }
+    }
+    fn plain_key(key: &str, is_held: bool) -> KeyDownEvent {
         KeyDownEvent {
             keystroke: Keystroke::parse(key).expect("probe key"),
             is_held,
@@ -3620,7 +3678,14 @@ impl Probe {
         let handle = window.window_handle();
         let keys = keys
             .iter()
-            .map(|key| Keystroke::parse(key).expect("probe key"))
+            .map(|key| {
+                let chord = if matches!(*key, "left" | "right") {
+                    format!("shift-{key}")
+                } else {
+                    (*key).to_owned()
+                };
+                Keystroke::parse(&chord).expect("probe key")
+            })
             .collect::<Vec<_>>();
         cx.defer(move |cx| {
             let _ = handle.update(cx, move |_, window, cx| {

@@ -309,20 +309,29 @@ impl AppView {
                 )
             })
             .when(!active_caption.is_empty(), |v| {
+                let caption_size = f32::from(self.video.subtitle_size);
+                // Keep the bilingual caption clear of the control bar at the
+                // bottom of the player. Four lines are enough for a wrapped
+                // English sentence plus its Chinese translation; the previous
+                // 3.8-line cap cut the last line in half on smaller players.
+                let caption_line = (caption_size * 1.4).round();
+                let caption_max = caption_line * 4. + 24.;
                 v.child(
                     div()
                         .absolute()
-                        .bottom_0()
-                        .left_0()
-                        .right_0()
-                        .px_5()
-                        .py_3()
+                        .bottom_2()
+                        .left_2()
+                        .right_2()
+                        .px_4()
+                        .py_2()
+                        .rounded_lg()
                         .id("video-current-caption")
-                        .max_h(px(f32::from(self.video.subtitle_size) * 3.8 + 24.))
+                        .max_h(px(caption_max))
                         .overflow_y_scroll()
-                        .bg(rgba(0x050a08c9))
+                        .bg(rgba(0x050a08d9))
                         .text_color(rgb(0xffffff))
-                        .text_size(px(f32::from(self.video.subtitle_size)))
+                        .text_size(px(caption_size))
+                        .line_height(px(caption_line))
                         .text_center()
                         .child(active_caption),
                 )
@@ -648,7 +657,7 @@ impl AppView {
                     .child(self.player_icon(
                         "video-back",
                         "rewind",
-                        format!("后退 {SEEK_STEP} 秒"),
+                        format!("后退 {SEEK_STEP} 秒 · ←"),
                         Action::Seek(-SEEK_STEP),
                         cx,
                     ))
@@ -675,7 +684,7 @@ impl AppView {
                     .child(self.player_icon(
                         "video-forward",
                         "forward",
-                        format!("前进 {SEEK_STEP} 秒"),
+                        format!("前进 {SEEK_STEP} 秒 · →"),
                         Action::Seek(SEEK_STEP),
                         cx,
                     ))
@@ -857,6 +866,7 @@ impl AppView {
                                         Action::VideoSentence(false),
                                         cx,
                                     )
+                                    .tooltip("上一句 · Shift+←")
                                     .disabled(!self.can_move_video_sentence(false)),
                                 )
                                 .child(
@@ -875,6 +885,7 @@ impl AppView {
                                         Action::VideoSentence(true),
                                         cx,
                                     )
+                                    .tooltip("下一句 · Shift+→")
                                     .disabled(!self.can_move_video_sentence(true)),
                                 )
                                 .child(

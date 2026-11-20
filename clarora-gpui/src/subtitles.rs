@@ -64,6 +64,49 @@ fn timestamp(text: &str) -> Option<f64> {
     };
     (time.is_finite() && time >= 0.).then_some(time)
 }
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find('&') {
+        out.push_str(&rest[..index]);
+        let candidate = &rest[index..];
+        let decoded = candidate
+            .find(';')
+            .filter(|&end| end <= 10)
+            .and_then(|end| {
+                let name = &candidate[1..end];
+                let value = match name {
+                    "nbsp" => Some(' '),
+                    "amp" => Some('&'),
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    _ => name.strip_prefix('#').and_then(|number| {
+                        let hex = number
+                            .strip_prefix('x')
+                            .or_else(|| number.strip_prefix('X'));
+                        let value = if let Some(hex) = hex {
+                            u32::from_str_radix(hex, 16).ok()
+                        } else {
+                            number.parse::<u32>().ok()
+                        };
+                        value.and_then(char::from_u32)
+                    }),
+                };
+                value.map(|value| (value, end + 1))
+            });
+        if let Some((value, consumed)) = decoded {
+            out.push(value);
+            rest = &candidate[consumed..];
+        } else {
+            out.push('&');
+            rest = &candidate[1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
 pub fn parse(body: &str) -> Vec<Cue> {
     let body = body.trim_start_matches('\u{feff}').replace("\r\n", "\n");
     let lines = body.lines().collect::<Vec<_>>();
@@ -83,7 +126,9 @@ pub fn parse(body: &str) -> Vec<Cue> {
                 text.push(lines[i]);
                 i += 1
             }
-            let text = tags.replace_all(&text.join("\n"), "").to_string();
+            let text = text.join("\n");
+            let text = tags.replace_all(&text, "");
+            let text = decode_entities(&text);
             if end > start && !text.trim().is_empty() {
                 cues.push(Cue { start, end, text });
             }
@@ -99,7 +144,7 @@ pub fn parse(body: &str) -> Vec<Cue> {
                 cues.push(Cue {
                     start,
                     end,
-                    text: line.trim().into(),
+                    text: decode_entities(line.trim()),
                 });
                 start = end;
             }

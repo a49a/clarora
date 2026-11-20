@@ -716,11 +716,7 @@ impl AppView {
         }
     }
     pub(super) fn video_horizontal_action(&self, next: bool) -> Action {
-        if self.page == "video" {
-            Action::VideoSentence(next)
-        } else {
-            Action::Seek(if next { SEEK_STEP } else { -SEEK_STEP })
-        }
+        Action::Seek(if next { SEEK_STEP } else { -SEEK_STEP })
     }
     /// Use raw key events in normal and fullscreen views so OS key repeat cannot
     /// turn one held arrow into two confirmations. Inputs keep their own arrows.
@@ -735,7 +731,6 @@ impl AppView {
             || modifiers.control
             || modifiers.platform
             || modifiers.alt
-            || modifiers.shift
             || !window.focused(cx).is_some_and(|focus| {
                 focus == self.focus || focus == self.subtitle_text.borrow().focus
             })
@@ -743,8 +738,10 @@ impl AppView {
             return false;
         }
         let action = match event.keystroke.key.as_str() {
-            "right" => Action::VideoArrow(true, event.is_held),
-            "left" => Action::VideoArrow(false, event.is_held),
+            "right" if modifiers.shift => Action::VideoArrow(true, event.is_held),
+            "left" if modifiers.shift => Action::VideoArrow(false, event.is_held),
+            "right" => Action::Seek(SEEK_STEP),
+            "left" => Action::Seek(-SEEK_STEP),
             "escape" if self.video.part_confirmation.is_some() => Action::VideoCancelPart,
             _ => return false,
         };
