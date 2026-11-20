@@ -504,8 +504,7 @@ impl AppView {
 
     pub(super) fn audio_group_note_panel(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let width = (f32::from(window.viewport_size().width) - 16.)
-            .min(clarora_gpui::assistant::DEFAULT_COLUMN)
-            .max(280.);
+            .clamp(280., clarora_gpui::assistant::DEFAULT_COLUMN);
         let group = self
             .audio
             .practices
