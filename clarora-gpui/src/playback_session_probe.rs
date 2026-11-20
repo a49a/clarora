@@ -10,9 +10,9 @@ const CLIP_B: &str = "session-clip-b";
 const EMPTY: &str = "session-empty";
 const AUDIO_POSITION: f64 = 0.62;
 const VIDEO_POSITION: f64 = 3.18;
-// Existing video triple-repeat restoration bookmarks the cue start and restarts
-// play one. An explicit in-session seek still uses VIDEO_POSITION above.
-const VIDEO_SENTENCE_START: f64 = 3.;
+// Restoring or reopening a counted video repeat keeps the saved position inside
+// the current sentence; the label remains three-play mode.
+const VIDEO_RESUME_POSITION: f64 = VIDEO_POSITION;
 
 fn source(lib: &Library) -> PathBuf {
     lib.root.join("media/shared-session.wav")
@@ -69,8 +69,8 @@ pub(super) fn prepare(out: &Path) -> Result<Library> {
             "library":lib.root,"shared_source":path,"subtitle":srt,"audio_id":AUDIO,
             "clip_ids":[CLIP_A,CLIP_B],"empty_card":EMPTY,
             "audio_position":AUDIO_POSITION,"video_position":VIDEO_POSITION,
-            "video_resume_position":VIDEO_SENTENCE_START,
-            "video_resume_policy":"triple repeat saves the sentence start and rebuilds from play one; an explicit in-session seek retains its requested position",
+            "video_resume_position":VIDEO_RESUME_POSITION,
+            "video_resume_policy":"triple repeat preserves the saved within-sentence position and rebuilds play one",
             "replay":["clarora-gpui","--playback-session-check","<new-empty-evidence-directory>"]
         }))?,
     )?;
@@ -119,8 +119,8 @@ impl Probe {
             "native_pending_same_path_loads_verified":false,
             "generation_check":"reject an archived snapshot from the completed previous load; multiple concurrent same-path loads are not covered",
             "video_manual_seek_position":VIDEO_POSITION,
-            "video_resume_position":VIDEO_SENTENCE_START,
-            "video_resume_policy":"existing triple-repeat behavior saves the sentence start and restores play one, while audio preserves its own within-sentence bookmark"
+            "video_resume_position":VIDEO_RESUME_POSITION,
+            "video_resume_policy":"video and audio each preserve their own within-sentence bookmark while restoring their repeat preference"
             }))?,
         )?;
         Ok(())
@@ -472,7 +472,7 @@ impl Probe {
             }
             17 => {
                 if !Self::loaded(app, &path)
-                    || !Self::paused_at(app, VIDEO_SENTENCE_START)
+                    || !Self::paused_at(app, VIDEO_RESUME_POSITION)
                     || app.video.pending_start.is_some()
                 {
                     return Ok(false);
@@ -501,7 +501,7 @@ impl Probe {
             }
             18 => {
                 if !Self::loaded(app, &path)
-                    || !Self::paused_at(app, VIDEO_SENTENCE_START)
+                    || !Self::paused_at(app, VIDEO_POSITION)
                     || app.video.pending_start.is_some()
                 {
                     return Ok(false);
@@ -597,7 +597,7 @@ impl Probe {
                 ensure!(
                     app_state::AudioState::new(&reopened).repeat_mode
                         == PlaybackMode::SentenceThree
-                        && Self::bookmark(&reopened, "last_video_position", VIDEO_SENTENCE_START)?,
+                        && Self::bookmark(&reopened, "last_video_position", VIDEO_RESUME_POSITION)?,
                     "page preferences or bookmarks did not survive SQLite reopen"
                 );
                 self.record(
@@ -695,7 +695,7 @@ impl Probe {
             }
             24 => {
                 if !Self::loaded(app, &path)
-                    || !Self::paused_at(app, VIDEO_SENTENCE_START)
+                    || !Self::paused_at(app, VIDEO_RESUME_POSITION)
                     || app.video.pending_start.is_some()
                 {
                     return Ok(false);
@@ -733,7 +733,7 @@ impl Probe {
                 app.handle(Action::Page("video".into()), window, cx);
             }
             27 => {
-                if !Self::loaded(app, &path) || !Self::paused_at(app, VIDEO_SENTENCE_START) {
+                if !Self::loaded(app, &path) || !Self::paused_at(app, VIDEO_RESUME_POSITION) {
                     return Ok(false);
                 }
                 ensure!(

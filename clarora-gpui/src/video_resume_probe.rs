@@ -1898,14 +1898,29 @@ impl Probe {
                 }
                 app.set("question", "KeyboardProbe", window, cx);
                 app.inputs["question"].update(cx, |state, cx| state.focus(window, cx));
-                Self::dispatch_keys(window, cx, &["right", "left", "space"]);
+                self.keyboard_position = app.media.player.snapshot().position;
+                Self::dispatch_plain_keys(window, cx, &["right", "left", "space"]);
                 self.advance();
             }
             72 => {
                 if !self.stable() {
                     return Ok(false);
                 }
-                ensure!(Self::at(app, &path, POSITION), "输入框按键改变了视频播放");
+                let state = app.media.player.snapshot();
+                let input_focused = app.inputs["question"]
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window);
+                ensure!(
+                    Self::at(app, &path, self.keyboard_position),
+                    "输入框按键改变了视频播放：expected={} pos={} paused={} input_focused={} video_focused={} question={:?}",
+                    self.keyboard_position,
+                    state.position,
+                    state.paused,
+                    input_focused,
+                    window.focused(cx) == Some(app.focus.clone()),
+                    app.value("question", cx)
+                );
                 ensure!(
                     app.value("question", cx).contains(' '),
                     "空格没有进入真实输入框"
@@ -1919,14 +1934,17 @@ impl Probe {
                     );
                     Ok::<_, anyhow::Error>(())
                 })?;
-                Self::dispatch_keys(window, cx, &["right", "left", "space"]);
+                Self::dispatch_plain_keys(window, cx, &["right", "left", "space"]);
                 self.advance();
             }
             73 => {
                 if !self.stable() {
                     return Ok(false);
                 }
-                ensure!(Self::at(app, &path, POSITION), "IME输入按键穿透到视频");
+                ensure!(
+                    Self::at(app, &path, self.keyboard_position),
+                    "IME输入按键穿透到视频"
+                );
                 self.record(app, "真实InputState组合文字期间方向键与空格不控制视频")?;
                 app.inputs["question"].update(cx, |state, cx| state.unmark_text(window, cx));
                 app.handle(Action::Assistant, window, cx);
@@ -2043,7 +2061,7 @@ impl Probe {
                 self.record(app, "问题框聚焦后点击播放动作/真实空格继续控制视频")?;
                 self.keyboard_position = state.position;
                 window.open_dialog(cx, |dialog, _, _| dialog.title("键盘焦点回归"));
-                Self::dispatch_keys(window, cx, &["right", "space"]);
+                Self::dispatch_plain_keys(window, cx, &["right", "space"]);
                 self.advance();
             }
             86 => {
@@ -3686,6 +3704,21 @@ impl Probe {
                 };
                 Keystroke::parse(&chord).expect("probe key")
             })
+            .collect::<Vec<_>>();
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, move |_, window, cx| {
+                window.draw(cx).clear();
+                for key in keys {
+                    window.dispatch_keystroke(key, cx);
+                }
+            });
+        });
+    }
+    fn dispatch_plain_keys(window: &Window, cx: &mut Context<AppView>, keys: &[&str]) {
+        let handle = window.window_handle();
+        let keys = keys
+            .iter()
+            .map(|key| Keystroke::parse(key).expect("probe key"))
             .collect::<Vec<_>>();
         cx.defer(move |cx| {
             let _ = handle.update(cx, move |_, window, cx| {
