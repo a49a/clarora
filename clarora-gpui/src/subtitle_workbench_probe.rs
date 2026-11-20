@@ -733,8 +733,9 @@ impl Probe {
                     "reopening on another video restores the A draft without adding B",
                     app,
                 )?;
-                // Clearing the draft is an explicit edit. A later reopen must not
-                // mistake it for a first open and attach B again.
+                // Clearing the draft is an explicit edit, but opening the
+                // assistant on a video material must still offer the current
+                // video's full transcript as its background.
                 app.assistant.references.clear();
                 app.assistant.draft_initialized = true;
                 app.persist_assistant_references()?;
@@ -742,11 +743,16 @@ impl Probe {
                 app.handle(Action::Assistant, window, cx);
                 app.handle(Action::Assistant, window, cx);
                 ensure!(
-                    app.assistant_open && app.assistant.references.is_empty(),
-                    "cleared draft regained the current video background"
+                    app.assistant_open
+                        && app
+                            .assistant
+                            .references
+                            .iter()
+                            .any(|reference| reference.text.contains(OTHER)),
+                    "cleared draft did not regain the current video background"
                 );
                 self.note(
-                    "cleared draft reopens empty instead of attaching the new video",
+                    "cleared draft reopens with the current video full background",
                     app,
                 )?;
                 app.assistant.references = vec![self.reference.clone().unwrap()];

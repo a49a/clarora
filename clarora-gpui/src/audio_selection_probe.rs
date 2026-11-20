@@ -382,8 +382,9 @@ impl Flow {
             10 => {
                 self.assert_quote(app)?;
                 cases.push(json!({"case":"audio transcript ask AI preserves exact multilingual selection","passed":true}));
-                app.handle(Action::AssistantRemove(1), window, cx);
-                app.handle(Action::AssistantRemove(0), window, cx);
+                while !app.assistant.references.is_empty() {
+                    app.handle(Action::AssistantRemove(0), window, cx);
+                }
                 app.handle(Action::Assistant, window, cx);
                 app.handle(Action::AudioBlind(true), window, cx);
                 Self::draw(window, cx);
@@ -396,6 +397,32 @@ impl Flow {
                     "blind listening leaked prior subtitle selection"
                 );
                 cases.push(json!({"case":"audio blind mode clears selection and offers no hidden subtitle quote","passed":true}));
+                if !app.assistant_open {
+                    app.handle(Action::Assistant, window, cx);
+                }
+                while !app.assistant.references.is_empty() {
+                    app.handle(Action::AssistantRemove(0), window, cx);
+                }
+                app.handle(Action::AssistantCurrent, window, cx);
+                ensure!(
+                    app.assistant.references.iter().any(|reference| {
+                        reference.kind
+                            == clarora_gpui::assistant::ReferenceKind::TranscriptBackground
+                            && reference.text.contains("When is the train leaving?")
+                    }),
+                    "盲听显式引用当前材料未附加全文"
+                );
+                ensure!(
+                    !app.assistant.expanded,
+                    "盲听显式引用当前材料直接展开了字幕"
+                );
+                cases.push(json!({"case":"blind listening explicit current material attaches transcript without expanding","passed":true}));
+                while !app.assistant.references.is_empty() {
+                    app.handle(Action::AssistantRemove(0), window, cx);
+                }
+                if app.assistant_open {
+                    app.handle(Action::Assistant, window, cx);
+                }
                 app.handle(Action::AudioBlind(false), window, cx);
                 app.handle(Action::Audio("repeat-other".into()), window, cx);
                 self.focus_drawn = false;

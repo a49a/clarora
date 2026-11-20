@@ -2,7 +2,7 @@
 use anyhow::{Result, ensure};
 use clarora_gpui::{
     ai,
-    assistant::{self, Reference, ReferenceKind},
+    assistant::{self, ColumnWidth, Reference, ReferenceKind},
     chat_store,
     data::Library,
     process,
@@ -302,24 +302,32 @@ pub fn run(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
         assistant::with_transcript_background(current, "x".repeat(120_001), None, None).is_err(),
         "oversized current material was accepted"
     );
-    for (viewport, nav, page_min, wide, expected_width, expected_side) in [
-        (900., 224., 760., false, 360., false),
-        (1280., 224., 760., false, 360., false),
-        (1440., 224., 760., false, 400., true),
-        (1920., 224., 760., true, 600., true),
-        (1280., 224., 620., false, 388., true),
-        (1440., 224., 620., false, 400., true),
+    for (viewport, nav, page_min, mode, expected_width, expected_side) in [
+        (900., 224., 760., ColumnWidth::Default, 360., false),
+        (900., 224., 760., ColumnWidth::Wide, 360., false),
+        (1280., 224., 760., ColumnWidth::Default, 460.8, true),
+        (1280., 224., 760., ColumnWidth::Wide, 612.8, true),
+        (1440., 224., 760., ColumnWidth::Default, 560., true),
+        (1440., 224., 760., ColumnWidth::Wide, 720., true),
+        (1512., 224., 760., ColumnWidth::Default, 560., true),
+        (1512., 224., 760., ColumnWidth::Wide, 720., true),
+        (1920., 224., 760., ColumnWidth::Default, 560., true),
+        (1920., 224., 760., ColumnWidth::Wide, 720., true),
+        (1280., 224., 620., ColumnWidth::Default, 560., true),
+        (1280., 224., 620., ColumnWidth::Wide, 628., true),
+        (1440., 224., 620., ColumnWidth::Default, 560., true),
+        (1440., 224., 620., ColumnWidth::Wide, 720., true),
     ] {
         let available = viewport - nav - 32.;
-        let width = assistant::column_width(available, page_min, wide);
+        let width = assistant::column_width(available, page_min, mode);
         ensure!(
             (width - expected_width).abs() < 0.01
-                && assistant::side_by_side(available, page_min, width) == expected_side,
-            "助手布局阈值错误：{viewport}/{page_min}/{wide} -> {width}/{expected_side}"
+                && assistant::side_by_side(available, page_min, width, mode) == expected_side,
+            "助手布局阈值错误：{viewport}/{page_min}/{mode:?} -> {width}/{expected_side}"
         );
     }
     ensure!(
-        assistant::column_width(600., 620., false) == assistant::MIN_COLUMN,
+        assistant::column_width(600., 620., ColumnWidth::Default) == assistant::MIN_COLUMN,
         "过窄窗口的助手列低于最低宽度"
     );
     let same_a = Reference {

@@ -69,7 +69,11 @@ impl Render for AppView {
             620.
         };
         self.assistant_width = if self.assistant_open {
-            clarora_gpui::assistant::column_width(available, minimum_content, self.assistant.wide)
+            clarora_gpui::assistant::column_width(
+                available,
+                minimum_content,
+                self.assistant.width_mode,
+            )
         } else {
             0.
         };
@@ -78,6 +82,7 @@ impl Render for AppView {
                 available,
                 minimum_content,
                 self.assistant_width,
+                self.assistant.width_mode,
             );
         let fullscreen_assistant_page =
             fullscreen && self.assistant_open && !self.assistant_embedded;

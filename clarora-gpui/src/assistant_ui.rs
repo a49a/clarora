@@ -1,6 +1,6 @@
 //! App-wide sidecar: explicit references, readable transcript and a fixed composer.
 use super::*;
-use clarora_gpui::assistant::{self, Reference, ReferenceKind};
+use clarora_gpui::assistant::{self, ColumnWidth, Reference, ReferenceKind};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum SelectionSource {
@@ -30,7 +30,7 @@ pub(super) struct State {
     pub expanded: bool,
     pub expanded_turn: Option<usize>,
     pub sessions_open: bool,
-    pub wide: bool,
+    pub width_mode: ColumnWidth,
     pub scroll: ScrollHandle,
     pub(super) history_view: Option<Entity<super::assistant_history_ui::HistoryView>>,
     pub press: Option<Point<Pixels>>,
@@ -63,10 +63,9 @@ impl AppView {
         let icon = match &action {
             Action::AssistantSessions => Some("history"),
             Action::ChatSession(id) if id.is_empty() => Some("plus"),
-            Action::AssistantWide => Some(if self.assistant.wide {
-                "fullscreen-exit"
-            } else {
-                "fullscreen"
+            Action::AssistantWide => Some(match self.assistant.width_mode {
+                ColumnWidth::Wide => "fullscreen-exit",
+                ColumnWidth::Default => "fullscreen",
             }),
             Action::Assistant => Some("assistant-close"),
             Action::AssistantCurrent => Some("plus"),
@@ -133,12 +132,28 @@ impl AppView {
     /// Attach the current material as the single full-text background. It is
     /// local-only until the user sends; blind modes keep their hidden text out.
     pub(super) fn attach_current_background(&mut self, cx: &App) -> Result<()> {
-        let text = self.current_material_text(cx);
+        self.attach_current_background_with(cx, false, true)
+    }
+
+    /// Explicit user action: allow the full current transcript even when the
+    /// blind-listening UI is hiding it. The caller keeps the preview collapsed
+    /// so the hidden subtitle lines are not revealed by opening the assistant.
+    pub(super) fn attach_current_background_explicit(&mut self, cx: &App) -> Result<()> {
+        self.attach_current_background_with(cx, true, false)
+    }
+
+    fn attach_current_background_with(
+        &mut self,
+        cx: &App,
+        include_hidden: bool,
+        expand: bool,
+    ) -> Result<()> {
+        let text = self.current_material_text(cx, include_hidden);
         if text.trim().is_empty() {
             return Ok(());
         }
         let (source, revision) = self
-            .subtitle_source()
+            .subtitle_source_with(include_hidden)
             .map(|(source, revision)| (Some(source), Some(revision)))
             .unwrap_or((None, None));
         let next = match assistant::with_transcript_background(
@@ -152,7 +167,7 @@ impl AppView {
                 // Long books/transcripts can exceed the reference budget. Keep
                 // the assistant useful by falling back to the current sentence
                 // or page instead of failing the whole attachment.
-                let fallback = self.current_material_excerpt(cx);
+                let fallback = self.current_material_excerpt(cx, include_hidden);
                 if fallback.trim().is_empty() || fallback == text {
                     return Err(error);
                 }
@@ -173,16 +188,20 @@ impl AppView {
             self.assistant.references = next;
             self.assistant.draft_initialized = true;
             self.persist_assistant_references()?;
-            self.assistant.expanded = true;
+            self.assistant.expanded = expand;
             self.assistant.error.clear();
         }
         Ok(())
     }
 
     pub(super) fn subtitle_source(&self) -> Option<(String, String)> {
+        self.subtitle_source_with(false)
+    }
+
+    fn subtitle_source_with(&self, include_hidden: bool) -> Option<(String, String)> {
         let cues = match self.page.as_str() {
             "video" => &self.video.cues,
-            "listening" if !self.audio.blind.enabled => &self.audio.cues,
+            "listening" if include_hidden || !self.audio.blind.enabled => &self.audio.cues,
             _ => return None,
         };
         if cues.is_empty() {
@@ -235,7 +254,7 @@ impl AppView {
         )
     }
 
-    fn current_material_excerpt(&self, cx: &App) -> String {
+    fn current_material_excerpt(&self, cx: &App, include_hidden: bool) -> String {
         match self.page.as_str() {
             "listening" | "video" => {
                 let cues = if self.page == "listening" {
@@ -243,6 +262,9 @@ impl AppView {
                 } else {
                     &self.video.cues
                 };
+                if self.page == "listening" && self.audio.blind.enabled && !include_hidden {
+                    return String::new();
+                }
                 clarora_gpui::video_subtitles::active(cues, self.media.snapshot.position)
                     .and_then(|index| cues.get(index))
                     .map(|cue| cue.text.clone())
@@ -252,9 +274,9 @@ impl AppView {
         }
     }
 
-    fn current_material_text(&self, cx: &App) -> String {
+    fn current_material_text(&self, cx: &App, include_hidden: bool) -> String {
         match self.page.as_str() {
-            "listening" if !self.audio.blind.enabled => self
+            "listening" if include_hidden || !self.audio.blind.enabled => self
                 .audio
                 .cues
                 .iter()
@@ -984,10 +1006,9 @@ impl AppView {
                     )
                     .child(self.assistant_button(
                         "assistant-wide",
-                        if self.assistant.wide {
-                            "紧凑"
-                        } else {
-                            "加宽"
+                        match self.assistant.width_mode {
+                            ColumnWidth::Default => "加宽",
+                            ColumnWidth::Wide => "紧凑",
                         },
                         Action::AssistantWide,
                         cx,
@@ -1031,8 +1052,7 @@ impl AppView {
         };
         let width = self
             .assistant_width
-            .max(360.)
-            .min(if self.assistant.wide { 600. } else { 400. })
+            .max(assistant::MIN_COLUMN)
             .min(f32::from(window.viewport_size().width) - 16.);
         let mut root = div().id("global-assistant").h_full().flex();
         root = match mount {

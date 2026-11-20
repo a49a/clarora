@@ -21,20 +21,54 @@ pub fn subtitle_revision(cues: &[crate::subtitles::Cue]) -> String {
 }
 
 pub const MIN_COLUMN: f32 = 360.;
-pub const DEFAULT_COLUMN: f32 = 400.;
-pub const WIDE_COLUMN: f32 = 600.;
+pub const DEFAULT_COLUMN: f32 = 560.;
+pub const WIDE_COLUMN: f32 = 720.;
 pub const CONTEXT: &str = "global-learning-assistant-v1";
 
-/// Width of the assistant column after reserving the page's minimum working
-/// width. It never drops below `MIN_COLUMN`; an overlay handles narrower
-/// windows instead of forcing an unusable split.
-pub fn column_width(available: f32, minimum_content: f32, wide: bool) -> f32 {
-    let preferred = if wide { WIDE_COLUMN } else { DEFAULT_COLUMN };
-    preferred.min((available - minimum_content - 16.).max(MIN_COLUMN))
+/// Assistant width is user-selected: 560 px by default, 720 px after clicking
+/// "加宽". Both states deliberately give the assistant more room than the old
+/// 400 px column, so video/listening pages no longer cap it near 480 px.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColumnWidth {
+    #[default]
+    Default,
+    Wide,
 }
 
-pub fn side_by_side(available: f32, minimum_content: f32, width: f32) -> bool {
-    available >= minimum_content + width + 16.
+impl ColumnWidth {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Default => Self::Wide,
+            Self::Wide => Self::Default,
+        }
+    }
+
+    pub fn preferred(self) -> f32 {
+        match self {
+            Self::Default => DEFAULT_COLUMN,
+            Self::Wide => WIDE_COLUMN,
+        }
+    }
+
+    fn content_floor(self, minimum_content: f32) -> f32 {
+        match self {
+            Self::Default => (minimum_content * 0.72).max(420.),
+            Self::Wide => (minimum_content * 0.52).max(380.),
+        }
+    }
+}
+
+/// Width of the assistant column after reserving a usable page width. It never
+/// drops below `MIN_COLUMN`; an overlay handles narrower windows instead of
+/// forcing an unusable split.
+pub fn column_width(available: f32, minimum_content: f32, width: ColumnWidth) -> f32 {
+    width
+        .preferred()
+        .min((available - width.content_floor(minimum_content) - 16.).max(MIN_COLUMN))
+}
+
+pub fn side_by_side(available: f32, minimum_content: f32, width: f32, mode: ColumnWidth) -> bool {
+    available >= mode.content_floor(minimum_content) + width + 16.
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

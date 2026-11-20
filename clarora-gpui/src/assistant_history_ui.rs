@@ -517,7 +517,13 @@ impl HistoryView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let blocks = answer_blocks(answer);
-        let mut column = div().w_full().min_w_0().flex().flex_col().gap_3();
+        let mut column = div()
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap_3();
         for (block_index, block) in blocks.into_iter().enumerate() {
             match block {
                 AnswerBlock::Markdown(text) if !text.is_empty() => {
@@ -539,12 +545,11 @@ impl HistoryView {
                         .id(("assistant-answer-table", index * 1000 + block_index))
                         .w_full()
                         .min_w_0()
+                        .flex_shrink_0()
                         .overflow_hidden()
                         .border_1()
                         .rounded_lg()
-                        .border_color(cx.theme().border)
-                        .flex()
-                        .flex_col();
+                        .border_color(cx.theme().border);
                     let columns = headers.len().max(1);
                     for (row_index, row) in std::iter::once(&headers).chain(rows.iter()).enumerate()
                     {
@@ -554,6 +559,7 @@ impl HistoryView {
                             .flex_row()
                             .w_full()
                             .min_w_0()
+                            .flex_shrink_0()
                             .when(header, |row| row.bg(cx.theme().muted))
                             .when(row_index + 1 < rows.len() + 1, |row| {
                                 row.border_b_1().border_color(cx.theme().border)
@@ -570,7 +576,9 @@ impl HistoryView {
                                     })
                                     .child(
                                         div()
+                                            .min_w_0()
                                             .text_sm()
+                                            .whitespace_normal()
                                             .when(header, |text| {
                                                 text.font_weight(FontWeight::SEMIBOLD)
                                             })

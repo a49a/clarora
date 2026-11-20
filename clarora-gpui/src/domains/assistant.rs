@@ -39,16 +39,16 @@ impl Command {
                     }
                     app.lib.set_setting("assistant_open", "false")?;
                 } else {
-                    // Audio learning has no always-visible transcript in the
-                    // assistant, so an empty reference list starts from the
-                    // full audio text even if the assistant was used before.
-                    // Other pages only initialize a truly blank first
-                    // conversation so moving between modules cannot silently
-                    // attach unrelated material.
-                    let audio = app.page == "listening";
+                    // Audio and video learning have a current material that
+                    // should be available to the assistant on open. Attach the
+                    // full transcript whenever the reference list is empty;
+                    // this also restores it after a sent turn or an explicit
+                    // clear. Other pages keep the first-conversation rule so
+                    // unrelated material is not attached silently.
+                    let material_page = matches!(app.page.as_str(), "listening" | "video");
                     let blank = app.assistant.references.is_empty()
                         && app.value("question", cx).trim().is_empty()
-                        && (audio
+                        && (material_page
                             || (!app.assistant.draft_initialized && app.chat.history.is_empty()));
                     if blank {
                         if let Err(error) = app.attach_current_background(cx) {
@@ -113,6 +113,16 @@ impl Command {
             }
 
             Command::AssistantCurrent => {
+                if app.page == "listening" && app.audio.blind.enabled {
+                    app.attach_current_background_explicit(cx)?;
+                    if !app.assistant.references.is_empty() {
+                        app.report_status(
+                            FeedbackKind::Info,
+                            "已附加当前音频全文；引用预览默认收起，展开会显示字幕".into(),
+                        );
+                    }
+                    return Ok(());
+                }
                 if app.page == "video" {
                     app.prepare_video_material(video_qa::Scope::Current)?;
                 }
@@ -153,7 +163,7 @@ impl Command {
                 app.assistant.sessions_open = !app.assistant.sessions_open
             }
 
-            Command::AssistantWide => app.assistant.wide = !app.assistant.wide,
+            Command::AssistantWide => app.assistant.width_mode = app.assistant.width_mode.next(),
 
             Command::AssistantLegacy => {
                 ensure!(!app.chat.running, "请先停止当前回答");
