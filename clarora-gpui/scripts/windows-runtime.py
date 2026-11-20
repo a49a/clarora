@@ -74,23 +74,34 @@ def extract(archive, root, kind):
         verify.require(not path.is_symlink(), f"Dependency symlink is not allowed: {path}")
 
 
+def acquire(item, work):
+    digest = item["sha256"]
+    verify.require(len(digest) == 64 and all(c in "0123456789abcdef" for c in digest), "Invalid pinned SHA-256")
+    archive = work / "downloads" / (item["name"] + ".download")
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    if item.get("path"):
+        source = SCRIPTS / item["path"]
+        verify.require(source.is_file(), f"Missing vendored runtime input: {item['path']}")
+        verify.require(verify.sha256(source) == digest, f"SHA-256 mismatch: {item['name']}")
+        shutil.copy2(source, archive)
+        return archive
+    if not archive.is_file() or verify.sha256(archive) != digest:
+        partial = archive.with_suffix(".partial")
+        print(f"Downloading pinned {item['name']} {item['version']}", flush=True)
+        request = urllib.request.Request(item["url"], headers={"User-Agent": "Clarora-GPUI-runtime-packager"})
+        with urllib.request.urlopen(request, timeout=90) as response, partial.open("wb") as output:
+            shutil.copyfileobj(response, output)
+        verify.require(verify.sha256(partial) == digest, f"SHA-256 mismatch: {item['name']}")
+        partial.replace(archive)
+    return archive
+
+
 def fetch(work):
     lock = json.loads((SCRIPTS / "windows-runtime-lock.json").read_text())
     verify.require(lock["schema_version"] == 1, "Unsupported dependency lock")
     sources = {}
     for item in lock["artifacts"]:
-        digest = item["sha256"]
-        verify.require(len(digest) == 64 and all(c in "0123456789abcdef" for c in digest), "Invalid pinned SHA-256")
-        archive = work / "downloads" / (item["name"] + ".download")
-        archive.parent.mkdir(parents=True, exist_ok=True)
-        if not archive.is_file() or verify.sha256(archive) != digest:
-            partial = archive.with_suffix(".partial")
-            print(f"Downloading pinned {item['name']} {item['version']}", flush=True)
-            request = urllib.request.Request(item["url"], headers={"User-Agent": "Clarora-GPUI-runtime-packager"})
-            with urllib.request.urlopen(request, timeout=90) as response, partial.open("wb") as output:
-                shutil.copyfileobj(response, output)
-            verify.require(verify.sha256(partial) == digest, f"SHA-256 mismatch: {item['name']}")
-            partial.replace(archive)
+        archive = acquire(item, work)
         root = work / "sources" / item["name"]
         if item["kind"] == "file":
             root.mkdir(parents=True, exist_ok=True)
