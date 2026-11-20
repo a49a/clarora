@@ -142,10 +142,7 @@ impl diagnostics::Probe for Probe {
                     #[cfg(target_os = "macos")]
                     click_track(window, track, 0.78, cx)?;
                     #[cfg(not(target_os = "macos"))]
-                    app.seek_speaking_prompt(
-                        &app.speaking_prompt_audio().unwrap().0.to_owned(),
-                        1.56,
-                    );
+                    app.seek_speaking_prompt(&app.speaking_prompt_audio().unwrap().0, 1.56);
                     return Ok(false);
                 }
                 ensure!(
@@ -201,10 +198,7 @@ impl diagnostics::Probe for Probe {
                         #[cfg(target_os = "macos")]
                         click_track(window, app.speaking.waveform.bounds.get(), 0.12, cx)?;
                         #[cfg(not(target_os = "macos"))]
-                        app.seek_speaking_prompt(
-                            &app.speaking_prompt_audio().unwrap().0.to_owned(),
-                            0.24,
-                        );
+                        app.seek_speaking_prompt(&app.speaking_prompt_audio().unwrap().0, 0.24);
                         self.seek_phase = 2;
                         return Ok(false);
                     }

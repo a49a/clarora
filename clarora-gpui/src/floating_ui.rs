@@ -1020,20 +1020,20 @@ mod native {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
         };
-        if let Ok(handle) = HasWindowHandle::window_handle(window) {
-            if let RawWindowHandle::Win32(handle) = handle.as_raw() {
-                // GPUI popup styling alone is not topmost on Windows.
-                unsafe {
-                    SetWindowPos(
-                        handle.hwnd.get() as _,
-                        HWND_TOPMOST,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                    );
-                }
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(handle) = handle.as_raw()
+        {
+            // GPUI popup styling alone is not topmost on Windows.
+            unsafe {
+                SetWindowPos(
+                    handle.hwnd.get() as _,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
             }
         }
     }
