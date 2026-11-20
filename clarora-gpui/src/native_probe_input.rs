@@ -1,6 +1,7 @@
 //! Native pointer events for isolated hidden-window diagnostics.
 use super::*;
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Copy)]
 pub(super) enum MouseEvent {
     Down(Point<Pixels>),

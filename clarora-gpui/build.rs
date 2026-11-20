@@ -54,6 +54,6 @@ END
             ),
         )
         .expect("write resource file");
-        embed_resource::compile(&rc, embed_resource::NONE);
+        let _ = embed_resource::compile(&rc, embed_resource::NONE);
     }
 }
