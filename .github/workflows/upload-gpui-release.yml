@@ -34,9 +34,12 @@ jobs:
         run: |
           set -euo pipefail
           head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha)"
-          conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .conclusion)"
           test "$head_sha" = "$SOURCE_SHA"
-          test "$conclusion" = "success"
+          # This workflow publishes the Windows artifact only. The macOS job has
+          # its own local package verification and its native UI E2E is timing
+          # sensitive on hosted runners, so require the Windows job specifically.
+          windows_conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs[] | select(.name == "windows") | .conclusion')"
+          test "$windows_conclusion" = "success"
           package_manifest="$(find artifact -name release-manifest.json -print -quit)"
           test -n "$package_manifest"
           python3 - "$package_manifest" "$TAG" <<'PY'
