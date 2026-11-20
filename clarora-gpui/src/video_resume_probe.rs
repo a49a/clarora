@@ -938,8 +938,8 @@ impl Probe {
                 );
                 let state = app.media.player.snapshot();
                 ensure!(
-                    state.position >= 7.95 && state.position < 10. && !state.paused,
-                    "普通模式回上一P没有从末句8秒开头播放或仍暂停：position={} paused={} load_revision={} session_rev={} pending={:?} repeat={:?} session={:?} status={}",
+                    state.position >= 7.95 && state.position < 10.,
+                    "普通模式回上一P没有从末句8秒开头播放：position={} paused={} load_revision={} session_rev={} pending={:?} repeat={:?} session={:?} status={}",
                     state.position,
                     state.paused,
                     state.load_revision,
@@ -955,6 +955,11 @@ impl Probe {
                         .map(|s| (s.index, s.range, s.total)),
                     app.status
                 );
+                // The pending start unpauses through the player message queue;
+                // wait for that command instead of asserting in the same frame.
+                if state.paused {
+                    return Ok(false);
+                }
                 self.record(app, "普通模式两次左键回上一P从最后一句播放")?;
                 app.handle(Action::VideoSentenceRepeat(Some(0), Some(3)), window, cx);
                 window.focus(&app.focus);
