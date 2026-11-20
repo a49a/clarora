@@ -1,25 +1,6 @@
 //! Root AppView render tree, separated from startup and helpers.
 use super::*;
 
-impl AppView {
-    #[cfg(windows)]
-    fn windows_menu_bar(&self, cx: &Context<Self>) -> AnyElement {
-        div()
-            .h(px(30.))
-            .px_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .bg(design::canvas(cx))
-            .child(self.menu_bar.clone())
-            .into_any_element()
-    }
-
-    #[cfg(not(windows))]
-    fn windows_menu_bar(&self, _: &Context<Self>) -> AnyElement {
-        div().into_any_element()
-    }
-}
-
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(debug_assertions)]
@@ -792,7 +773,6 @@ impl Render for AppView {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .child(self.windows_menu_bar(cx))
                     .child(
                         div()
                             .px_8()

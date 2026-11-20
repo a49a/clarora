@@ -103,8 +103,6 @@ use clarora_gpui::{
 };
 use feedback_ui::FeedbackKind;
 use gpui::{prelude::*, *};
-#[cfg(windows)]
-use gpui_component::menu::AppMenuBar;
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Root, Selectable, Sizable, Theme, ThemeMode,
     WindowExt,
@@ -234,8 +232,6 @@ struct AppView {
     tasks: app_state::TasksState,
     media: app_state::PlaybackState,
     position_checkpoint: Instant,
-    #[cfg(windows)]
-    menu_bar: Entity<AppMenuBar>,
     video: app_state::VideoState,
     video_progress: video_progress::Progress,
     audio: app_state::AudioState,
@@ -410,8 +406,6 @@ impl AppView {
             };
         let focus_notes = focus_notes::list(&lib, 100).unwrap_or_default();
         let video_progress = video_progress::Progress::load(&lib);
-        #[cfg(windows)]
-        let menu_bar = AppMenuBar::new(window, cx);
         let mut this = Self {
             #[cfg(debug_assertions)]
             diagnostic: None,
@@ -427,8 +421,6 @@ impl AppView {
             tasks: app_state::TasksState::new(),
             media: app_state::PlaybackState::new(),
             position_checkpoint: Instant::now(),
-            #[cfg(windows)]
-            menu_bar,
             video: app_state::VideoState::new(cx),
             video_progress,
             audio: app_state::AudioState::new(&lib),
