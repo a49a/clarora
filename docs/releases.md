@@ -63,7 +63,7 @@ RN Release 不构建 Windows。Windows 桌面产物由 `GPUI desktop` 工作流�
 release assets` 工作流把 `Clarora-windows-x64.zip` 与
 `Clarora-windows-x64-setup-unsigned.exe` 上传到对应 Release，并重新生成
 `SHA256SUMS.txt`、`source-provenance.json` 和 `release-metadata.json`。
-构建与验证细节见 [`clarora-gpui/scripts/PACKAGING.md`](../clarora-gpui/scripts/PACKAGING.md)。
+上传前会校验构建 run 的 head SHA 与输入的 `source_sha`，并从 tag 推导版本、核对包清单；构建与验证细节见 [`clarora-gpui/scripts/PACKAGING.md`](../clarora-gpui/scripts/PACKAGING.md)。
 
 ## 官网下载链接的来源
 
