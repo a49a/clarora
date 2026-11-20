@@ -305,7 +305,7 @@ impl Probe {
                 if w.focused(cx) != Some(app.focus.clone()) {
                     return Ok(false);
                 }
-                Self::keys(w, cx, &["right"]);
+                Self::keys(w, cx, &["shift-right"]);
                 self.stage = 4;
             }
             4 => {
@@ -362,7 +362,7 @@ impl Probe {
                 if w.focused(cx) != Some(app.focus.clone()) {
                     return Ok(false);
                 }
-                Self::keys(w, cx, &["left"]);
+                Self::keys(w, cx, &["shift-left"]);
                 self.stage = 7;
             }
             7 => {
