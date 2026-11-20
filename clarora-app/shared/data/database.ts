@@ -19,6 +19,15 @@ export type SyncedClip = {
 };
 export type SyncedSentenceCard = { id: string; text: string; translation: string; notes: string; created_at: string };
 
+export type LocalVideo = {
+  id: string;
+  name: string;
+  video_uri: string;
+  subtitle_uri: string;
+  opened_at: string;
+  created_at: string;
+};
+
 export type SyncedAiCard = {
   id: string;
   question: string;
@@ -65,6 +74,7 @@ async function initializeDb(): Promise<SQLiteDatabase> {
       tx.executeSql("CREATE TABLE IF NOT EXISTS listening_practices (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))");
       tx.executeSql("CREATE TABLE IF NOT EXISTS listening_audios (id TEXT PRIMARY KEY, practice_id TEXT NOT NULL, name TEXT NOT NULL, audio_uri TEXT NOT NULL, subtitle_uri TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY (practice_id) REFERENCES listening_practices(id) ON DELETE CASCADE)");
       tx.executeSql("CREATE TABLE IF NOT EXISTS audio_stars (audio_id TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY (audio_id) REFERENCES listening_audios(id) ON DELETE CASCADE)");
+      tx.executeSql("CREATE TABLE IF NOT EXISTS audio_stats (audio_id TEXT PRIMARY KEY, listen_seconds REAL NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY (audio_id) REFERENCES listening_audios(id) ON DELETE CASCADE)");
       tx.executeSql("CREATE TABLE IF NOT EXISTS clip_cards (id TEXT PRIMARY KEY, en_text TEXT NOT NULL, zh_text TEXT, audio_uri TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))");
       tx.executeSql("CREATE TABLE IF NOT EXISTS sentence_cards (id TEXT PRIMARY KEY, text TEXT NOT NULL, translation TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')))");
       tx.executeSql("CREATE TABLE IF NOT EXISTS ai_cards (id TEXT PRIMARY KEY, question TEXT NOT NULL, answer TEXT NOT NULL, context_text TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')))");
@@ -73,6 +83,10 @@ async function initializeDb(): Promise<SQLiteDatabase> {
       // 每日学习统计（设备本地，day = 本地日期 YYYY-MM-DD）。
       tx.executeSql("CREATE TABLE IF NOT EXISTS study_stats (day TEXT PRIMARY KEY, listen_seconds REAL NOT NULL DEFAULT 0, review_count INTEGER NOT NULL DEFAULT 0, pomodoro_count INTEGER NOT NULL DEFAULT 0)");
       tx.executeSql("CREATE TABLE IF NOT EXISTS video_clips (id TEXT PRIMARY KEY, en_text TEXT NOT NULL, zh_text TEXT, video_uri TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))");
+      // Mobile video learning keeps its own local library: the picked file is
+      // already copied into app storage by the file picker. Subtitles are
+      // sidecar SRT/VTT files because phones have no ffmpeg to extract tracks.
+      tx.executeSql("CREATE TABLE IF NOT EXISTS videos (id TEXT PRIMARY KEY, name TEXT NOT NULL, video_uri TEXT NOT NULL UNIQUE, subtitle_uri TEXT NOT NULL DEFAULT '', opened_at TEXT NOT NULL DEFAULT (datetime('now')), created_at TEXT NOT NULL DEFAULT (datetime('now')))");
       tx.executeSql("CREATE TABLE IF NOT EXISTS ai_records (id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL)");
       tx.executeSql("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
       tx.executeSql("CREATE TABLE IF NOT EXISTS discover_favorites (key TEXT PRIMARY KEY, payload TEXT NOT NULL)");
@@ -701,6 +715,53 @@ export async function updateAudioSubtitle(audioId: string, subtitleUri: string):
   await database.executeSql("UPDATE listening_audios SET subtitle_uri = ? WHERE id = ?", [subtitleUri, audioId]);
 }
 
+const VIDEO_COLUMNS = "id, name, video_uri, subtitle_uri, opened_at, created_at";
+
+export async function listLocalVideos(): Promise<LocalVideo[]> {
+  const database = await getDb();
+  const [result] = await database.executeSql(
+    `SELECT ${VIDEO_COLUMNS} FROM videos ORDER BY opened_at DESC, created_at DESC`
+  );
+  return result.rows.raw() as LocalVideo[];
+}
+
+export async function getLocalVideo(id: string): Promise<LocalVideo | null> {
+  const database = await getDb();
+  const [result] = await database.executeSql(`SELECT ${VIDEO_COLUMNS} FROM videos WHERE id = ?`, [id]);
+  return (result.rows.raw() as LocalVideo[])[0] ?? null;
+}
+
+/** Remember a picked file. The picker already copied it into app storage. */
+export async function saveLocalVideo(name: string, videoUri: string): Promise<LocalVideo> {
+  const database = await getDb();
+  const [existing] = await database.executeSql(`SELECT ${VIDEO_COLUMNS} FROM videos WHERE video_uri = ?`, [videoUri]);
+  const row = (existing.rows.raw() as LocalVideo[])[0];
+  if (row) {
+    await database.executeSql("UPDATE videos SET name = ?, opened_at = datetime('now') WHERE id = ?", [name, row.id]);
+    return { ...row, name };
+  }
+  const id = generateId();
+  await database.executeSql("INSERT INTO videos (id, name, video_uri) VALUES (?, ?, ?)", [id, name, videoUri]);
+  const created = await getLocalVideo(id);
+  if (!created) throw new Error("保存视频记录失败");
+  return created;
+}
+
+export async function touchLocalVideo(id: string): Promise<void> {
+  const database = await getDb();
+  await database.executeSql("UPDATE videos SET opened_at = datetime('now') WHERE id = ?", [id]);
+}
+
+export async function setLocalVideoSubtitle(id: string, subtitleUri: string): Promise<void> {
+  const database = await getDb();
+  await database.executeSql("UPDATE videos SET subtitle_uri = ? WHERE id = ?", [subtitleUri, id]);
+}
+
+export async function deleteLocalVideo(id: string): Promise<void> {
+  const database = await getDb();
+  await database.executeSql("DELETE FROM videos WHERE id = ?", [id]);
+}
+
 export async function getSetting(key: string): Promise<string | null> {
   const database = await getDb();
   const [result] = await database.executeSql("SELECT value FROM app_settings WHERE key = ?", [key]);
@@ -1014,6 +1075,7 @@ export async function importVaultData(data: VaultData, settingsUpdates?: Record<
       }
       // MAX is idempotent when the same backup is imported twice. It is not a sum of device activity.
       if (table === 'study_stats') suffix = ' ON CONFLICT(day) DO UPDATE SET ' + ['listen_seconds', 'review_count', 'pomodoro_count'].map(c => `${c}=MAX(study_stats.${c},excluded.${c})`).join(',');
+      if (table === 'audio_stats') suffix = " ON CONFLICT(audio_id) DO UPDATE SET listen_seconds=MAX(audio_stats.listen_seconds,excluded.listen_seconds), updated_at=CASE WHEN excluded.updated_at > audio_stats.updated_at THEN excluded.updated_at ELSE audio_stats.updated_at END";
       tx.executeSql(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})${suffix || " ON CONFLICT DO NOTHING"}`, columns.map(c => row[c]));
     }
     applySettingsUpdates(tx, settingsUpdates);

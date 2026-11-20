@@ -1,6 +1,6 @@
 import { learningDesign } from "../ui/learningDesign";
 import { useCallback, useEffect, useState } from "react";
-import { Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
+import { Pressable, Platform, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 import {
   getStudyStats,
   type StudyStats,
@@ -41,6 +41,7 @@ function trendColor(accuracy: number): string {
 export default function StatsScreen() {
   const { theme, scheme } = useAppTheme();
   const styles = makeStyles(theme);
+  const isMobile = Platform.OS === "android" || Platform.OS === "ios";
   const [stats, setStats] = useState<StudyStats | null>(null);
   const [attempts, setAttempts] = useState<SpeakingAttemptSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +96,7 @@ export default function StatsScreen() {
         <View style={styles.header}>
           <Text style={styles.eyebrow}>STATS</Text>
           <Text style={styles.title}>学习统计</Text>
-          <Text style={styles.subtitle}>复习量、听力时长、跟读分数与番茄钟，坚持看得见。学习日按凌晨 4 点切换。</Text>
+          <Text style={styles.subtitle}>复习量、听力时长{isMobile ? "" : "、跟读分数"}与番茄钟，坚持看得见。学习日按凌晨 4 点切换。</Text>
         </View>
 
         {error ? (
@@ -201,12 +202,14 @@ export default function StatsScreen() {
                 })}
               </View>
               <Text style={styles.trendHint}>
-                绿 ≥90% · 黄 ≥70% · 红 &lt;70%；完整度与语速在口语页查看详情。
+                绿 ≥90% · 黄 ≥70% · 红 &lt;70%{isMobile ? "。" : "；完整度与语速在口语页查看详情。"}
               </Text>
             </>
           ) : (
             <Text style={styles.emptyHint}>
-              还没有跟读评分记录，去听力页点「🎤 跟读」或到口语页练习。
+              {isMobile
+                ? "还没有跟读评分记录，去听力页点「🎤 跟读」练习。"
+                : "还没有跟读评分记录，去听力页点「🎤 跟读」或到口语页练习。"}
             </Text>
           )}
         </View>

@@ -66,15 +66,22 @@ class ClaroraFilePickerModule(private val context: ReactApplicationContext) :
       return
     }
     pendingPick = promise
-    val mimeType = when (type) {
-      "audio/*" -> "audio/*"
-      "text/*" -> "text/*"
-      else -> "*/*"
-    }
     val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
       addCategory(Intent.CATEGORY_OPENABLE)
-      this.type = mimeType
       addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      when (type) {
+        "audio/*" -> this.type = "audio/*"
+        // SRT/VTT files are often reported as application/x-subrip or
+        // octet-stream, so a text/* filter hides them on many providers.
+        "text/*" -> {
+          this.type = "*/*"
+          putExtra(
+            Intent.EXTRA_MIME_TYPES,
+            arrayOf("text/*", "application/x-subrip", "application/x-subtitle", "application/octet-stream")
+          )
+        }
+        else -> this.type = "*/*"
+      }
     }
     activity.startActivityForResult(intent, REQUEST_PICK_FILE)
   }

@@ -1725,6 +1725,63 @@ PODS:
     - React-Core
   - react-native-sqlite-storage (6.0.1):
     - React-Core
+  - react-native-video (6.19.3):
+    - boost
+    - DoubleConversion
+    - fast_float
+    - fmt
+    - glog
+    - hermes-engine
+    - RCT-Folly
+    - RCT-Folly/Fabric
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - react-native-video/Video (= 6.19.3)
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - SocketRocket
+    - Yoga
+  - react-native-video/Video (6.19.3):
+    - boost
+    - DoubleConversion
+    - fast_float
+    - fmt
+    - glog
+    - hermes-engine
+    - RCT-Folly
+    - RCT-Folly/Fabric
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - SocketRocket
+    - Yoga
   - React-NativeModulesApple (0.81.9):
     - boost
     - DoubleConversion
@@ -2284,6 +2341,7 @@ DEPENDENCIES:
   - React-microtasksnativemodule (from `../node_modules/react-native/ReactCommon/react/nativemodule/microtasks`)
   - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
   - react-native-sqlite-storage (from `../node_modules/react-native-sqlite-storage`)
+  - react-native-video (from `../node_modules/react-native-video`)
   - React-NativeModulesApple (from `../node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios`)
   - React-oscompat (from `../node_modules/react-native/ReactCommon/oscompat`)
   - React-perflogger (from `../node_modules/react-native/ReactCommon/reactperflogger`)
@@ -2409,6 +2467,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-safe-area-context"
   react-native-sqlite-storage:
     :path: "../node_modules/react-native-sqlite-storage"
+  react-native-video:
+    :path: "../node_modules/react-native-video"
   React-NativeModulesApple:
     :path: "../node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios"
   React-oscompat:
@@ -2519,6 +2579,7 @@ SPEC CHECKSUMS:
   React-microtasksnativemodule: a0f271cefc1bae9ff0cb8f4237b9f7481cd97543
   react-native-safe-area-context: fc3977890a85a4b66632c0588eaf9ed7d9948faa
   react-native-sqlite-storage: 0c84826214baaa498796c7e46a5ccc9a82e114ed
+  react-native-video: f105fba98b70c13a2eb9f9f4f6b73a49e4dafb24
   React-NativeModulesApple: 02b57ec4dced7eb81bedcccdad1ca62fee961c4d
   React-oscompat: 66d4c9c770c0690b00c652a568f30b4713104ebf
   React-perflogger: 0834475c95233811e2095a13fc6fad0bac270dae

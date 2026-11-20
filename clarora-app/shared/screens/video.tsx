@@ -20,9 +20,23 @@ import { getSetting, setSetting, saveVideoClip } from "../data/database";
 import { DocumentPicker, FileSystem, runCommandArgs } from "../services/platform";
 import { NativeVideoPlayer } from "../services/nativeVideo";
 import { downloadBilibiliVideo, cancelBilibiliDownload } from "../services/bilibili";
+import MobileVideoScreen, { type MobileVideoScreenProps } from "./videoMobile";
 
-// English video learning is a desktop feature: the phone screen is too small
-// for comfortable caption study, so Android never shows this tab.
+export type VideoLearningScreenProps = MobileVideoScreenProps;
+
+const SEEK_STEP_MS = 2_000;
+
+/**
+ * Phones play local files with react-native-video and sidecar subtitles; the
+ * desktop builds keep the libmpv workbench with subtitle tracks and clips.
+ */
+export default function VideoLearningScreen(props: VideoLearningScreenProps = {}) {
+  if (Platform.OS === "android" || Platform.OS === "ios") {
+    return <MobileVideoScreen {...props} />;
+  }
+  return <DesktopVideoScreen />;
+}
+
 
 const RECENT_VIDEOS_KEY = "recent_videos";
 const RECENT_LIMIT = 12;
@@ -73,7 +87,7 @@ function videoName(path: string): string {
   return path.split("/").pop() || path;
 }
 
-export default function VideoLearningScreen() {
+function DesktopVideoScreen() {
   const { visible: chatOpen } = useAIChat();
   const { theme, scheme } = useAppTheme();
   const styles = makeStyles(theme, scheme);
@@ -317,9 +331,9 @@ export default function VideoLearningScreen() {
         if (key === " " || key === "Space" || key === "Spacebar") {
           setPlaying((current) => !current);
         } else if (key === "ArrowLeft" || key === "Left") {
-          seekBy(-5000);
+          seekBy(-SEEK_STEP_MS);
         } else if (key === "ArrowRight" || key === "Right") {
-          seekBy(5000);
+          seekBy(SEEK_STEP_MS);
         } else if (key === "ArrowUp" || key === "Up") {
           applyVolume(volumeRef.current + 10);
         } else if (key === "ArrowDown" || key === "Down") {
@@ -494,8 +508,8 @@ export default function VideoLearningScreen() {
       <View style={styles.safeArea}>
         <StatusBar barStyle={scheme === "dark" ? "light-content" : "dark-content"} />
         <View style={styles.centered}>
-          <Text style={styles.emptyTitle}>视频学习仅在 Mac 端提供</Text>
-          <Text style={styles.emptyText}>手机屏幕不适合视频精听，请在 Mac 上使用。</Text>
+          <Text style={styles.emptyTitle}>当前平台暂不支持视频播放</Text>
+          <Text style={styles.emptyText}>手机端使用内置播放器；其他平台请使用桌面版或最新移动版。</Text>
         </View>
       </View>
     );
@@ -783,13 +797,23 @@ export default function VideoLearningScreen() {
                       </View>
 
                       <View style={styles.barGroup}>
-                        <Pressable style={styles.barBtn} onPress={() => seekBy(-5000)}>
+                        <Pressable
+                          style={styles.barBtn}
+                          accessibilityRole="button"
+                          accessibilityLabel="后退 2 秒"
+                          onPress={() => seekBy(-SEEK_STEP_MS)}
+                        >
                           <Text style={styles.barText}>⏪</Text>
                         </Pressable>
                         <Pressable style={styles.barBtn} onPress={() => setPlaying((current) => !current)}>
                           <Text style={styles.barText}>{playing ? "⏸" : "▶"}</Text>
                         </Pressable>
-                        <Pressable style={styles.barBtn} onPress={() => seekBy(5000)}>
+                        <Pressable
+                          style={styles.barBtn}
+                          accessibilityRole="button"
+                          accessibilityLabel="前进 2 秒"
+                          onPress={() => seekBy(SEEK_STEP_MS)}
+                        >
                           <Text style={styles.barText}>⏩</Text>
                         </Pressable>
                       </View>

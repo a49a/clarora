@@ -84,6 +84,14 @@ export function parseSubtitleCues(content: string): SubtitleCue[] {
 
 const CJK_PATTERN = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/;
 
+/** Split one cue into its English line(s) and Chinese translation line(s). */
+export function cueLanguages(text: string): { english: string; translation: string } {
+  const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
+  const translation = lines.filter(line => CJK_PATTERN.test(line)).join("\n");
+  const english = lines.filter(line => !CJK_PATTERN.test(line)).join("\n");
+  return { english, translation };
+}
+
 export type SubtitleLanguage = "bilingual" | "chinese" | "original";
 
 /**

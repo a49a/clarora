@@ -8,9 +8,11 @@ import ListeningScreen from "./shared/screens/listening";
 import AudioManagerScreen from "./shared/screens/audioManager";
 import GraphScreen from "./shared/screens/graph";
 import MeditationScreen from "./shared/screens/meditation";
+import ProfileScreen from "./shared/screens/profile";
 import OcrScreen from "./shared/screens/ocr";
 import PdfScreen from "./shared/screens/pdf";
 import SpeakingScreen from "./shared/screens/speaking";
+import SentenceSearchScreen from "./shared/screens/sentences";
 import StatsScreen from "./shared/screens/stats";
 import SettingsScreen from "./shared/screens/settings";
 import VideoLearningScreen from "./shared/screens/video";
@@ -32,15 +34,34 @@ const screens = [
   { key: "stats", label: "学习统计", detail: "Stats" },
   { key: "meditation", label: "冥想放松", detail: "Mindfulness" },
   { key: "settings", label: "设置", detail: "Settings" },
+  { key: "profile", label: "我的", detail: "Profile" },
 ] as const;
 
-// Mobile clients keep only the learning surfaces; bulk library management
-// stay desktop-only, and the video screen is Mac-only (too small on phones).
-// The PDF reader is desktop-only as well (native engines exist on Mac/Windows).
-const desktopOnlyScreens = new Set(["audio-manager", "video", "pdf"]);
-const mobileScreens = screens.filter((screen) => !desktopOnlyScreens.has(screen.key));
+// Mobile clients keep only the learning surfaces; bulk library management and
+// the PDF reader stay desktop-only. Discover and Speaking are hidden on phones
+// for now while their mobile experience is reworked, and Vocabulary is hidden
+// because the desktop client replaced it with the flashcard list. Screens and
+// desktop entries remain, so narrowing the mobile scope never deletes code.
+const mobileHiddenScreens = new Set([
+  "audio-manager",
+  "pdf",
+  "discover",
+  "speaking",
+  "graph",
+]);
 
 type ScreenKey = (typeof screens)[number]["key"];
+
+// Four fixed bottom tabs, following the daily-listening app pattern: three
+// learning surfaces plus a profile hub for statistics, tools and settings.
+// Icons are text glyphs so they follow the theme colour without an icon font.
+const mobileTabs: Array<{ key: ScreenKey; label: string; icon: string; accessibilityLabel: string }> = [
+  { key: "flashcard", label: "闪卡", icon: "▤", accessibilityLabel: "闪卡复习" },
+  { key: "listening", label: "音频", icon: "♫", accessibilityLabel: "音频学习" },
+  { key: "video", label: "视频", icon: "▷", accessibilityLabel: "视频学习" },
+  { key: "profile", label: "我的", icon: "☰", accessibilityLabel: "我的" },
+];
+const mobileProfileKeys: ScreenKey[] = ["stats", "ocr", "meditation", "settings"];
 const primaryKeys: ScreenKey[] = ["discover", "flashcard", "listening"];
 const navigationGroups: Array<{ key: string; label: string; screens: ScreenKey[] }> = [
   { key: "practice", label: "专项练习", screens: ["speaking", "video"] },
@@ -50,6 +71,8 @@ const navigationGroups: Array<{ key: string; label: string; screens: ScreenKey[]
 type ListeningSelection = {
   practiceId: string | null;
   audioId: string | null;
+  /** One-shot cue position opened from sentence search. */
+  positionMs: number | null;
 };
 
 const LAST_ACTIVE_SCREEN_SETTING = "last_active_screen";
@@ -64,7 +87,10 @@ function Shell() {
   const [listeningSelection, setListeningSelection] = useState<ListeningSelection>({
     practiceId: null,
     audioId: null,
+    positionMs: null,
   });
+  const [videoSelection, setVideoSelection] = useState<{ id: string; positionMs: number } | null>(null);
+  const [sentenceOpen, setSentenceOpen] = useState(false);
   const styles = makeStyles(theme);
   const [customFocusInput, setCustomFocusInput] = useState("");
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
@@ -86,7 +112,7 @@ function Shell() {
       .then((saved) => {
         if (cancelled || !saved) return;
         // Never restore a screen the current platform does not show.
-        if (isMobile && desktopOnlyScreens.has(saved)) return;
+        if (isMobile && mobileHiddenScreens.has(saved)) return;
         if (screens.some((screen) => screen.key === saved)) {
           setActiveKey(saved as ScreenKey);
         }
@@ -106,21 +132,70 @@ function Shell() {
   }, [activeKey, navigationRestored]);
 
 
+  useEffect(() => {
+    if (isMobile && mobileHiddenScreens.has(activeKey)) setActiveKey("flashcard");
+  }, [activeKey, isMobile]);
+
+
   const rememberListeningSelection = useCallback(
     (practiceId: string | null, audioId: string | null) => {
       setListeningSelection((current) =>
         current.practiceId === practiceId && current.audioId === audioId
           ? current
-          : { practiceId, audioId }
+          : { practiceId, audioId, positionMs: null }
       );
     },
     []
   );
 
+  // Normal navigation clears one-shot cue positions; only sentence search and
+  // deep links set them.
+  const openScreen = useCallback((key: ScreenKey) => {
+    setListeningSelection((current) =>
+      current.positionMs == null ? current : { ...current, positionMs: null }
+    );
+    setVideoSelection(null);
+    setActiveKey(key);
+  }, []);
+
   const startListeningStudy = useCallback((practiceId: string, audioId: string) => {
-    setListeningSelection({ practiceId, audioId });
+    setListeningSelection({ practiceId, audioId, positionMs: null });
     setActiveKey("listening");
   }, []);
+
+  // Opening search unmounts the current media screen. Drop the one-shot cue so
+  // closing the search cannot replay the sentence position on remount.
+  const openSentenceSearch = useCallback(() => {
+    setListeningSelection((current) =>
+      current.positionMs == null ? current : { ...current, positionMs: null }
+    );
+    setVideoSelection(null);
+    setSentenceOpen(true);
+  }, []);
+
+  if (sentenceOpen) {
+    return (
+      <RootView style={styles.focusRoot}>
+        <SentenceSearchScreen
+          onClose={() => setSentenceOpen(false)}
+          onOpenAudio={(practiceId, audioId, positionMs) => {
+            setSentenceOpen(false);
+            setVideoSelection(null);
+            setListeningSelection({ practiceId, audioId, positionMs });
+            setActiveKey("listening");
+          }}
+          onOpenVideo={(id, positionMs) => {
+            setSentenceOpen(false);
+            setListeningSelection((current) =>
+              current.positionMs == null ? current : { ...current, positionMs: null }
+            );
+            setVideoSelection({ id, positionMs });
+            setActiveKey("video");
+          }}
+        />
+      </RootView>
+    );
+  }
 
   // Audio study is intentionally immersive: the global sidebar disappears
   // until the learner explicitly exits the session.
@@ -132,7 +207,9 @@ function Shell() {
           initialPracticeId={listeningSelection.practiceId}
           initialAudioId={listeningSelection.audioId}
           onSelectionChange={rememberListeningSelection}
-          onExitStudy={() => setActiveKey(isMobile ? "flashcard" : "audio-manager")}
+          initialPositionMs={listeningSelection.positionMs}
+          onOpenSentenceSearch={openSentenceSearch}
+          onExitStudy={() => openScreen(isMobile ? "flashcard" : "audio-manager")}
           studySidebarStatus={pomodoro.running ? (
             <Text style={{ color: theme.textMuted, fontSize: 12, fontVariant: ['tabular-nums'] }}>
               {pomodoroStatus} · {formatPomodoroClock(pomodoro.remainingSec)}
@@ -147,7 +224,7 @@ function Shell() {
   switch (activeKey) {
     case "discover":
       activeContent = <DiscoverScreen onManageAudio={isMobile ? undefined : (practiceId, audioId) => {
-        setListeningSelection({ practiceId, audioId });
+        setListeningSelection({ practiceId, audioId, positionMs: null });
         setActiveKey("audio-manager");
       }} />;
       break;
@@ -168,7 +245,13 @@ function Shell() {
       activeContent = <StatsScreen />;
       break;
     case "video":
-      activeContent = <VideoLearningScreen />;
+      activeContent = (
+        <VideoLearningScreen
+          initialVideoId={videoSelection?.id ?? null}
+          initialPositionMs={videoSelection?.positionMs ?? null}
+          onOpenSentenceSearch={openSentenceSearch}
+        />
+      );
       break;
     case "ocr":
       activeContent = <OcrScreen />;
@@ -185,72 +268,108 @@ function Shell() {
     case "settings":
       activeContent = <SettingsScreen />;
       break;
+    case "profile":
+      activeContent = (
+        <ProfileScreen onOpen={openScreen} onOpenSentenceSearch={openSentenceSearch} />
+      );
+      break;
     default:
       activeContent = <HomeScreen />;
   }
 
   if (isMobile) {
+    const mobileActiveTab: ScreenKey = mobileProfileKeys.includes(activeKey) ? "profile" : activeKey;
     return (
       <RootView style={styles.mobileRoot}>
         <View style={styles.mobileContent}>{activeContent}</View>
         <View style={styles.mobileNavShell}>
-          {pomodoro.running ? (
-            <View style={styles.mobilePomodoro}>
-              <Text style={styles.pomodoroStatusTitle}>{pomodoroStatus}</Text>
-              <Text style={styles.pomodoroStatusClock}>{formatPomodoroClock(pomodoro.remainingSec)}</Text>
-              <View style={styles.mobilePomodoroActions}>
-                <Pressable style={styles.mobilePomodoroBtn} onPress={pomodoro.togglePause}>
-                  <Text style={styles.mobilePomodoroBtnText}>{pomodoro.paused ? "继续" : "暂停"}</Text>
-                </Pressable>
-                <Pressable style={styles.mobilePomodoroBtn} onPress={pomodoro.reset}>
-                  <Text style={styles.mobilePomodoroBtnText}>重置</Text>
-                </Pressable>
-              </View>
-            </View>
-          ) : (
-            <View style={styles.mobilePomodoro}>
-              <Text style={styles.pomodoroStatusTitle}>番茄钟 · 专注 {pomodoro.focusMin} 分钟</Text>
-              <View style={styles.mobilePomodoroActions}>
-                {[25, 45, 60].map((minutes) => (
-                  <Pressable
-                    key={minutes}
-                    style={[styles.mobilePomodoroBtn, pomodoro.focusMin === minutes && styles.mobilePomodoroBtnActive]}
-                    onPress={() => pomodoro.setFocusMin(minutes)}
-                  >
-                    <Text
-                      style={[
-                        styles.mobilePomodoroBtnText,
-                        pomodoro.focusMin === minutes && styles.mobilePomodoroBtnTextActive,
-                      ]}
-                    >
-                      {minutes} 分
-                    </Text>
+          <View style={styles.mobileTimer}>
+            {pomodoro.running ? (
+              <View style={styles.mobileTimerRow}>
+                <View style={styles.mobileTimerInfo}>
+                  <Text style={styles.mobileTimerLabel}>{pomodoroStatus}</Text>
+                  <Text style={styles.mobileTimerClock}>
+                    {formatPomodoroClock(pomodoro.remainingSec)}
+                  </Text>
+                </View>
+                <View style={styles.mobileTimerActions}>
+                  <Pressable style={styles.mobileTimerActionBtn} onPress={pomodoro.togglePause}
+                    accessibilityRole="button" accessibilityLabel={pomodoro.paused ? "继续专注" : "暂停专注"}>
+                    <Text style={styles.mobileTimerActionText}>{pomodoro.paused ? "继续" : "暂停"}</Text>
                   </Pressable>
-                ))}
-                <Pressable style={[styles.mobilePomodoroBtn, styles.mobilePomodoroBtnActive]} onPress={() => pomodoro.start()}>
-                  <Text style={[styles.mobilePomodoroBtnText, styles.mobilePomodoroBtnTextActive]}>▶ 开始</Text>
-                </Pressable>
+                  <Pressable style={styles.mobileTimerActionBtn} onPress={pomodoro.reset}
+                    accessibilityRole="button" accessibilityLabel="重置专注计时">
+                    <Text style={styles.mobileTimerActionText}>重置</Text>
+                  </Pressable>
+                </View>
               </View>
-            </View>
-          )}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={styles.mobileNav}>
-            {mobileScreens.map((screen) => {
-              const active = activeKey === screen.key;
+            ) : (
+              <>
+                <View style={styles.mobileTimerRow}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`番茄钟，专注 ${pomodoro.focusMin} 分钟`}
+                    accessibilityState={{ expanded: timerExpanded }}
+                    onPress={() => setTimerExpanded((value) => !value)}
+                    style={({ pressed }) => [styles.mobileTimerInfo, pressed && styles.pressedTab]}
+                  >
+                    <Text style={styles.mobileTimerLabel}>⏱ 专注 {pomodoro.focusMin} 分钟</Text>
+                    <Text style={styles.mobileTimerChevron}>{timerExpanded ? "⌄" : "›"}</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="开始专注"
+                    onPress={() => {
+                      setTimerExpanded(false);
+                      pomodoro.start();
+                    }}
+                    style={({ pressed }) => [styles.mobileTimerStart, pressed && styles.pressedTab]}
+                  >
+                    <Text style={styles.mobileTimerStartText}>▶ 开始</Text>
+                  </Pressable>
+                </View>
+                {timerExpanded && (
+                  <View style={styles.mobileTimerPresets}>
+                    {[25, 45, 60].map((minutes) => (
+                      <Pressable
+                        key={minutes}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: pomodoro.focusMin === minutes }}
+                        style={[styles.mobileTimerChip, pomodoro.focusMin === minutes && styles.mobileTimerChipActive]}
+                        onPress={() => pomodoro.setFocusMin(minutes)}
+                      >
+                        <Text style={[styles.mobileTimerChipText, pomodoro.focusMin === minutes && styles.mobileTimerChipTextActive]}>
+                          {minutes} 分
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
+              </>
+            )}
+          </View>
+          <View style={styles.mobileNav}>
+            {mobileTabs.map((tab) => {
+              const active = mobileActiveTab === tab.key;
               return (
                 <Pressable
-                  key={screen.key}
+                  key={tab.key}
                   accessibilityRole="tab"
+                  accessibilityLabel={tab.accessibilityLabel}
                   accessibilityState={{ selected: active }}
-                  onPress={() => setActiveKey(screen.key)}
-                  style={({ pressed }) => [styles.mobileTab, active && styles.mobileTabActive, pressed && styles.pressedTab]}
+                  onPress={() => openScreen(tab.key)}
+                  style={({ pressed }) => [styles.mobileTab, pressed && styles.pressedTab]}
                 >
+                  <Text style={[styles.mobileTabIcon, active && styles.mobileTabIconActive]}>
+                    {tab.icon}
+                  </Text>
                   <Text style={[styles.mobileTabText, active && styles.mobileTabTextActive]} numberOfLines={1}>
-                    {screen.label}
+                    {tab.label}
                   </Text>
                 </Pressable>
               );
             })}
-          </ScrollView>
+          </View>
         </View>
       </RootView>
     );
@@ -260,7 +379,7 @@ function Shell() {
     const screen = screens.find(item => item.key === key)!;
     const active = activeKey === key;
     return <Pressable key={key} accessibilityRole="tab" accessibilityState={{ selected: active }}
-      onPress={() => setActiveKey(key)}
+      onPress={() => openScreen(key)}
       style={({ pressed }) => [styles.tab, nested && styles.nestedTab, active && styles.activeTab, pressed && styles.pressedTab]}>
       <View style={[styles.navMarker, active && styles.navMarkerActive]} />
       <Text style={[styles.tabText, active && styles.activeTabText]}>{screen.label}</Text>
@@ -416,25 +535,99 @@ function makeStyles(theme: Theme) {
     focusRoot: { flex: 1, backgroundColor: theme.bg },
     mobileRoot: { flex: 1, backgroundColor: theme.bg },
     mobileContent: { flex: 1, minHeight: 0 },
-    mobileNavShell: { borderTopWidth: 1, borderTopColor: theme.border, backgroundColor: theme.sidebar, paddingBottom: 8 },
-    mobilePomodoro: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 9 },
+    mobileNavShell: {
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+      backgroundColor: theme.sidebar,
+      paddingBottom: 8,
+    },
+    mobileTimer: {
+      width: "100%",
+      maxWidth: 640,
+      alignSelf: "center",
+      paddingTop: 6,
+      paddingBottom: 2,
+    },
+    mobileTimerRow: {
+      minHeight: 38,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      paddingHorizontal: 14,
+    },
+    mobileTimerInfo: {
+      flex: 1,
+      minHeight: 34,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    mobileTimerLabel: { color: theme.accent, fontSize: 12, fontWeight: "700" },
+    mobileTimerClock: {
+      color: theme.sidebarText,
+      fontSize: 16,
+      fontWeight: "700",
+      fontVariant: ["tabular-nums"],
+    },
+    mobileTimerChevron: { color: theme.sidebarTextMuted, fontSize: 16 },
+    mobileTimerActions: { flexDirection: "row", gap: 6 },
+    mobileTimerActionBtn: {
+      minHeight: 34,
+      justifyContent: "center",
+      paddingHorizontal: 12,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    mobileTimerActionText: { color: theme.textSecondary, fontSize: 12, fontWeight: "600" },
+    mobileTimerStart: {
+      minHeight: 36,
+      justifyContent: "center",
+      paddingHorizontal: 16,
+      borderRadius: 10,
+      backgroundColor: theme.accent,
+    },
+    mobileTimerStartText: { color: "#fff", fontSize: 12, fontWeight: "700" },
+    mobileTimerPresets: {
+      flexDirection: "row",
+      gap: 8,
+      paddingHorizontal: 14,
+      paddingTop: 4,
+      paddingBottom: 2,
+    },
+    mobileTimerChip: {
+      flex: 1,
+      minHeight: 32,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    mobileTimerChipActive: { borderColor: theme.accent, backgroundColor: `${theme.accent}22` },
+    mobileTimerChipText: { color: theme.textSecondary, fontSize: 12, fontWeight: "600" },
+    mobileTimerChipTextActive: { color: theme.accent, fontWeight: "700" },
     mobileNav: {
+      width: "100%",
+      maxWidth: 640,
+      alignSelf: "center",
       flexDirection: "row",
       alignItems: "stretch",
-      gap: 2,
-      paddingHorizontal: 6,
-      paddingTop: 6,
+      gap: 4,
+      paddingHorizontal: 8,
+      paddingTop: 2,
     },
     mobileTab: {
       flex: 1,
-      minWidth: 76,
-      minHeight: 52,
+      minHeight: 56,
       alignItems: "center",
       justifyContent: "center",
+      gap: 2,
       borderRadius: 10,
       paddingHorizontal: 2,
     },
-    mobileTabActive: { backgroundColor: theme.sidebarActive },
+    mobileTabIcon: { color: theme.sidebarTextMuted, fontSize: 19, lineHeight: 21 },
+    mobileTabIconActive: { color: theme.sidebarAccent },
     mobileTabText: { color: theme.sidebarTextMuted, fontSize: 11, fontWeight: "600" },
     mobileTabTextActive: { color: theme.sidebarAccent },
     sidebar: {
@@ -526,17 +719,6 @@ function makeStyles(theme: Theme) {
       backgroundColor: theme.accent,
     },
     pomodoroStartText: { color: "#fff", fontSize: 11, fontWeight: "700" },
-    mobilePomodoroActions: { flexDirection: "row", gap: 6 },
-    mobilePomodoroBtn: {
-      paddingVertical: 4,
-      paddingHorizontal: 10,
-      borderRadius: 6,
-      borderWidth: 1,
-      borderColor: theme.border,
-    },
-    mobilePomodoroBtnActive: { borderColor: theme.accent, backgroundColor: `${theme.accent}22` },
-    mobilePomodoroBtnText: { color: theme.textSecondary, fontSize: 12 },
-    mobilePomodoroBtnTextActive: { color: theme.accent, fontWeight: "700" },
     pomodoroStatusTitle: { color: theme.accent, fontSize: 11, fontWeight: "700" },
     pomodoroStatusClock: { color: theme.sidebarText, fontSize: 19, fontWeight: "700", fontVariant: ["tabular-nums"] },
     pomodoroTrack: { height: 3, backgroundColor: theme.border, borderRadius: 2, overflow: "hidden", marginTop: 7 },

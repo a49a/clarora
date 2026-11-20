@@ -5,6 +5,7 @@ export const VAULT_COLUMNS = {
   listening_practices: ['id', 'name', 'created_at'],
   listening_audios: ['id', 'practice_id', 'name', 'audio_uri', 'subtitle_uri', 'created_at'],
   audio_stars: ['audio_id', 'created_at'],
+  audio_stats: ['audio_id', 'listen_seconds', 'updated_at'],
   clip_cards: ['id', 'en_text', 'zh_text', 'audio_uri', 'start_ms', 'end_ms', 'created_at'],
   ai_cards: ['id', 'question', 'answer', 'context_text', 'created_at'],
   video_clips: ['id', 'en_text', 'zh_text', 'video_uri', 'created_at'],
@@ -20,9 +21,10 @@ export const VAULT_TABLES = Object.keys(VAULT_COLUMNS) as VaultTable[];
 export function validateVault(data: unknown): asserts data is VaultData {
   if (!data || typeof data !== 'object') throw new Error('备份数据格式错误');
   const raw = data as Record<string, unknown>;
-  // Older backups predate sentence cards and audio stars; normalize additive tables.
+  // Older backups predate sentence cards and additive audio tables; normalize them.
   if (!('sentence_cards' in raw)) raw.sentence_cards = [];
   if (!('audio_stars' in raw)) raw.audio_stars = [];
+  if (!('audio_stats' in raw)) raw.audio_stats = [];
   for (const table of VAULT_TABLES) {
     const rows = raw[table];
     if (!Array.isArray(rows) || rows.length > 500000) throw new Error(`备份表 ${table} 无效`);

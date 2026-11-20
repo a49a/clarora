@@ -54,6 +54,9 @@ type TranscriptCue = {
 type ListeningScreenProps = ListeningSelection & {
   onExitStudy?: () => void;
   studySidebarStatus?: ReactNode;
+  /** One-shot position from sentence search; cleared by the parent after exit. */
+  initialPositionMs?: number | null;
+  onOpenSentenceSearch?: () => void;
 };
 
 const AI_QUESTION_TIMEOUT_MS = 60_000;
@@ -232,7 +235,13 @@ function tokenizeCue(text: string): CueToken[] {
   return tokens;
 }
 
-export default function ListeningScreen({ onExitStudy, studySidebarStatus, ...selection }: ListeningScreenProps = {}) {
+export default function ListeningScreen({
+  onExitStudy,
+  studySidebarStatus,
+  initialPositionMs,
+  onOpenSentenceSearch,
+  ...selection
+}: ListeningScreenProps = {}) {
   const { theme, scheme } = useAppTheme();
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -907,6 +916,27 @@ export default function ListeningScreen({ onExitStudy, studySidebarStatus, ...se
     });
   }, [blindMachine, enqueueAudioOperation]);
 
+  // Sentence search opens the audio at a cue. Wait for the player to finish
+  // loading, seek once, then start playback so the tapped sentence is audible.
+  // The cue belongs to the searched audio; never apply it to a different one
+  // after the library falls back or the learner switches tracks.
+  const initialCueAudioId = selection.initialAudioId ?? null;
+  const initialPositionAppliedRef = useRef(false);
+  useEffect(() => {
+    initialPositionAppliedRef.current = false;
+  }, [selectedAudioId, initialPositionMs]);
+  useEffect(() => {
+    if (initialPositionAppliedRef.current) return;
+    if (initialPositionMs == null || initialPositionMs < 0) return;
+    if (initialCueAudioId && selectedAudioId !== initialCueAudioId) return;
+    if (!selectedAudioId || readyAudioId !== selectedAudioId) return;
+    initialPositionAppliedRef.current = true;
+    void (async () => {
+      await seekTo(initialPositionMs);
+      if (!isPlayingRef.current) await togglePlayback();
+    })();
+  }, [initialCueAudioId, initialPositionMs, isPlayingRef, readyAudioId, selectedAudioId, seekTo, togglePlayback]);
+
   const seekBy = useCallback(
     async (deltaMs: number) => {
       const limit = durationMs > 0 ? durationMs : Number.POSITIVE_INFINITY;
@@ -1440,6 +1470,13 @@ export default function ListeningScreen({ onExitStudy, studySidebarStatus, ...se
               </View>
               <View style={styles.studyHeadingActions}>
                 {studySidebarStatus}
+                {onOpenSentenceSearch && (
+                  <Pressable accessibilityRole="button" accessibilityLabel="句型搜索"
+                    style={({ pressed }) => [styles.studyExitBtn, pressed && styles.buttonPressed]}
+                    onPress={onOpenSentenceSearch}>
+                    <Text style={styles.studyExitText}>🔍 句型搜索</Text>
+                  </Pressable>
+                )}
                 <StudyOptions open={activeSettings === "subtitle"} onVisibilityChange={(visible) => setActiveSettings(visible ? "subtitle" : null)}
                   triggerRef={subtitleSettingsTriggerRef} onBackdropPress={handleSettingsBackdropPress} suppressReturnFocus={chatOpen}
                   align="right" label="字幕" title="字幕与阅读设置">
