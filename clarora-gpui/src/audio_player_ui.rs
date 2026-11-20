@@ -502,6 +502,103 @@ impl AppView {
             .into_any_element()
     }
 
+    pub(super) fn audio_group_note_panel(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+        let width = (f32::from(window.viewport_size().width) - 16.)
+            .min(clarora_gpui::assistant::DEFAULT_COLUMN)
+            .max(280.);
+        let group = self
+            .audio
+            .practices
+            .iter()
+            .find(|row| text(row, "id") == self.audio.practice_id)
+            .map(|row| text(row, "name"))
+            .unwrap_or_default();
+        let header = div()
+            .flex_shrink_0()
+            .px_5()
+            .py_4()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("组笔记"),
+                    )
+                    .when(!group.is_empty(), |v| {
+                        v.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(group),
+                        )
+                    }),
+            )
+            .child(div().flex_1())
+            .child(
+                self.button("audio-group-note-close", "收起", Action::AudioNote, cx)
+                    .outline(),
+            );
+        div()
+            .id("audio-group-note")
+            .absolute()
+            .top_0()
+            .right_0()
+            .h_full()
+            .w(px(width))
+            .flex()
+            .flex_col()
+            .bg(cx.theme().background)
+            .border_l_1()
+            .border_color(cx.theme().border)
+            .shadow_lg()
+            .overflow_hidden()
+            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+            .child(header)
+            .child(
+                div()
+                    .id("audio-group-note-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p_5()
+                    .child(self.field("group_note", "笔记内容")),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .px_5()
+                    .py_4()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("保存后写入当前练习组，并随备份同步。"),
+                    )
+                    .child(
+                        self.button("audio-save-note", "保存组笔记", Action::AudioNoteSave, cx)
+                            .primary()
+                            .disabled(self.tasks.foreground.is_running()),
+                    ),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn audio_study(
         &mut self,
         window: &mut Window,
@@ -668,34 +765,6 @@ impl AppView {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(navigation);
-        if self.audio.note_open {
-            header = header.child(
-                div()
-                    .px_4()
-                    .pb_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(self.field("group_note", "组笔记"))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .flex_wrap()
-                            .child(
-                                self.button(
-                                    "audio-save-note",
-                                    "保存组笔记",
-                                    Action::AudioNoteSave,
-                                    cx,
-                                )
-                                .primary()
-                                .disabled(self.tasks.foreground.is_running()),
-                            )
-                            .child(self.button("audio-close-note", "收起", Action::AudioNote, cx)),
-                    ),
-            );
-        }
         header = header
             .when(!self.audio.blind.enabled, |v| {
                 v.child(self.audio_subtitle_toolbar(cx))

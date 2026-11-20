@@ -943,6 +943,9 @@ impl Render for AppView {
                     .child(page_body),
             )
             .when_some(assistant, |view, assistant| view.child(assistant))
+            .when(self.page == "listening" && self.audio.note_open, |view| {
+                view.child(self.audio_group_note_panel(window, cx))
+            })
             .when(self.focus_note_open, |view| {
                 view.child(self.focus_note_overlay(window, cx))
             })
