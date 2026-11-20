@@ -157,6 +157,7 @@ impl AppView {
                     .flex()
                     .items_center()
                     .gap_2()
+                    .flex_wrap()
                     .child(
                         div()
                             .flex()
@@ -213,6 +214,7 @@ impl AppView {
                     .flex()
                     .items_center()
                     .gap_2()
+                    .flex_wrap()
                     .child(
                         self.button(
                             "video-transcribe",
@@ -258,7 +260,7 @@ impl AppView {
                     .child(
                         self.button(
                             "video-transcribe-stronger",
-                            "更强模型",
+                            "更高精度重转写",
                             Action::VideoTranscribeStronger,
                             cx,
                         )
@@ -272,11 +274,14 @@ impl AppView {
                                 .as_ref()
                                 .map(|(model, _)| {
                                     format!(
-                                        "用 {} 重新生成当前视频字幕，覆盖英文字幕和已有中文译文",
+                                        "用 {} 重新识别当前视频，覆盖英文字幕和已有中文译文",
                                         model.name
                                     )
                                 })
-                                .unwrap_or_else(|| "请先在设置中下载更强的同语言本机模型".into()),
+                                .unwrap_or_else(|| {
+                                    "仅当已下载更高精度的同语言本机模型时可用；可在设置 → 语音模型下载"
+                                        .into()
+                                }),
                         ),
                     )
                     .child(self.surface_menu("video-subtitle-more", "更多 ▾".into(), more, cx)),

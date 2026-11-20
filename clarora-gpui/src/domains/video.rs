@@ -513,7 +513,7 @@ impl Command {
             Command::VideoTranscribeStronger => {
                 let (model, _) = app
                     .stronger_local_model()
-                    .context("没有比当前更强且已下载的本机转写模型")?;
+                    .context("没有已下载的更高精度同语言本机转写模型；请先在设置 → 语音模型下载")?;
                 app.begin_background_subtitles_stronger(model.id)?;
             }
 
