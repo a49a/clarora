@@ -31,6 +31,9 @@ try {
         if ($process.ExitCode -ne 0) { throw "Installer round $round failed: $($process.ExitCode)" }
         & python "$PSScriptRoot/verify-windows-package.py" $installRoot --installed --native --report "$Evidence/installed-$round.json"
         if ($LASTEXITCODE -ne 0) { throw "Installed package round $round verification failed." }
+        $installedExe = Get-Item -LiteralPath "$installRoot/clarora-gpui.exe"
+        if ($installedExe.VersionInfo.FileDescription -ne 'Clarora') { throw "EXE FileDescription is missing in round $round." }
+        if (-not (Test-Path -LiteralPath "$installRoot/clarora.ico")) { throw "Installed package is missing clarora.ico." }
         $previousPath = $env:PATH
         try {
             $env:PATH = "$env:SystemRoot/System32"
@@ -40,7 +43,13 @@ try {
             if (-not (Get-Content -Raw -LiteralPath $runtimeReport | ConvertFrom-Json).passed) { throw "Installed application runtime report $round did not pass." }
         } finally { $env:PATH = $previousPath }
         if ((Get-Content -Raw -LiteralPath $sentinel) -ne $token) { throw "Application data changed during install round $round." }
-        $report.rounds += @{ round = $round; install_exit = $process.ExitCode; runtime_verified = $true; user_data_preserved = $true }
+        $appData = Join-Path $Evidence "app-data-$round"
+        $app = Start-Process -FilePath "$installRoot/clarora-gpui.exe" -ArgumentList @('--data-dir', "`"$appData`"") -PassThru
+        Start-Sleep -Seconds 3
+        if ($app.HasExited) { throw "Installed application exited during startup smoke in round $round." }
+        Stop-Process -Id $app.Id -Force
+        $app.WaitForExit()
+        $report.rounds += @{ round = $round; install_exit = $process.ExitCode; runtime_verified = $true; startup_smoke = $true; user_data_preserved = $true }
     }
     $uninstaller = Join-Path $installRoot 'unins000.exe'
     if (-not (Test-Path -LiteralPath $uninstaller)) { throw 'Installed uninstaller is missing.' }

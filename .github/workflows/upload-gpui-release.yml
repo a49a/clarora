@@ -25,12 +25,36 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: artifact
+      - name: Verify source commit and package version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha)"
+          conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .conclusion)"
+          test "$head_sha" = "$SOURCE_SHA"
+          test "$conclusion" = "success"
+          package_manifest="$(find artifact -name release-manifest.json -print -quit)"
+          test -n "$package_manifest"
+          python3 - "$package_manifest" "$TAG" <<'PY'
+          import json
+          import sys
+          manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+          version = sys.argv[2].removeprefix("v")
+          if manifest.get("version") != version or manifest.get("platform") != "windows":
+              raise SystemExit(f"Windows package version/platform mismatch: {manifest}")
+          PY
       - name: Rename and upload Windows assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           WINDOWS_RUN_ID: ${{ inputs.run_id }}
+          BUILD_NUMBER: ${{ inputs.run_id }}
+          SOURCE_VERIFIED: 'true'
         run: |
           set -euo pipefail
           version="${TAG#v}"

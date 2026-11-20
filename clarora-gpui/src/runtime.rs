@@ -66,7 +66,17 @@ pub fn inspect() -> Report {
         packaged: packaged(),
         ..Default::default()
     };
-    for name in ["ffmpeg", "ffprobe", "yt-dlp", "clarora-asr", "clarora-tts"] {
+    for name in [
+        "ffmpeg",
+        "ffprobe",
+        "yt-dlp",
+        "deno",
+        "clarora-asr",
+        "clarora-tts",
+    ] {
+        if name == "deno" && !cfg!(windows) {
+            continue;
+        }
         let result = process::tool(name);
         report.components.push(Component {
             name: name.into(),
@@ -165,7 +175,7 @@ pub fn check(output: &Path) -> Result<Report> {
             }
             name => process::run(
                 component.path.as_ref().context("组件路径缺失")?,
-                &[if name == "yt-dlp" {
+                &[if name == "yt-dlp" || name == "deno" {
                     "--version"
                 } else {
                     "-version"

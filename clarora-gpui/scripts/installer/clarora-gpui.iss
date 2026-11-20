@@ -17,6 +17,7 @@ AppId={{17F3D01D-07B1-45AC-8A65-4304FDCE9158}
 AppName=Clarora
 AppVersion={#AppVersion}
 AppPublisher=Clarora
+AppMutex=Clarora-GPUI-SingleInstance
 SetupIconFile={#SourceDir}\clarora.ico
 DefaultDirName={localappdata}\Programs\Clarora
 UsePreviousAppDir=yes
@@ -43,11 +44,10 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 ; Remove only shortcuts owned by the previous GPUI display name.
 Type: files; Name: "{userprograms}\Clarora GPUI\Clarora GPUI.lnk"
 Type: files; Name: "{autodesktop}\Clarora GPUI.lnk"
-; Remove obsolete runtime names during upgrades, before installing the new tree.
-; {app} contains program files only; learning data is in %LOCALAPPDATA%\Clarora-GPUI.
-Type: files; Name: "{app}\*.dll"
-Type: filesandordirs; Name: "{app}\tools"
-Type: filesandordirs; Name: "{app}\licenses"
+; Do not delete the current runtime before the new tree is copied. Inno overwrites
+; matching files via [Files]; an interrupted upgrade must leave the old app usable.
+; If a runtime filename changes in a future release, add an explicit cleanup for
+; the old name after the new tree has been installed.
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked

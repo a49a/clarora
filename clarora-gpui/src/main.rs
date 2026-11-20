@@ -103,6 +103,8 @@ use clarora_gpui::{
 };
 use feedback_ui::FeedbackKind;
 use gpui::{prelude::*, *};
+#[cfg(windows)]
+use gpui_component::menu::AppMenuBar;
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Root, Selectable, Sizable, Theme, ThemeMode,
     WindowExt,
@@ -231,6 +233,9 @@ struct AppView {
     chat_closing: Option<chat_controller_ui::Closing>,
     tasks: app_state::TasksState,
     media: app_state::PlaybackState,
+    position_checkpoint: Instant,
+    #[cfg(windows)]
+    menu_bar: Entity<AppMenuBar>,
     video: app_state::VideoState,
     video_progress: video_progress::Progress,
     audio: app_state::AudioState,
@@ -402,6 +407,8 @@ impl AppView {
             };
         let focus_notes = focus_notes::list(&lib, 100).unwrap_or_default();
         let video_progress = video_progress::Progress::load(&lib);
+        #[cfg(windows)]
+        let menu_bar = cx.new(|cx| AppMenuBar::new(window, cx));
         let mut this = Self {
             #[cfg(debug_assertions)]
             diagnostic: None,
@@ -416,6 +423,9 @@ impl AppView {
             chat_closing: None,
             tasks: app_state::TasksState::new(),
             media: app_state::PlaybackState::new(),
+            position_checkpoint: Instant::now(),
+            #[cfg(windows)]
+            menu_bar,
             video: app_state::VideoState::new(cx),
             video_progress,
             audio: app_state::AudioState::new(&lib),
@@ -1781,6 +1791,15 @@ fn main() -> Result<()> {
         ensure!(report.passed, "运行环境检查失败，详情见 {}", path.display());
         return Ok(());
     }
+    #[cfg(windows)]
+    let _instance = match acquire_single_instance() {
+        Ok(Some(guard)) => guard,
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            report_startup_error(&error);
+            return Err(error);
+        }
+    };
     let root = match startup.data_dir {
         Some(path) => path,
         None => dirs::data_local_dir()
@@ -1926,34 +1945,39 @@ fn main() -> Result<()> {
             ]);
             let bounds = Bounds::centered(None, size(px(1240.), px(860.)), cx);
             let mut quit_view = None;
-            let main = cx
-                .open_window(
-                    WindowOptions {
-                        show: interactive,
-                        focus: interactive,
-                        window_bounds: Some(WindowBounds::Windowed(bounds)),
-                        titlebar: Some(TitlebarOptions {
-                            title: Some("Clarora".into()),
-                            ..Default::default()
-                        }),
+            let main = match cx.open_window(
+                WindowOptions {
+                    show: interactive,
+                    focus: interactive,
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Clarora".into()),
                         ..Default::default()
-                    },
-                    |window, cx| {
-                        let view = cx.new(|cx| {
-                            #[allow(unused_mut)]
-                            let mut view = AppView::new(library, window, cx);
-                            #[cfg(debug_assertions)]
-                            if let Some(launch) = &startup.diagnostic {
-                                view.diagnostic = Some(launch.start());
-                            }
-                            view
-                        });
-                        quit_view = Some(view.downgrade());
-                        view.read(cx).focus.focus(window);
-                        cx.new(|cx| Root::new(view, window, cx))
-                    },
-                )
-                .expect("无法打开 Clarora 窗口");
+                    }),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let view = cx.new(|cx| {
+                        #[allow(unused_mut)]
+                        let mut view = AppView::new(library, window, cx);
+                        #[cfg(debug_assertions)]
+                        if let Some(launch) = &startup.diagnostic {
+                            view.diagnostic = Some(launch.start());
+                        }
+                        view
+                    });
+                    quit_view = Some(view.downgrade());
+                    view.read(cx).focus.focus(window);
+                    cx.new(|cx| Root::new(view, window, cx))
+                },
+            ) {
+                Ok(main) => main,
+                Err(error) => {
+                    report_startup_error(&error);
+                    cx.quit();
+                    return;
+                }
+            };
             cx.on_action(move |_: &Quit, cx| {
                 if let Some(view) = &quit_view {
                     let _ = view.update(cx, |this, cx| this.prepare_close(cx));
@@ -1974,6 +1998,89 @@ fn main() -> Result<()> {
             }
         });
     Ok(())
+}
+
+#[cfg(windows)]
+struct SingleInstance(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for SingleInstance {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+fn acquire_single_instance() -> Result<Option<SingleInstance>> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, MB_ICONINFORMATION, MB_OK, MessageBoxW, SW_RESTORE, SetForegroundWindow,
+        ShowWindow,
+    };
+    let name = wide("Clarora-GPUI-SingleInstance");
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    ensure!(!handle.is_null(), "无法创建单实例互斥量");
+    if std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ALREADY_EXISTS as i32) {
+        unsafe { CloseHandle(handle) };
+        let title = wide("Clarora");
+        let window = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+        if window.is_null() {
+            let text = wide("Clarora 已在运行，请从任务栏切换。");
+            let caption = wide("Clarora");
+            unsafe {
+                MessageBoxW(
+                    std::ptr::null_mut(),
+                    text.as_ptr(),
+                    caption.as_ptr(),
+                    MB_OK | MB_ICONINFORMATION,
+                );
+            }
+        } else {
+            unsafe {
+                ShowWindow(window, SW_RESTORE);
+                SetForegroundWindow(window);
+            }
+        }
+        return Ok(None);
+    }
+    Ok(Some(SingleInstance(handle)))
+}
+
+fn report_startup_error(error: &anyhow::Error) {
+    let message = format!("{error:#}");
+    if let Some(root) = dirs::data_local_dir() {
+        let path = root.join("Clarora-GPUI").join("startup-error.log");
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(&path, &message);
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+        let text = wide(&format!(
+            "Clarora 无法打开窗口。\n\n{message}\n\n日志：%LOCALAPPDATA%\\Clarora-GPUI\\startup-error.log"
+        ));
+        let caption = wide("Clarora 启动失败");
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                caption.as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    eprintln!("{message}");
 }
 
 impl Drop for AppView {

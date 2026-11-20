@@ -19,8 +19,14 @@ def digest(path):
 
 
 def main():
-    version = os.environ.get("VERSION", "0.3.0")
-    tag = os.environ.get("TAG", f"v{version}")
+    tag = os.environ["TAG"].strip()
+    version = tag.removeprefix("v")
+    if not version or ("VERSION" in os.environ and os.environ["VERSION"] != version):
+        raise SystemExit("VERSION must match TAG")
+    source_verified = os.environ.get("SOURCE_VERIFIED") == "true"
+    if not source_verified:
+        raise SystemExit("SOURCE_VERIFIED must be true after the workflow checks the build run")
+    build_number = int(os.environ.get("BUILD_NUMBER", "0"))
     source_sha = os.environ["SOURCE_SHA"]
     run_id = os.environ["WINDOWS_RUN_ID"]
     repo = "https://github.com/a49a/clarora"
@@ -48,10 +54,8 @@ def main():
         "version": version,
         "application_name": "Clarora",
         "build_profile": "release",
-        "build_number": 20261109,
-        "source_inputs_match_commit": True,
-        "macos_worktree_dirty": False,
-        "excluded_uncommitted_paths": [],
+        "build_number": build_number,
+        "source_inputs_match_commit": source_verified,
         "platforms": {
             "macos": {
                 "architecture": "arm64",

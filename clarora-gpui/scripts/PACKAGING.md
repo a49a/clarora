@@ -32,14 +32,21 @@ python3 scripts/verify-macos-package.py \
 
 ## Windows x64
 
-在 Windows 上准备 Rust 1.93.1 MSVC、Visual Studio 2022 C++ 工作负载、CMake、Python 3、7-Zip 和 Inno Setup 6，并在 `clarora-gpui/` 执行：
+在 Windows 上准备 Rust 1.93.1 MSVC、Visual Studio 2022 C++ 工作负载、CMake、Python 3、7-Zip 和 Inno Setup 6。先运行环境检查；它只读取版本和 PATH，不安装软件，缺失项会给出安装提示并以非 0 退出：
+
+```powershell
+./scripts/check-windows-env.ps1 -Runtime -Installer
+./scripts/check-windows-env.ps1 -Runtime -Installer -Json target/windows-env.json
+```
+
+CI 在同一个 Windows runner 上先执行这项检查，再解析打包脚本并开始构建。检查通过后在 `clarora-gpui/` 执行：
 
 ```powershell
 ./scripts/prepare-windows-runtime.ps1
 ./scripts/build-windows.ps1 -Distribution -RuntimeDir ./target/windows-runtime -Installer
 ```
 
-`windows-runtime-lock.json` 固定下载来源、版本和 SHA-256。准备流程构建 ASR／TTS，收集 mpv、Vulkan loader、FFmpeg／ffprobe、yt-dlp、PDFium、Whisper／GGML、Sherpa／ONNX 和 CRT。每个 EXE 的 DLL 闭包必须在自身目录或系统目录内可解析；辅助程序和 CPU 后端位于 `tools/`。
+`windows-runtime-lock.json` 固定下载来源、版本和 SHA-256。准备流程构建 ASR／TTS，收集 mpv、Vulkan loader、FFmpeg／ffprobe、yt-dlp、Deno、PDFium、Whisper／GGML、Sherpa／ONNX 和 CRT。每个 EXE 的 DLL 闭包必须在自身目录或系统目录内可解析；辅助程序和 CPU 后端位于 `tools/`。Deno 用于 yt-dlp 的 YouTube JavaScript challenge，缺少时安装包验证会失败。
 
 默认输出到工作区 `artifacts/clarora/gpui/windows/`；`-Output` 可指定路径。打包先检查运行库，再构建 ZIP 和可选安装器，使用 `PATH=System32` 执行运行检查并复验 ZIP。默认文件名标明 `unsigned`。已有代码签名证书时，可传 `-CertificateThumbprint <证书指纹>` 签署自有程序和安装器；第三方库保留原始签名。
 
@@ -49,7 +56,7 @@ python3 scripts/verify-macos-package.py \
   -Evidence /absolute/path/installer-evidence
 ```
 
-安装器按用户安装、无须管理员权限；验证覆盖安装、升级、运行环境检查和卸载，确认 `%LOCALAPPDATA%/Clarora-GPUI` 学习资料保留。验证拒绝接管已有同 AppId 安装。CI 在 Windows runner 实际执行完整构建与安装生命周期验证；发行验收以对应 run 的完整结果为准。
+安装器按用户安装、无须管理员权限；验证覆盖安装、升级、运行环境检查和卸载，确认 `%LOCALAPPDATA%/Clarora-GPUI` 学习资料保留。验证拒绝接管已有同 AppId 安装。升级只覆盖同名文件，不先删除整个运行库；旧版本遗留的非当前文件不进入新清单。若以后更改运行库文件名，需要在安装器中显式清理旧名称。CI 在 Windows runner 实际执行完整构建与安装生命周期验证；发行验收以对应 run 的完整结果为准。
 
 ## 诊断、许可证与发布前检查
 

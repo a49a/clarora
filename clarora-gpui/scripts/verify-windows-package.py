@@ -35,10 +35,11 @@ coremessaging coreuicomponents dinput8 glu32 msvcp_win textinputframework
 uiautomationcore windows.storage windows.ui icuuc
 """.split())
 REQUIRED_COMPONENTS = {
-    "mpv", "vulkan-loader", "ffmpeg", "yt-dlp", "pdfium", "whisper.cpp", "sherpa-onnx", "msvc-runtime", "rust-crates",
+    "mpv", "vulkan-loader", "ffmpeg", "yt-dlp", "deno", "pdfium", "whisper.cpp", "sherpa-onnx", "msvc-runtime", "rust-crates",
 }
 REQUIRED_FILES = (
     "pdfium.dll", "tools/ffmpeg.exe", "tools/ffprobe.exe", "tools/yt-dlp.exe",
+    "tools/deno.exe",
     "tools/clarora-asr.exe", "tools/clarora-tts.exe", "tools/ggml-cpu.dll",
     "licenses/rust/inventory.json", "licenses/rust/Cargo.lock",
 )
@@ -148,6 +149,7 @@ def native_checks(root):
         ("tools/ffmpeg.exe", ["-version"], 0),
         ("tools/ffprobe.exe", ["-version"], 0),
         ("tools/yt-dlp.exe", ["--ignore-config", "--version"], 0),
+        ("tools/deno.exe", ["--version"], 0),
         ("tools/clarora-asr.exe", [], 2),
         ("tools/clarora-tts.exe", [], 2),
     ]
@@ -190,7 +192,7 @@ def verify(root, runtime=False, native=False, installed=False):
         for text in item["license_files"]:
             path = root / relative_path(text)
             require(path.is_file() and path.stat().st_size > 0, f"Missing/empty license: {text}")
-    for text in REQUIRED_FILES + (() if runtime else ("clarora-gpui.exe", "LICENSE", "README.md")):
+    for text in REQUIRED_FILES + (() if runtime else ("clarora-gpui.exe", "LICENSE", "README.md", "clarora.ico")):
         require((root / text).is_file() and (root / text).stat().st_size > 0, f"Missing runtime file: {text}")
     require((root / "mpv-2.dll").is_file() or (root / "libmpv-2.dll").is_file(), "Missing libmpv runtime")
     rust = json.loads((root / "licenses/rust/inventory.json").read_text(encoding="utf-8"))
@@ -207,15 +209,23 @@ def verify(root, runtime=False, native=False, installed=False):
     installer_files = {"unins000.exe", "unins000.dat", "unins000.msg"} if installed else set()
     actual = inventory(root, {manifest_name, *installer_files})
     expected = sorted(declared, key=lambda item: item["path"])
-    require(actual == expected, "Package inventory differs: missing, additional or changed files")
+    expected_by_path = {item["path"]: item for item in expected}
+    actual_by_path = {item["path"]: item for item in actual}
+    if installed:
+        # Upgrades deliberately leave old runtime files in place; verify every
+        # current file exactly, while allowing obsolete extras.
+        require(set(expected_by_path) <= set(actual_by_path), "Installed package is missing current files")
+        for path, item in expected_by_path.items():
+            require(actual_by_path[path] == item, f"Installed package file changed: {path}")
+    else:
+        require(actual == expected, "Package inventory differs: missing, additional or changed files")
     graph = []
     lower_files = {path.relative_to(root).as_posix().lower(): path for path in root.rglob("*")
-                   if path.is_file() and path.relative_to(root).as_posix() not in installer_files}
-    require(len(lower_files) == len(actual) + 1, "Case-colliding Windows package paths")
-    for path in sorted(root.rglob("*")):
+                   if path.is_file() and path.relative_to(root).as_posix() in expected_by_path}
+    require(len(lower_files) == len(expected_by_path), "Case-colliding Windows package paths")
+    for relative in sorted(expected_by_path):
+        path = root / relative
         if path.suffix.lower() not in (".dll", ".exe"):
-            continue
-        if path.relative_to(root).as_posix() in installer_files:
             continue
         info = pe_info(path)
         relative = path.relative_to(root)
@@ -241,7 +251,7 @@ def main():
     parser.add_argument("package", type=Path)
     parser.add_argument("--runtime", action="store_true")
     parser.add_argument("--native", action="store_true")
-    parser.add_argument("--installed", action="store_true", help="Allow Inno's three unins000 files in an installed tree")
+    parser.add_argument("--installed", action="store_true", help="Allow obsolete upgrade files and Inno uninstall records")
     parser.add_argument("--report", required=True, type=Path)
     args = parser.parse_args()
     report = {"schema_version": 1, "status": "failed", "package": str(args.package.resolve())}

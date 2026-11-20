@@ -516,6 +516,12 @@ fn download_into(
         if let Some(browser) = browser {
             args.extend(["--cookies-from-browser".into(), browser.id().into()]);
         }
+        if let Ok(deno) = tool("deno") {
+            args.extend([
+                "--js-runtimes".into(),
+                format!("deno:{}", deno.to_string_lossy()),
+            ]);
+        }
         args.extend(options.iter().map(|arg| (*arg).to_owned()));
         args.extend([
             "--ffmpeg-location".into(),
@@ -669,6 +675,12 @@ pub fn download_youtube_with(
         &url,
         cancel,
         |directory| {
+            if cfg!(windows) && crate::runtime::packaged() {
+                ensure!(
+                    tool("deno").is_ok(),
+                    "YouTube 下载需要外部 JavaScript runtime；安装包缺少 tools/deno.exe"
+                );
+            }
             download_into(
                 directory,
                 &url,

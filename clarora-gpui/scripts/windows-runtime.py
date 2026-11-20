@@ -163,6 +163,8 @@ def stage(work, output, msvc_redist, msvc_licenses):
               license_files(sources["ffmpeg"], output / "licenses/ffmpeg"))
     yt_licenses = license_files(sources["yt-dlp-license"], output / "licenses/yt-dlp") + license_files(sources["yt-dlp-notices"], output / "licenses/yt-dlp")
     component("yt-dlp", [(one(sources["yt-dlp"], "yt-dlp.exe"), "tools/yt-dlp.exe")], yt_licenses)
+    deno_licenses = license_files(sources["deno-license"], output / "licenses/deno")
+    component("deno", [(one(sources["deno"], "deno.exe"), "tools/deno.exe")], deno_licenses)
     component("pdfium", [(one(sources["pdfium"], "pdfium.dll"), "pdfium.dll")],
               license_files(sources["pdfium"], output / "licenses/pdfium"))
     whisper_dlls = sorted((work / "whisper-install").rglob("*.dll"))

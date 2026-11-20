@@ -99,10 +99,32 @@ impl Request {
     }
 }
 
+#[cfg(windows)]
+fn powershell() -> Result<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        candidates.push(PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe"));
+    }
+    for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+        for name in ["pwsh.exe", "powershell.exe"] {
+            candidates.push(directory.join(name));
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .context("未找到 PowerShell（powershell.exe 或 pwsh.exe）")
+}
+
+#[cfg(not(windows))]
+fn powershell() -> Result<PathBuf> {
+    anyhow::bail!("PowerShell 仅适用于 Windows")
+}
+
 fn command_paths(command: String, cancel: &Cancel) -> Result<Vec<PathBuf>> {
     let (exe, args) = if cfg!(windows) {
         (
-            PathBuf::from("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+            powershell()?,
             vec![
                 "-NoProfile".into(),
                 "-NonInteractive".into(),

@@ -13,6 +13,10 @@ try {
 if ($env:OS -ne 'Windows_NT') { throw 'Run this packaging entry point on Windows.' }
 $RuntimeDir = (Resolve-Path -LiteralPath $RuntimeDir).Path
 $Executable = (Resolve-Path -LiteralPath $Executable).Path
+$exeInfo = (Get-Item -LiteralPath $Executable).VersionInfo
+if ($exeInfo.FileDescription -ne 'Clarora' -or $exeInfo.ProductName -ne 'Clarora') {
+    throw 'Windows executable is missing the Clarora icon/version resource.'
+}
 $Output = [IO.Path]::GetFullPath($Output)
 if ($Output.StartsWith($RuntimeDir + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or $Output -eq $RuntimeDir) {
     throw 'Output must be separate from RuntimeDir.'
