@@ -936,11 +936,24 @@ impl Probe {
                     app.video.sentence_repeat.is_none(),
                     "普通模式回上一P误启用三次"
                 );
+                let state = app.media.player.snapshot();
                 ensure!(
-                    app.media.player.snapshot().position >= 7.95
-                        && app.media.player.snapshot().position < 10.
-                        && !app.media.player.snapshot().paused,
-                    "普通模式回上一P没有从末句8秒开头播放或仍暂停"
+                    state.position >= 7.95 && state.position < 10. && !state.paused,
+                    "普通模式回上一P没有从末句8秒开头播放或仍暂停：position={} paused={} load_revision={} session_rev={} pending={:?} repeat={:?} session={:?} status={}",
+                    state.position,
+                    state.paused,
+                    state.load_revision,
+                    app.media.session.revision(),
+                    app.video
+                        .pending_start
+                        .as_ref()
+                        .map(|p| (p.revision, p.from_end, p.seek_to)),
+                    app.video.sentence_repeat,
+                    app.media
+                        .session
+                        .video_sentence()
+                        .map(|s| (s.index, s.range, s.total)),
+                    app.status
                 );
                 self.record(app, "普通模式两次左键回上一P从最后一句播放")?;
                 app.handle(Action::VideoSentenceRepeat(Some(0), Some(3)), window, cx);

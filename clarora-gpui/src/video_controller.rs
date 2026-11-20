@@ -275,6 +275,19 @@ impl AppView {
                 within_sentence_seek: None,
             });
         }
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "open_at_start set pending={:?} page={} session_rev={}",
+            self.video.pending_start.as_ref().map(|p| (
+                p.revision,
+                p.path.clone(),
+                p.paused,
+                p.from_end,
+                p.seek_to
+            )),
+            self.page,
+            self.media.session.revision()
+        );
         if self.video.series.is_none() {
             let _ = self.lib.set_setting("bilibili_series", "");
         }
@@ -383,6 +396,21 @@ impl AppView {
         self.video.sentence_repeat = None;
     }
     pub(super) fn reset_video_sentence_request(&mut self) {
+        #[cfg(debug_assertions)]
+        if self.video.pending_start.is_some() {
+            eprintln!(
+                "reset_video_sentence_request clears pending video start: page={} session_rev={} pending={:?}\n{}",
+                self.page,
+                self.media.session.revision(),
+                self.video.pending_start.as_ref().map(|p| (
+                    p.revision,
+                    p.path.clone(),
+                    p.from_end,
+                    p.seek_to
+                )),
+                std::backtrace::Backtrace::force_capture()
+            );
+        }
         self.video.part_confirmation = None;
         self.video.seek_drag_target = None;
         self.video.pending_start = None;
@@ -423,6 +451,17 @@ impl AppView {
             || self.video.path.as_ref() != Some(&pending.path)
             || self.media.session.path.as_ref() != Some(&pending.path)
         {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "pending video start invalidated: page={} is_video={} pending_rev={} session_rev={} video_path={:?} pending_path={:?} session_path={:?}",
+                self.page,
+                self.media.session.is_video(),
+                pending.revision,
+                self.media.session.revision(),
+                self.video.path,
+                pending.path,
+                self.media.session.path
+            );
             self.video.pending_start = None;
             return true;
         }
