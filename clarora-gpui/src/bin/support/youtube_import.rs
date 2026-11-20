@@ -1,6 +1,4 @@
-#[cfg(unix)]
-use anyhow::Context;
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use clarora_gpui::{data::Library, process};
 use serde_json::{Value, json};
 #[cfg(unix)]
