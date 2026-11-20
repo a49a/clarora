@@ -645,7 +645,7 @@ fn repair_derived(state: &mut Envelope) -> Result<()> {
                 .and_then(|s| s.split_once(':'))
                 .and_then(|(kind, id)| parent_key(kind, id))
                 .is_some_and(|k| state.records.get(&k).is_none_or(|p| p.value.is_none())),
-            "audio_stars" => {
+            "audio_stars" | "audio_stats" => {
                 let audio = value["audio_id"].as_str().unwrap_or("");
                 state
                     .records

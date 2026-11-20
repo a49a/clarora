@@ -408,6 +408,16 @@ impl AppView {
                     )
                     .child(
                         self.button(
+                            "empty-import-audio-directory",
+                            "导入文件夹",
+                            Action::Pick("audio-directory".into()),
+                            cx,
+                        )
+                        .outline()
+                        .tooltip("文件夹名作为练习组，文件名作为音频名"),
+                    )
+                    .child(
+                        self.button(
                             "empty-manage-audio",
                             "管理音频",
                             Action::Page("library".into()),
@@ -456,6 +466,42 @@ impl AppView {
         .into_any_element()
     }
 
+    pub(super) fn audio_current_header_menu(&self, cx: &Context<Self>) -> AnyElement {
+        let mut audios = self
+            .audio
+            .library
+            .merges
+            .learning(&self.audio.audios, &self.audio.practice_id);
+        if self.audio.starred_review {
+            audios.retain(|r| self.audio.library.starred.contains(&text(r, "id")));
+        }
+        let index = audios
+            .iter()
+            .position(|r| text(r, "id") == self.audio.current_id);
+        let title = index
+            .map(|i| text(audios[i], "name"))
+            .unwrap_or_else(|| "选择音频".into());
+        let options = audios
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                (
+                    format!("{}  {}", i + 1, text(r, "name")),
+                    Action::Audio(text(r, "id")),
+                    Some(i) == index,
+                    false,
+                )
+            })
+            .collect();
+        let label = if index.is_none() {
+            "选择音频 ▾".to_string()
+        } else {
+            format!("当前音频：{} ▾", title.chars().take(20).collect::<String>())
+        };
+        self.group_menu("audio-header-current", label, options, "切换当前音频", cx)
+            .into_any_element()
+    }
+
     pub(super) fn audio_study(
         &mut self,
         window: &mut Window,
@@ -477,21 +523,6 @@ impl AppView {
         let index = audios
             .iter()
             .position(|r| text(r, "id") == self.audio.current_id);
-        let title = index
-            .map(|i| text(audios[i], "name"))
-            .unwrap_or_else(|| "选择音频".into());
-        let audio_options = audios
-            .iter()
-            .enumerate()
-            .map(|(i, r)| {
-                (
-                    format!("{}  {}", i + 1, text(r, "name")),
-                    Action::Audio(text(r, "id")),
-                    Some(i) == index,
-                    false,
-                )
-            })
-            .collect();
         let previous = index
             .and_then(|i| i.checked_sub(1))
             .map(|i| text(audios[i], "id"));
@@ -517,12 +548,6 @@ impl AppView {
                 self.button("audio-blind-mode", "盲听", Action::AudioBlind(true), cx)
                     .selected(self.audio.blind.enabled),
             )
-            .child(self.player_menu(
-                "audio-picker",
-                format!("{} ▾", title.chars().take(24).collect::<String>()),
-                audio_options,
-                cx,
-            ))
             .child(
                 self.button(
                     "audio-star",
@@ -614,6 +639,21 @@ impl AppView {
             })
             .child(
                 self.button(
+                    "audio-group-note",
+                    if self.audio.note_open {
+                        "收起笔记"
+                    } else {
+                        "组笔记"
+                    },
+                    Action::AudioNote,
+                    cx,
+                )
+                .outline()
+                .selected(self.audio.note_open)
+                .disabled(self.audio.practice_id.is_empty()),
+            )
+            .child(
+                self.button(
                     "audio-manage",
                     "管理音频",
                     Action::Page("library".into()),
@@ -621,13 +661,42 @@ impl AppView {
                 )
                 .outline(),
             );
-        let header = div()
+        let mut header = div()
             .flex()
             .flex_col()
             .flex_shrink_0()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(navigation)
+            .child(navigation);
+        if self.audio.note_open {
+            header = header.child(
+                div()
+                    .px_4()
+                    .pb_3()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(self.field("group_note", "组笔记"))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .child(
+                                self.button(
+                                    "audio-save-note",
+                                    "保存组笔记",
+                                    Action::AudioNoteSave,
+                                    cx,
+                                )
+                                .primary()
+                                .disabled(self.tasks.foreground.is_running()),
+                            )
+                            .child(self.button("audio-close-note", "收起", Action::AudioNote, cx)),
+                    ),
+            );
+        }
+        header = header
             .when(!self.audio.blind.enabled, |v| {
                 v.child(self.audio_subtitle_toolbar(cx))
             })

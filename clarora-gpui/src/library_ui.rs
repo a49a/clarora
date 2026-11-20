@@ -124,6 +124,17 @@ impl AppView {
             )
             .child(
                 self.button(
+                    "library-import-directory",
+                    "＋ 导入文件夹",
+                    Action::Pick("audio-directory".into()),
+                    cx,
+                )
+                .outline()
+                .tooltip("选择文件夹：文件夹名作为练习组，文件名作为组内音频名")
+                .disabled(busy),
+            )
+            .child(
+                self.button(
                     "library-study-starred",
                     "★ 复习星标",
                     Action::LibraryStudyStarred,
@@ -680,12 +691,13 @@ impl AppView {
             "group-new" | "group-rename" => {
                 let title = match self.audio.library.tool.as_str() {
                     "group-new" => "新建练习组",
-                    _ => "重命名练习组",
+                    _ => "练习组设置",
                 };
                 return detail.child(
                     panel(cx)
                         .child(div().text_lg().child(title))
                         .child(self.field("library_name", "名称"))
+                        .child(self.field("group_note", "组笔记"))
                         .child(
                             div()
                                 .flex()
@@ -694,7 +706,7 @@ impl AppView {
                                 .child(
                                     self.button(
                                         "library-save-name",
-                                        "保存名称",
+                                        "保存设置",
                                         Action::LibrarySaveName,
                                         cx,
                                     )

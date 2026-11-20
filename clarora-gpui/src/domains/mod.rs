@@ -36,6 +36,8 @@ pub(super) enum Action {
     AudioReviewStep(i8),
     AudioReviewStop,
     AudioTools,
+    AudioNote,
+    AudioNoteSave,
     AudioFont(u8),
     AudioCurrent,
     AudioFollow,
@@ -290,6 +292,8 @@ impl From<Action> for Command {
             Action::AudioReviewStep(v0) => Routed::Audio(audio::Command::AudioReviewStep(v0)),
             Action::AudioReviewStop => Routed::Audio(audio::Command::AudioReviewStop),
             Action::AudioTools => Routed::Audio(audio::Command::AudioTools),
+            Action::AudioNote => Routed::Audio(audio::Command::AudioNote),
+            Action::AudioNoteSave => Routed::Audio(audio::Command::AudioNoteSave),
             Action::AudioFont(v0) => Routed::Audio(audio::Command::AudioFont(v0)),
             Action::AudioCurrent => Routed::Audio(audio::Command::AudioCurrent),
             Action::AudioFollow => Routed::Audio(audio::Command::AudioFollow),
@@ -665,6 +669,9 @@ pub(super) fn complete(
         }
         Outcome::Message(v0) => tasks::Completed::Message(v0).apply(app, context, window, cx),
         Outcome::ClipSaved => audio::Completed::ClipSaved.apply(app, context, window, cx),
+        Outcome::AudioDirectoryImported(v0) => {
+            audio::Completed::AudioDirectoryImported(v0).apply(app, context, window, cx)
+        }
         Outcome::VideoClipSaved => video::Completed::ClipSaved.apply(app, context, window, cx),
         Outcome::Issue(v0) => tasks::Completed::Issue(v0).apply(app, context, window, cx),
         Outcome::Parts(v0) => video::Completed::Parts(v0).apply(app, context, window, cx),

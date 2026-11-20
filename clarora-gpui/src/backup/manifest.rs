@@ -468,9 +468,17 @@ pub fn validate(manifest: &mut Manifest) -> Result<()> {
     for spec in TABLES {
         let table = spec.name;
         let columns = spec.columns;
-        let rows = manifest.data.get(table).context("缺少备份数据表")?;
+        let rows = manifest.data.get_mut(table).context("缺少备份数据表")?;
         ensure!(rows.len() <= 500000, "数据表过大");
         for row in rows {
+            // Backups created before practice-group notes existed do not have
+            // this column. Default it instead of rejecting an otherwise valid
+            // old backup.
+            if table == "listening_practices"
+                && !row.get("note").is_some_and(|value| value.is_string())
+            {
+                row.insert("note".into(), json!(""));
+            }
             ensure!(
                 columns.iter().all(|col| row
                     .get(*col)

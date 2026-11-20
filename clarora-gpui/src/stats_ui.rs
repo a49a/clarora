@@ -162,11 +162,13 @@ pub(super) fn content(app: &AppView, cx: &mut Context<AppView>) -> Div {
         .child(daily_minutes_chart(cx, &focus_days, 10.))
         .child("最近 14 天媒体播放时长")
         .child(daily_minutes_chart(cx, &media_days, 10.))
+        .child("各音频累计播放时长（前 10）")
+        .child(audio_playback_stats(app, cx))
         .child(
             div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child("学习日按凌晨 4 点切换，0–4 点的记录归前一天。专注时长按每轮「结束本轮」的实际时长统计；媒体播放只累计未暂停的音频或视频。阅读、写作、口语、暂停和冥想不计入媒体播放。平均分心间隔 = 所选范围内已结束专注轮次的实际总时长 ÷ 分心总次数；上方卡片随范围切换。"),
+                .child("各音频累计播放时长不受上方统计范围影响；删除音频后对应记录会一并移除。学习日按凌晨 4 点切换，0–4 点的记录归前一天。专注时长按每轮「结束本轮」的实际时长统计；媒体播放只累计未暂停的音频或视频。阅读、写作、口语、暂停和冥想不计入媒体播放。平均分心间隔 = 所选范围内已结束专注轮次的实际总时长 ÷ 分心总次数；上方卡片随范围切换。"),
         );
     let attempts = &app.data.speaking;
     let mut trend = div().flex().gap_2().items_end().h(px(140.));
@@ -202,6 +204,68 @@ pub(super) fn content(app: &AppView, cx: &mut Context<AppView>) -> Div {
         ));
     }
     content
+}
+
+fn audio_playback_stats(app: &AppView, cx: &Context<AppView>) -> Div {
+    if app.data.audio_stats.is_empty() {
+        return div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child("暂无音频播放记录。");
+    }
+    let maximum = app
+        .data
+        .audio_stats
+        .iter()
+        .filter_map(|row| row["seconds"].as_f64())
+        .fold(0., f64::max);
+    let mut list = div().flex().flex_col().gap_2().max_w(px(680.));
+    for row in app.data.audio_stats.iter().take(10) {
+        let name = row["name"].as_str().unwrap_or("未命名音频");
+        let seconds = row["seconds"].as_f64().unwrap_or(0.);
+        let ratio = if maximum > 0. {
+            (seconds / maximum).clamp(0., 1.) as f32
+        } else {
+            0.
+        };
+        list = list.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .truncate()
+                        .child(name.to_string()),
+                )
+                .child(
+                    div()
+                        .w(px(100.))
+                        .flex_shrink_0()
+                        .h(px(8.))
+                        .rounded_full()
+                        .bg(cx.theme().muted)
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(ratio))
+                                .rounded_full()
+                                .bg(cx.theme().primary),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(72.))
+                        .text_right()
+                        .text_sm()
+                        .child(format!("{:.1} 分钟", seconds / 60.)),
+                ),
+        );
+    }
+    list
 }
 
 fn daily_minutes_chart(cx: &Context<AppView>, days: &[(String, f64)], floor: f64) -> Div {

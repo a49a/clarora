@@ -72,6 +72,11 @@ impl MediaStats {
         self.pending >= FLUSH_SECONDS
     }
 
+    /// Seconds waiting for a successful flush.
+    pub fn pending(&self) -> f64 {
+        self.pending
+    }
+
     /// Take the accumulated seconds. The caller persists them atomically.
     pub fn take(&mut self) -> f64 {
         std::mem::take(&mut self.pending)

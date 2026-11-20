@@ -14,6 +14,7 @@ pub type Row = Map<String, Value>;
 pub(crate) type VaultSnapshot = (BTreeMap<String, Vec<Row>>, BTreeMap<String, String>);
 mod audio;
 mod cards;
+pub use audio::AudioDirectoryImport;
 pub(crate) mod schema;
 mod tracking;
 pub use schema::CardKind;
@@ -98,6 +99,20 @@ impl Library {
         };
         let db = this.db()?;
         db.execute_batch(include_str!("schema.sql"))?;
+        let has_practice_note = {
+            let mut statement = db.prepare("PRAGMA table_info(listening_practices)")?;
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .iter()
+                .any(|name| name == "note")
+        };
+        if !has_practice_note {
+            db.execute(
+                "ALTER TABLE listening_practices ADD COLUMN note TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
         tracking::install(&db)?;
         for dir in ["media", "pdf", "models", "downloads", "recordings"] {
             fs::create_dir_all(this.root.join(dir))?;

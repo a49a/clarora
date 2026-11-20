@@ -44,6 +44,7 @@ pub(super) struct AudioState {
     pub(super) blind_settle_until: Option<Instant>,
     pub(super) clip_mode: bool,
     pub(super) tools_open: bool,
+    pub(super) note_open: bool,
     pub(super) show_current: bool,
     pub(super) current_scroll: ScrollHandle,
     pub(super) font_size: u8,
@@ -82,6 +83,7 @@ impl AudioState {
             blind_settle_until: None,
             clip_mode: false,
             tools_open: false,
+            note_open: false,
             show_current: true,
             current_scroll: ScrollHandle::new(),
             font_size: 18,
@@ -389,6 +391,8 @@ pub(super) struct PlaybackState {
     pub(super) volume: f64,
     pub(super) volume_before_mute: f64,
     pub(super) stats: clarora_gpui::media_stats::MediaStats,
+    /// Audio owner for pending [MediaStats] seconds; empty for video/cards.
+    pub(super) stats_owner: String,
 }
 impl PlaybackState {
     pub(super) fn poll(&mut self) -> bool {
@@ -479,6 +483,7 @@ impl PlaybackState {
             volume: 100.,
             volume_before_mute: 100.,
             stats: Default::default(),
+            stats_owner: String::new(),
         }
     }
 }

@@ -318,6 +318,7 @@ impl AppView {
             ("library_search", "搜索当前组的音频", false, false),
             ("library_groups", "搜索练习组", false, false),
             ("library_name", "输入名称", false, false),
+            ("group_note", "这组音频的笔记、目标、生词…", true, false),
             ("library_audio_name", "音频名称", false, false),
             ("group", "练习组名称", false, false),
             ("video_group_name", "视频分组名称", false, false),
@@ -376,6 +377,8 @@ impl AppView {
                     let mut input = InputState::new(window, cx).placeholder(placeholder);
                     if key == "question" {
                         input = input.auto_grow(4, 10).soft_wrap(true);
+                    } else if key == "group_note" {
+                        input = input.multi_line(true).rows(5);
                     } else if multi {
                         input = input.multi_line(true).rows(3);
                     }
@@ -1088,7 +1091,7 @@ impl AppView {
     }
     fn pick(&self, kind: &str, window: &mut Window, cx: &mut Context<Self>) {
         let kind = kind.to_string();
-        let directory = kind == "directory";
+        let directory = kind == "directory" || kind == "audio-directory";
         let audio_group = self.audio.practice_id.clone();
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: !directory,
@@ -1216,6 +1219,13 @@ impl AppView {
                     documents::import_anki(&lib, &path)?
                 )))
             }),
+            "audio-directory" => {
+                self.begin("正在导入音频文件夹…", move |lib, _, _| {
+                    Ok(Outcome::AudioDirectoryImported(
+                        lib.import_audio_directory(&path)?,
+                    ))
+                });
+            }
             "audio" => {
                 let group = self.audio.practice_id.clone();
                 self.begin("正在导入音频…", move |lib, _, _| {

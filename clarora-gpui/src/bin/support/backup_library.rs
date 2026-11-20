@@ -185,6 +185,13 @@ fn assert_restored(
         lib.list("audio_stars")?.len() == 1 && lib.audio_star_ids()?.len() == 1,
         "audio star was not restored"
     );
+    ensure!(
+        lib.list("audio_stats")?.len() == 1
+            && lib.list("audio_stats")?[0]["listen_seconds"]
+                .as_f64()
+                .is_some_and(|seconds| (seconds - 240.).abs() < 0.001),
+        "audio playback time was not restored"
+    );
     let video = collection.active().context("selected video missing")?;
     ensure!(
         collection.groups == vec!["课程".to_string()] && video.group == "课程",
@@ -439,6 +446,7 @@ pub fn run(parent: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result
         source.toggle_audio_star(&row_text(&star_audio, "id"))?,
         "audio star fixture failed"
     );
+    source.stat_audio(&row_text(&star_audio, "id"), 240.)?;
     let archive = root.join("full-library.zip");
     backup::export_local_cancellable(&source, &archive, &cancel)?;
     let mut zip = zip::ZipArchive::new(fs::File::open(&archive)?)?;
@@ -468,8 +476,11 @@ pub fn run(parent: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result
                 .is_some_and(|rows| rows.len() == 1)
             && cloud_manifest["data"]["audio_stars"]
                 .as_array()
+                .is_some_and(|rows| rows.len() == 1)
+            && cloud_manifest["data"]["audio_stats"]
+                .as_array()
                 .is_some_and(|rows| rows.len() == 1),
-        "云备份没有包含专注记录、想法或音频星标"
+        "云备份没有包含专注记录、想法、音频星标或播放时长"
     );
     let video_bytes = fs::read(fixture)?;
     ensure!(

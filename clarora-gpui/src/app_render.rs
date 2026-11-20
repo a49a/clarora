@@ -891,6 +891,7 @@ impl Render for AppView {
                                             })
                                             .when(self.page == "listening", |row| {
                                                 row.child(self.audio_group_header_menu(cx))
+                                                    .child(self.audio_current_header_menu(cx))
                                             })
                                             .when(self.page == "video", |row| {
                                                 row.child(self.video_group_header_menu(cx))

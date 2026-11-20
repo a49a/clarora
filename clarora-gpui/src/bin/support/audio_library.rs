@@ -1,4 +1,4 @@
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use clarora_gpui::{
     audio_library::{self, State},
     data::{Library, text},
@@ -6,8 +6,10 @@ use clarora_gpui::{
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs, path::Path};
 pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()> {
+    run_legacy_note_migration(lib, results)?;
     run_inline_rename(lib, fixture, results)?;
     run_import_rollback(lib, fixture, results)?;
+    run_directory_import(lib, fixture, results)?;
     // An isolated real library prevents management operations affecting other E2E workflows.
     let lib = Library::open(lib.root.join("audio-manager"))?;
     let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 23).unwrap();
@@ -36,6 +38,18 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
     ensure!(next_day == "2026-10-24", "新日期沿用旧日期名称");
     let a = lib.practice("Course A")?;
     let b = lib.practice("Course B")?;
+    lib.set_practice_note(&a, "Listening goals\nReview lesson 3")?;
+    ensure!(
+        lib.list("listening_practices")?
+            .iter()
+            .any(|row| text(row, "id") == a
+                && text(row, "note") == "Listening goals\nReview lesson 3"),
+        "练习组笔记没有保存"
+    );
+    ensure!(
+        lib.set_practice_note(&a, &"x".repeat(20_001)).is_err(),
+        "超长练习组笔记未拒绝"
+    );
     lib.import_audio(&a, fixture)?;
     let original = lib.list("listening_audios")?.remove(0);
     let key = text(&original, "id");
@@ -69,6 +83,14 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
         "星标筛选未包含已加星标音频"
     );
     state.filter = 0;
+    lib.stat_audio(&key, 90.)?;
+    lib.stat_audio(&key, 30.)?;
+    let recorded: f64 = lib.db()?.query_row(
+        "SELECT listen_seconds FROM audio_stats WHERE audio_id=?",
+        [&key],
+        |row| row.get(0),
+    )?;
+    ensure!((recorded - 120.).abs() < 0.001, "音频累计播放时长未累加");
     ensure!(!state.preview.is_empty(), "所选音频字幕预览丢失");
     audio_library::move_records(&lib, &a, &b, std::slice::from_ref(&key))?;
     ensure!(
@@ -156,12 +178,24 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
             .contains(&key),
         "重开后星标丢失"
     );
+    ensure!(
+        Library::open(lib.root.clone())?.db()?.query_row(
+            "SELECT listen_seconds FROM audio_stats WHERE audio_id=?",
+            [&key],
+            |row| row.get::<_, f64>(0)
+        )? >= 120.,
+        "重开后音频累计播放时长丢失"
+    );
     audio_library::delete_records(&lib, &b, std::slice::from_ref(&key))?;
     ensure!(
         Path::new(&audio).is_file() && Path::new(&subtitle).is_file(),
         "移除记录误删附件"
     );
     ensure!(lib.audio_star_ids()?.is_empty(), "删除音频后星标未级联清理");
+    ensure!(
+        lib.list("audio_stats")?.is_empty(),
+        "删除音频后累计播放时长未级联清理"
+    );
     let reopened = Library::open(lib.root.clone())?;
     ensure!(
         reopened.audio_star_ids()?.is_empty(),
@@ -181,6 +215,14 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
         "日期组或自定义名称重开后丢失"
     );
     ensure!(
+        reopened
+            .list("listening_practices")?
+            .iter()
+            .any(|row| text(row, "id") == a
+                && text(row, "note") == "Listening goals\nReview lesson 3"),
+        "重开后练习组笔记丢失"
+    );
+    ensure!(
         !reopened
             .list("listening_audios")?
             .iter()
@@ -190,10 +232,128 @@ pub fn run(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()
     fs::write(
         lib.root.join("management-evidence.json"),
         serde_json::to_vec_pretty(
-            &json!({"default_practice_names":{"first":first_name,"second":second_name,"next_available":third,"next_day":next_day,"custom_name_persisted":true,"suggestion_does_not_create":true},"rename":true,"search_filter":true,"audio_star":true,"group_scope":true,"move_with_subtitles":true,"duplicate_rollback":true,"delete_snapshot_scope":true,"attachments_retained":true,"reopen":true}),
+            &json!({"default_practice_names":{"first":first_name,"second":second_name,"next_available":third,"next_day":next_day,"custom_name_persisted":true,"suggestion_does_not_create":true},"rename":true,"search_filter":true,"audio_star":true,"audio_stats":true,"group_scope":true,"practice_note":true,"move_with_subtitles":true,"duplicate_rollback":true,"delete_snapshot_scope":true,"attachments_retained":true,"reopen":true}),
         )?,
     )?;
     results.push(json!({"workflow":"音频管理：真实SQLite/文件 → 搜索筛选/分组选择 → 重命名/移动冲突回滚 → 删除作用域及附件保留 → 重开", "passed":true,"evidence":"audio-manager/management-evidence.json"}));
+    Ok(())
+}
+
+fn run_legacy_note_migration(parent: &Library, results: &mut Vec<Value>) -> Result<()> {
+    let root = parent.root.join("legacy-practice-note");
+    fs::create_dir_all(&root)?;
+    {
+        let db = rusqlite::Connection::open(root.join("clarora.db"))?;
+        db.execute_batch(
+            "CREATE TABLE listening_practices (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+             INSERT INTO listening_practices(id,name) VALUES('legacy-group','旧练习组');",
+        )?;
+    }
+    let lib = Library::open(root)?;
+    ensure!(
+        lib.list("listening_practices")?.iter().any(|row| {
+            text(row, "id") == "legacy-group"
+                && text(row, "name") == "旧练习组"
+                && text(row, "note").is_empty()
+        }),
+        "旧库组名未保留或组笔记默认值错误"
+    );
+    lib.set_practice_note("legacy-group", "迁移后的组笔记")?;
+    ensure!(
+        Library::open(lib.root.clone())?
+            .list("listening_practices")?
+            .iter()
+            .any(|row| text(row, "id") == "legacy-group" && text(row, "note") == "迁移后的组笔记"),
+        "组笔记迁移后未持久化"
+    );
+    let trigger: String = lib.db()?.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='cloud_sync_listening_practices_update'",
+        [],
+        |row| row.get(0),
+    )?;
+    ensure!(trigger.contains("'note'"), "云同步触发器未包含组笔记列");
+    results.push(json!({"workflow":"旧音频库缺少组笔记列 → 自动迁移保留组名 → 笔记重开/云同步触发器","passed":true,"evidence":"legacy-practice-note"}));
+    Ok(())
+}
+
+fn run_directory_import(lib: &Library, fixture: &Path, results: &mut Vec<Value>) -> Result<()> {
+    let lib = Library::open(lib.root.join("audio-directory-import"))?;
+    let directory = lib.root.join("Imported Folder");
+    fs::create_dir_all(directory.join("nested"))?;
+    fs::copy(fixture, directory.join("Lesson One.mp3"))?;
+    fs::copy(fixture, directory.join("Lesson Two.mp3"))?;
+    fs::copy(fixture, directory.join("nested").join("Nested.mp3"))?;
+    fs::write(
+        directory.join("Lesson One.srt"),
+        "1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+    )?;
+    fs::write(directory.join("notes.txt"), "not audio")?;
+    fs::write(directory.join(".hidden.mp3"), b"hidden")?;
+
+    let imported = lib.import_audio_directory(&directory)?;
+    ensure!(
+        imported.name == "Imported Folder",
+        "文件夹名没有作为练习组名"
+    );
+    ensure!(
+        imported.imported == 2 && imported.errors.is_empty(),
+        "目录导入数量或错误不符：{:?}",
+        imported.errors
+    );
+    let practices = lib.list("listening_practices")?;
+    ensure!(
+        practices
+            .iter()
+            .any(|row| text(row, "id") == imported.group && text(row, "name") == "Imported Folder"),
+        "目录导入没有创建对应练习组"
+    );
+    let rows = lib.list("listening_audios")?;
+    let mut names = rows
+        .iter()
+        .filter(|row| text(row, "practice_id") == imported.group)
+        .map(|row| text(row, "name"))
+        .collect::<Vec<_>>();
+    names.sort();
+    ensure!(
+        names == vec!["Lesson One".to_string(), "Lesson Two".to_string()],
+        "文件名没有作为音频名或跳过了非音频/子目录文件：{names:?}"
+    );
+    let first = rows
+        .iter()
+        .find(|row| text(row, "name") == "Lesson One")
+        .context("缺少 Lesson One")?;
+    ensure!(
+        !text(first, "subtitle_uri").is_empty()
+            && Path::new(&text(first, "subtitle_uri")).is_file(),
+        "同名字幕文件没有随音频导入"
+    );
+
+    let again = lib.import_audio_directory(&directory)?;
+    ensure!(
+        again.group == imported.group && again.imported == 0 && again.errors.len() == 2,
+        "重复导入没有回到原组并报告同名冲突"
+    );
+    ensure!(
+        lib.list("listening_audios")?
+            .iter()
+            .filter(|row| text(row, "practice_id") == imported.group)
+            .count()
+            == 2,
+        "重复导入产生了重复音频"
+    );
+    let evidence = lib.root.join("audio-directory-import.json");
+    fs::write(
+        &evidence,
+        serde_json::to_vec_pretty(&json!({
+            "group": imported.name,
+            "imported": imported.imported,
+            "files": names,
+            "sidecar_subtitle": true,
+            "nested_hidden_and_non_audio_skipped": true,
+            "reimport_duplicates_rejected": true,
+        }))?,
+    )?;
+    results.push(json!({"workflow":"音频文件夹导入：文件夹名成组/文件名为音频名/同名字幕/重复导入","passed":true,"evidence":evidence}));
     Ok(())
 }
 

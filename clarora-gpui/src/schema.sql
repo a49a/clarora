@@ -1,8 +1,9 @@
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS words (id INTEGER PRIMARY KEY AUTOINCREMENT, word TEXT NOT NULL UNIQUE, meaning TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', created_at TEXT NOT NULL DEFAULT (datetime('now')));
-CREATE TABLE IF NOT EXISTS listening_practices (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE IF NOT EXISTS listening_practices (id TEXT PRIMARY KEY, name TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE TABLE IF NOT EXISTS listening_audios (id TEXT PRIMARY KEY, practice_id TEXT NOT NULL, name TEXT NOT NULL, audio_uri TEXT NOT NULL, subtitle_uri TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY (practice_id) REFERENCES listening_practices(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS audio_stars (audio_id TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY (audio_id) REFERENCES listening_audios(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS audio_stats (audio_id TEXT PRIMARY KEY, listen_seconds REAL NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY (audio_id) REFERENCES listening_audios(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS clip_cards (id TEXT PRIMARY KEY, en_text TEXT NOT NULL, zh_text TEXT, audio_uri TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE TABLE IF NOT EXISTS sentence_cards (id TEXT PRIMARY KEY, text TEXT NOT NULL, translation TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE TABLE IF NOT EXISTS ai_cards (id TEXT PRIMARY KEY, question TEXT NOT NULL, answer TEXT NOT NULL, context_text TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')));

@@ -35,6 +35,15 @@ impl AppView {
             cx.notify();
         }
         let playback_changed = self.media.poll();
+        // Windows shutdown/restart does not always run the normal close hook.
+        // Checkpoint the current media position periodically so at most a few
+        // seconds are lost even when the process is terminated by the OS.
+        if self.position_checkpoint.elapsed() >= Duration::from_secs(15) {
+            self.position_checkpoint = Instant::now();
+            if !self.media.snapshot.paused && !self.media.snapshot.path.is_empty() {
+                self.save_media_position();
+            }
+        }
         if self.page == "listening" {
             let active = video_subtitles::active(&self.audio.cues, self.media.snapshot.position);
             if active != self.audio.active {
@@ -259,6 +268,19 @@ impl AppView {
     }
 
     fn settle_media_stats(&mut self, snapshot: &Playback, active: bool) -> bool {
+        let owner = match self.media.session.owner() {
+            Some(PlaybackOwner::Audio(id)) => id.clone(),
+            _ => String::new(),
+        };
+        if self.media.stats_owner != owner {
+            // Settle the previous owner before MediaStats starts a new path;
+            // otherwise a late flush would credit the newly selected audio.
+            self.flush_media_stats();
+            if self.media.stats.pending() > 0. {
+                return false;
+            }
+            self.media.stats_owner = owner;
+        }
         if !self.media.stats.observe(
             &snapshot.path,
             snapshot.position,
@@ -283,6 +305,14 @@ impl AppView {
                 format!("媒体播放时长保存失败：{error:#}"),
             );
             return false;
+        }
+        if !self.media.stats_owner.is_empty()
+            && let Err(error) = self.lib.stat_audio(&self.media.stats_owner, seconds)
+        {
+            self.report_status(
+                FeedbackKind::Error,
+                format!("音频播放时长保存失败：{error:#}"),
+            );
         }
         if self.media.session.is_audio(&self.audio.current_id) {
             let _ = self.lib.set_setting(

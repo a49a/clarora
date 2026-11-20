@@ -207,8 +207,8 @@ fn merge_snapshot(
         if ["review_schedule", "study_stats", "discover_favorites"].contains(&table) {
             continue;
         }
-        if table == "audio_stars" {
-            for original in data.get(table).context("缺少音频星标表")? {
+        if table == "audio_stars" || table == "audio_stats" {
+            for original in data.get(table).context("缺少音频关联表")? {
                 check_cancel(cancel)?;
                 let old = text(original, "audio_id");
                 let Some(mapped) = mapping.get(&("audio".into(), old)) else {

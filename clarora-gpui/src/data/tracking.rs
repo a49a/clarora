@@ -80,7 +80,12 @@ pub(super) fn install(db: &rusqlite::Connection) -> Result<()> {
             }
             body.push_str(&statement(row, name == "delete", ""));
             let trigger = if video_groups { GROUPS_KEY } else { table };
-            db.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS cloud_sync_{trigger}_{name} AFTER {operation} ON {table} WHEN (SELECT applying=0 AND tracking=1 FROM cloud_sync_identity WHERE singleton=1) {predicate} BEGIN {body} END;"))?;
+            // Recreate triggers when a table gains a column so cloud payloads
+            // include the new field on existing libraries too.
+            db.execute_batch(&format!(
+                "DROP TRIGGER IF EXISTS cloud_sync_{trigger}_{name};
+                 CREATE TRIGGER cloud_sync_{trigger}_{name} AFTER {operation} ON {table} WHEN (SELECT applying=0 AND tracking=1 FROM cloud_sync_identity WHERE singleton=1) {predicate} BEGIN {body} END;"
+            ))?;
         }
     }
     Ok(())

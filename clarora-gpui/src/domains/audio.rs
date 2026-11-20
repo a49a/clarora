@@ -16,6 +16,8 @@ pub(super) enum Command {
     AudioReviewStep(i8),
     AudioReviewStop,
     AudioTools,
+    AudioNote,
+    AudioNoteSave,
     AudioFont(u8),
     AudioCurrent,
     AudioStar(String),
@@ -111,6 +113,7 @@ impl Command {
             Command::AudioPractice(key) => {
                 app.reset_audio_sentence_request();
                 app.invalidate_blind();
+                app.audio.note_open = false;
                 app.audio.starred_review = false;
                 ensure!(
                     app.audio.practices.iter().any(|r| text(r, "id") == key),
@@ -486,6 +489,32 @@ impl Command {
                 app.audio.tools_open = !app.audio.tools_open;
             }
 
+            Command::AudioNote => {
+                ensure!(!app.audio.practice_id.is_empty(), "请先选择练习组");
+                if app.audio.note_open {
+                    app.audio.note_open = false;
+                } else {
+                    let note = app
+                        .audio
+                        .practices
+                        .iter()
+                        .find(|row| text(row, "id") == app.audio.practice_id)
+                        .map(|row| text(row, "note"))
+                        .unwrap_or_default();
+                    app.set("group_note", note, window, cx);
+                    app.audio.note_open = true;
+                }
+            }
+
+            Command::AudioNoteSave => {
+                ensure!(!app.audio.practice_id.is_empty(), "请先选择练习组");
+                let note = app.value("group_note", cx);
+                app.lib.set_practice_note(&app.audio.practice_id, &note)?;
+                app.audio.note_open = false;
+                app.refresh();
+                app.report_status(FeedbackKind::Info, "组笔记已保存".into());
+            }
+
             Command::AudioCurrent => app.audio.show_current = !app.audio.show_current,
 
             Command::AudioFollow => {
@@ -558,7 +587,7 @@ impl Command {
                 let row = app.selected().context("请先选择音频")?;
                 let (model, _) = app
                     .stronger_local_model()
-                    .context("没有比当前更强且已下载的本机转写模型")?;
+                    .context("没有已下载的更高精度同语言本机转写模型；请先在设置 → 语音模型下载")?;
                 let target = audio_subtitles_controller::Target {
                     audio: Some(text(&row, "id")),
                     name: text(&row, "name"),
@@ -650,6 +679,7 @@ pub(super) enum Completed {
     KeyPoints(String, Vec<ai::KeyPoint>),
     TtsReady(Row),
     AudioMerged(clarora_gpui::audio_tools::Merged),
+    AudioDirectoryImported(clarora_gpui::data::AudioDirectoryImport),
 }
 impl Completed {
     pub(super) fn apply(
@@ -660,6 +690,38 @@ impl Completed {
         cx: &mut Context<AppView>,
     ) {
         match self {
+            Completed::AudioDirectoryImported(report) => {
+                app.audio.practice_id = report.group;
+                let _ = app.lib.set_setting("library_group", &app.audio.practice_id);
+                app.audio.library.cancel_rename();
+                app.audio.checked.clear();
+                app.audio.library.selected.clear();
+                app.audio.library.filter = 0;
+                app.audio.library.tool.clear();
+                app.audio.library.pending_delete.clear();
+                app.set("library_search", "", window, cx);
+                app.refresh_view_data();
+                let mut message = format!(
+                    "已从「{}」导入 {} 条音频，文件夹名已作为练习组",
+                    report.name, report.imported
+                );
+                if report.errors.is_empty() {
+                    app.report_status(FeedbackKind::Info, message);
+                } else {
+                    let shown = report
+                        .errors
+                        .iter()
+                        .take(4)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("；");
+                    message.push_str(&format!("；{} 条失败：{shown}", report.errors.len()));
+                    if report.errors.len() > 4 {
+                        message.push('…');
+                    }
+                    app.report_status(FeedbackKind::Error, message);
+                }
+            }
             Completed::ClipSaved => {
                 let start = app.media.session.loop_a;
                 app.audio.clip_mode = false;

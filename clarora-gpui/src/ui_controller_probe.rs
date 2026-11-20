@@ -268,6 +268,18 @@ impl Probe {
                     "管理预览串材料"
                 );
                 self.note("原生Page/Practice/LibrarySelect与后台预览", app)?;
+                app.handle(Action::AudioNote, window, cx);
+                ensure!(app.audio.note_open, "组笔记未打开");
+                app.set("group_note", "原生组笔记", window, cx);
+                app.handle(Action::AudioNoteSave, window, cx);
+                ensure!(
+                    !app.audio.note_open
+                        && app.lib.list("listening_practices")?.iter().any(|row| {
+                            text(row, "id") == GROUP_A && text(row, "note") == "原生组笔记"
+                        }),
+                    "组笔记未保存或面板未收起"
+                );
+                self.note("原生组笔记打开/保存/收起", app)?;
                 app.handle(Action::Audio(AUDIO_A.into()), window, cx);
                 ensure!(app.chat.is_loading(), "材料切换未提交异步会话请求");
                 app.set("question", "读取中不应发送", window, cx);

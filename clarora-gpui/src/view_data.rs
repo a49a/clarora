@@ -17,6 +17,8 @@ pub struct State {
     pub speaking: Vec<Value>,
     pub ocr: Vec<Value>,
     pub stats: Vec<Row>,
+    /// Cumulative playback seconds for audio that still exists in the library.
+    pub audio_stats: Vec<Value>,
     /// Actual focus-round minutes keyed by local day.
     pub focus_by_day: BTreeMap<String, f64>,
     pub focus_distractions_by_day: BTreeMap<String, u64>,
@@ -77,6 +79,22 @@ impl State {
             let speaking = records(lib, "speaking", 20)?;
             let ocr = records(lib, "ocr", 100)?;
             let stats = lib.list("study_stats")?;
+            let audio_stats = lib
+                .rows(
+                    "SELECT a.id,a.name,s.listen_seconds FROM audio_stats s
+                     JOIN listening_audios a ON a.id=s.audio_id
+                     ORDER BY s.listen_seconds DESC, a.name, a.id",
+                    &[],
+                )?
+                .into_iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "id": text(&row, "id"),
+                        "name": text(&row, "name"),
+                        "seconds": row["listen_seconds"].as_f64().unwrap_or(0.),
+                    })
+                })
+                .collect();
             let mut focus_by_day = BTreeMap::new();
             let mut focus_distractions_by_day = BTreeMap::new();
             let mut focus_minutes = 0.;
@@ -131,6 +149,7 @@ impl State {
                 speaking,
                 ocr,
                 stats,
+                audio_stats,
                 focus_by_day,
                 focus_distractions_by_day,
                 focus_minutes,

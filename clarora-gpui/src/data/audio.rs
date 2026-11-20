@@ -6,6 +6,7 @@ use std::{collections::BTreeSet, fs, path::Path};
 pub(crate) struct Practice {
     pub id: String,
     pub name: String,
+    pub note: String,
     created_at: String,
 }
 
@@ -18,12 +19,21 @@ pub(crate) struct AudioRecord {
     created_at: String,
 }
 
+/// Result of importing one folder as one practice group.
+pub struct AudioDirectoryImport {
+    pub group: String,
+    pub name: String,
+    pub imported: usize,
+    pub errors: Vec<String>,
+}
+
 impl Practice {
     fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             id: column_text(row, 0)?,
             name: column_text(row, 1)?,
-            created_at: column_text(row, 2)?,
+            note: column_text(row, 2)?,
+            created_at: column_text(row, 3)?,
         })
     }
 
@@ -31,6 +41,7 @@ impl Practice {
         Row::from_iter([
             ("id".into(), self.id.into()),
             ("name".into(), self.name.into()),
+            ("note".into(), self.note.into()),
             ("created_at".into(), self.created_at.into()),
         ])
     }
@@ -70,12 +81,27 @@ fn ensure_available(db: &Connection, group: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
+const AUDIO_EXTENSIONS: &[&str] = &[
+    "mp3", "m4a", "m4b", "aac", "wav", "flac", "ogg", "opus", "wma", "amr", "aif", "aiff", "caf",
+    "mp4", "m4v", "mov", "mkv", "webm",
+];
+
+fn is_audio_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            AUDIO_EXTENSIONS
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        })
+}
+
 impl Library {
     pub(crate) fn audio_catalog(&self) -> Result<(Vec<Practice>, Vec<AudioRecord>)> {
         let mut db = self.db()?;
         let tx = db.transaction()?;
         let practices = tx
-            .prepare("SELECT id,name,created_at FROM listening_practices")?
+            .prepare("SELECT id,name,note,created_at FROM listening_practices")?
             .query_map([], Practice::read)?
             .collect::<rusqlite::Result<_>>()?;
         let audios = tx.prepare("SELECT id,practice_id,name,audio_uri,subtitle_uri,created_at FROM listening_audios")?
@@ -121,11 +147,36 @@ impl Library {
         Ok(next)
     }
 
+    /// Add playback seconds to one existing audio. Missing/deleted audio is
+    /// ignored so a late media flush cannot resurrect an old row.
+    pub fn stat_audio(&self, audio_id: &str, seconds: f64) -> Result<()> {
+        if audio_id.is_empty() || !seconds.is_finite() || seconds <= 0. {
+            return Ok(());
+        }
+        let db = self.db()?;
+        let exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM listening_audios WHERE id=?)",
+            [audio_id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(());
+        }
+        db.execute(
+            "INSERT INTO audio_stats(audio_id,listen_seconds,updated_at) VALUES(?,?,?)
+             ON CONFLICT(audio_id) DO UPDATE SET
+               listen_seconds=listen_seconds+excluded.listen_seconds,
+               updated_at=excluded.updated_at",
+            params![audio_id, seconds, now()],
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn audio_practice(&self, key: &str) -> Result<Option<Practice>> {
         Ok(self
             .db()?
             .query_row(
-                "SELECT id,name,created_at FROM listening_practices WHERE id=?",
+                "SELECT id,name,note,created_at FROM listening_practices WHERE id=?",
                 [key],
                 Practice::read,
             )
@@ -157,6 +208,57 @@ impl Library {
 
     pub fn import_audio(&self, practice: &str, path: &Path) -> Result<()> {
         self.import_audio_record(practice, path).map(|_| ())
+    }
+
+    /// Import the files directly inside one folder into a practice group named
+    /// after that folder. Subdirectories, hidden files and non-media files are
+    /// skipped; a same-stem SRT/VTT/TXT sidecar is copied with each audio.
+    pub fn import_audio_directory(&self, directory: &Path) -> Result<AudioDirectoryImport> {
+        ensure!(directory.is_dir(), "请选择一个音频文件夹");
+        let name = directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .context("无法读取文件夹名称")?
+            .to_string();
+        let mut files = vec![];
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if !file_type.is_file() || entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            if is_audio_file(&path) {
+                files.push(path);
+            }
+        }
+        files.sort_by_key(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_lowercase())
+                .unwrap_or_default()
+        });
+        ensure!(!files.is_empty(), "文件夹里没有可导入的音频");
+        let group = self.practice(&name)?;
+        let mut imported = 0;
+        let mut errors = vec![];
+        for path in files {
+            let label = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            match self.import_audio(&group, &path) {
+                Ok(()) => imported += 1,
+                Err(error) => errors.push(format!("{label}：{error:#}")),
+            }
+        }
+        Ok(AudioDirectoryImport {
+            group,
+            name,
+            imported,
+            errors,
+        })
     }
 
     pub(crate) fn import_audio_record(&self, practice: &str, path: &Path) -> Result<AudioRecord> {
@@ -208,6 +310,19 @@ impl Library {
 
     pub fn rename_practice(&self, key: &str, name: &str) -> Result<()> {
         self.rename("listening_practices", key, name, None)
+    }
+
+    /// One freeform note per practice group. Empty clears the note.
+    pub fn set_practice_note(&self, key: &str, note: &str) -> Result<()> {
+        ensure!(note.chars().count() <= 20_000, "组笔记不能超过 20,000 字");
+        ensure!(
+            self.db()?.execute(
+                "UPDATE listening_practices SET note=? WHERE id=?",
+                params![note.trim_end(), key],
+            )? == 1,
+            "练习组已不存在"
+        );
+        Ok(())
     }
 
     pub fn rename_audio(&self, key: &str, name: &str, group: Option<&str>) -> Result<()> {

@@ -46,6 +46,7 @@ pub(super) enum Outcome {
     SpeakingReviewed(String, clarora_gpui::writing::Review),
     SpeakingDraftAudio(PathBuf),
     AudioMerged(clarora_gpui::audio_tools::Merged),
+    AudioDirectoryImported(clarora_gpui::data::AudioDirectoryImport),
 }
 pub(super) enum TaskUpdate {
     SubtitleProgress(String),

@@ -46,6 +46,7 @@ impl Command {
                 );
                 app.lib.set_setting("library_group", &key)?;
                 app.audio.practice_id = key;
+                app.audio.note_open = false;
                 app.audio.library.cancel_rename();
                 app.audio.checked.clear();
                 app.audio.library.selected.clear();
@@ -176,6 +177,17 @@ impl Command {
                     _ => String::new(),
                 };
                 app.set("library_name", name, window, cx);
+                let note = if app.audio.library.tool == "group-rename" {
+                    app.audio
+                        .practices
+                        .iter()
+                        .find(|r| text(r, "id") == app.audio.practice_id)
+                        .map(|r| text(r, "note"))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                app.set("group_note", note, window, cx);
                 app.audio.library.tool = tool;
                 app.page_scroll.set_offset(point(px(0.), px(0.)));
                 let field = if app.audio.library.tool == "tts" {
@@ -213,13 +225,15 @@ impl Command {
                         app.set("library_search", "", window, cx);
                     }
                     "group-rename" => app.lib.rename_practice(&app.audio.practice_id, &name)?,
-                    _ => anyhow::bail!("请重新打开名称编辑"),
+                    _ => anyhow::bail!("请重新打开练习组设置"),
                 }
+                app.lib
+                    .set_practice_note(&app.audio.practice_id, &app.value("group_note", cx))?;
                 app.lib
                     .set_setting("library_group", &app.audio.practice_id)?;
                 app.audio.library.tool.clear();
                 app.refresh();
-                app.report_status(FeedbackKind::Info, "名称已保存".into());
+                app.report_status(FeedbackKind::Info, "练习组已保存".into());
             }
 
             Command::LibraryFilter(filter) => {
