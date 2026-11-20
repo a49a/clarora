@@ -920,6 +920,7 @@ impl Probe {
                 if app.media.player.snapshot().path != path.to_string_lossy()
                     || app.video.cues.len() != 3
                     || !self.stable()
+                    || app.video.pending_start.is_some()
                 {
                     return Ok(false);
                 }
