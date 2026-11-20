@@ -437,6 +437,14 @@ impl AppView {
                 .filter(|p| p.revision == self.media.session.revision())
         {
             pending.paused = !pending.paused;
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "toggle_pending_video_start: page={} session_rev={} paused={} seek_to={:?}",
+                self.page,
+                self.media.session.revision(),
+                pending.paused,
+                pending.seek_to
+            );
             return true;
         }
         false
@@ -478,6 +486,15 @@ impl AppView {
             let target = position.clamp(0., state.duration);
             if (state.position - target).abs() <= 0.09 {
                 let paused = pending.paused;
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "pending video start reached target: page={} session_rev={} target={} position={} paused={}",
+                    self.page,
+                    self.media.session.revision(),
+                    target,
+                    state.position,
+                    paused
+                );
                 self.video.pending_start = None;
                 self.media
                     .player
